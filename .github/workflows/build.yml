@@ -1,0 +1,64 @@
+name: Build TypeScript
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'l1/**'
+      - 'l2/**'
+      - 'l3/**'
+      - 'l4/**'
+      - 'l5/**'
+      - 'l6/**'
+      - 'l7/**'
+      - 'README.md'
+      - 'readme.md'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '14'  # ou a versão do Node.js que você está usando
+
+    - name: Install dependencies
+      run: npm install
+
+    - name: Compile CI
+      run: npm run buildCI
+      env:
+          COLLAB_PROJECT: 102034
+          COLLAB_REPO: "mls-102034"
+          COLLAB_OWNER: "mls"
+          COLLAB_BRANCH: "main"
+          COLLAB_DRIVER: "GitHub"
+          COLLAB_TOKEN: ${{ vars.COLLAB_TOKEN }}
+          
+    - name: Commit compiled files
+      run: |
+        git config --global user.name 'github-actions[bot]'
+        git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+        git add obj
+        git commit -m "Compile TypeScript files"
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Push changes (with friendly diff on failure)
+      run: |
+        git fetch origin main
+        if ! git push origin main; then
+          echo "Push failed. The remote repository contains changes you don't have locally."
+          echo "Files that differ between your HEAD and origin/main:"
+          git diff --name-only HEAD origin/main
+          exit 1
+        fi
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
