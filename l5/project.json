@@ -1,0 +1,22 @@
+{
+  "orgName": "expansiva",
+  "designSystems": [
+    {
+      "dsIndex": "0",
+      "dsName": "localDesignSystem",
+      "widgetIOName": "_100554_configDsDefault"
+    }
+  ],
+  "languages": [
+    {
+      "language": "en",
+      "name": "English",
+      "path": "/"
+    }
+  ],
+  "plugins": {},
+  "reasons": {},
+  "services": [],
+  "links": [],
+  "servicesConfigEnabled": false
+}
