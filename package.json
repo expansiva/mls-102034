@@ -1,0 +1,22 @@
+{
+  "name": "102030",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "buildCI": "node -e \"require('mls-ci').runCI()\""
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "adm-zip": "0.5.16",
+    "less": "^4.2.0",
+    "esbuild": "^0.27.2",
+    "mls-ci": "git+https://github.com/expansiva/mls-ci.git",
+    "mls-102025": "git+https://github.com/expansiva/mls-102025.git",
+    "mls-102027": "git+https://github.com/expansiva/mls-102027.git",
+    "node-fetch": "^2.7.0",
+    "typescript": "^5.5.3"
+  }
+}
