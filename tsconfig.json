@@ -1,0 +1,42 @@
+{
+    "compilerOptions": {
+        "target": "es2020",
+        "module": "ES2020",
+        "esModuleInterop": true,
+        "outDir": "./preBuild/",
+        "rootDir": "./project",
+        "strict": true,
+        "removeComments": false,
+        "noUnusedParameters": false,
+        "skipLibCheck": false,
+        "forceConsistentCasingInFileNames": true,
+        "sourceMap": false,
+        "declaration": false,
+        "experimentalDecorators": true,
+        "emitDecoratorMetadata": false,
+        "noImplicitAny": false,
+        "strictNullChecks": false,
+        "paths": {
+            "lit": [
+                "./project/_100554_/l2/litElement.ts"
+            ],
+            "lit/decorators.js": [
+                "./project/_100554_/l2/litDecorators.ts"
+            ]
+        },
+        "lib": [
+            "dom",
+            "ES2022"
+        ]
+    },
+    "include": [
+        "project/**/*",
+        "monaco.d.ts",
+        "mls.d.ts"
+    ],
+    "exclude": [
+        "node_modules",
+        "**/*.spec.ts",
+        "l2/*.ts"
+    ]
+}
