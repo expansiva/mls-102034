@@ -1,0 +1,255 @@
+{
+  "module": "project",
+  "description": "Project planning, tasks, milestones, timesheets, budgets, and project billing.",
+  "type": "HDM",
+  "mdmDependencies": [
+    "Person",
+    "Company"
+  ],
+  "infraDependencies": [
+    "AuditLog",
+    "StatusHistory",
+    "NumberSequence",
+    "Comment"
+  ],
+  "entities": {
+    "Project": {
+      "description": "A bounded initiative with scope, budget, and timeline",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Code": {
+          "type": "string",
+          "required": true
+        },
+        "Name": {
+          "type": "string",
+          "required": true
+        },
+        "CustomerId": {
+          "type": "uuidv7",
+          "required": false,
+          "ref": "MDM.Company"
+        },
+        "ManagerId": {
+          "type": "uuidv7",
+          "required": true,
+          "ref": "MDM.Person"
+        },
+        "StartDate": {
+          "type": "date",
+          "required": false
+        },
+        "EndDate": {
+          "type": "date",
+          "required": false
+        },
+        "Budget": {
+          "type": "decimal(18,2)",
+          "required": false
+        },
+        "BillingType": {
+          "type": "enum",
+          "required": false,
+          "values": [
+            "fixed_price",
+            "time_and_materials",
+            "milestone",
+            "retainer"
+          ]
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "draft",
+            "active",
+            "on_hold",
+            "completed",
+            "cancelled"
+          ]
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false
+        }
+      },
+      "persistence": {
+        "module": "project",
+        "table": "project",
+        "strategy": "relational"
+      }
+    },
+    "Task": {
+      "description": "Unit of work within a project",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "ProjectId": {
+          "type": "uuidv7",
+          "required": true,
+          "ref": "Project"
+        },
+        "ParentTaskId": {
+          "type": "uuidv7",
+          "required": false,
+          "ref": "Task"
+        },
+        "Title": {
+          "type": "string",
+          "required": true
+        },
+        "AssignedTo": {
+          "type": "uuidv7",
+          "required": false,
+          "ref": "MDM.Person"
+        },
+        "DueDate": {
+          "type": "date",
+          "required": false
+        },
+        "EstimatedHrs": {
+          "type": "decimal(8,2)",
+          "required": false
+        },
+        "LoggedHrs": {
+          "type": "decimal(8,2)",
+          "required": true,
+          "constraints": "default 0"
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "backlog",
+            "todo",
+            "in_progress",
+            "review",
+            "done",
+            "cancelled"
+          ]
+        },
+        "Priority": {
+          "type": "enum",
+          "required": false,
+          "values": [
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ]
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false
+        }
+      },
+      "persistence": {
+        "module": "project",
+        "table": "task",
+        "strategy": "relational"
+      }
+    },
+    "Timesheet": {
+      "description": "Hours logged by a person against a task or project",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "ProjectId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "TaskId": {
+          "type": "uuidv7",
+          "required": false
+        },
+        "PersonId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Date": {
+          "type": "date",
+          "required": true
+        },
+        "Hours": {
+          "type": "decimal(8,2)",
+          "required": true
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "draft",
+            "submitted",
+            "approved",
+            "rejected"
+          ]
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "description, billable flag, hourly rate"
+        }
+      },
+      "persistence": {
+        "module": "project",
+        "table": "timesheet",
+        "strategy": "relational"
+      }
+    },
+    "Milestone": {
+      "description": "Key deliverable or checkpoint in the project",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "ProjectId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Name": {
+          "type": "string",
+          "required": true
+        },
+        "DueDate": {
+          "type": "date",
+          "required": true
+        },
+        "BillingAmount": {
+          "type": "decimal(18,2)",
+          "required": false
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "pending",
+            "achieved",
+            "missed",
+            "cancelled"
+          ]
+        },
+        "AchievedAt": {
+          "type": "date",
+          "required": false
+        }
+      },
+      "persistence": {
+        "module": "project",
+        "table": "milestone",
+        "strategy": "relational"
+      }
+    }
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "module": "purchasing",
+  "rules": {
+    "rule-three-quotes-required": {
+      "description": "Purchases above threshold require at least 3 supplier quotations",
+      "condition": "PurchaseOrder.TotalAmount >= company.threeQuoteThreshold",
+      "configurable": true,
+      "severity": "blocking"
+    },
+    "rule-po-approval-by-value": {
+      "description": "PO above configured value requires approval before sending to supplier",
+      "condition": "PurchaseOrder.TotalAmount >= company.poApprovalThreshold",
+      "configurable": true,
+      "severity": "blocking"
+    },
+    "rule-gr-cannot-exceed-po-qty": {
+      "description": "Received quantity per line cannot exceed ordered quantity",
+      "condition": "GoodsReceipt.line.ReceivedQty <= PurchaseOrder.line.OrderedQty",
+      "severity": "blocking"
+    },
+    "rule-invoice-match-tolerance": {
+      "description": "Invoice amount must match PO within configured tolerance",
+      "condition": "abs(PurchaseInvoice.TotalAmount - PurchaseOrder.TotalAmount) <= company.invoiceMatchTolerance",
+      "configurable": true,
+      "severity": "warning"
+    },
+    "rule-blocked-supplier-no-po": {
+      "description": "Purchase orders cannot be created for blocked suppliers",
+      "condition": "Supplier.Status !== 'blocked'",
+      "severity": "blocking"
+    },
+    "rule-po-requires-approved-requisition": {
+      "description": "When requisition flow is active, PO must reference an approved requisition",
+      "condition": "PurchaseRequisition.Status === 'approved'",
+      "configurable": true,
+      "severity": "blocking"
+    }
+  }
+}

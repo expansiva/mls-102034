@@ -1,0 +1,15 @@
+{
+  "name": "Collab Forge Monitor",
+  "short_name": "Monitor",
+  "display": "standalone",
+  "start_url": "/monitor/index.html",
+  "background_color": "#fffdfa",
+  "theme_color": "#17324d",
+  "icons": [
+    {
+      "src": "/monitor/assets/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

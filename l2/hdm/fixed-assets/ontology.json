@@ -1,0 +1,126 @@
+{
+  "module": "fixed-assets",
+  "description": "Accounting control of capital assets: acquisition, depreciation, revaluation, disposal.",
+  "type": "HDM",
+  "mdmDependencies": [
+    "Company"
+  ],
+  "infraDependencies": [
+    "AuditLog",
+    "NumberSequence",
+    "Attachment"
+  ],
+  "entities": {
+    "FixedAsset": {
+      "description": "Capital asset for accounting and tax purposes",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "AssetCode": {
+          "type": "string",
+          "required": true
+        },
+        "Name": {
+          "type": "string",
+          "required": true
+        },
+        "CategoryId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "AcquisitionDate": {
+          "type": "date",
+          "required": true
+        },
+        "AcquisitionCost": {
+          "type": "decimal(18,2)",
+          "required": true
+        },
+        "AccountingBookValue": {
+          "type": "decimal(18,2)",
+          "required": true
+        },
+        "TaxBookValue": {
+          "type": "decimal(18,2)",
+          "required": false
+        },
+        "AccountId": {
+          "type": "uuidv7",
+          "required": false,
+          "ref": "financial.Account"
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "active",
+            "fully_depreciated",
+            "disposed",
+            "revalued"
+          ]
+        },
+        "PhysicalAssetId": {
+          "type": "uuidv7",
+          "required": false,
+          "constraints": "ref to HDM-04 if integrated"
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false
+        }
+      },
+      "persistence": {
+        "module": "fixed-assets",
+        "table": "fixed_asset",
+        "strategy": "relational"
+      }
+    },
+    "DepreciationRun": {
+      "description": "Monthly depreciation calculation for all active assets",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Period": {
+          "type": "string",
+          "required": true,
+          "constraints": "YYYY-MM"
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "draft",
+            "posted",
+            "reversed"
+          ]
+        },
+        "TotalAmount": {
+          "type": "decimal(18,2)",
+          "required": false
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "line per asset: amount, method, book value after"
+        }
+      },
+      "persistence": {
+        "module": "fixed-assets",
+        "table": "depreciation_run",
+        "strategy": "relational"
+      }
+    }
+  }
+}

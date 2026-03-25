@@ -1,0 +1,27 @@
+{
+  "module": "time-tracking",
+  "rules": {
+    "rule-clockout-after-clockin": {
+      "description": "Clock-out must be after clock-in",
+      "condition": "TimeEntry.ClockOut > TimeEntry.ClockIn",
+      "severity": "blocking"
+    },
+    "rule-max-daily-hours": {
+      "description": "Alert when daily hours exceed configured maximum",
+      "condition": "dailyHours <= company.maxDailyHours",
+      "configurable": true,
+      "severity": "warning"
+    },
+    "rule-no-double-clockin": {
+      "description": "Employee cannot have two open time entries on the same day",
+      "condition": "no open TimeEntry for same EmployeeId and Date",
+      "severity": "blocking"
+    },
+    "rule-overtime-requires-approval": {
+      "description": "Overtime above threshold requires manager approval when configured",
+      "condition": "overtimeHours <= company.overtimeApprovalThreshold || approved",
+      "configurable": true,
+      "severity": "warning"
+    }
+  }
+}

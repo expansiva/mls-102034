@@ -1,0 +1,20 @@
+{
+  "module": "marketing",
+  "rules": {
+    "rule-no-email-without-consent": {
+      "description": "Marketing emails cannot be sent without active consent record",
+      "condition": "ConsentRecord.Status === 'granted' && purpose === 'marketing_email'",
+      "severity": "blocking"
+    },
+    "rule-unsubscribe-revokes-consent": {
+      "description": "Unsubscribe action immediately revokes all marketing consents",
+      "condition": "on unsubscribe \u2192 ConsentRecord.Status = 'revoked' for all marketing purposes",
+      "severity": "blocking"
+    },
+    "rule-campaign-requires-segment": {
+      "description": "Campaign cannot be activated without a target audience defined",
+      "condition": "Campaign.Details.targetSegment is defined",
+      "severity": "blocking"
+    }
+  }
+}

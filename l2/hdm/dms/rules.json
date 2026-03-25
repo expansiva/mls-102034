@@ -1,0 +1,26 @@
+{
+  "module": "dms",
+  "rules": {
+    "rule-publication-requires-approval": {
+      "description": "Documents in categories with RequiresApproval cannot be published without approval",
+      "condition": "ApprovalRequest.Status === 'approved' || !DocumentCategory.RequiresApproval",
+      "severity": "blocking"
+    },
+    "rule-expiry-alert": {
+      "description": "Alert document owner N days before expiry",
+      "condition": "ManagedDocument.ExpiresAt - today <= DocumentCategory.ExpiryAlertDaysBefore",
+      "severity": "warning",
+      "action": "notify owner"
+    },
+    "rule-new-version-supersedes-current": {
+      "description": "Publishing a new version automatically sets previous version to Superseded",
+      "condition": "on publish \u2192 previous published version Status = 'superseded'",
+      "severity": "info"
+    },
+    "rule-expired-document-read-only": {
+      "description": "Expired documents can be read but not used operationally",
+      "condition": "ManagedDocument.Status !== 'expired'",
+      "severity": "warning"
+    }
+  }
+}

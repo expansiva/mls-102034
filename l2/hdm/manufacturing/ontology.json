@@ -1,0 +1,170 @@
+{
+  "module": "manufacturing",
+  "description": "Production orders, BOM, WIP, and finished goods output.",
+  "type": "HDM",
+  "templateVariants": [
+    "manufacturing-discrete",
+    "manufacturing-batch"
+  ],
+  "mdmDependencies": [
+    "Product",
+    "Company"
+  ],
+  "infraDependencies": [
+    "AuditLog",
+    "StatusHistory",
+    "NumberSequence"
+  ],
+  "entities": {
+    "BillOfMaterials": {
+      "description": "Recipe defining components and quantities to produce one unit",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "ProductMdmId": {
+          "type": "uuidv7",
+          "required": true,
+          "ref": "MDM.Product"
+        },
+        "Version": {
+          "type": "string",
+          "required": true
+        },
+        "IsActive": {
+          "type": "boolean",
+          "required": true
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "lines: component productId, qty, unit, scrap pct"
+        }
+      },
+      "persistence": {
+        "module": "manufacturing",
+        "table": "bill_of_materials",
+        "strategy": "relational"
+      }
+    },
+    "WorkCenter": {
+      "description": "Machine, workstation, or production resource",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Code": {
+          "type": "string",
+          "required": true
+        },
+        "Name": {
+          "type": "string",
+          "required": true
+        },
+        "CostPerHour": {
+          "type": "decimal(18,2)",
+          "required": false
+        },
+        "Capacity": {
+          "type": "decimal(10,2)",
+          "required": false
+        },
+        "IsActive": {
+          "type": "boolean",
+          "required": true
+        }
+      },
+      "persistence": {
+        "module": "manufacturing",
+        "table": "work_center",
+        "strategy": "relational"
+      }
+    },
+    "ProductionOrder": {
+      "description": "Order to produce a quantity of a finished product",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Number": {
+          "type": "string",
+          "required": true
+        },
+        "ProductMdmId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "BomId": {
+          "type": "uuidv7",
+          "required": true,
+          "ref": "BillOfMaterials"
+        },
+        "PlannedQty": {
+          "type": "decimal(18,4)",
+          "required": true
+        },
+        "ProducedQty": {
+          "type": "decimal(18,4)",
+          "required": true,
+          "constraints": "default 0"
+        },
+        "ScrapQty": {
+          "type": "decimal(18,4)",
+          "required": true,
+          "constraints": "default 0"
+        },
+        "PlannedStart": {
+          "type": "date",
+          "required": false
+        },
+        "PlannedEnd": {
+          "type": "date",
+          "required": false
+        },
+        "ActualStart": {
+          "type": "timestamptz",
+          "required": false
+        },
+        "ActualEnd": {
+          "type": "timestamptz",
+          "required": false
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "draft",
+            "released",
+            "in_progress",
+            "completed",
+            "cancelled"
+          ]
+        },
+        "SalesOrderId": {
+          "type": "uuidv7",
+          "required": false
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false
+        }
+      },
+      "persistence": {
+        "module": "manufacturing",
+        "table": "production_order",
+        "strategy": "relational"
+      }
+    }
+  }
+}

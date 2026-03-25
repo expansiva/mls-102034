@@ -1,0 +1,26 @@
+{
+  "module": "cmms",
+  "rules": {
+    "rule-critical-wo-requires-assignment": {
+      "description": "Critical priority work orders must be assigned immediately",
+      "condition": "WorkOrder.Priority === 'critical' \u2192 AssignedTo required within 1 hour",
+      "severity": "warning"
+    },
+    "rule-preventive-auto-generate": {
+      "description": "System generates WO automatically when NextDue is reached",
+      "condition": "PreventiveSchedule.NextDue <= today && PreventiveSchedule.IsActive",
+      "severity": "info",
+      "action": "create WorkOrder"
+    },
+    "rule-asset-in-maintenance-blocks-operation": {
+      "description": "Asset under maintenance cannot be marked operational until WO is closed",
+      "condition": "no open WorkOrder for asset before setting Status=operational",
+      "severity": "warning"
+    },
+    "rule-completed-wo-requires-solution": {
+      "description": "Work order cannot be completed without a solution description",
+      "condition": "WorkOrder.Details.solution is not empty",
+      "severity": "blocking"
+    }
+  }
+}

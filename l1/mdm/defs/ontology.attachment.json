@@ -1,0 +1,119 @@
+{
+  "entity": "Attachment",
+  "description": "Links files stored in object storage (S3 or local filesystem) to any entity in any module. A purchase order can have attached quotes, an invoice can have a PDF, a supplier can have a contract scan. The Attachment record is the metadata — the file itself lives in object storage. Modules never manage file metadata directly.",
+
+  "access": "write-via-routine-only",
+  "routine": "Attachment.attach(ctx, input) / Attachment.detach(ctx, id) / Attachment.findByEntity(ctx, input)",
+  "consumers": "any module that needs to associate files with entities",
+
+  "fields": {
+    "Id": {
+      "type": "uuidv7",
+      "required": true,
+      "constraints": "primary key"
+    },
+    "EntityType": {
+      "type": "string",
+      "required": true,
+      "constraints": "pascal case entity name, e.g. 'PurchaseOrder', 'MdmCompany'"
+    },
+    "EntityId": {
+      "type": "uuidv7",
+      "required": true,
+      "constraints": "id of the entity this file is attached to"
+    },
+    "FileName": {
+      "type": "string",
+      "required": true,
+      "constraints": "original file name as provided by the uploader. Max 255 chars. Stored for display — not used as storage key"
+    },
+    "MimeType": {
+      "type": "string",
+      "required": true,
+      "constraints": "MIME type, e.g. 'application/pdf', 'image/png'. Validated against allowed types list in skill-hdm of the consuming module"
+    },
+    "SizeBytes": {
+      "type": "integer",
+      "required": true,
+      "constraints": "file size in bytes at upload time"
+    },
+    "StorageKey": {
+      "type": "string",
+      "required": true,
+      "constraints": "object storage path, e.g. 'attachments/purchasing/PurchaseOrder/{entityId}/{id}.pdf'. Never exposed directly to frontend — access goes through a signed URL routine"
+    },
+    "StorageProvider": {
+      "type": "enum",
+      "required": true,
+      "values": ["s3", "local"],
+      "constraints": "'local' used in development and single-server installations. 's3' in production"
+    },
+    "Category": {
+      "type": "string",
+      "required": false,
+      "constraints": "optional classification defined by the consuming module, e.g. 'quote', 'contract', 'proof-of-delivery'. Max 50 chars"
+    },
+    "UploadedBy": {
+      "type": "uuidv7",
+      "required": true,
+      "constraints": "userId or agentId that uploaded the file"
+    },
+    "UploadedAt": {
+      "type": "timestamptz",
+      "required": true,
+      "constraints": "set by MDM routine at write time"
+    },
+    "DeletedAt": {
+      "type": "timestamptz",
+      "required": false,
+      "constraints": "soft delete — file is not removed from storage immediately. A cleanup job removes the object after the grace period"
+    },
+    "Details": {
+      "type": "jsonb",
+      "required": false,
+      "constraints": "optional metadata from the consuming module — e.g. page count, document version, NF-e access key for XML attachments. Stored in DynamoDB only. Max 50KB"
+    }
+  },
+
+  "indexes": {
+    "postgresql": [
+      { "fields": ["EntityType", "EntityId"], "note": "list all attachments for an entity" },
+      { "fields": ["EntityType", "EntityId", "Category"], "note": "list attachments by category, e.g. all quotes for a PO" },
+      { "fields": ["UploadedBy", "UploadedAt"], "note": "what did this user upload" },
+      { "fields": ["DeletedAt"], "note": "cleanup job — find soft-deleted files past grace period" }
+    ],
+    "dynamodb": {
+      "pk": "EntityType#EntityId",
+      "sk": "UploadedAt#Id",
+      "note": "full attachment record including Details — used for restore and audit trail"
+    }
+  },
+
+  "persistence": {
+    "module": "mdm",
+    "table": "attachment",
+    "type": "MDM-INFRA",
+    "strategy": "remote-document",
+    "remoteStore": "dynamodb",
+    "indexFields": ["Id", "EntityType", "EntityId", "FileName", "MimeType", "SizeBytes", "StorageKey", "StorageProvider", "Category", "UploadedBy", "UploadedAt", "DeletedAt"],
+    "remoteOnlyFields": ["Details"],
+    "consistencyContract": {
+      "sync": ["Id", "EntityType", "EntityId", "FileName", "MimeType", "SizeBytes", "StorageKey", "StorageProvider", "Category", "UploadedBy", "UploadedAt"],
+      "async": ["Details"],
+      "note": "index fields sync — file must be findable immediately after upload"
+    },
+    "retention": {
+      "postgresql": "soft delete via DeletedAt — hard delete from PostgreSQL after 30 days grace period",
+      "dynamodb": "permanent — attachment history preserved even after file deletion",
+      "storage": "object deleted from S3/local after grace period by cleanup job"
+    },
+    "immutable": false,
+    "note": "only DeletedAt is writable after creation — FileName, StorageKey and other fields never change"
+  },
+
+  "rules": [
+    "rule-attachment-no-direct-storage-access",
+    "rule-attachment-signed-url-only",
+    "rule-attachment-soft-delete-before-storage-removal"
+  ]
+}

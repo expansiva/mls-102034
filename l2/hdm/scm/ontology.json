@@ -1,0 +1,141 @@
+{
+  "module": "scm",
+  "description": "Supply chain: demand planning, transport management, carrier tracking, import/export.",
+  "type": "HDM",
+  "mdmDependencies": [
+    "Company",
+    "Product",
+    "Location"
+  ],
+  "infraDependencies": [
+    "AuditLog",
+    "StatusHistory",
+    "NumberSequence",
+    "Attachment"
+  ],
+  "entities": {
+    "DemandForecast": {
+      "description": "Projected demand for a product in a future period",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "ProductMdmId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "WarehouseId": {
+          "type": "uuidv7",
+          "required": false
+        },
+        "Period": {
+          "type": "string",
+          "required": true,
+          "constraints": "YYYY-MM"
+        },
+        "ForecastQty": {
+          "type": "decimal(18,4)",
+          "required": true
+        },
+        "ActualQty": {
+          "type": "decimal(18,4)",
+          "required": false
+        },
+        "Method": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "manual",
+            "moving_average",
+            "seasonal",
+            "ml_based"
+          ]
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false
+        }
+      },
+      "persistence": {
+        "module": "scm",
+        "table": "demand_forecast",
+        "strategy": "relational"
+      }
+    },
+    "TransportOrder": {
+      "description": "Shipment request assigned to a carrier",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Number": {
+          "type": "string",
+          "required": true
+        },
+        "CarrierMdmId": {
+          "type": "uuidv7",
+          "required": false,
+          "ref": "MDM.Company"
+        },
+        "OriginId": {
+          "type": "uuidv7",
+          "required": true,
+          "ref": "MDM.Location"
+        },
+        "DestinationId": {
+          "type": "uuidv7",
+          "required": true,
+          "ref": "MDM.Location"
+        },
+        "PlannedDepart": {
+          "type": "timestamptz",
+          "required": false
+        },
+        "ActualDepart": {
+          "type": "timestamptz",
+          "required": false
+        },
+        "ActualArrival": {
+          "type": "timestamptz",
+          "required": false
+        },
+        "TrackingCode": {
+          "type": "string",
+          "required": false
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "draft",
+            "booked",
+            "in_transit",
+            "delivered",
+            "exception",
+            "cancelled"
+          ]
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "linked deliveries, freight cost, documents"
+        }
+      },
+      "persistence": {
+        "module": "scm",
+        "table": "transport_order",
+        "strategy": "relational"
+      }
+    }
+  }
+}

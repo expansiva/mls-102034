@@ -1,0 +1,162 @@
+{
+  "module": "marketing",
+  "description": "Campaign management, lead nurturing, email automation, and attribution.",
+  "type": "HDM",
+  "mdmDependencies": [
+    "Person",
+    "ContactChannel"
+  ],
+  "infraDependencies": [
+    "AuditLog",
+    "Tag"
+  ],
+  "entities": {
+    "Campaign": {
+      "description": "Marketing initiative targeting a segment",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Name": {
+          "type": "string",
+          "required": true
+        },
+        "Type": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "email",
+            "sms",
+            "whatsapp",
+            "social",
+            "event",
+            "other"
+          ]
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "draft",
+            "scheduled",
+            "running",
+            "paused",
+            "completed",
+            "cancelled"
+          ]
+        },
+        "StartDate": {
+          "type": "date",
+          "required": false
+        },
+        "EndDate": {
+          "type": "date",
+          "required": false
+        },
+        "Budget": {
+          "type": "decimal(18,2)",
+          "required": false
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "target segment, content, UTM params"
+        }
+      },
+      "persistence": {
+        "module": "marketing",
+        "table": "campaign",
+        "strategy": "relational"
+      }
+    },
+    "EmailSequence": {
+      "description": "Automated sequence of emails triggered by an event",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Name": {
+          "type": "string",
+          "required": true
+        },
+        "Trigger": {
+          "type": "string",
+          "required": true,
+          "constraints": "event that starts the sequence, e.g. lead.created"
+        },
+        "IsActive": {
+          "type": "boolean",
+          "required": true
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "steps: delay, template, condition to skip"
+        }
+      },
+      "persistence": {
+        "module": "marketing",
+        "table": "email_sequence",
+        "strategy": "relational"
+      }
+    },
+    "ConsentRecord": {
+      "description": "LGPD/GDPR consent log per contact per purpose",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "PersonMdmId": {
+          "type": "uuidv7",
+          "required": true,
+          "ref": "MDM.Person"
+        },
+        "Purpose": {
+          "type": "string",
+          "required": true,
+          "constraints": "e.g. marketing_email, sms_promo"
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "granted",
+            "revoked"
+          ]
+        },
+        "GrantedAt": {
+          "type": "timestamptz",
+          "required": false
+        },
+        "RevokedAt": {
+          "type": "timestamptz",
+          "required": false
+        },
+        "Source": {
+          "type": "string",
+          "required": false
+        },
+        "IpAddress": {
+          "type": "string",
+          "required": false
+        }
+      },
+      "persistence": {
+        "module": "marketing",
+        "table": "consent_record",
+        "strategy": "relational"
+      }
+    }
+  }
+}

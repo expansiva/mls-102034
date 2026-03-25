@@ -1,0 +1,228 @@
+{
+  "module": "inventory",
+  "description": "Controls stock levels, locations, and movements for fungible items.",
+  "type": "HDM",
+  "templateVariants": [
+    "inventory-trade",
+    "inventory-manufacturing"
+  ],
+  "mdmDependencies": [
+    "Product",
+    "Company",
+    "Location"
+  ],
+  "infraDependencies": [
+    "AuditLog",
+    "StatusHistory",
+    "NumberSequence"
+  ],
+  "entities": {
+    "Warehouse": {
+      "description": "Physical storage location",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Code": {
+          "type": "string",
+          "required": true
+        },
+        "Name": {
+          "type": "string",
+          "required": true
+        },
+        "LocationMdmId": {
+          "type": "uuidv7",
+          "required": false,
+          "ref": "MDM.Location"
+        },
+        "IsActive": {
+          "type": "boolean",
+          "required": true
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false
+        }
+      },
+      "persistence": {
+        "module": "inventory",
+        "table": "warehouse",
+        "strategy": "relational"
+      }
+    },
+    "StockItem": {
+      "description": "Quantity of a product in a warehouse",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "ProductMdmId": {
+          "type": "uuidv7",
+          "required": true,
+          "ref": "MDM.Product"
+        },
+        "WarehouseId": {
+          "type": "uuidv7",
+          "required": true,
+          "ref": "Warehouse"
+        },
+        "Quantity": {
+          "type": "decimal(18,4)",
+          "required": true
+        },
+        "ReservedQty": {
+          "type": "decimal(18,4)",
+          "required": true,
+          "constraints": "qty committed to sales orders"
+        },
+        "ReorderPoint": {
+          "type": "decimal(18,4)",
+          "required": false
+        },
+        "CostingMethod": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "average",
+            "fifo",
+            "standard"
+          ]
+        },
+        "UnitCost": {
+          "type": "decimal(18,4)",
+          "required": true
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false
+        }
+      },
+      "persistence": {
+        "module": "inventory",
+        "table": "stock_item",
+        "strategy": "relational"
+      }
+    },
+    "StockMovement": {
+      "description": "Every inventory transaction \u2014 in, out, transfer, adjustment",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Type": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "receipt",
+            "issue",
+            "transfer",
+            "adjustment",
+            "return",
+            "scrap"
+          ]
+        },
+        "ProductMdmId": {
+          "type": "uuidv7",
+          "required": true,
+          "ref": "MDM.Product"
+        },
+        "WarehouseId": {
+          "type": "uuidv7",
+          "required": true,
+          "ref": "Warehouse"
+        },
+        "Quantity": {
+          "type": "decimal(18,4)",
+          "required": true,
+          "constraints": "positive=in, negative=out"
+        },
+        "UnitCost": {
+          "type": "decimal(18,4)",
+          "required": false
+        },
+        "LotNumber": {
+          "type": "string",
+          "required": false
+        },
+        "SerialNumber": {
+          "type": "string",
+          "required": false
+        },
+        "SourceModule": {
+          "type": "string",
+          "required": false
+        },
+        "SourceId": {
+          "type": "uuidv7",
+          "required": false
+        },
+        "MovedAt": {
+          "type": "timestamptz",
+          "required": true
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false
+        }
+      },
+      "persistence": {
+        "module": "inventory",
+        "table": "stock_movement",
+        "strategy": "relational"
+      }
+    },
+    "PhysicalCount": {
+      "description": "Periodic physical inventory audit",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "WarehouseId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "StartedAt": {
+          "type": "timestamptz",
+          "required": true
+        },
+        "ClosedAt": {
+          "type": "timestamptz",
+          "required": false
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "open",
+            "counting",
+            "review",
+            "closed"
+          ]
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "count lines: product, system qty, counted qty, variance"
+        }
+      },
+      "persistence": {
+        "module": "inventory",
+        "table": "physical_count",
+        "strategy": "relational"
+      }
+    }
+  }
+}

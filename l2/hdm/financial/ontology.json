@@ -1,0 +1,123 @@
+{
+  "module": "financial",
+  "description": "Core accounting engine. General ledger, accounts payable, accounts receivable, bank reconciliation, cost centers, and financial reporting.",
+  "type": "HDM",
+  "mdmDependencies": ["Company", "Person", "BankAccount"],
+  "infraDependencies": ["AuditLog", "StatusHistory", "NumberSequence", "Attachment"],
+
+  "entities": {
+    "Account": {
+      "description": "Chart of accounts entry — every debit and credit posts here",
+      "fields": {
+        "Id":          { "type": "uuidv7", "required": true },
+        "CompanyId":   { "type": "uuidv7", "required": true, "ref": "MDM.Company" },
+        "Code":        { "type": "string",  "required": true, "constraints": "unique per company, e.g. 1.1.01" },
+        "Name":        { "type": "string",  "required": true },
+        "Type":        { "type": "enum",    "required": true, "values": ["asset","liability","equity","revenue","expense"] },
+        "ParentId":    { "type": "uuidv7",  "required": false, "ref": "Account" },
+        "IsAnalytic":  { "type": "boolean", "required": true, "constraints": "only analytic accounts receive postings" },
+        "IsActive":    { "type": "boolean", "required": true },
+        "CostCenterId":{ "type": "uuidv7",  "required": false, "ref": "CostCenter" },
+        "Details":     { "type": "jsonb",   "required": false }
+      },
+      "persistence": { "module": "financial", "table": "account", "strategy": "relational" }
+    },
+
+    "CostCenter": {
+      "description": "Analytical dimension for cost and revenue allocation",
+      "fields": {
+        "Id":        { "type": "uuidv7", "required": true },
+        "CompanyId": { "type": "uuidv7", "required": true, "ref": "MDM.Company" },
+        "Code":      { "type": "string",  "required": true },
+        "Name":      { "type": "string",  "required": true },
+        "ParentId":  { "type": "uuidv7",  "required": false, "ref": "CostCenter" },
+        "IsActive":  { "type": "boolean", "required": true }
+      },
+      "persistence": { "module": "financial", "table": "cost_center", "strategy": "relational" }
+    },
+
+    "JournalEntry": {
+      "description": "Double-entry accounting record — header with lines",
+      "fields": {
+        "Id":          { "type": "uuidv7",     "required": true },
+        "CompanyId":   { "type": "uuidv7",     "required": true, "ref": "MDM.Company" },
+        "Number":      { "type": "string",     "required": true, "constraints": "from NumberSequence financial.JournalEntry" },
+        "Date":        { "type": "date",       "required": true },
+        "Description": { "type": "string",     "required": true },
+        "Status":      { "type": "enum",       "required": true, "values": ["draft","posted","reversed"] },
+        "SourceModule":{ "type": "string",     "required": false, "constraints": "module that generated this entry, e.g. purchasing, sales" },
+        "SourceId":    { "type": "uuidv7",     "required": false, "constraints": "id of the originating document" },
+        "PostedAt":    { "type": "timestamptz","required": false },
+        "PostedBy":    { "type": "uuidv7",     "required": false },
+        "Details":     { "type": "jsonb",      "required": false }
+      },
+      "subEntities": {
+        "JournalLine": {
+          "description": "Single debit or credit line within a journal entry",
+          "fields": {
+            "Id":           { "type": "uuidv7", "required": true },
+            "AccountId":    { "type": "uuidv7", "required": true, "ref": "Account" },
+            "CostCenterId": { "type": "uuidv7", "required": false, "ref": "CostCenter" },
+            "Debit":        { "type": "decimal(18,2)", "required": false },
+            "Credit":       { "type": "decimal(18,2)", "required": false },
+            "Description":  { "type": "string", "required": false }
+          },
+          "persistence": { "strategy": "relational", "table": "journal_line" }
+        }
+      },
+      "persistence": { "module": "financial", "table": "journal_entry", "strategy": "relational" }
+    },
+
+    "Invoice": {
+      "description": "Payable (supplier) or receivable (customer) document",
+      "fields": {
+        "Id":           { "type": "uuidv7",       "required": true },
+        "CompanyId":    { "type": "uuidv7",       "required": true, "ref": "MDM.Company" },
+        "Direction":    { "type": "enum",         "required": true, "values": ["payable","receivable"] },
+        "Number":       { "type": "string",       "required": true },
+        "CounterpartyMdmId": { "type": "uuidv7", "required": true, "ref": "MDM.Company or MDM.Person" },
+        "IssueDate":    { "type": "date",         "required": true },
+        "DueDate":      { "type": "date",         "required": true },
+        "Amount":       { "type": "decimal(18,2)","required": true },
+        "PaidAmount":   { "type": "decimal(18,2)","required": true, "constraints": "default 0" },
+        "Status":       { "type": "enum",         "required": true, "values": ["draft","approved","partially_paid","paid","overdue","cancelled"] },
+        "SourceModule": { "type": "string",       "required": false },
+        "SourceId":     { "type": "uuidv7",       "required": false },
+        "Details":      { "type": "jsonb",        "required": false, "constraints": "line items, tax breakdown, bank data" }
+      },
+      "persistence": { "module": "financial", "table": "invoice", "strategy": "relational" }
+    },
+
+    "Payment": {
+      "description": "Records a payment against one or more invoices",
+      "fields": {
+        "Id":           { "type": "uuidv7",       "required": true },
+        "CompanyId":    { "type": "uuidv7",       "required": true, "ref": "MDM.Company" },
+        "Direction":    { "type": "enum",         "required": true, "values": ["outgoing","incoming"] },
+        "Amount":       { "type": "decimal(18,2)","required": true },
+        "PaymentDate":  { "type": "date",         "required": true },
+        "Method":       { "type": "enum",         "required": true, "values": ["bank_transfer","pix","boleto","credit_card","cash","check"] },
+        "BankAccountId":{ "type": "uuidv7",       "required": false, "ref": "MDM.BankAccount" },
+        "Status":       { "type": "enum",         "required": true, "values": ["scheduled","processed","reconciled","failed","cancelled"] },
+        "Details":      { "type": "jsonb",        "required": false, "constraints": "invoice allocations, bank transaction ref" }
+      },
+      "persistence": { "module": "financial", "table": "payment", "strategy": "relational" }
+    },
+
+    "BankStatement": {
+      "description": "Imported bank transactions for reconciliation",
+      "fields": {
+        "Id":             { "type": "uuidv7",       "required": true },
+        "CompanyId":      { "type": "uuidv7",       "required": true },
+        "BankAccountId":  { "type": "uuidv7",       "required": true, "ref": "MDM.BankAccount" },
+        "TransactionDate":{ "type": "date",         "required": true },
+        "Amount":         { "type": "decimal(18,2)","required": true, "constraints": "positive = credit, negative = debit" },
+        "Description":    { "type": "string",       "required": true },
+        "Status":         { "type": "enum",         "required": true, "values": ["unreconciled","reconciled","ignored"] },
+        "PaymentId":      { "type": "uuidv7",       "required": false, "ref": "Payment", "constraints": "set when reconciled" },
+        "Details":        { "type": "jsonb",        "required": false }
+      },
+      "persistence": { "module": "financial", "table": "bank_statement", "strategy": "relational" }
+    }
+  }
+}

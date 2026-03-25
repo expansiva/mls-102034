@@ -1,0 +1,26 @@
+{
+  "module": "fiscal",
+  "rules": {
+    "rule-authorized-document-immutable": {
+      "description": "Authorized fiscal documents cannot be edited \u2014 only cancelled via counter-document",
+      "condition": "FiscalDocument.Status !== 'authorized'",
+      "severity": "blocking"
+    },
+    "rule-cancellation-window": {
+      "description": "NF-e cancellation only allowed within 24 hours of authorization (Brazil)",
+      "condition": "issuedAt + 24h >= now",
+      "severity": "blocking",
+      "countryScope": "brazil"
+    },
+    "rule-access-key-unique": {
+      "description": "Fiscal access key must be globally unique",
+      "condition": "FiscalDocument.AccessKey is unique",
+      "severity": "blocking"
+    },
+    "rule-contingency-requires-later-transmission": {
+      "description": "Documents issued in contingency must be transmitted when system recovers",
+      "condition": "FiscalDocument.Status === 'contingency' \u2192 transmit on reconnection",
+      "severity": "warning"
+    }
+  }
+}

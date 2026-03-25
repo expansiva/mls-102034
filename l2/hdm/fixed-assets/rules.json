@@ -1,0 +1,25 @@
+{
+  "module": "fixed-assets",
+  "rules": {
+    "rule-one-depreciation-run-per-period": {
+      "description": "Only one posted depreciation run per company per period",
+      "condition": "no other DepreciationRun with Status='posted' for same period",
+      "severity": "blocking"
+    },
+    "rule-book-value-not-negative": {
+      "description": "Accounting book value cannot go below zero",
+      "condition": "FixedAsset.AccountingBookValue >= 0",
+      "severity": "blocking"
+    },
+    "rule-disposed-asset-no-depreciation": {
+      "description": "Disposed assets are excluded from depreciation runs",
+      "condition": "FixedAsset.Status !== 'disposed'",
+      "severity": "blocking"
+    },
+    "rule-depreciation-requires-gl-account": {
+      "description": "Asset must have a GL account configured to post depreciation",
+      "condition": "FixedAsset.AccountId is set",
+      "severity": "blocking"
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "module": "asset-management",
+  "rules": {
+    "rule-asset-code-unique": {
+      "description": "Asset code must be unique per company",
+      "condition": "Asset.AssetCode is unique within CompanyId",
+      "severity": "blocking"
+    },
+    "rule-disposed-asset-no-transfer": {
+      "description": "Disposed or lost assets cannot be transferred",
+      "condition": "Asset.Status not in ['disposed','lost']",
+      "severity": "blocking"
+    },
+    "rule-depreciation-not-below-residual": {
+      "description": "Asset book value cannot be depreciated below its residual value",
+      "condition": "Asset.CurrentValue >= Asset.AcquisitionCost * (AssetCategory.ResidualValuePct / 100)",
+      "severity": "blocking"
+    },
+    "rule-depreciation-requires-category-config": {
+      "description": "Depreciation can only run if the asset category has method and useful life configured",
+      "condition": "AssetCategory.DepreciationMethod && AssetCategory.UsefulLifeMonths",
+      "severity": "blocking"
+    }
+  }
+}

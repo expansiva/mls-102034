@@ -1,0 +1,122 @@
+{
+  "module": "dms",
+  "description": "Document management with version control, approval workflow, expiry, and access control.",
+  "type": "HDM",
+  "mdmDependencies": [
+    "Person",
+    "Company"
+  ],
+  "infraDependencies": [
+    "AuditLog",
+    "StatusHistory",
+    "NumberSequence",
+    "Attachment",
+    "Workflow"
+  ],
+  "entities": {
+    "DocumentCategory": {
+      "description": "Classification of managed documents",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Name": {
+          "type": "string",
+          "required": true
+        },
+        "RequiresApproval": {
+          "type": "boolean",
+          "required": true
+        },
+        "RetentionMonths": {
+          "type": "integer",
+          "required": false
+        },
+        "ExpiryAlertDaysBefore": {
+          "type": "integer",
+          "required": false
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false
+        }
+      },
+      "persistence": {
+        "module": "dms",
+        "table": "document_category",
+        "strategy": "relational"
+      }
+    },
+    "ManagedDocument": {
+      "description": "A controlled document with version history and lifecycle",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CategoryId": {
+          "type": "uuidv7",
+          "required": true,
+          "ref": "DocumentCategory"
+        },
+        "Title": {
+          "type": "string",
+          "required": true
+        },
+        "Code": {
+          "type": "string",
+          "required": false
+        },
+        "Version": {
+          "type": "string",
+          "required": true,
+          "constraints": "e.g. 1.0, 2.1"
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "draft",
+            "under_review",
+            "approved",
+            "published",
+            "superseded",
+            "expired",
+            "archived"
+          ]
+        },
+        "OwnerId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "PublishedAt": {
+          "type": "date",
+          "required": false
+        },
+        "ExpiresAt": {
+          "type": "date",
+          "required": false
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "change log, review notes, access list"
+        }
+      },
+      "persistence": {
+        "module": "dms",
+        "table": "managed_document",
+        "strategy": "relational"
+      }
+    }
+  }
+}

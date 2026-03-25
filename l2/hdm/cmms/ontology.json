@@ -1,0 +1,207 @@
+{
+  "module": "cmms",
+  "description": "Maintenance management: work orders, preventive schedules, parts, and KPIs.",
+  "type": "HDM",
+  "mdmDependencies": [
+    "Person",
+    "Company",
+    "Product"
+  ],
+  "infraDependencies": [
+    "AuditLog",
+    "StatusHistory",
+    "NumberSequence",
+    "Attachment"
+  ],
+  "entities": {
+    "MaintenanceAsset": {
+      "description": "Asset under maintenance control \u2014 references HDM-04 asset or standalone",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "AssetId": {
+          "type": "uuidv7",
+          "required": false,
+          "constraints": "ref to HDM-04 Asset if integrated"
+        },
+        "Name": {
+          "type": "string",
+          "required": true
+        },
+        "Category": {
+          "type": "string",
+          "required": true
+        },
+        "Criticality": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ]
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "operational",
+            "under_maintenance",
+            "decommissioned"
+          ]
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "specs, location, last maintenance date"
+        }
+      },
+      "persistence": {
+        "module": "cmms",
+        "table": "maintenance_asset",
+        "strategy": "relational"
+      }
+    },
+    "WorkOrder": {
+      "description": "Maintenance task \u2014 corrective or preventive",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Number": {
+          "type": "string",
+          "required": true
+        },
+        "AssetId": {
+          "type": "uuidv7",
+          "required": true,
+          "ref": "MaintenanceAsset"
+        },
+        "Type": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "corrective",
+            "preventive",
+            "predictive",
+            "inspection"
+          ]
+        },
+        "Priority": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ]
+        },
+        "AssignedTo": {
+          "type": "uuidv7",
+          "required": false,
+          "ref": "MDM.Person"
+        },
+        "PlannedDate": {
+          "type": "date",
+          "required": false
+        },
+        "StartedAt": {
+          "type": "timestamptz",
+          "required": false
+        },
+        "CompletedAt": {
+          "type": "timestamptz",
+          "required": false
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "open",
+            "assigned",
+            "in_progress",
+            "on_hold",
+            "completed",
+            "cancelled"
+          ]
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "problem description, solution, parts used, labor hours"
+        }
+      },
+      "persistence": {
+        "module": "cmms",
+        "table": "work_order",
+        "strategy": "relational"
+      }
+    },
+    "PreventiveSchedule": {
+      "description": "Recurring maintenance schedule for an asset",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "AssetId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Name": {
+          "type": "string",
+          "required": true
+        },
+        "FrequencyType": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "days",
+            "weeks",
+            "months",
+            "hours_meter",
+            "km_meter"
+          ]
+        },
+        "FrequencyValue": {
+          "type": "integer",
+          "required": true
+        },
+        "LastExecuted": {
+          "type": "date",
+          "required": false
+        },
+        "NextDue": {
+          "type": "date",
+          "required": false
+        },
+        "IsActive": {
+          "type": "boolean",
+          "required": true
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false
+        }
+      },
+      "persistence": {
+        "module": "cmms",
+        "table": "preventive_schedule",
+        "strategy": "relational"
+      }
+    }
+  }
+}

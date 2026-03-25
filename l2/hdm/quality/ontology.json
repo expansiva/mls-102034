@@ -1,0 +1,233 @@
+{
+  "module": "quality",
+  "description": "Quality control: inspections, non-conformances, corrective actions, supplier quality.",
+  "type": "HDM",
+  "mdmDependencies": [
+    "Person",
+    "Company",
+    "Product"
+  ],
+  "infraDependencies": [
+    "AuditLog",
+    "StatusHistory",
+    "NumberSequence",
+    "Attachment"
+  ],
+  "entities": {
+    "InspectionChecklist": {
+      "description": "Template defining what to check at an inspection point",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Name": {
+          "type": "string",
+          "required": true
+        },
+        "Point": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "inbound",
+            "in_process",
+            "outbound",
+            "periodic"
+          ]
+        },
+        "IsActive": {
+          "type": "boolean",
+          "required": true
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "check items: description, type (pass/fail, numeric, text), required"
+        }
+      },
+      "persistence": {
+        "module": "quality",
+        "table": "inspection_checklist",
+        "strategy": "relational"
+      }
+    },
+    "InspectionRecord": {
+      "description": "Completed inspection against a checklist",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "ChecklistId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "EntityType": {
+          "type": "string",
+          "required": true,
+          "constraints": "GoodsReceipt, ProductionOrder, Delivery..."
+        },
+        "EntityId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "InspectedBy": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "InspectedAt": {
+          "type": "timestamptz",
+          "required": true
+        },
+        "Result": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "passed",
+            "failed",
+            "conditional"
+          ]
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "item results, measurements, photos"
+        }
+      },
+      "persistence": {
+        "module": "quality",
+        "table": "inspection_record",
+        "strategy": "relational"
+      }
+    },
+    "NonConformance": {
+      "description": "Documented quality defect or deviation",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Number": {
+          "type": "string",
+          "required": true
+        },
+        "Source": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "inbound",
+            "production",
+            "customer_complaint",
+            "audit",
+            "internal"
+          ]
+        },
+        "Severity": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "minor",
+            "major",
+            "critical"
+          ]
+        },
+        "EntityType": {
+          "type": "string",
+          "required": false
+        },
+        "EntityId": {
+          "type": "uuidv7",
+          "required": false
+        },
+        "Description": {
+          "type": "string",
+          "required": true
+        },
+        "AssignedTo": {
+          "type": "uuidv7",
+          "required": false
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "open",
+            "under_analysis",
+            "action_planned",
+            "resolved",
+            "closed",
+            "cancelled"
+          ]
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "root cause, containment actions, photos"
+        }
+      },
+      "persistence": {
+        "module": "quality",
+        "table": "non_conformance",
+        "strategy": "relational"
+      }
+    },
+    "CorrectiveAction": {
+      "description": "Action planned to resolve a non-conformance",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "NonConformanceId": {
+          "type": "uuidv7",
+          "required": true,
+          "ref": "NonConformance"
+        },
+        "Description": {
+          "type": "string",
+          "required": true
+        },
+        "ResponsibleId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Deadline": {
+          "type": "date",
+          "required": true
+        },
+        "CompletedAt": {
+          "type": "date",
+          "required": false
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "planned",
+            "in_progress",
+            "completed",
+            "verified",
+            "overdue"
+          ]
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false
+        }
+      },
+      "persistence": {
+        "module": "quality",
+        "table": "corrective_action",
+        "strategy": "relational"
+      }
+    }
+  }
+}

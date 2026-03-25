@@ -1,0 +1,293 @@
+{
+  "module": "sales",
+  "description": "Outbound commercial cycle: quote, sales order, delivery, invoicing.",
+  "type": "HDM",
+  "mdmDependencies": [
+    "Company",
+    "Person",
+    "Product",
+    "Location"
+  ],
+  "infraDependencies": [
+    "AuditLog",
+    "StatusHistory",
+    "NumberSequence",
+    "Attachment"
+  ],
+  "entities": {
+    "Customer": {
+      "description": "Local sales profile for an MDM Company or Person acting as customer",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "MdmId": {
+          "type": "uuidv7",
+          "required": true,
+          "ref": "MDM.Company or MDM.Person"
+        },
+        "MdmType": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "company",
+            "person"
+          ]
+        },
+        "CustomerCode": {
+          "type": "string",
+          "required": false
+        },
+        "CreditLimit": {
+          "type": "decimal(18,2)",
+          "required": false
+        },
+        "PaymentTermDays": {
+          "type": "integer",
+          "required": true,
+          "constraints": "default 30"
+        },
+        "PriceListId": {
+          "type": "uuidv7",
+          "required": false
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "active",
+            "inactive",
+            "blocked"
+          ]
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false
+        }
+      },
+      "persistence": {
+        "module": "sales",
+        "table": "customer",
+        "strategy": "relational"
+      }
+    },
+    "SalesQuote": {
+      "description": "Commercial proposal sent to a customer",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Number": {
+          "type": "string",
+          "required": true
+        },
+        "CustomerId": {
+          "type": "uuidv7",
+          "required": true,
+          "ref": "Customer"
+        },
+        "ValidUntil": {
+          "type": "date",
+          "required": false
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "draft",
+            "sent",
+            "accepted",
+            "rejected",
+            "expired",
+            "converted"
+          ]
+        },
+        "TotalAmount": {
+          "type": "decimal(18,2)",
+          "required": true
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "line items, discount, payment conditions"
+        }
+      },
+      "persistence": {
+        "module": "sales",
+        "table": "sales_quote",
+        "strategy": "relational"
+      }
+    },
+    "SalesOrder": {
+      "description": "Confirmed customer order \u2014 commitment to deliver",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Number": {
+          "type": "string",
+          "required": true
+        },
+        "CustomerId": {
+          "type": "uuidv7",
+          "required": true,
+          "ref": "Customer"
+        },
+        "OrderDate": {
+          "type": "date",
+          "required": true
+        },
+        "RequestedDelivery": {
+          "type": "date",
+          "required": false
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "draft",
+            "confirmed",
+            "partially_delivered",
+            "delivered",
+            "invoiced",
+            "cancelled"
+          ]
+        },
+        "TotalAmount": {
+          "type": "decimal(18,2)",
+          "required": true
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "line items, delivery address, payment terms"
+        }
+      },
+      "persistence": {
+        "module": "sales",
+        "table": "sales_order",
+        "strategy": "relational"
+      }
+    },
+    "Delivery": {
+      "description": "Physical shipment of goods to customer",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "SalesOrderId": {
+          "type": "uuidv7",
+          "required": true,
+          "ref": "SalesOrder"
+        },
+        "Number": {
+          "type": "string",
+          "required": true
+        },
+        "ShippedAt": {
+          "type": "date",
+          "required": false
+        },
+        "DeliveredAt": {
+          "type": "date",
+          "required": false
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "pending",
+            "shipped",
+            "delivered",
+            "returned"
+          ]
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "delivered lines, carrier, tracking"
+        }
+      },
+      "persistence": {
+        "module": "sales",
+        "table": "delivery",
+        "strategy": "relational"
+      }
+    },
+    "SalesInvoice": {
+      "description": "Billing document issued to customer",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CustomerId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "SalesOrderId": {
+          "type": "uuidv7",
+          "required": false
+        },
+        "Number": {
+          "type": "string",
+          "required": true
+        },
+        "IssueDate": {
+          "type": "date",
+          "required": true
+        },
+        "DueDate": {
+          "type": "date",
+          "required": true
+        },
+        "TotalAmount": {
+          "type": "decimal(18,2)",
+          "required": true
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "draft",
+            "issued",
+            "partially_paid",
+            "paid",
+            "overdue",
+            "cancelled"
+          ]
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "fiscal key, tax breakdown, payment data"
+        }
+      },
+      "persistence": {
+        "module": "sales",
+        "table": "sales_invoice",
+        "strategy": "relational"
+      }
+    }
+  }
+}

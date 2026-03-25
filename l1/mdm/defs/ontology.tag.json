@@ -1,0 +1,160 @@
+{
+  "entity": "Tag",
+  "description": "Free-form labels attached to any entity in any module. Enables flexible classification without schema changes — a purchasing team can tag POs as 'urgent' or 'capex', a CRM team can tag companies as 'vip' or 'at-risk'. Tags are lightweight, user-defined, and module-scoped. Modules never manage tag storage directly.",
+  "access": "write-via-routine-only",
+  "routine": "Tag.add(ctx, input) / Tag.remove(ctx, input) / Tag.findByEntity(ctx, input) / Tag.findByTag(ctx, input)",
+  "consumers": "any module — tags appear on POs, suppliers, companies, invoices, or any other entity",
+  "fields": {
+    "Id": {
+      "type": "uuidv7",
+      "required": true,
+      "constraints": "primary key"
+    },
+    "EntityType": {
+      "type": "string",
+      "required": true,
+      "constraints": "pascal case entity name, e.g. 'PurchaseOrder', 'MdmCompany'"
+    },
+    "EntityId": {
+      "type": "uuidv7",
+      "required": true,
+      "constraints": "id of the tagged entity"
+    },
+    "Tag": {
+      "type": "string",
+      "required": true,
+      "constraints": "the label value. Lowercase, max 50 chars, no spaces — use hyphens if needed (e.g. 'at-risk', 'capex', 'vip'). Normalized to lowercase on write by the routine"
+    },
+    "Namespace": {
+      "type": "string",
+      "required": false,
+      "constraints": "optional grouping for tags within a module, e.g. 'priority', 'category', 'risk'. Allows distinct tag domains on the same entity. Max 30 chars. Null means general-purpose tag"
+    },
+    "Module": {
+      "type": "string",
+      "required": true,
+      "constraints": "lowercase module name that created the tag — prevents cross-module tag collisions"
+    },
+    "CreatedBy": {
+      "type": "uuidv7",
+      "required": true,
+      "constraints": "userId or agentId that added the tag"
+    },
+    "CreatedByType": {
+      "type": "enum",
+      "required": true,
+      "values": [
+        "user",
+        "agent",
+        "system"
+      ]
+    },
+    "CreatedAt": {
+      "type": "timestamptz",
+      "required": true,
+      "constraints": "set by MDM routine at write time"
+    }
+  },
+  "indexes": {
+    "postgresql": [
+      {
+        "fields": [
+          "EntityType",
+          "EntityId"
+        ],
+        "note": "list all tags for an entity"
+      },
+      {
+        "fields": [
+          "EntityType",
+          "Tag",
+          "Module"
+        ],
+        "note": "find all entities with a specific tag — e.g. all POs tagged 'urgent'"
+      },
+      {
+        "fields": [
+          "EntityType",
+          "Namespace",
+          "Module"
+        ],
+        "note": "list all tags in a namespace for an entity type"
+      },
+      {
+        "fields": [
+          "Module",
+          "Tag"
+        ],
+        "note": "tag frequency per module — autocomplete and analytics"
+      },
+      {
+        "fields": [
+          "EntityType",
+          "EntityId",
+          "Tag",
+          "Module"
+        ],
+        "unique": true,
+        "note": "prevents duplicate tags on the same entity within the same module"
+      }
+    ],
+    "dynamodb": {
+      "pk": "EntityType#EntityId",
+      "sk": "Module#Tag",
+      "note": "full tag record — mirrors PostgreSQL. Used for restore and cross-module tag audit"
+    }
+  },
+  "persistence": {
+    "module": "mdm",
+    "table": "tag",
+    "type": "MDM-INFRA",
+    "strategy": "remote-document",
+    "remoteStore": "dynamodb",
+    "indexFields": [
+      "Id",
+      "EntityType",
+      "EntityId",
+      "Tag",
+      "Namespace",
+      "Module",
+      "CreatedBy",
+      "CreatedByType",
+      "CreatedAt"
+    ],
+    "remoteOnlyFields": [],
+    "consistencyContract": {
+      "sync": [
+        "Id",
+        "EntityType",
+        "EntityId",
+        "Tag",
+        "Namespace",
+        "Module",
+        "CreatedBy",
+        "CreatedByType",
+        "CreatedAt"
+      ],
+      "async": [],
+      "note": "all fields sync — tag must be queryable immediately after creation. No remote-only fields: the full record is small enough to keep in both stores"
+    },
+    "retention": {
+      "postgresql": "permanent while entity exists — hard delete on Tag.remove()",
+      "dynamodb": "permanent — tag history preserved even after removal for audit purposes"
+    },
+    "immutable": false,
+    "note": "tags are deleted (hard delete in PostgreSQL) via Tag.remove() — no soft delete. DynamoDB keeps the history. A removed tag can be re-added and will create a new record with a new Id and CreatedAt"
+  },
+  "usagePatterns": {
+    "addTag": "Tag.add(ctx, { EntityType: 'PurchaseOrder', EntityId: id, Tag: 'urgent', Module: 'purchasing' })",
+    "removeTag": "Tag.remove(ctx, { EntityType: 'PurchaseOrder', EntityId: id, Tag: 'urgent', Module: 'purchasing' })",
+    "getEntityTags": "Tag.findByEntity(ctx, { EntityType: 'PurchaseOrder', EntityId: id })",
+    "findByTag": "Tag.findByTag(ctx, { EntityType: 'PurchaseOrder', Tag: 'urgent', Module: 'purchasing' })",
+    "namespaceExample": "Tag.add(ctx, { EntityType: 'MdmCompany', EntityId: id, Tag: 'gold', Namespace: 'supplier-tier', Module: 'purchasing' })"
+  },
+  "rules": [
+    "rule-tag-no-direct-write",
+    "rule-tag-lowercase-normalized",
+    "rule-tag-unique-per-entity-module",
+    "rule-tag-hard-delete-postgresql-only"
+  ]
+}

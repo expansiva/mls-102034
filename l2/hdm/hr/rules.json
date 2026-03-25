@@ -1,0 +1,25 @@
+{
+  "module": "hr",
+  "rules": {
+    "rule-employee-requires-position": {
+      "description": "Every employee must have an active position",
+      "condition": "Position.IsActive === true",
+      "severity": "blocking"
+    },
+    "rule-time-off-no-overlap": {
+      "description": "Employee cannot have two approved time-off requests for overlapping periods",
+      "condition": "no overlap in approved TimeOffRequests for same employee",
+      "severity": "blocking"
+    },
+    "rule-manager-cannot-approve-own-request": {
+      "description": "Employee cannot approve their own time-off",
+      "condition": "TimeOffRequest.approverId !== TimeOffRequest.EmployeeId",
+      "severity": "blocking"
+    },
+    "rule-termination-date-after-hire": {
+      "description": "Termination date must be after hire date",
+      "condition": "Employee.TerminationDate > Employee.HireDate",
+      "severity": "blocking"
+    }
+  }
+}

@@ -1,0 +1,161 @@
+{
+  "module": "workflow",
+  "description": "Generic approval engine with multi-level chains, conditions, deadlines, and delegation.",
+  "type": "HDM",
+  "mdmDependencies": [
+    "Person",
+    "Company"
+  ],
+  "infraDependencies": [
+    "AuditLog",
+    "StatusHistory",
+    "Comment"
+  ],
+  "entities": {
+    "ApprovalPolicy": {
+      "description": "Named approval chain for a specific entity type and condition",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Name": {
+          "type": "string",
+          "required": true
+        },
+        "EntityType": {
+          "type": "string",
+          "required": true,
+          "constraints": "PurchaseOrder, SalesInvoice, TimeOffRequest..."
+        },
+        "IsActive": {
+          "type": "boolean",
+          "required": true
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "levels: [{condition, approvers, mode (any/all), deadlineHours}]"
+        }
+      },
+      "persistence": {
+        "module": "workflow",
+        "table": "approval_policy",
+        "strategy": "relational"
+      }
+    },
+    "ApprovalRequest": {
+      "description": "Active approval flow instance for a specific document",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "PolicyId": {
+          "type": "uuidv7",
+          "required": true,
+          "ref": "ApprovalPolicy"
+        },
+        "EntityType": {
+          "type": "string",
+          "required": true
+        },
+        "EntityId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CurrentLevel": {
+          "type": "integer",
+          "required": true,
+          "constraints": "starts at 1"
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "pending",
+            "in_progress",
+            "approved",
+            "rejected",
+            "cancelled",
+            "timed_out"
+          ]
+        },
+        "RequestedBy": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "RequestedAt": {
+          "type": "timestamptz",
+          "required": true
+        },
+        "CompletedAt": {
+          "type": "timestamptz",
+          "required": false
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "level decisions history"
+        }
+      },
+      "persistence": {
+        "module": "workflow",
+        "table": "approval_request",
+        "strategy": "relational"
+      }
+    },
+    "ApprovalDecision": {
+      "description": "One approver's decision on one level of an approval request",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "ApprovalRequestId": {
+          "type": "uuidv7",
+          "required": true,
+          "ref": "ApprovalRequest"
+        },
+        "Level": {
+          "type": "integer",
+          "required": true
+        },
+        "ApproverId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Decision": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "approved",
+            "rejected",
+            "delegated"
+          ]
+        },
+        "Reason": {
+          "type": "string",
+          "required": false
+        },
+        "DelegatedToId": {
+          "type": "uuidv7",
+          "required": false
+        },
+        "DecidedAt": {
+          "type": "timestamptz",
+          "required": true
+        }
+      },
+      "persistence": {
+        "module": "workflow",
+        "table": "approval_decision",
+        "strategy": "relational"
+      }
+    }
+  }
+}

@@ -1,0 +1,120 @@
+{
+  "entity": "NumberSequence",
+  "description": "Centralized generator of human-readable sequential identifiers for any entity that needs them — purchase order numbers, invoice numbers, contract numbers, NF sequences. Guarantees uniqueness within a scope (company, branch, or global) without gaps under normal operation. Modules never implement their own sequence logic.",
+
+  "access": "write-via-routine-only",
+  "routine": "NumberSequence.next(ctx, input) → string",
+  "consumers": "any module that needs sequential document numbers — called once per entity creation, before insert",
+
+  "fields": {
+    "Id": {
+      "type": "uuidv7",
+      "required": true,
+      "constraints": "primary key"
+    },
+    "SequenceKey": {
+      "type": "string",
+      "required": true,
+      "constraints": "unique identifier for this sequence. Format: '{module}.{entityType}.{scope}', e.g. 'purchasing.PurchaseOrder.company:uuid', 'financial.Invoice.branch:uuid', 'mdm.NF.company:uuid'. Indexed for lookup"
+    },
+    "Prefix": {
+      "type": "string",
+      "required": false,
+      "constraints": "optional static prefix prepended to the formatted number, e.g. 'PO-', 'NF-', 'CTR-'. Max 10 chars"
+    },
+    "CurrentValue": {
+      "type": "integer",
+      "required": true,
+      "constraints": "last issued number. Incremented atomically by the routine using SELECT FOR UPDATE. Never written directly"
+    },
+    "Increment": {
+      "type": "integer",
+      "required": true,
+      "constraints": "step between values, almost always 1. Values other than 1 require explicit justification in the module ADR"
+    },
+    "Padding": {
+      "type": "integer",
+      "required": false,
+      "constraints": "zero-pad the numeric part to this length, e.g. padding 6 produces '000042'. Default 0 means no padding"
+    },
+    "YearSegment": {
+      "type": "boolean",
+      "required": true,
+      "constraints": "if true, the year is included in the formatted output and CurrentValue resets to 1 on January 1st. e.g. 'PO-2025-000001'. Required for NF-e sequences in Brazil"
+    },
+    "ScopeType": {
+      "type": "enum",
+      "required": true,
+      "values": ["global", "company", "branch"],
+      "constraints": "'company' is the most common — one sequence per company per entity type"
+    },
+    "ScopeId": {
+      "type": "uuidv7",
+      "required": false,
+      "constraints": "the companyId or branchId when ScopeType is 'company' or 'branch'. Null when ScopeType is 'global'"
+    },
+    "LastIssuedAt": {
+      "type": "timestamptz",
+      "required": true,
+      "constraints": "timestamp of the last next() call — used for monitoring and year-reset detection"
+    },
+    "CreatedAt": {
+      "type": "timestamptz",
+      "required": true,
+      "constraints": "when this sequence was first registered"
+    },
+    "Details": {
+      "type": "jsonb",
+      "required": false,
+      "constraints": "optional metadata — e.g. legal series identifier for NF-e, reset history log. Stored in DynamoDB only"
+    }
+  },
+
+  "indexes": {
+    "postgresql": [
+      { "fields": ["SequenceKey"], "unique": true, "note": "primary lookup — must be unique and fast" },
+      { "fields": ["ScopeType", "ScopeId"], "note": "list all sequences for a company or branch" }
+    ],
+    "dynamodb": {
+      "pk": "SequenceKey",
+      "sk": "Id",
+      "note": "backup of full sequence record including Details — used to restore local table if needed"
+    }
+  },
+
+  "persistence": {
+    "module": "mdm",
+    "table": "number_sequence",
+    "type": "MDM-INFRA",
+    "strategy": "remote-document",
+    "remoteStore": "dynamodb",
+    "indexFields": ["Id", "SequenceKey", "Prefix", "CurrentValue", "Increment", "Padding", "YearSegment", "ScopeType", "ScopeId", "LastIssuedAt", "CreatedAt"],
+    "remoteOnlyFields": ["Details"],
+    "consistencyContract": {
+      "sync": ["SequenceKey", "CurrentValue", "LastIssuedAt"],
+      "async": ["Details"],
+      "note": "CurrentValue must be sync — a gap or duplicate in sequence is a business error. Details is informational and can lag"
+    },
+    "retention": {
+      "postgresql": "permanent — sequence state must never be deleted while the module is active",
+      "dynamodb": "permanent"
+    },
+    "immutable": false,
+    "note": "CurrentValue is the only mutable field — updated atomically via SELECT FOR UPDATE on every next() call"
+  },
+
+  "formattedOutput": {
+    "description": "The next() routine returns a formatted string, not a raw integer",
+    "examples": [
+      { "config": { "Prefix": "PO-", "YearSegment": true, "Padding": 6 }, "output": "PO-2025-000042" },
+      { "config": { "Prefix": "NF-", "YearSegment": false, "Padding": 9 }, "output": "NF-000000001" },
+      { "config": { "Prefix": "CTR-", "YearSegment": false, "Padding": 0 }, "output": "CTR-87" }
+    ]
+  },
+
+  "rules": [
+    "rule-sequence-no-direct-write",
+    "rule-sequence-atomic-increment",
+    "rule-sequence-year-reset-on-january"
+  ]
+}

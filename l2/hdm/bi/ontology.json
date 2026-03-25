@@ -1,0 +1,137 @@
+{
+  "module": "bi",
+  "description": "Cross-module analytics layer: KPI dashboards, reports, alerts, and data export.",
+  "type": "HDM",
+  "mdmDependencies": [
+    "Company",
+    "Person"
+  ],
+  "infraDependencies": [
+    "AuditLog"
+  ],
+  "note": "BI module does not own operational data. It reads from other module tables via read-optimized views or a lightweight data mart. No operational writes.",
+  "entities": {
+    "Dashboard": {
+      "description": "Named collection of widgets visible to a role or user",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Name": {
+          "type": "string",
+          "required": true
+        },
+        "OwnerId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "IsShared": {
+          "type": "boolean",
+          "required": true
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "widget layout: [{type, kpiId, filters, position}]"
+        }
+      },
+      "persistence": {
+        "module": "bi",
+        "table": "dashboard",
+        "strategy": "relational"
+      }
+    },
+    "KpiDefinition": {
+      "description": "Named metric with query template and display configuration",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Module": {
+          "type": "string",
+          "required": true
+        },
+        "Name": {
+          "type": "string",
+          "required": true
+        },
+        "QueryTemplate": {
+          "type": "string",
+          "required": true,
+          "constraints": "parameterized SQL or routine name"
+        },
+        "Unit": {
+          "type": "string",
+          "required": false,
+          "constraints": "currency, percentage, days, count..."
+        },
+        "Direction": {
+          "type": "enum",
+          "required": false,
+          "values": [
+            "higher_is_better",
+            "lower_is_better",
+            "target"
+          ]
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "drill-down config, benchmark, alert thresholds"
+        }
+      },
+      "persistence": {
+        "module": "bi",
+        "table": "kpi_definition",
+        "strategy": "relational"
+      }
+    },
+    "AlertRule": {
+      "description": "Triggers notification when a KPI crosses a threshold",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "KpiId": {
+          "type": "uuidv7",
+          "required": true,
+          "ref": "KpiDefinition"
+        },
+        "Condition": {
+          "type": "string",
+          "required": true,
+          "constraints": "e.g. value > 50000 or value < 0.8"
+        },
+        "Recipients": {
+          "type": "jsonb",
+          "required": true,
+          "constraints": "[{personId, channel: email|app}]"
+        },
+        "IsActive": {
+          "type": "boolean",
+          "required": true
+        },
+        "LastFiredAt": {
+          "type": "timestamptz",
+          "required": false
+        }
+      },
+      "persistence": {
+        "module": "bi",
+        "table": "alert_rule",
+        "strategy": "relational"
+      }
+    }
+  }
+}

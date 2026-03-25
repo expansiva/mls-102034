@@ -1,0 +1,21 @@
+{
+  "module": "bi",
+  "rules": {
+    "rule-bi-read-only": {
+      "description": "BI module never writes to other module tables \u2014 read only via views or queries",
+      "condition": "all BI operations are SELECT only",
+      "severity": "blocking"
+    },
+    "rule-kpi-query-must-be-parameterized": {
+      "description": "KPI query templates must use parameters, never hardcoded company IDs",
+      "condition": "QueryTemplate contains :companyId parameter",
+      "severity": "blocking"
+    },
+    "rule-alert-cooldown": {
+      "description": "Alert rule cannot fire more than once per configured cooldown period",
+      "condition": "now - AlertRule.LastFiredAt >= cooldownMinutes",
+      "configurable": true,
+      "severity": "info"
+    }
+  }
+}

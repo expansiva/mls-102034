@@ -1,0 +1,227 @@
+{
+  "module": "asset-management",
+  "description": "Tracks individually identified physical assets \u2014 furniture, IT, vehicles, machinery.",
+  "type": "HDM",
+  "mdmDependencies": [
+    "Company",
+    "Person",
+    "Location"
+  ],
+  "infraDependencies": [
+    "AuditLog",
+    "StatusHistory",
+    "NumberSequence",
+    "Attachment",
+    "Tag"
+  ],
+  "entities": {
+    "AssetCategory": {
+      "description": "Classification of assets \u2014 IT, furniture, vehicle, machinery",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Name": {
+          "type": "string",
+          "required": true
+        },
+        "DepreciationMethod": {
+          "type": "enum",
+          "required": false,
+          "values": [
+            "straight_line",
+            "declining_balance",
+            "none"
+          ]
+        },
+        "UsefulLifeMonths": {
+          "type": "integer",
+          "required": false
+        },
+        "ResidualValuePct": {
+          "type": "decimal(5,2)",
+          "required": false
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false
+        }
+      },
+      "persistence": {
+        "module": "asset-management",
+        "table": "asset_category",
+        "strategy": "relational"
+      }
+    },
+    "Asset": {
+      "description": "Individual physical asset with its own identity and lifecycle",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "AssetCode": {
+          "type": "string",
+          "required": true,
+          "constraints": "from NumberSequence or manual, printed on label"
+        },
+        "Name": {
+          "type": "string",
+          "required": true
+        },
+        "CategoryId": {
+          "type": "uuidv7",
+          "required": true,
+          "ref": "AssetCategory"
+        },
+        "SerialNumber": {
+          "type": "string",
+          "required": false
+        },
+        "Brand": {
+          "type": "string",
+          "required": false
+        },
+        "Model": {
+          "type": "string",
+          "required": false
+        },
+        "AcquisitionDate": {
+          "type": "date",
+          "required": true
+        },
+        "AcquisitionCost": {
+          "type": "decimal(18,2)",
+          "required": true
+        },
+        "CurrentValue": {
+          "type": "decimal(18,2)",
+          "required": true
+        },
+        "LocationId": {
+          "type": "uuidv7",
+          "required": false,
+          "ref": "MDM.Location"
+        },
+        "AssignedToId": {
+          "type": "uuidv7",
+          "required": false,
+          "ref": "MDM.Person"
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "active",
+            "in_maintenance",
+            "transferred",
+            "disposed",
+            "lost"
+          ]
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "purchase invoice ref, warranty, notes"
+        }
+      },
+      "persistence": {
+        "module": "asset-management",
+        "table": "asset",
+        "strategy": "relational"
+      }
+    },
+    "AssetTransfer": {
+      "description": "Records movement of an asset between locations or responsible persons",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "AssetId": {
+          "type": "uuidv7",
+          "required": true,
+          "ref": "Asset"
+        },
+        "FromLocationId": {
+          "type": "uuidv7",
+          "required": false
+        },
+        "ToLocationId": {
+          "type": "uuidv7",
+          "required": false
+        },
+        "FromPersonId": {
+          "type": "uuidv7",
+          "required": false
+        },
+        "ToPersonId": {
+          "type": "uuidv7",
+          "required": false
+        },
+        "TransferDate": {
+          "type": "date",
+          "required": true
+        },
+        "Reason": {
+          "type": "string",
+          "required": false
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false
+        }
+      },
+      "persistence": {
+        "module": "asset-management",
+        "table": "asset_transfer",
+        "strategy": "relational"
+      }
+    },
+    "AssetDepreciation": {
+      "description": "Monthly depreciation posting for an asset",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "AssetId": {
+          "type": "uuidv7",
+          "required": true,
+          "ref": "Asset"
+        },
+        "Period": {
+          "type": "string",
+          "required": true,
+          "constraints": "YYYY-MM"
+        },
+        "Amount": {
+          "type": "decimal(18,2)",
+          "required": true
+        },
+        "BookValueAfter": {
+          "type": "decimal(18,2)",
+          "required": true
+        },
+        "PostedToFinancial": {
+          "type": "boolean",
+          "required": true
+        }
+      },
+      "persistence": {
+        "module": "asset-management",
+        "table": "asset_depreciation",
+        "strategy": "relational"
+      }
+    }
+  }
+}

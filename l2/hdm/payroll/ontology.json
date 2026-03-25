@@ -1,0 +1,173 @@
+{
+  "module": "payroll",
+  "description": "Salary calculation, deductions, taxes, payslips, and statutory submissions.",
+  "type": "HDM",
+  "countryVariation": "very-high",
+  "mdmDependencies": [
+    "Person",
+    "Company"
+  ],
+  "infraDependencies": [
+    "AuditLog",
+    "NumberSequence",
+    "Attachment"
+  ],
+  "entities": {
+    "PayrollRun": {
+      "description": "A payroll processing cycle for a period",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Period": {
+          "type": "string",
+          "required": true,
+          "constraints": "YYYY-MM"
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "draft",
+            "calculating",
+            "review",
+            "approved",
+            "paid",
+            "closed"
+          ]
+        },
+        "ProcessedAt": {
+          "type": "timestamptz",
+          "required": false
+        },
+        "ApprovedBy": {
+          "type": "uuidv7",
+          "required": false
+        },
+        "TotalNet": {
+          "type": "decimal(18,2)",
+          "required": false
+        },
+        "TotalGross": {
+          "type": "decimal(18,2)",
+          "required": false
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "summary by department, employer contributions"
+        }
+      },
+      "persistence": {
+        "module": "payroll",
+        "table": "payroll_run",
+        "strategy": "relational"
+      }
+    },
+    "PaySlip": {
+      "description": "Individual payment calculation for one employee in one period",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "PayrollRunId": {
+          "type": "uuidv7",
+          "required": true,
+          "ref": "PayrollRun"
+        },
+        "EmployeeId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "GrossSalary": {
+          "type": "decimal(18,2)",
+          "required": true
+        },
+        "TotalDeductions": {
+          "type": "decimal(18,2)",
+          "required": true
+        },
+        "NetSalary": {
+          "type": "decimal(18,2)",
+          "required": true
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "draft",
+            "approved",
+            "paid"
+          ]
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "earnings lines, deduction lines, tax lines, employer contribution lines"
+        }
+      },
+      "persistence": {
+        "module": "payroll",
+        "table": "pay_slip",
+        "strategy": "relational"
+      }
+    },
+    "PayrollEvent": {
+      "description": "One-time earnings or deductions outside regular cycle",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "EmployeeId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Type": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "bonus",
+            "commission",
+            "advance",
+            "deduction",
+            "reimbursement"
+          ]
+        },
+        "Amount": {
+          "type": "decimal(18,2)",
+          "required": true
+        },
+        "Period": {
+          "type": "string",
+          "required": true,
+          "constraints": "YYYY-MM to include in"
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "pending",
+            "processed",
+            "cancelled"
+          ]
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false
+        }
+      },
+      "persistence": {
+        "module": "payroll",
+        "table": "payroll_event",
+        "strategy": "relational"
+      }
+    }
+  }
+}

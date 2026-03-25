@@ -1,0 +1,26 @@
+{
+  "module": "manufacturing",
+  "rules": {
+    "rule-bom-must-have-components": {
+      "description": "A BOM must have at least one component line",
+      "condition": "BOM.lines.length >= 1",
+      "severity": "blocking"
+    },
+    "rule-production-requires-active-bom": {
+      "description": "Production order must reference an active BOM version",
+      "condition": "BillOfMaterials.IsActive === true",
+      "severity": "blocking"
+    },
+    "rule-produced-qty-not-exceed-planned": {
+      "description": "Produced quantity cannot exceed planned without explicit override",
+      "condition": "ProductionOrder.ProducedQty <= ProductionOrder.PlannedQty",
+      "configurable": true,
+      "severity": "warning"
+    },
+    "rule-component-stock-check": {
+      "description": "Alert when components are insufficient for planned production",
+      "condition": "StockItem.Quantity >= requiredQty",
+      "severity": "warning"
+    }
+  }
+}

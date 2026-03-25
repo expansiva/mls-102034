@@ -1,0 +1,26 @@
+{
+  "module": "expenses",
+  "rules": {
+    "rule-amount-above-limit-requires-justification": {
+      "description": "Expense above category limit requires written justification",
+      "condition": "expenseLine.amount <= policy.category.maxAmount || Details.justification present",
+      "severity": "warning"
+    },
+    "rule-receipt-required": {
+      "description": "Expenses in categories configured as requiresReceipt must have attachment",
+      "condition": "Attachment exists for expense line when category.requiresReceipt === true",
+      "severity": "blocking"
+    },
+    "rule-expense-period-max-days": {
+      "description": "Expense report period cannot exceed configured maximum days",
+      "condition": "periodEnd - periodStart <= company.maxExpensePeriodDays",
+      "configurable": true,
+      "severity": "warning"
+    },
+    "rule-approved-report-immutable": {
+      "description": "Approved expense reports cannot be edited \u2014 rejection required to return to draft",
+      "condition": "ExpenseReport.Status !== 'approved'",
+      "severity": "blocking"
+    }
+  }
+}

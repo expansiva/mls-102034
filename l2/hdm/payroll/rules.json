@@ -1,0 +1,25 @@
+{
+  "module": "payroll",
+  "rules": {
+    "rule-one-run-per-period": {
+      "description": "Only one approved payroll run per company per period",
+      "condition": "no other PayrollRun with Status='approved' for same CompanyId and Period",
+      "severity": "blocking"
+    },
+    "rule-net-cannot-be-negative": {
+      "description": "Net salary cannot be negative",
+      "condition": "PaySlip.NetSalary >= 0",
+      "severity": "blocking"
+    },
+    "rule-run-requires-approval": {
+      "description": "Payroll run must be approved before payment processing",
+      "condition": "PayrollRun.Status === 'approved'",
+      "severity": "blocking"
+    },
+    "rule-closed-run-immutable": {
+      "description": "Closed payroll runs cannot be modified",
+      "condition": "PayrollRun.Status !== 'closed'",
+      "severity": "blocking"
+    }
+  }
+}

@@ -1,0 +1,220 @@
+{
+  "module": "hr",
+  "description": "Employee lifecycle: hiring, org structure, contracts, time-off, performance.",
+  "type": "HDM",
+  "mdmDependencies": [
+    "Person",
+    "Company",
+    "Location"
+  ],
+  "infraDependencies": [
+    "AuditLog",
+    "StatusHistory",
+    "NumberSequence",
+    "Attachment"
+  ],
+  "entities": {
+    "Department": {
+      "description": "Organizational unit within the company",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Code": {
+          "type": "string",
+          "required": true
+        },
+        "Name": {
+          "type": "string",
+          "required": true
+        },
+        "ParentId": {
+          "type": "uuidv7",
+          "required": false,
+          "ref": "Department"
+        },
+        "ManagerId": {
+          "type": "uuidv7",
+          "required": false,
+          "ref": "Employee"
+        },
+        "IsActive": {
+          "type": "boolean",
+          "required": true
+        }
+      },
+      "persistence": {
+        "module": "hr",
+        "table": "department",
+        "strategy": "relational"
+      }
+    },
+    "Position": {
+      "description": "Job role definition within a department",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Title": {
+          "type": "string",
+          "required": true
+        },
+        "DepartmentId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "IsActive": {
+          "type": "boolean",
+          "required": true
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "job description, required skills, salary band"
+        }
+      },
+      "persistence": {
+        "module": "hr",
+        "table": "position",
+        "strategy": "relational"
+      }
+    },
+    "Employee": {
+      "description": "Person employed by the company",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "PersonMdmId": {
+          "type": "uuidv7",
+          "required": true,
+          "ref": "MDM.Person"
+        },
+        "EmployeeCode": {
+          "type": "string",
+          "required": true
+        },
+        "PositionId": {
+          "type": "uuidv7",
+          "required": true,
+          "ref": "Position"
+        },
+        "DepartmentId": {
+          "type": "uuidv7",
+          "required": true,
+          "ref": "Department"
+        },
+        "HireDate": {
+          "type": "date",
+          "required": true
+        },
+        "TerminationDate": {
+          "type": "date",
+          "required": false
+        },
+        "ContractType": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "clt",
+            "pj",
+            "intern",
+            "temporary"
+          ]
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "active",
+            "on_leave",
+            "terminated"
+          ]
+        },
+        "ManagerId": {
+          "type": "uuidv7",
+          "required": false,
+          "ref": "Employee"
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "salary, benefits, emergency contact"
+        }
+      },
+      "persistence": {
+        "module": "hr",
+        "table": "employee",
+        "strategy": "relational"
+      }
+    },
+    "TimeOffRequest": {
+      "description": "Employee vacation or leave request",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "EmployeeId": {
+          "type": "uuidv7",
+          "required": true,
+          "ref": "Employee"
+        },
+        "Type": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "vacation",
+            "sick",
+            "personal",
+            "maternity",
+            "paternity",
+            "other"
+          ]
+        },
+        "StartDate": {
+          "type": "date",
+          "required": true
+        },
+        "EndDate": {
+          "type": "date",
+          "required": true
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "pending",
+            "approved",
+            "rejected",
+            "cancelled"
+          ]
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false
+        }
+      },
+      "persistence": {
+        "module": "hr",
+        "table": "time_off_request",
+        "strategy": "relational"
+      }
+    }
+  }
+}

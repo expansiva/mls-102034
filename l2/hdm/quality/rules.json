@@ -1,0 +1,25 @@
+{
+  "module": "quality",
+  "rules": {
+    "rule-failed-inspection-blocks-acceptance": {
+      "description": "GR or production output with failed inspection cannot be accepted without NCR",
+      "condition": "InspectionRecord.Result !== 'failed' || NonConformance exists for entity",
+      "severity": "blocking"
+    },
+    "rule-critical-ncr-requires-immediate-action": {
+      "description": "Critical non-conformances require corrective action within 24 hours",
+      "condition": "NonConformance.Severity === 'critical' \u2192 CorrectiveAction.Deadline <= issuedAt + 1 day",
+      "severity": "warning"
+    },
+    "rule-corrective-action-deadline-alert": {
+      "description": "Alert responsible when corrective action is approaching deadline",
+      "condition": "CorrectiveAction.Deadline - today <= 3 days && Status !== 'completed'",
+      "severity": "warning"
+    },
+    "rule-ncr-closure-requires-verified-action": {
+      "description": "NCR can only be closed when all corrective actions are verified",
+      "condition": "all CorrectiveActions.Status === 'verified'",
+      "severity": "blocking"
+    }
+  }
+}

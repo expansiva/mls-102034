@@ -1,0 +1,275 @@
+{
+  "module": "crm",
+  "description": "Commercial relationship management: leads, pipeline, accounts, interactions.",
+  "type": "HDM",
+  "mdmDependencies": [
+    "Person",
+    "Company",
+    "ContactChannel"
+  ],
+  "infraDependencies": [
+    "AuditLog",
+    "StatusHistory",
+    "Comment",
+    "Tag"
+  ],
+  "entities": {
+    "Lead": {
+      "description": "Potential customer before qualification",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Name": {
+          "type": "string",
+          "required": true
+        },
+        "Email": {
+          "type": "string",
+          "required": false
+        },
+        "Phone": {
+          "type": "string",
+          "required": false
+        },
+        "Source": {
+          "type": "enum",
+          "required": false,
+          "values": [
+            "website",
+            "referral",
+            "cold_call",
+            "event",
+            "social",
+            "other"
+          ]
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "new",
+            "contacted",
+            "qualified",
+            "disqualified",
+            "converted"
+          ]
+        },
+        "AssignedTo": {
+          "type": "uuidv7",
+          "required": false,
+          "ref": "MDM.Person"
+        },
+        "Score": {
+          "type": "integer",
+          "required": false
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false
+        }
+      },
+      "persistence": {
+        "module": "crm",
+        "table": "lead",
+        "strategy": "relational"
+      }
+    },
+    "Account": {
+      "description": "Customer account \u2014 company or person under commercial management",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "MdmId": {
+          "type": "uuidv7",
+          "required": true,
+          "ref": "MDM.Company or MDM.Person"
+        },
+        "MdmType": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "company",
+            "person"
+          ]
+        },
+        "AccountCode": {
+          "type": "string",
+          "required": false
+        },
+        "Segment": {
+          "type": "string",
+          "required": false
+        },
+        "OwnerId": {
+          "type": "uuidv7",
+          "required": false,
+          "ref": "MDM.Person"
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "prospect",
+            "active",
+            "at_risk",
+            "churned"
+          ]
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "industry, revenue band, key contacts"
+        }
+      },
+      "persistence": {
+        "module": "crm",
+        "table": "account",
+        "strategy": "relational"
+      }
+    },
+    "Opportunity": {
+      "description": "Potential deal in the sales pipeline",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "AccountId": {
+          "type": "uuidv7",
+          "required": true,
+          "ref": "Account"
+        },
+        "Title": {
+          "type": "string",
+          "required": true
+        },
+        "Stage": {
+          "type": "string",
+          "required": true,
+          "constraints": "configurable pipeline stages"
+        },
+        "Amount": {
+          "type": "decimal(18,2)",
+          "required": false
+        },
+        "Probability": {
+          "type": "integer",
+          "required": false,
+          "constraints": "0-100"
+        },
+        "ExpectedClose": {
+          "type": "date",
+          "required": false
+        },
+        "OwnerId": {
+          "type": "uuidv7",
+          "required": true,
+          "ref": "MDM.Person"
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "open",
+            "won",
+            "lost",
+            "cancelled"
+          ]
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false
+        }
+      },
+      "persistence": {
+        "module": "crm",
+        "table": "opportunity",
+        "strategy": "relational"
+      }
+    },
+    "Activity": {
+      "description": "Interaction log \u2014 call, email, meeting, task",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Type": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "call",
+            "email",
+            "meeting",
+            "task",
+            "note"
+          ]
+        },
+        "EntityType": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "Lead",
+            "Account",
+            "Opportunity"
+          ]
+        },
+        "EntityId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "OwnerId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "ScheduledAt": {
+          "type": "timestamptz",
+          "required": false
+        },
+        "CompletedAt": {
+          "type": "timestamptz",
+          "required": false
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "planned",
+            "completed",
+            "cancelled"
+          ]
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "summary, outcome, next steps"
+        }
+      },
+      "persistence": {
+        "module": "crm",
+        "table": "activity",
+        "strategy": "relational"
+      }
+    }
+  }
+}

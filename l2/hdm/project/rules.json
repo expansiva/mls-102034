@@ -1,0 +1,26 @@
+{
+  "module": "project",
+  "rules": {
+    "rule-budget-alert": {
+      "description": "Alert PM when project cost reaches 80% of budget",
+      "condition": "actualCost >= Project.Budget * 0.8",
+      "severity": "warning"
+    },
+    "rule-timesheet-requires-approval": {
+      "description": "Timesheets must be approved before being included in billing",
+      "condition": "Timesheet.Status === 'approved'",
+      "configurable": true,
+      "severity": "blocking"
+    },
+    "rule-task-end-before-project-end": {
+      "description": "Task due date should not exceed project end date",
+      "condition": "Task.DueDate <= Project.EndDate",
+      "severity": "warning"
+    },
+    "rule-overdue-milestone-alert": {
+      "description": "Milestone past due date without achievement triggers alert",
+      "condition": "Milestone.DueDate < today && Milestone.Status === 'pending'",
+      "severity": "warning"
+    }
+  }
+}

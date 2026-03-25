@@ -1,0 +1,98 @@
+{
+  "module": "purchasing",
+  "description": "Full procurement cycle: requisition, RFQ, purchase order, goods receipt, supplier invoice matching.",
+  "type": "HDM",
+  "mdmDependencies": ["Company", "Person", "Product", "Location"],
+  "infraDependencies": ["AuditLog", "StatusHistory", "NumberSequence", "Attachment", "Comment", "Workflow"],
+  "entities": {
+    "Supplier": {
+      "description": "Local purchasing profile for an MDM Company acting as supplier",
+      "fields": {
+        "Id":              { "type": "uuidv7", "required": true },
+        "CompanyMdmId":    { "type": "uuidv7", "required": true, "ref": "MDM.Company" },
+        "SupplierCode":    { "type": "string",  "required": false },
+        "PaymentTermDays": { "type": "integer", "required": true, "constraints": "default 30" },
+        "Currency":        { "type": "string",  "required": true, "constraints": "ISO 4217, default BRL" },
+        "Status":          { "type": "enum",    "required": true, "values": ["active","inactive","blocked"] },
+        "Rating":          { "type": "enum",    "required": false, "values": ["A","B","C","D"] },
+        "LeadTimeDays":    { "type": "integer", "required": false },
+        "Details":         { "type": "jsonb",   "required": false }
+      },
+      "persistence": { "module": "purchasing", "table": "supplier", "strategy": "relational" }
+    },
+    "PurchaseRequisition": {
+      "description": "Internal request to purchase",
+      "fields": {
+        "Id":          { "type": "uuidv7", "required": true },
+        "CompanyId":   { "type": "uuidv7", "required": true },
+        "Number":      { "type": "string",  "required": true },
+        "RequestedBy": { "type": "uuidv7",  "required": true, "ref": "MDM.Person" },
+        "NeededBy":    { "type": "date",    "required": false },
+        "Status":      { "type": "enum",    "required": true, "values": ["draft","pending_approval","approved","rejected","converted"] },
+        "Details":     { "type": "jsonb",   "required": false }
+      },
+      "persistence": { "module": "purchasing", "table": "purchase_requisition", "strategy": "relational" }
+    },
+    "Quotation": {
+      "description": "RFQ sent to suppliers and their responses",
+      "fields": {
+        "Id":         { "type": "uuidv7", "required": true },
+        "CompanyId":  { "type": "uuidv7", "required": true },
+        "Number":     { "type": "string",  "required": true },
+        "SupplierId": { "type": "uuidv7",  "required": true, "ref": "Supplier" },
+        "ValidUntil": { "type": "date",    "required": false },
+        "Status":     { "type": "enum",    "required": true, "values": ["draft","sent","received","selected","rejected","expired"] },
+        "TotalAmount":{ "type": "decimal(18,2)", "required": false },
+        "Details":    { "type": "jsonb",   "required": false }
+      },
+      "persistence": { "module": "purchasing", "table": "quotation", "strategy": "relational" }
+    },
+    "PurchaseOrder": {
+      "description": "Formal commitment to buy",
+      "fields": {
+        "Id":               { "type": "uuidv7",        "required": true },
+        "CompanyId":        { "type": "uuidv7",        "required": true },
+        "Number":           { "type": "string",        "required": true },
+        "SupplierId":       { "type": "uuidv7",        "required": true, "ref": "Supplier" },
+        "OrderDate":        { "type": "date",          "required": true },
+        "ExpectedDelivery": { "type": "date",          "required": false },
+        "Status":           { "type": "enum",          "required": true, "values": ["draft","pending_approval","approved","sent","partially_received","received","invoiced","cancelled"] },
+        "TotalAmount":      { "type": "decimal(18,2)", "required": true },
+        "CurrencyCode":     { "type": "string",        "required": true },
+        "Details":          { "type": "jsonb",         "required": false }
+      },
+      "persistence": { "module": "purchasing", "table": "purchase_order", "strategy": "relational" }
+    },
+    "GoodsReceipt": {
+      "description": "Physical receipt of goods against a purchase order",
+      "fields": {
+        "Id":               { "type": "uuidv7", "required": true },
+        "CompanyId":        { "type": "uuidv7", "required": true },
+        "Number":           { "type": "string",  "required": true },
+        "PurchaseOrderId":  { "type": "uuidv7",  "required": true, "ref": "PurchaseOrder" },
+        "ReceivedAt":       { "type": "date",    "required": true },
+        "ReceivedBy":       { "type": "uuidv7",  "required": true },
+        "Status":           { "type": "enum",    "required": true, "values": ["draft","confirmed","accepted","partially_accepted","rejected"] },
+        "Details":          { "type": "jsonb",   "required": false }
+      },
+      "persistence": { "module": "purchasing", "table": "goods_receipt", "strategy": "relational" }
+    },
+    "PurchaseInvoice": {
+      "description": "Supplier invoice matched against PO and GR",
+      "fields": {
+        "Id":               { "type": "uuidv7",        "required": true },
+        "CompanyId":        { "type": "uuidv7",        "required": true },
+        "SupplierId":       { "type": "uuidv7",        "required": true, "ref": "Supplier" },
+        "PurchaseOrderId":  { "type": "uuidv7",        "required": false },
+        "GoodsReceiptId":   { "type": "uuidv7",        "required": false },
+        "InvoiceNumber":    { "type": "string",        "required": true },
+        "IssueDate":        { "type": "date",          "required": true },
+        "DueDate":          { "type": "date",          "required": true },
+        "TotalAmount":      { "type": "decimal(18,2)", "required": true },
+        "Status":           { "type": "enum",          "required": true, "values": ["pending_match","matched","approved","scheduled","paid","disputed","cancelled"] },
+        "Details":          { "type": "jsonb",         "required": false }
+      },
+      "persistence": { "module": "purchasing", "table": "purchase_invoice", "strategy": "relational" }
+    }
+  }
+}

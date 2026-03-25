@@ -1,0 +1,143 @@
+{
+  "module": "time-tracking",
+  "description": "Employee working hours, absences, overtime, and shift scheduling.",
+  "type": "HDM",
+  "mdmDependencies": [
+    "Person",
+    "Company"
+  ],
+  "infraDependencies": [
+    "AuditLog",
+    "StatusHistory"
+  ],
+  "entities": {
+    "Shift": {
+      "description": "Work schedule template",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Name": {
+          "type": "string",
+          "required": true
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "daily schedule: start, end, break, days of week"
+        }
+      },
+      "persistence": {
+        "module": "time-tracking",
+        "table": "shift",
+        "strategy": "relational"
+      }
+    },
+    "TimeEntry": {
+      "description": "A single clock-in/clock-out record",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "EmployeeId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Date": {
+          "type": "date",
+          "required": true
+        },
+        "ClockIn": {
+          "type": "timestamptz",
+          "required": true
+        },
+        "ClockOut": {
+          "type": "timestamptz",
+          "required": false
+        },
+        "Method": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "manual",
+            "mobile",
+            "biometric",
+            "rep_integration"
+          ]
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "open",
+            "closed",
+            "adjusted",
+            "disputed"
+          ]
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "overtime mins, break mins, adjustment reason"
+        }
+      },
+      "persistence": {
+        "module": "time-tracking",
+        "table": "time_entry",
+        "strategy": "relational"
+      }
+    },
+    "AbsenceRecord": {
+      "description": "Justified or unjustified absence",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "EmployeeId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Date": {
+          "type": "date",
+          "required": true
+        },
+        "Type": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "sick",
+            "justified",
+            "unjustified",
+            "holiday",
+            "time_off"
+          ]
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "pending",
+            "approved",
+            "rejected"
+          ]
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false
+        }
+      },
+      "persistence": {
+        "module": "time-tracking",
+        "table": "absence_record",
+        "strategy": "relational"
+      }
+    }
+  }
+}

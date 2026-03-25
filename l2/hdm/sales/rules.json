@@ -1,0 +1,32 @@
+{
+  "module": "sales",
+  "rules": {
+    "rule-blocked-customer-no-order": {
+      "description": "Orders cannot be created for blocked customers",
+      "condition": "Customer.Status !== 'blocked'",
+      "severity": "blocking"
+    },
+    "rule-credit-limit-check": {
+      "description": "Sales order cannot be confirmed if customer exceeds credit limit",
+      "condition": "Customer.openBalance + SalesOrder.TotalAmount <= Customer.CreditLimit",
+      "configurable": true,
+      "severity": "warning"
+    },
+    "rule-quote-expiry": {
+      "description": "Expired quotes cannot be converted to orders",
+      "condition": "SalesQuote.ValidUntil >= today",
+      "severity": "blocking"
+    },
+    "rule-delivery-cannot-exceed-order-qty": {
+      "description": "Delivered quantity cannot exceed ordered quantity per line",
+      "condition": "Delivery.line.Qty <= SalesOrder.line.Qty",
+      "severity": "blocking"
+    },
+    "rule-invoice-requires-delivery": {
+      "description": "When configured, invoicing requires at least one confirmed delivery",
+      "condition": "Delivery.Status in ['delivered']",
+      "configurable": true,
+      "severity": "blocking"
+    }
+  }
+}

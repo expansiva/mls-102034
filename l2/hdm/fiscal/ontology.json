@@ -1,0 +1,148 @@
+{
+  "module": "fiscal",
+  "description": "Tax calculation and electronic fiscal document generation. Core defines interface; country plugins implement.",
+  "type": "HDM",
+  "countryVariation": "extreme",
+  "pluginRequired": true,
+  "mdmDependencies": [
+    "Company"
+  ],
+  "infraDependencies": [
+    "AuditLog",
+    "NumberSequence",
+    "Attachment"
+  ],
+  "entities": {
+    "FiscalDocument": {
+      "description": "Any electronically issued fiscal document \u2014 NF-e, NFS-e, CT-e, etc.",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "DocumentType": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "nfe",
+            "nfse",
+            "cte",
+            "mdfe",
+            "bpe",
+            "cfdi",
+            "dte",
+            "other"
+          ]
+        },
+        "Number": {
+          "type": "string",
+          "required": true,
+          "constraints": "from NumberSequence per document type"
+        },
+        "Series": {
+          "type": "string",
+          "required": false
+        },
+        "Direction": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "outbound",
+            "inbound"
+          ]
+        },
+        "IssuedAt": {
+          "type": "timestamptz",
+          "required": false
+        },
+        "TotalAmount": {
+          "type": "decimal(18,2)",
+          "required": true
+        },
+        "TaxAmount": {
+          "type": "decimal(18,2)",
+          "required": true
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "draft",
+            "pending_transmission",
+            "authorized",
+            "rejected",
+            "cancelled",
+            "contingency"
+          ]
+        },
+        "AccessKey": {
+          "type": "string",
+          "required": false,
+          "constraints": "44-digit key (Brazil) or equivalent"
+        },
+        "SourceModule": {
+          "type": "string",
+          "required": false
+        },
+        "SourceId": {
+          "type": "uuidv7",
+          "required": false
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "full XML payload, tax breakdown, protocol number"
+        }
+      },
+      "persistence": {
+        "module": "fiscal",
+        "table": "fiscal_document",
+        "strategy": "relational"
+      }
+    },
+    "TaxRate": {
+      "description": "Configurable tax rates by type, regime, and product/service classification",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "TaxType": {
+          "type": "string",
+          "required": true,
+          "constraints": "ICMS, PIS, COFINS, ISS, IPI, CSLL, IRPJ, VAT..."
+        },
+        "Rate": {
+          "type": "decimal(7,4)",
+          "required": true
+        },
+        "ValidFrom": {
+          "type": "date",
+          "required": true
+        },
+        "ValidUntil": {
+          "type": "date",
+          "required": false
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "NCM, CFOP, CEST, conditions"
+        }
+      },
+      "persistence": {
+        "module": "fiscal",
+        "table": "tax_rate",
+        "strategy": "relational"
+      }
+    }
+  }
+}

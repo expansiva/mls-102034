@@ -1,0 +1,114 @@
+{
+  "entity": "Comment",
+  "description": "Free-text notes attached to any entity in any module. Enables collaboration — a buyer can note why a PO was delayed, an approver can explain a rejection, an agent can log a decision rationale. Comments are visible to all users with access to the parent entity. Modules never manage comment storage directly.",
+
+  "access": "write-via-routine-only",
+  "routine": "Comment.add(ctx, input) / Comment.edit(ctx, input) / Comment.remove(ctx, id) / Comment.findByEntity(ctx, input)",
+  "consumers": "any module — comment threads appear on POs, invoices, suppliers, MDM entities, etc.",
+
+  "fields": {
+    "Id": {
+      "type": "uuidv7",
+      "required": true,
+      "constraints": "primary key"
+    },
+    "EntityType": {
+      "type": "string",
+      "required": true,
+      "constraints": "pascal case entity name, e.g. 'PurchaseOrder', 'MdmCompany'"
+    },
+    "EntityId": {
+      "type": "uuidv7",
+      "required": true,
+      "constraints": "id of the entity this comment belongs to"
+    },
+    "ParentCommentId": {
+      "type": "uuidv7",
+      "required": false,
+      "constraints": "id of the parent comment when this is a reply. Null for top-level comments. Max nesting depth: 1 (replies to replies are not allowed)"
+    },
+    "Text": {
+      "type": "string",
+      "required": true,
+      "constraints": "comment body. Max 4000 chars. Plain text — no HTML. Stored in DynamoDB only to keep PostgreSQL index lean"
+    },
+    "AuthorId": {
+      "type": "uuidv7",
+      "required": true,
+      "constraints": "userId or agentId"
+    },
+    "AuthorType": {
+      "type": "enum",
+      "required": true,
+      "values": ["user", "agent", "system"],
+      "constraints": "'system' for automated comments added by routines, e.g. 'Status changed to Approved by approval workflow'"
+    },
+    "Module": {
+      "type": "string",
+      "required": true,
+      "constraints": "module that created the comment — for filtering and access control"
+    },
+    "IsSystemGenerated": {
+      "type": "boolean",
+      "required": true,
+      "constraints": "true when added automatically by a routine rather than a human. System comments are displayed differently in the UI"
+    },
+    "EditedAt": {
+      "type": "timestamptz",
+      "required": false,
+      "constraints": "set when the comment text is updated. Null if never edited. Only the author may edit within 15 minutes of creation"
+    },
+    "DeletedAt": {
+      "type": "timestamptz",
+      "required": false,
+      "constraints": "soft delete — deleted comments show as '[removed]' in the thread to preserve reply context"
+    },
+    "CreatedAt": {
+      "type": "timestamptz",
+      "required": true,
+      "constraints": "set by MDM routine at write time"
+    }
+  },
+
+  "indexes": {
+    "postgresql": [
+      { "fields": ["EntityType", "EntityId", "CreatedAt"], "note": "primary query — full comment thread for an entity in order" },
+      { "fields": ["ParentCommentId"], "note": "fetch replies for a top-level comment" },
+      { "fields": ["AuthorId", "CreatedAt"], "note": "what did this user comment on" },
+      { "fields": ["Module", "CreatedAt"], "note": "comment activity per module" }
+    ],
+    "dynamodb": {
+      "pk": "EntityType#EntityId",
+      "sk": "CreatedAt#Id",
+      "note": "full comment record including Text — PostgreSQL index has no Text to stay lean"
+    }
+  },
+
+  "persistence": {
+    "module": "mdm",
+    "table": "comment",
+    "type": "MDM-INFRA",
+    "strategy": "remote-document",
+    "remoteStore": "dynamodb",
+    "indexFields": ["Id", "EntityType", "EntityId", "ParentCommentId", "AuthorId", "AuthorType", "Module", "IsSystemGenerated", "EditedAt", "DeletedAt", "CreatedAt"],
+    "remoteOnlyFields": ["Text"],
+    "consistencyContract": {
+      "sync": ["Id", "EntityType", "EntityId", "ParentCommentId", "AuthorId", "AuthorType", "Module", "IsSystemGenerated", "CreatedAt", "Text"],
+      "async": [],
+      "note": "Text is written to DynamoDB in the same request — comment must be readable immediately after creation"
+    },
+    "retention": {
+      "postgresql": "permanent while entity exists — soft delete preserves thread structure",
+      "dynamodb": "permanent"
+    },
+    "immutable": false,
+    "note": "Text and EditedAt are mutable within the edit window. DeletedAt is set on soft delete. No other fields change after creation"
+  },
+
+  "rules": [
+    "rule-comment-no-direct-write",
+    "rule-comment-edit-window-15min",
+    "rule-comment-soft-delete-preserves-thread",
+    "rule-comment-max-nesting-depth-1"
+  ]
+}

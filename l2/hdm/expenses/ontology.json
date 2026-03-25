@@ -1,0 +1,108 @@
+{
+  "module": "expenses",
+  "description": "Employee expense reimbursement: travel, meals, fuel, accommodation, corporate card.",
+  "type": "HDM",
+  "mdmDependencies": [
+    "Person",
+    "Company"
+  ],
+  "infraDependencies": [
+    "AuditLog",
+    "StatusHistory",
+    "NumberSequence",
+    "Attachment",
+    "Workflow"
+  ],
+  "entities": {
+    "ExpensePolicy": {
+      "description": "Company rules for expense categories and limits",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Name": {
+          "type": "string",
+          "required": true
+        },
+        "IsActive": {
+          "type": "boolean",
+          "required": true
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "categories: [{name, maxAmount, requiresReceipt, requiresNote}]"
+        }
+      },
+      "persistence": {
+        "module": "expenses",
+        "table": "expense_policy",
+        "strategy": "relational"
+      }
+    },
+    "ExpenseReport": {
+      "description": "Employee expense claim for a period or trip",
+      "fields": {
+        "Id": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "CompanyId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Number": {
+          "type": "string",
+          "required": true
+        },
+        "EmployeeId": {
+          "type": "uuidv7",
+          "required": true
+        },
+        "Title": {
+          "type": "string",
+          "required": true
+        },
+        "PeriodStart": {
+          "type": "date",
+          "required": true
+        },
+        "PeriodEnd": {
+          "type": "date",
+          "required": true
+        },
+        "TotalAmount": {
+          "type": "decimal(18,2)",
+          "required": true
+        },
+        "Status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "draft",
+            "submitted",
+            "approved",
+            "rejected",
+            "paid",
+            "cancelled"
+          ]
+        },
+        "Details": {
+          "type": "jsonb",
+          "required": false,
+          "constraints": "expense lines: date, category, amount, description, receipt attachment id"
+        }
+      },
+      "persistence": {
+        "module": "expenses",
+        "table": "expense_report",
+        "strategy": "relational"
+      }
+    }
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "module": "scm",
+  "rules": {
+    "rule-forecast-variance-alert": {
+      "description": "Alert when actual demand deviates more than 20% from forecast",
+      "condition": "abs(actual - forecast) / forecast <= 0.20",
+      "configurable": true,
+      "severity": "warning"
+    },
+    "rule-transport-requires-carrier": {
+      "description": "Transport order must have carrier assigned before departure",
+      "condition": "TransportOrder.CarrierMdmId is set before Status='in_transit'",
+      "severity": "blocking"
+    },
+    "rule-replenishment-below-safety-stock": {
+      "description": "Generate replenishment suggestion when projected stock falls below safety stock",
+      "condition": "projectedStock <= StockItem.SafetyStock",
+      "severity": "warning",
+      "action": "suggest purchase order"
+    }
+  }
+}

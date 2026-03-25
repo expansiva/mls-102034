@@ -1,0 +1,26 @@
+{
+  "module": "crm",
+  "rules": {
+    "rule-opportunity-requires-account": {
+      "description": "Opportunity must be linked to an account",
+      "condition": "Opportunity.AccountId is set",
+      "severity": "blocking"
+    },
+    "rule-won-opportunity-requires-amount": {
+      "description": "Opportunity cannot be marked won without a defined amount",
+      "condition": "Opportunity.Status === 'won' \u2192 Opportunity.Amount required",
+      "severity": "blocking"
+    },
+    "rule-overdue-activity-alert": {
+      "description": "Activities past scheduled date without completion trigger alert",
+      "condition": "Activity.ScheduledAt < now && Activity.Status === 'planned'",
+      "severity": "warning"
+    },
+    "rule-lead-score-auto": {
+      "description": "Lead score increases on each qualified activity logged",
+      "condition": "Activity.Type in ['call','meeting'] && Activity.Status === 'completed'",
+      "severity": "info",
+      "action": "increment Lead.Score"
+    }
+  }
+}

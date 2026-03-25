@@ -1,0 +1,52 @@
+{
+  "module": "financial",
+  "rules": {
+    "rule-double-entry-must-balance": {
+      "description": "Sum of debits must equal sum of credits in every journal entry",
+      "condition": "sum(JournalLine.Debit) === sum(JournalLine.Credit)",
+      "severity": "blocking"
+    },
+    "rule-post-requires-balanced-entry": {
+      "description": "A journal entry can only be posted when it is balanced",
+      "condition": "JournalEntry.Status === 'draft' && isBalanced(entry)",
+      "severity": "blocking"
+    },
+    "rule-posted-entry-immutable": {
+      "description": "Posted entries cannot be edited — only reversed via a counter-entry",
+      "condition": "JournalEntry.Status !== 'posted'",
+      "severity": "blocking"
+    },
+    "rule-invoice-due-after-issue": {
+      "description": "Invoice due date must be on or after issue date",
+      "condition": "Invoice.DueDate >= Invoice.IssueDate",
+      "severity": "blocking"
+    },
+    "rule-payment-cannot-exceed-invoice": {
+      "description": "Total payments allocated to an invoice cannot exceed its amount",
+      "condition": "Invoice.PaidAmount <= Invoice.Amount",
+      "severity": "blocking"
+    },
+    "rule-closed-period-no-posting": {
+      "description": "Journal entries cannot be posted to a closed fiscal period",
+      "condition": "FiscalPeriod.Status !== 'closed'",
+      "severity": "blocking"
+    },
+    "rule-analytic-account-required-for-posting": {
+      "description": "Only analytic accounts (IsAnalytic=true) can receive journal line postings",
+      "condition": "Account.IsAnalytic === true",
+      "severity": "blocking"
+    },
+    "rule-overdue-invoice-alert": {
+      "description": "Invoices past due date with unpaid balance trigger overdue status",
+      "condition": "Invoice.DueDate < today && Invoice.PaidAmount < Invoice.Amount",
+      "severity": "warning",
+      "action": "set Invoice.Status = 'overdue'"
+    },
+    "rule-bank-reconciliation-tolerance": {
+      "description": "Reconciliation difference within tolerance is auto-approved; above tolerance requires manual review",
+      "condition": "abs(BankStatement.Amount - Payment.Amount) <= company.reconciliationTolerance",
+      "severity": "warning",
+      "configurable": true
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "module": "inventory",
+  "rules": {
+    "rule-stock-cannot-go-negative": {
+      "description": "Stock quantity cannot go below zero unless negative stock is explicitly allowed",
+      "condition": "StockItem.Quantity - movement.Quantity >= 0 || company.allowNegativeStock",
+      "configurable": true,
+      "severity": "blocking"
+    },
+    "rule-reorder-alert": {
+      "description": "Alert when stock falls below reorder point",
+      "condition": "StockItem.Quantity <= StockItem.ReorderPoint",
+      "severity": "warning",
+      "action": "trigger reorder notification"
+    },
+    "rule-lot-required-for-tracked-products": {
+      "description": "Products configured with lot tracking require a lot number on every movement",
+      "condition": "Product.LotTracking === true \u2192 StockMovement.LotNumber required",
+      "severity": "blocking"
+    },
+    "rule-serial-unique-in-stock": {
+      "description": "Serial number must be unique across all stock items",
+      "condition": "StockMovement.SerialNumber is unique when Product.SerialTracking === true",
+      "severity": "blocking"
+    },
+    "rule-adjustment-requires-reason": {
+      "description": "Stock adjustments must include a reason in Details",
+      "condition": "StockMovement.Type === 'adjustment' \u2192 Details.reason required",
+      "severity": "blocking"
+    }
+  }
+}

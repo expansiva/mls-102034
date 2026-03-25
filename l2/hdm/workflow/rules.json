@@ -1,0 +1,26 @@
+{
+  "module": "workflow",
+  "rules": {
+    "rule-approver-cannot-approve-own-request": {
+      "description": "The requester cannot approve their own request at any level",
+      "condition": "ApprovalDecision.ApproverId !== ApprovalRequest.RequestedBy",
+      "severity": "blocking"
+    },
+    "rule-timeout-escalation": {
+      "description": "Approval request not decided within deadline escalates to next level or rejects",
+      "condition": "decision within ApprovalPolicy.level.deadlineHours",
+      "severity": "warning",
+      "action": "escalate or auto-reject"
+    },
+    "rule-rejection-ends-flow": {
+      "description": "A rejection at any level immediately ends the approval flow",
+      "condition": "ApprovalDecision.Decision === 'rejected' \u2192 ApprovalRequest.Status = 'rejected'",
+      "severity": "info"
+    },
+    "rule-delegation-chain-max-2": {
+      "description": "Delegation cannot exceed 2 hops to prevent infinite loops",
+      "condition": "delegation chain length <= 2",
+      "severity": "blocking"
+    }
+  }
+}
