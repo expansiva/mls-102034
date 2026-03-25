@@ -21,5 +21,5 @@ export async function execBff<TData = unknown>(
     }),
   });
 
-  return response.json();
+  return response.json(); 
 }
