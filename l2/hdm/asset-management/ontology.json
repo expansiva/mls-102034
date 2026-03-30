@@ -1,4 +1,4 @@
-{
+{ 
   "module": "asset-management",
   "description": "Tracks individually identified physical assets \u2014 furniture, IT, vehicles, machinery.",
   "type": "HDM",
