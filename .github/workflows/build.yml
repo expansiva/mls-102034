@@ -29,6 +29,12 @@ jobs:
       with:
         node-version: '24'  # ou a versão do Node.js que você está usando
 
+    - name: Fix package name
+      run: |
+        if [ -f packagelib.json ]; then
+          mv packagelib.json package.json
+        fi
+
     - name: Install dependencies
       run: npm install
 
