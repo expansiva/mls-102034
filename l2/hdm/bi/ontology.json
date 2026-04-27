@@ -1,5 +1,5 @@
 {
-  "module": "bi",
+  "module": "bi", 
   "description": "Cross-module analytics layer: KPI dashboards, reports, alerts, and data export.",
   "type": "HDM",
   "mdmDependencies": [
