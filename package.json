@@ -11,13 +11,17 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1041.0",
+    "@aws-sdk/lib-dynamodb": "^3.1041.0",
     "adm-zip": "0.5.16",
     "esbuild": "^0.27.2",
+    "fastify": "^5.8.5",
     "less": "^4.2.0",
     "lit": "^3.3.2",
     "mls-102029": "git+https://github.com/expansiva/mls-102029.git",
     "mls-ci": "git+https://github.com/expansiva/mls-ci.git",
     "node-fetch": "^2.7.0",
+    "pg": "^8.20.0",
     "typescript": "^5.5.3"
   },
   "devDependencies": {
