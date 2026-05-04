@@ -4,6 +4,7 @@
         "module": "nodenext",
         "types": ["node"],
         "esModuleInterop": true,
+        "rootDir": ".",
         "outDir": "./dist/",
         "strict": true,
         "removeComments": false,
