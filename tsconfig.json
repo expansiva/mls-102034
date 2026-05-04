@@ -1,14 +1,13 @@
 {
     "compilerOptions": {
         "target": "es2020",
-        "module": "ES2020",
+        "module": "nodenext",
         "esModuleInterop": true,
-        "outDir": "./preBuild/_102034_/",
-        "rootDir": "./project/_102034_",
+        "outDir": "./dist/",
         "strict": true,
         "removeComments": false,
+        "skipLibCheck": true,
         "noUnusedParameters": false,
-        "skipLibCheck": false,
         "forceConsistentCasingInFileNames": true,
         "sourceMap": false,
         "declaration": false,
@@ -18,25 +17,25 @@
         "strictNullChecks": false,
         "paths": {
             "/_102034_/*": [
-                "./project/_102034_/*"
+                "./*"
             ],
-            "/_102027_/*": [
-                "./project/_102027_/*"
+            "/_102029_/*": [
+                "./node_modules/mls-102029/*"
             ]
         },
         "lib": [
             "dom",
-            "ES2022"
+            "ES2022", 
+            "DOM.Iterable"
         ]
     },
     "include": [
-        "project/_102034_/**/*",
+        "./l2/**/*",
         "monaco.d.ts",
         "mls.d.ts"
     ],
     "exclude": [
         "node_modules",
-        "**/*.spec.ts",
-        "l2/*.ts"
+        "**/*.spec.ts"
     ]
 }
