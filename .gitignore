@@ -1,9 +1,7 @@
 # ====================
 # macOS
 # ====================
-.DS_Store
 **/.DS_Store
-.DS_Store?
 ._*
 .AppleDouble
 .LSOverride
@@ -23,4 +21,6 @@ Temporary Items
 #
 /node_modules/
 /dist/
-l2/.DS_Store
+package-lock.json
+*.js
+*.mjs
