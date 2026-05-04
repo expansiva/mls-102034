@@ -19,5 +19,8 @@
     "mls-ci": "git+https://github.com/expansiva/mls-ci.git",
     "node-fetch": "^2.7.0",
     "typescript": "^5.5.3"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0"
   }
 }
