@@ -32,6 +32,7 @@
     },
     "include": [
         "./l2/**/*",
+        "./l1/**/*",
         "monaco.d.ts",
         "mls.d.ts"
     ],
