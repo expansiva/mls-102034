@@ -1,5 +1,5 @@
 /// <mls fileReference="_102034_/l2/audit/module.ts" enhancement="_blank" />
-import type { AuraModuleFrontendDefinition } from '/_102029_/l2/contracts/bootstrap.js';
+import type { AuraModuleFrontendDefinition } from '/_102029_/l2/contracts/bootstrap.js'; 
 
 export const moduleGenome = {
   page11: {
