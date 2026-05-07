@@ -64,8 +64,14 @@ async function rebuildPostgresSchema(
   await pool.query('DROP SCHEMA IF EXISTS public CASCADE');
   await pool.query('CREATE SCHEMA public');
 
+  let timescaleAvailable = false;
   if (hasTimescale) {
-    await pool.query('CREATE EXTENSION timescaledb CASCADE');
+    try {
+      await pool.query('CREATE EXTENSION timescaledb CASCADE');
+      timescaleAvailable = true;
+    } catch {
+      console.warn('[bootstrapSchema] TimescaleDB extension not available — hypertables will be created as regular tables');
+    }
   }
 
   const orderedDefinitions = [...definitions]
@@ -90,13 +96,15 @@ async function rebuildPostgresSchema(
     }
   }
 
-  for (const definition of orderedDefinitions.filter((d) => d.timescale?.hypertable)) {
-    const { timeColumn, chunkTimeInterval } = definition.timescale!.hypertable;
-    const intervalPart = chunkTimeInterval ? `, chunk_time_interval => INTERVAL '${chunkTimeInterval}'` : '';
-    await pool.query(
-      `SELECT create_hypertable($1, $2, if_not_exists => TRUE${intervalPart})`,
-      [definition.tableName, timeColumn],
-    );
+  if (timescaleAvailable) {
+    for (const definition of orderedDefinitions.filter((d) => d.timescale?.hypertable)) {
+      const { timeColumn, chunkTimeInterval } = definition.timescale!.hypertable;
+      const intervalPart = chunkTimeInterval ? `, chunk_time_interval => INTERVAL '${chunkTimeInterval}'` : '';
+      await pool.query(
+        `SELECT create_hypertable($1, $2, if_not_exists => TRUE${intervalPart})`,
+        [definition.tableName, timeColumn],
+      );
+    }
   }
 
   await pool.query('INSERT INTO "_schema_migrations" ("id") VALUES ($1)', [snapshotId]);

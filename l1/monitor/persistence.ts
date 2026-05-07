@@ -109,8 +109,8 @@ export const viewDefinitions: ViewDefinition[] = [
        GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
        WITH NO DATA`,
       `SELECT add_continuous_aggregate_policy('monitor_bff_execution_agg_minute',
-         start_offset     => INTERVAL '2 minutes',
-         end_offset       => INTERVAL '10 seconds',
+         start_offset     => INTERVAL '3 minutes',
+         end_offset       => INTERVAL '30 seconds',
          schedule_interval => INTERVAL '30 seconds')`,
       `SELECT add_retention_policy('monitor_bff_execution_log', INTERVAL '90 days')`,
     ],

@@ -64,6 +64,8 @@ export class WriteBehindWorker {
     this.remoteNumberSequenceRuntime = new MdmNumberSequenceRemoteRuntimeDynamo(env);
   }
 
+  private static readonly MAX_ATTEMPT_COUNT = 100;
+
   public async runOnce(limit = 50): Promise<{ processed: number; failed: number }> {
     const queueItems = (await this.runtime.mdmOutbox.findMany({
       where: {
@@ -74,7 +76,7 @@ export class WriteBehindWorker {
         direction: 'asc',
       },
       limit,
-    }));
+    })).filter((item) => item.attemptCount < WriteBehindWorker.MAX_ATTEMPT_COUNT);
 
     let processed = 0;
     let failed = 0;

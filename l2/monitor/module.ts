@@ -35,6 +35,7 @@ export const moduleFrontendDefinition: AuraModuleFrontendDefinition = {
     { id: 'architecture', label: 'Architecture', href: '/monitor/architecture', description: 'Module topology and storage design' },
     { id: 'postgres', label: 'Postgres', href: '/monitor/postgres', description: 'Tables, cache and queue status' },
     { id: 'dynamodb', label: 'DynamoDB', href: '/monitor/dynamodb', description: 'Tables and storage status' },
+    { id: 'abend', label: 'Abends', href: '/monitor/abend', description: 'Failed BFF executions with error details' },
     { id: 'trace', label: 'Trace', href: '/monitor/trace', description: 'Correlate requests by requestId or traceId' },
   ],
   headerRenderer: {
@@ -90,6 +91,12 @@ export const moduleFrontendDefinition: AuraModuleFrontendDefinition = {
       entrypoint: '/_102034_/l2/monitor/web/routes/process.js',
       tag: 'monitor-web-desktop-home-page',
       title: 'Process',
+    },
+    {
+      path: '/monitor/abend',
+      entrypoint: '/_102034_/l2/monitor/web/routes/abend.js',
+      tag: 'monitor-web-desktop-home-page',
+      title: 'Abends',
     },
     {
       path: '/monitor/trace',

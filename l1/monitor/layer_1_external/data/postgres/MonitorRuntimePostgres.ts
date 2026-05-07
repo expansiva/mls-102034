@@ -56,6 +56,7 @@ function quoteIdent(value: string) {
   return `"${value.replaceAll('"', '""')}"`;
 }
 
+
 export function isSafeMonitorIdentifier(value: string) {
   return /^[A-Za-z0-9_.-]+$/.test(value);
 }
@@ -1003,6 +1004,26 @@ export class MonitorRuntimePostgres {
         this.getTableNameByRepositoryName('mdmOutbox'),
         this.getTableNameByRepositoryName('mdmReplicationFailures'),
       ]);
+      const mdmTableNames = [
+        outboxTableName ?? 'mdm_outbox',
+        replicationFailuresTableName ?? 'mdm_replication_failures',
+        documentTableName ?? 'mdm_documents',
+      ];
+      const existingTablesRows = await queryRows<{ tableName: string }>(
+        pool,
+        `SELECT table_name AS "tableName" FROM information_schema.tables
+         WHERE table_schema = 'public' AND table_name = ANY($1)`,
+        [mdmTableNames],
+      );
+      const existingTables = new Set(existingTablesRows.map((r) => r.tableName));
+
+      const resolvedOutbox = outboxTableName ?? 'mdm_outbox';
+      const resolvedFailures = replicationFailuresTableName ?? 'mdm_replication_failures';
+      const resolvedDocuments = documentTableName ?? 'mdm_documents';
+      const outboxExists = existingTables.has(resolvedOutbox);
+      const failuresExists = existingTables.has(resolvedFailures);
+      const documentsExists = existingTables.has(resolvedDocuments);
+
       const [databaseRows, waitingLocksRows, queueRows, tables, connectionsByStateRows, maxConnectionsRows] = await Promise.all([
       queryRows<{
         databaseName: string;
@@ -1039,10 +1060,10 @@ export class MonitorRuntimePostgres {
       }>(
         pool,
         `SELECT
-          COALESCE((SELECT COUNT(*)::int FROM ${quoteIdent(outboxTableName ?? 'mdm_outbox')} WHERE "processedAt" IS NULL), 0) AS "pendingOutbox",
-          COALESCE((SELECT COUNT(*)::int FROM ${quoteIdent(outboxTableName ?? 'mdm_outbox')} WHERE "processedAt" IS NOT NULL), 0) AS "processedOutbox",
-         COALESCE((SELECT COUNT(*)::int FROM ${quoteIdent(replicationFailuresTableName ?? 'mdm_replication_failures')}), 0) AS "replicationFailures",
-         COALESCE((SELECT COUNT(*)::int FROM ${quoteIdent(documentTableName ?? 'mdm_documents')}), 0) AS "cacheEntries"`,
+          ${outboxExists ? `(SELECT COUNT(*)::int FROM ${quoteIdent(resolvedOutbox)} WHERE "processedAt" IS NULL)` : '0'} AS "pendingOutbox",
+          ${outboxExists ? `(SELECT COUNT(*)::int FROM ${quoteIdent(resolvedOutbox)} WHERE "processedAt" IS NOT NULL)` : '0'} AS "processedOutbox",
+          ${failuresExists ? `(SELECT COUNT(*)::int FROM ${quoteIdent(resolvedFailures)})` : '0'} AS "replicationFailures",
+          ${documentsExists ? `(SELECT COUNT(*)::int FROM ${quoteIdent(resolvedDocuments)})` : '0'} AS "cacheEntries"`,
       ),
       this.listKnownPostgresTablesDetailed(targetDatabase),
       queryRows<{ state: string | null; count: number }>(
@@ -1611,6 +1632,67 @@ export class MonitorRuntimePostgres {
        ORDER BY "startedAt" ASC
        LIMIT 200`,
       [requestId ?? null, traceId ?? null],
+    );
+
+    return rows.map((row) => ({
+      ...row,
+      startedAt: row.startedAt instanceof Date ? row.startedAt.toISOString() : String(row.startedAt),
+      finishedAt: row.finishedAt instanceof Date ? row.finishedAt.toISOString() : String(row.finishedAt),
+    }));
+  }
+
+  public async loadAbends(input: {
+    module?: string;
+    limit?: number;
+  }): Promise<Array<{
+    id: string;
+    requestId: string;
+    traceId: string;
+    userId: string;
+    routine: string;
+    module: string;
+    statusCode: number;
+    statusGroup: string;
+    durationMs: number;
+    errorCode: string | null;
+    errorStack: string | null;
+    startedAt: string;
+    finishedAt: string;
+  }>> {
+    if (this.env.runtimeMode !== 'postgres') {
+      return [];
+    }
+
+    const pool = getSharedPgPool(this.env);
+    const limit = Math.min(Math.max(1, input.limit ?? 100), 500);
+    const params: unknown[] = [limit];
+    const moduleClause = input.module ? `AND "module" = $${params.push(input.module)}` : '';
+
+    const rows = await queryRows<{
+      id: string;
+      requestId: string;
+      traceId: string;
+      userId: string;
+      routine: string;
+      module: string;
+      statusCode: number;
+      statusGroup: string;
+      durationMs: number;
+      errorCode: string | null;
+      errorStack: string | null;
+      startedAt: Date;
+      finishedAt: Date;
+    }>(
+      pool,
+      `SELECT
+         "id", "requestId", "traceId", "userId", "routine", "module",
+         "statusCode", "statusGroup", "durationMs",
+         "errorCode", "errorStack", "startedAt", "finishedAt"
+       FROM monitor_bff_execution_log
+       WHERE "ok" = FALSE ${moduleClause}
+       ORDER BY "startedAt" DESC
+       LIMIT $1`,
+      params,
     );
 
     return rows.map((row) => ({

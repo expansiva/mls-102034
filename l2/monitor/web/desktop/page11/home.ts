@@ -22,6 +22,7 @@ import { loadMonitorHome } from '/_102034_/l2/monitor/web/shared/home.js';
 import { loadMonitorPostgres } from '/_102034_/l2/monitor/web/shared/postgres.js';
 import { loadMonitorProcess } from '/_102034_/l2/monitor/web/shared/process.js';
 import { loadMonitorSeries } from '/_102034_/l2/monitor/web/shared/series.js';
+import { loadMonitorAbend } from '/_102034_/l2/monitor/web/shared/abend.js';
 import { loadMonitorTrace } from '/_102034_/l2/monitor/web/shared/trace.js';
 import { loadMonitorDynamoTableDetails } from '/_102034_/l2/monitor/web/shared/tableDetailsDynamodb.js';
 import { loadMonitorPostgresTableDetails } from '/_102034_/l2/monitor/web/shared/tableDetailsPostgres.js';
@@ -36,6 +37,7 @@ import type {
 } from '/_102034_/l2/monitor/shared/contracts/home.js';
 import type { MonitorPostgresResponse } from '/_102034_/l2/monitor/shared/contracts/postgres.js';
 import type { MonitorProcessResponse } from '/_102034_/l2/monitor/shared/contracts/process.js';
+import type { MonitorAbendResponse } from '/_102034_/l2/monitor/shared/contracts/abend.js';
 import type { MonitorTraceResponse } from '/_102034_/l2/monitor/shared/contracts/trace.js';
 import type { MonitorDynamoTableDetailsResponse } from '/_102034_/l2/monitor/shared/contracts/table-details-dynamodb.js';
 import type { MonitorPostgresTableDetailsResponse } from '/_102034_/l2/monitor/shared/contracts/table-details-postgres.js';
@@ -49,7 +51,7 @@ function traceLazy(event: string, details?: Record<string, unknown>) {
   console.log('[traceLazy][monitor]', event, details ?? {});
 }
 
-type MonitorSection = 'overview' | 'architecture' | 'postgres' | 'dynamodb' | 'process' | 'trace';
+type MonitorSection = 'overview' | 'architecture' | 'postgres' | 'dynamodb' | 'process' | 'abend' | 'trace';
 type MonitorStorage = 'postgres' | 'dynamodb';
 type MonitorRoute =
   | {
@@ -72,6 +74,11 @@ type MonitorRoute =
   | {
       section: 'process';
       kind: 'section';
+    }
+  | {
+      section: 'abend';
+      kind: 'section';
+      module?: string;
     }
   | {
       section: 'trace';
@@ -168,6 +175,13 @@ function parseMonitorRoute(locationValue: Location): MonitorRoute {
       kind: 'section',
     };
   }
+  if (pathname === '/monitor/abend') {
+    return {
+      section: 'abend',
+      kind: 'section',
+      module: searchParams.get('module') ?? undefined,
+    };
+  }
   if (pathname === '/monitor/trace') {
     return {
       section: 'trace',
@@ -221,6 +235,11 @@ function buildMonitorHref(route: MonitorRoute) {
     pathname = `/monitor/dynamodb/tables/${encodeURIComponent(route.tableName)}/${route.kind}`;
   } else if (route.section === 'process') {
     pathname = '/monitor/process';
+  } else if (route.section === 'abend') {
+    pathname = '/monitor/abend';
+    if ('module' in route && route.module) {
+      searchParams.set('module', route.module);
+    }
   } else if (route.section === 'trace') {
     pathname = '/monitor/trace';
     if (route.requestId) {
@@ -284,6 +303,7 @@ export class MonitorWebDesktopHomePage extends LitElement {
     postgresDetailsData: { state: true },
     dynamoInspectData: { state: true },
     dynamoDetailsData: { state: true },
+    abendData: { state: true },
     processData: { state: true },
     traceData: { state: true },
     traceSearchInput: { state: true },
@@ -304,6 +324,7 @@ export class MonitorWebDesktopHomePage extends LitElement {
   declare postgresDetailsData?: MonitorPostgresTableDetailsResponse;
   declare dynamoInspectData?: MonitorDynamoTableInspectResponse;
   declare dynamoDetailsData?: MonitorDynamoTableDetailsResponse;
+  declare abendData?: MonitorAbendResponse;
   declare processData?: MonitorProcessResponse;
   declare traceData?: MonitorTraceResponse;
   traceSearchInput = '';
@@ -700,6 +721,25 @@ export class MonitorWebDesktopHomePage extends LitElement {
       }
       this.processData = response.data;
       this.status = `Updated ${new Date(response.data.generatedAt).toLocaleTimeString('pt-BR')}`;
+      return;
+    }
+
+    if (this.currentRoute.section === 'abend' && this.currentRoute.kind === 'section') {
+      this.routeError = undefined;
+      this.status = 'Loading execution errors...';
+      const response = await loadMonitorAbend(
+        { module: this.currentRoute.module },
+        { mode: options.mode, signal: options.signal },
+      );
+      if (!response.ok || !response.data) {
+        if (options.mode === 'blocking') {
+          throw this.toBlockingError('Could not load abends.', response.error);
+        }
+        this.status = response.error?.message ?? 'Could not load abends.';
+        return;
+      }
+      this.abendData = response.data;
+      this.status = `${response.data.totalCount} failures found · ${new Date(response.data.generatedAt).toLocaleTimeString('pt-BR')}`;
       return;
     }
 
@@ -1870,6 +1910,95 @@ export class MonitorWebDesktopHomePage extends LitElement {
     `;
   }
 
+  private renderAbend() {
+    const data = this.abendData;
+    const entries = data?.entries ?? [];
+    const route = this.currentRoute.section === 'abend' ? this.currentRoute : null;
+
+    return html`
+      <section class="space-y-6">
+        ${this.renderRouteError()}
+
+        ${data
+          ? html`
+            <div class="grid gap-4 md:grid-cols-3">
+              ${this.renderMetricCard('Total failures', formatInteger(data.totalCount), 'Failed BFF executions')}
+              ${this.renderMetricCard('Modules affected', formatInteger(new Set(entries.map((e) => e.module)).size), 'Distinct modules with errors')}
+              ${this.renderMetricCard('With stack trace', formatInteger(entries.filter((e) => e.errorStack).length), 'Entries with captured stack')}
+            </div>
+          `
+          : null}
+
+        <article class="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
+          <div class="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 px-6 py-4">
+            <h2 class="text-lg font-semibold text-slate-900">Failed executions</h2>
+            <form class="flex gap-3" @submit=${(event: Event) => {
+              event.preventDefault();
+              const formData = new FormData(event.currentTarget as HTMLFormElement);
+              const mod = String(formData.get('module') ?? '').trim() || undefined;
+              void this.navigate({ section: 'abend', kind: 'section', module: mod });
+            }}>
+              <input
+                class="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm text-slate-900"
+                name="module"
+                value="${route?.module ?? ''}"
+                placeholder="Filter by module"
+              />
+              <button class="rounded-full bg-aura-navy px-4 py-2 text-sm font-medium text-white hover:bg-aura-blue" type="submit">Filter</button>
+            </form>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="min-w-full text-left text-sm">
+              <thead class="bg-slate-50 text-slate-600">
+                <tr>
+                  <th class="px-6 py-3 font-medium">Routine</th>
+                  <th class="px-6 py-3 font-medium">Status</th>
+                  <th class="px-6 py-3 font-medium">Duration</th>
+                  <th class="px-6 py-3 font-medium">User</th>
+                  <th class="px-6 py-3 font-medium">Started</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${entries.length > 0
+                  ? entries.map((entry) => html`
+                      <tr class="border-t border-slate-100 align-top">
+                        <td class="px-6 py-4">
+                          <div class="font-medium text-slate-900">${entry.routine}</div>
+                          ${entry.errorCode
+                            ? html`<div class="mt-1 text-xs font-medium text-rose-600">${entry.errorCode}</div>`
+                            : null}
+                          ${entry.errorStack
+                            ? html`
+                                <details class="mt-2">
+                                  <summary class="cursor-pointer text-xs text-rose-500">stack trace</summary>
+                                  <pre class="mt-2 max-w-xs overflow-x-auto whitespace-pre-wrap break-all text-xs text-rose-700">${entry.errorStack}</pre>
+                                </details>
+                              `
+                            : null}
+                        </td>
+                        <td class="px-6 py-4">
+                          <span class="rounded-full bg-rose-100 px-2 py-1 text-xs font-medium text-rose-800">
+                            ${entry.statusCode} ${entry.statusGroup}
+                          </span>
+                        </td>
+                        <td class="px-6 py-4 text-slate-700">${formatInteger(entry.durationMs)} ms</td>
+                        <td class="px-6 py-4 text-slate-600">${entry.userId}</td>
+                        <td class="px-6 py-4 text-slate-500">${formatDateTime(entry.startedAt)}</td>
+                      </tr>
+                    `)
+                  : html`
+                      <tr>
+                        <td class="px-6 py-8 text-sm text-slate-500" colspan="5">No failed executions found${route?.module ? ` for module "${route.module}"` : ''}.</td>
+                      </tr>
+                    `}
+              </tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+    `;
+  }
+
   private renderMetricCard(title: string, value: string, caption: string) {
     return html`
       <article class="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -1903,7 +2032,9 @@ export class MonitorWebDesktopHomePage extends LitElement {
             ? this.renderDynamodb()
             : this.currentRoute.section === 'process' && this.currentRoute.kind === 'section'
               ? this.renderProcess()
-              : this.currentRoute.section === 'trace' && this.currentRoute.kind === 'section'
+              : this.currentRoute.section === 'abend' && this.currentRoute.kind === 'section'
+                ? this.renderAbend()
+                : this.currentRoute.section === 'trace' && this.currentRoute.kind === 'section'
                 ? this.renderTrace()
                 : this.currentRoute.section === 'postgres' && this.currentRoute.kind === 'inspect'
                   ? this.renderPostgresInspect()

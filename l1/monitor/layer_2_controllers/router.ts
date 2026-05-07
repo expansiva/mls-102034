@@ -12,6 +12,7 @@ import {
   monitorGetStatisticsSeriesHandler,
   monitorGetStatisticsSnapshotHandler,
 } from '/_102034_/l1/monitor/layer_2_controllers/monitorGetStatistics.js';
+import { monitorAbendLoadHandler } from '/_102034_/l1/monitor/layer_2_controllers/abendHandlers.js';
 import { monitorProcessLoadHandler } from '/_102034_/l1/monitor/layer_2_controllers/processHealthHandlers.js';
 import { monitorRequestTraceLoadHandler } from '/_102034_/l1/monitor/layer_2_controllers/traceHandlers.js';
 
@@ -27,6 +28,7 @@ export function createMonitorRouter(): Map<string, BffHandler> {
     ['monitor.dynamodbTable.details', monitorDynamodbTableDetailsHandler],
     ['monitor.monitorGetStatistics.getSnapshot', monitorGetStatisticsSnapshotHandler],
     ['monitor.monitorGetStatistics.getSeries', monitorGetStatisticsSeriesHandler],
+    ['monitor.abend.load', monitorAbendLoadHandler],
     ['monitor.process.load', monitorProcessLoadHandler],
     ['monitor.requestTrace.load', monitorRequestTraceLoadHandler],
     ['monitor.telemetry.flush', async () => ok(null)],
