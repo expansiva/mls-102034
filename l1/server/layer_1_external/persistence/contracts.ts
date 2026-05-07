@@ -46,6 +46,20 @@ export interface DynamoTableConfig {
   ttlField?: string;
 }
 
+export interface TableTimescaleConfig {
+  hypertable: {
+    timeColumn: string;
+    chunkTimeInterval?: string;
+  };
+}
+
+export interface ViewDefinition {
+  moduleId: string;
+  viewName: string;
+  /** SQL statements executed in order after all tables and hypertables are created. */
+  statements: string[];
+}
+
 export interface TableDefinition {
   moduleId: string;
   repositoryName?: string;
@@ -62,6 +76,7 @@ export interface TableDefinition {
   postgres?: {
     unlogged?: boolean;
   };
+  timescale?: TableTimescaleConfig;
   dynamo?: DynamoTableConfig;
   retentionDays?: number;
   version: number;

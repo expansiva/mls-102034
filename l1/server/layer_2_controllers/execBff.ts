@@ -16,6 +16,7 @@ import { MonitorExecutionEntity } from '/_102034_/l1/monitor/layer_4_entities/Mo
 import {
   getStatusGroup,
   parseRoutineParts,
+  MonitorRuntimePostgres,
 } from '/_102034_/l1/monitor/layer_1_external/data/postgres/MonitorRuntimePostgres.js';
 
 function createClock() {
@@ -73,6 +74,8 @@ export async function execBff(
   let normalizedRequest: BffRequest | null = null;
   let statusCode = 500;
   let response: BffResponse | null = null;
+  let caughtErrorStack: string | null = null;
+  let telemetryReceived = 0;
 
   try {
     normalizedRequest = normalizeRequest(request);
@@ -105,6 +108,7 @@ export async function execBff(
       statusCode,
     };
   } catch (error) {
+    caughtErrorStack = error instanceof Error ? (error.stack ?? null) : null;
     if (error instanceof AppError) {
       statusCode = error.statusCode;
       response = fail(error);
@@ -150,6 +154,10 @@ export async function execBff(
           (request as { meta?: { traceId?: string; requestId?: string } } | null | undefined)?.meta?.traceId ??
           (request as { meta?: { requestId?: string } } | null | undefined)?.meta?.requestId ??
           createUuidV7(),
+        userId:
+          normalizedRequest?.meta?.userId ??
+          (request as { meta?: { userId?: string } } | null | undefined)?.meta?.userId ??
+          'anonymous',
         routine: inferredRoutine,
         module: parts.module,
         pageName: parts.pageName,
@@ -160,6 +168,7 @@ export async function execBff(
         ok: response?.ok ?? false,
         durationMs: Math.max(0, Date.now() - startedAt),
         errorCode: response?.error?.code ?? null,
+        errorStack: caughtErrorStack,
         startedAt: startedAtIso,
         finishedAt: finishedAtIso,
       });
@@ -168,6 +177,61 @@ export async function execBff(
         cause: error instanceof Error ? error.message : String(error),
         routine: inferredRoutine,
       });
+    }
+
+    const rawTelemetry = normalizedRequest?.meta?.telemetry ??
+      (request as { meta?: { telemetry?: unknown } } | null | undefined)?.meta?.telemetry;
+    if (Array.isArray(rawTelemetry) && rawTelemetry.length > 0) {
+      const TELEMETRY_LIMIT = 20;
+      const receivedAt = finishedAtIso;
+      const requestId =
+        normalizedRequest?.meta?.requestId ??
+        (request as { meta?: { requestId?: string } } | null | undefined)?.meta?.requestId ??
+        createUuidV7();
+      const traceId =
+        normalizedRequest?.meta?.traceId ??
+        (request as { meta?: { traceId?: string } } | null | undefined)?.meta?.traceId ??
+        requestId;
+      const userId =
+        normalizedRequest?.meta?.userId ??
+        (request as { meta?: { userId?: string } } | null | undefined)?.meta?.userId ??
+        'anonymous';
+      const validEvents = rawTelemetry
+        .slice(0, TELEMETRY_LIMIT)
+        .filter((e): e is { eventType: string; label: string; recordedAt: string; durationMs?: number | null; metadata?: Record<string, unknown> | null } =>
+          e !== null && typeof e === 'object' &&
+          typeof (e as Record<string, unknown>).eventType === 'string' &&
+          typeof (e as Record<string, unknown>).recordedAt === 'string',
+        )
+        .map((e) => ({
+          id: createUuidV7(),
+          requestId,
+          traceId,
+          userId,
+          module: parts.module,
+          routine: inferredRoutine,
+          eventType: e.eventType,
+          label: typeof e.label === 'string' ? e.label : e.eventType,
+          durationMs: typeof e.durationMs === 'number' ? e.durationMs : null,
+          metadata: e.metadata ?? null,
+          recordedAt: e.recordedAt,
+          receivedAt,
+        }));
+      if (validEvents.length > 0) {
+        try {
+          const env = readAppEnv();
+          await new MonitorRuntimePostgres(env).recordTelemetry(validEvents);
+          telemetryReceived = validEvents.length;
+        } catch (error) {
+          ctx.log.error('Telemetry recording failed', {
+            cause: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    }
+
+    if (response) {
+      response.telemetryReceived = telemetryReceived;
     }
   }
 }

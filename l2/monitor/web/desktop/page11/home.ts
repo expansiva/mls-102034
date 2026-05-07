@@ -20,7 +20,9 @@ import {
 } from '/_102034_/l2/monitor/web/shared/homeFormatters.js';
 import { loadMonitorHome } from '/_102034_/l2/monitor/web/shared/home.js';
 import { loadMonitorPostgres } from '/_102034_/l2/monitor/web/shared/postgres.js';
+import { loadMonitorProcess } from '/_102034_/l2/monitor/web/shared/process.js';
 import { loadMonitorSeries } from '/_102034_/l2/monitor/web/shared/series.js';
+import { loadMonitorTrace } from '/_102034_/l2/monitor/web/shared/trace.js';
 import { loadMonitorDynamoTableDetails } from '/_102034_/l2/monitor/web/shared/tableDetailsDynamodb.js';
 import { loadMonitorPostgresTableDetails } from '/_102034_/l2/monitor/web/shared/tableDetailsPostgres.js';
 import { loadMonitorDynamoTableInspect } from '/_102034_/l2/monitor/web/shared/tableInspectDynamodb.js';
@@ -33,6 +35,8 @@ import type {
   MonitorStatisticsSeriesResponse,
 } from '/_102034_/l2/monitor/shared/contracts/home.js';
 import type { MonitorPostgresResponse } from '/_102034_/l2/monitor/shared/contracts/postgres.js';
+import type { MonitorProcessResponse } from '/_102034_/l2/monitor/shared/contracts/process.js';
+import type { MonitorTraceResponse } from '/_102034_/l2/monitor/shared/contracts/trace.js';
 import type { MonitorDynamoTableDetailsResponse } from '/_102034_/l2/monitor/shared/contracts/table-details-dynamodb.js';
 import type { MonitorPostgresTableDetailsResponse } from '/_102034_/l2/monitor/shared/contracts/table-details-postgres.js';
 import type { MonitorDynamoTableInspectResponse } from '/_102034_/l2/monitor/shared/contracts/table-inspect-dynamodb.js';
@@ -45,7 +49,7 @@ function traceLazy(event: string, details?: Record<string, unknown>) {
   console.log('[traceLazy][monitor]', event, details ?? {});
 }
 
-type MonitorSection = 'overview' | 'architecture' | 'postgres' | 'dynamodb';
+type MonitorSection = 'overview' | 'architecture' | 'postgres' | 'dynamodb' | 'process' | 'trace';
 type MonitorStorage = 'postgres' | 'dynamodb';
 type MonitorRoute =
   | {
@@ -64,6 +68,16 @@ type MonitorRoute =
   | {
       section: 'dynamodb';
       kind: 'section';
+    }
+  | {
+      section: 'process';
+      kind: 'section';
+    }
+  | {
+      section: 'trace';
+      kind: 'section';
+      requestId?: string;
+      traceId?: string;
     }
   | {
       section: 'postgres';
@@ -148,6 +162,20 @@ function parseMonitorRoute(locationValue: Location): MonitorRoute {
       kind: 'section',
     };
   }
+  if (pathname === '/monitor/process') {
+    return {
+      section: 'process',
+      kind: 'section',
+    };
+  }
+  if (pathname === '/monitor/trace') {
+    return {
+      section: 'trace',
+      kind: 'section',
+      requestId: searchParams.get('requestId') ?? undefined,
+      traceId: searchParams.get('traceId') ?? undefined,
+    };
+  }
   return {
     section: 'overview',
     kind: 'section',
@@ -191,6 +219,16 @@ function buildMonitorHref(route: MonitorRoute) {
     pathname = `/monitor/postgres/tables/${encodeURIComponent(route.tableName)}/${route.kind}`;
   } else if (route.section === 'dynamodb') {
     pathname = `/monitor/dynamodb/tables/${encodeURIComponent(route.tableName)}/${route.kind}`;
+  } else if (route.section === 'process') {
+    pathname = '/monitor/process';
+  } else if (route.section === 'trace') {
+    pathname = '/monitor/trace';
+    if (route.requestId) {
+      searchParams.set('requestId', route.requestId);
+    }
+    if (route.traceId) {
+      searchParams.set('traceId', route.traceId);
+    }
   } else {
     pathname = '/monitor';
   }
@@ -246,6 +284,9 @@ export class MonitorWebDesktopHomePage extends LitElement {
     postgresDetailsData: { state: true },
     dynamoInspectData: { state: true },
     dynamoDetailsData: { state: true },
+    processData: { state: true },
+    traceData: { state: true },
+    traceSearchInput: { state: true },
   };
 
   currentSection: MonitorSection = 'overview';
@@ -263,6 +304,9 @@ export class MonitorWebDesktopHomePage extends LitElement {
   declare postgresDetailsData?: MonitorPostgresTableDetailsResponse;
   declare dynamoInspectData?: MonitorDynamoTableInspectResponse;
   declare dynamoDetailsData?: MonitorDynamoTableDetailsResponse;
+  declare processData?: MonitorProcessResponse;
+  declare traceData?: MonitorTraceResponse;
+  traceSearchInput = '';
 
   private overviewPollTimer: number | null = null;
 
@@ -637,6 +681,51 @@ export class MonitorWebDesktopHomePage extends LitElement {
       traceLazy('loadActiveRoute.success', {
         route: 'dynamodb.inspect',
       });
+      return;
+    }
+
+    if (this.currentRoute.section === 'process' && this.currentRoute.kind === 'section') {
+      this.routeError = undefined;
+      this.status = 'Loading process health...';
+      const response = await loadMonitorProcess({
+        mode: options.mode,
+        signal: options.signal,
+      });
+      if (!response.ok || !response.data) {
+        if (options.mode === 'blocking') {
+          throw this.toBlockingError('Could not load process health.', response.error);
+        }
+        this.status = response.error?.message ?? 'Could not load process health.';
+        return;
+      }
+      this.processData = response.data;
+      this.status = `Updated ${new Date(response.data.generatedAt).toLocaleTimeString('pt-BR')}`;
+      return;
+    }
+
+    if (this.currentRoute.section === 'trace' && this.currentRoute.kind === 'section') {
+      this.routeError = undefined;
+      const { requestId, traceId } = this.currentRoute;
+      if (!requestId && !traceId) {
+        this.traceData = undefined;
+        this.status = 'Enter a requestId or traceId to search.';
+        return;
+      }
+      this.status = 'Loading trace...';
+      const response = await loadMonitorTrace({ requestId, traceId }, {
+        mode: options.mode,
+        signal: options.signal,
+      });
+      if (!response.ok || !response.data) {
+        if (options.mode === 'blocking') {
+          throw this.toBlockingError('Could not load trace.', response.error);
+        }
+        this.routeError = this.routeErrorMessage('Could not load trace.', response.error);
+        this.status = response.error?.message ?? 'Could not load trace.';
+        return;
+      }
+      this.traceData = response.data;
+      this.status = `${response.data.totalCount} entries found`;
       return;
     }
 
@@ -1639,6 +1728,148 @@ export class MonitorWebDesktopHomePage extends LitElement {
     `;
   }
 
+  private handleTraceSearch(event: Event) {
+    event.preventDefault();
+    const form = event.currentTarget as HTMLFormElement;
+    const formData = new FormData(form);
+    const requestId = (formData.get('requestId') as string | null)?.trim() || undefined;
+    const traceId = (formData.get('traceId') as string | null)?.trim() || undefined;
+    void this.navigate({ section: 'trace', kind: 'section', requestId, traceId });
+  }
+
+  private renderProcess() {
+    const data = this.processData;
+    const uptime = data ? `${Math.floor(data.process.uptimeSeconds / 3600)}h ${Math.floor((data.process.uptimeSeconds % 3600) / 60)}m ${data.process.uptimeSeconds % 60}s` : 'n/a';
+
+    return html`
+      <section class="space-y-6">
+        <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          ${this.renderMetricCard('Heap used', data ? `${data.memory.heapUsedMb} MB` : 'n/a', `${formatPercent(data?.memory.heapUsedPercent)} of heap total`)}
+          ${this.renderMetricCard('Heap total', data ? `${data.memory.heapTotalMb} MB` : 'n/a', `RSS ${data ? `${data.memory.rssMb} MB` : 'n/a'}`)}
+          ${this.renderMetricCard('System free', data ? `${data.system.freememMb} MB` : 'n/a', `${formatPercent(data?.system.freeMemPercent)} of ${data ? `${data.system.totalMemMb} MB` : 'n/a'}`)}
+          ${this.renderMetricCard('Uptime', uptime, `PID ${data?.process.pid ?? 'n/a'}`)}
+        </div>
+
+        <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          ${this.renderMetricCard('CPU count', formatInteger(data?.system.cpuCount), 'Logical processors')}
+          ${this.renderMetricCard('Load avg 1m', data ? String(data.system.loadAvg1m) : 'n/a', `5m ${data?.system.loadAvg5m ?? 'n/a'} · 15m ${data?.system.loadAvg15m ?? 'n/a'}`)}
+          ${this.renderMetricCard('Node version', data?.process.nodeVersion ?? 'n/a', 'Runtime version')}
+        </div>
+
+        <article class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <h2 class="text-lg font-semibold text-slate-900">Memory breakdown</h2>
+          <div class="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            ${this.renderMetricCard('Heap used', data ? `${data.memory.heapUsedMb} MB` : 'n/a', `${formatPercent(data?.memory.heapUsedPercent)} utilization`)}
+            ${this.renderMetricCard('Heap total', data ? `${data.memory.heapTotalMb} MB` : 'n/a', 'V8 heap allocation')}
+            ${this.renderMetricCard('RSS', data ? `${data.memory.rssMb} MB` : 'n/a', 'Resident set size')}
+            ${this.renderMetricCard('External', data ? `${data.memory.externalMb} MB` : 'n/a', 'C++ objects bound to JS')}
+          </div>
+        </article>
+      </section>
+    `;
+  }
+
+  private renderTrace() {
+    const data = this.traceData;
+    const route = this.currentRoute.section === 'trace' ? this.currentRoute : null;
+    const entries = data?.entries ?? [];
+
+    return html`
+      <section class="space-y-6">
+        ${this.renderRouteError()}
+        <article class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <h2 class="text-lg font-semibold text-slate-900">Search trace</h2>
+          <form class="mt-4 grid gap-4 md:grid-cols-2" @submit=${(event: Event) => this.handleTraceSearch(event)}>
+            <label class="space-y-2 text-sm text-slate-600">
+              <span>Request ID</span>
+              <input
+                class="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900"
+                name="requestId"
+                value="${route?.requestId ?? ''}"
+                placeholder="Search by requestId"
+              />
+            </label>
+            <label class="space-y-2 text-sm text-slate-600">
+              <span>Trace ID</span>
+              <input
+                class="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900"
+                name="traceId"
+                value="${route?.traceId ?? ''}"
+                placeholder="Search by traceId"
+              />
+            </label>
+            <div class="md:col-span-2">
+              <button class="rounded-full bg-aura-navy px-5 py-3 text-sm font-medium text-white hover:bg-aura-blue" type="submit">Search</button>
+            </div>
+          </form>
+        </article>
+
+        ${data
+          ? html`
+            <div class="grid gap-4 md:grid-cols-3">
+              ${this.renderMetricCard('Entries', formatInteger(data.totalCount), `requestId ${data.requestId ?? 'n/a'}`)}
+              ${this.renderMetricCard('Trace ID', data.traceId ?? 'n/a', 'Correlated trace identifier')}
+              ${this.renderMetricCard('Users', data.entries.length > 0 ? [...new Set(entries.map((e) => e.userId))].join(', ') : 'n/a', 'Unique user IDs in trace')}
+            </div>
+
+            <article class="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
+              <div class="border-b border-slate-200 px-6 py-4">
+                <h2 class="text-lg font-semibold text-slate-900">Execution timeline</h2>
+              </div>
+              <div class="overflow-x-auto">
+                <table class="min-w-full text-left text-sm">
+                  <thead class="bg-slate-50 text-slate-600">
+                    <tr>
+                      <th class="px-6 py-3 font-medium">Routine</th>
+                      <th class="px-6 py-3 font-medium">Status</th>
+                      <th class="px-6 py-3 font-medium">Duration</th>
+                      <th class="px-6 py-3 font-medium">User</th>
+                      <th class="px-6 py-3 font-medium">Started</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${entries.length > 0
+                      ? entries.map((entry) => html`
+                          <tr class="border-t border-slate-100 align-top">
+                            <td class="px-6 py-4">
+                              <div class="font-medium text-slate-900">${entry.routine}</div>
+                              ${entry.errorCode
+                                ? html`<div class="mt-1 text-xs text-rose-600">${entry.errorCode}</div>`
+                                : null}
+                              ${entry.errorStack
+                                ? html`
+                                    <details class="mt-2">
+                                      <summary class="cursor-pointer text-xs text-rose-500">stack trace</summary>
+                                      <pre class="mt-2 max-w-xs overflow-x-auto whitespace-pre-wrap break-all text-xs text-rose-700">${entry.errorStack}</pre>
+                                    </details>
+                                  `
+                                : null}
+                            </td>
+                            <td class="px-6 py-4">
+                              <span class="${entry.ok ? 'rounded-full bg-emerald-100 px-2 py-1 text-xs font-medium text-emerald-800' : 'rounded-full bg-rose-100 px-2 py-1 text-xs font-medium text-rose-800'}">
+                                ${entry.statusCode} ${entry.statusGroup}
+                              </span>
+                            </td>
+                            <td class="px-6 py-4 text-slate-700">${formatInteger(entry.durationMs)} ms</td>
+                            <td class="px-6 py-4 text-slate-600">${entry.userId}</td>
+                            <td class="px-6 py-4 text-slate-500">${formatDateTime(entry.startedAt)}</td>
+                          </tr>
+                        `)
+                      : html`
+                          <tr>
+                            <td class="px-6 py-8 text-sm text-slate-500" colspan="5">No entries found for this trace.</td>
+                          </tr>
+                        `}
+                  </tbody>
+                </table>
+              </div>
+            </article>
+          `
+          : null}
+      </section>
+    `;
+  }
+
   private renderMetricCard(title: string, value: string, caption: string) {
     return html`
       <article class="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -1670,15 +1901,19 @@ export class MonitorWebDesktopHomePage extends LitElement {
           ? this.renderPostgres()
           : this.currentRoute.section === 'dynamodb' && this.currentRoute.kind === 'section'
             ? this.renderDynamodb()
-            : this.currentRoute.section === 'postgres' && this.currentRoute.kind === 'inspect'
-              ? this.renderPostgresInspect()
-              : this.currentRoute.section === 'postgres' && this.currentRoute.kind === 'details'
-                ? this.renderPostgresDetails()
-                : this.currentRoute.section === 'dynamodb' && this.currentRoute.kind === 'inspect'
-                  ? this.renderDynamoInspect()
-                  : this.currentRoute.section === 'dynamodb' && this.currentRoute.kind === 'details'
-                    ? this.renderDynamoDetails()
-                    : this.renderOverview()}
+            : this.currentRoute.section === 'process' && this.currentRoute.kind === 'section'
+              ? this.renderProcess()
+              : this.currentRoute.section === 'trace' && this.currentRoute.kind === 'section'
+                ? this.renderTrace()
+                : this.currentRoute.section === 'postgres' && this.currentRoute.kind === 'inspect'
+                  ? this.renderPostgresInspect()
+                  : this.currentRoute.section === 'postgres' && this.currentRoute.kind === 'details'
+                    ? this.renderPostgresDetails()
+                    : this.currentRoute.section === 'dynamodb' && this.currentRoute.kind === 'inspect'
+                      ? this.renderDynamoInspect()
+                      : this.currentRoute.section === 'dynamodb' && this.currentRoute.kind === 'details'
+                        ? this.renderDynamoDetails()
+                        : this.renderOverview()}
       </section>
     `;
   }

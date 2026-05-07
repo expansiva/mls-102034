@@ -7,7 +7,11 @@ import type {
   TableIndexColumnDefinition,
 } from '/_102034_/l1/server/layer_1_external/persistence/contracts.js';
 import { usesPostgres } from '/_102034_/l1/server/layer_1_external/persistence/contracts.js';
-import { buildSchemaSnapshot, loadResolvedTableDefinitions } from '/_102034_/l1/server/layer_1_external/persistence/registry.js';
+import {
+  buildSchemaSnapshot,
+  loadResolvedTableDefinitions,
+  loadViewDefinitions,
+} from '/_102034_/l1/server/layer_1_external/persistence/registry.js';
 import {
   ensureRegisteredDynamoTables,
   writeSchemaSnapshotLog,
@@ -51,8 +55,18 @@ async function rebuildPostgresSchema(
   snapshotId: string,
 ): Promise<void> {
   const pool = getSharedPgPool(env);
+  const hasTimescale = definitions.some((d) => d.timescale?.hypertable);
+
+  if (hasTimescale) {
+    await pool.query('DROP EXTENSION IF EXISTS timescaledb CASCADE');
+  }
+
   await pool.query('DROP SCHEMA IF EXISTS public CASCADE');
   await pool.query('CREATE SCHEMA public');
+
+  if (hasTimescale) {
+    await pool.query('CREATE EXTENSION timescaledb CASCADE');
+  }
 
   const orderedDefinitions = [...definitions]
     .filter((definition) => usesPostgres(definition))
@@ -76,7 +90,25 @@ async function rebuildPostgresSchema(
     }
   }
 
+  for (const definition of orderedDefinitions.filter((d) => d.timescale?.hypertable)) {
+    const { timeColumn, chunkTimeInterval } = definition.timescale!.hypertable;
+    const intervalPart = chunkTimeInterval ? `, chunk_time_interval => INTERVAL '${chunkTimeInterval}'` : '';
+    await pool.query(
+      `SELECT create_hypertable($1, $2, if_not_exists => TRUE${intervalPart})`,
+      [definition.tableName, timeColumn],
+    );
+  }
+
   await pool.query('INSERT INTO "_schema_migrations" ("id") VALUES ($1)', [snapshotId]);
+}
+
+async function applyViewDefinitions(pool: Pool): Promise<void> {
+  const viewDefs = await loadViewDefinitions();
+  for (const view of viewDefs) {
+    for (const statement of view.statements) {
+      await pool.query(statement);
+    }
+  }
 }
 
 export async function bootstrapSchema(
@@ -86,9 +118,17 @@ export async function bootstrapSchema(
     recordSnapshotLog?: boolean;
   },
 ): Promise<{ snapshotId: string; postgresTableCount: number; dynamoTableCount: number }> {
+  if (env.runtimeMode === 'memory') {
+    console.info('[bootstrapSchema] Skipped — memory mode');
+    return { snapshotId: 'memory', postgresTableCount: 0, dynamoTableCount: 0 };
+  }
+
   const definitions = await loadResolvedTableDefinitions(env);
   const snapshot = await buildSchemaSnapshot(env);
   await rebuildPostgresSchema(env, definitions, snapshot.id);
+
+  const pool = getSharedPgPool(env);
+  await applyViewDefinitions(pool);
 
   let dynamoTableCount = 0;
   if (input?.ensureDynamo !== false) {

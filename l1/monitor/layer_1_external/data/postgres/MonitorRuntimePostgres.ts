@@ -260,72 +260,32 @@ export class MonitorRuntimePostgres {
     }
 
     const pool = getSharedPgPool(this.env);
-    const aggregateId = [
-      toMinuteBucket(event.finishedAt),
-      event.routine,
-      event.source,
-      String(event.statusCode),
-      event.statusGroup,
-    ].join('|');
 
-    await withPgTransaction(pool, async (client) => {
-      await client.query(
-        `INSERT INTO monitor_bff_execution_log
-          ("id", "requestId", "traceId", "routine", "module", "pageName", "command", "source", "statusCode", "statusGroup", "ok", "durationMs", "errorCode", "startedAt", "finishedAt")
-         VALUES
-          ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
-        [
-          event.requestId,
-          event.requestId,
-          event.traceId,
-          event.routine,
-          event.module,
-          event.pageName,
-          event.command,
-          event.source,
-          event.statusCode,
-          event.statusGroup,
-          event.ok,
-          event.durationMs,
-          event.errorCode ?? null,
-          event.startedAt,
-          event.finishedAt,
-        ],
-      );
-
-      await client.query(
-        `INSERT INTO monitor_bff_execution_agg_minute
-          ("id", "bucketStart", "routine", "module", "pageName", "command", "source", "statusCode", "statusGroup", "totalCount", "successCount", "clientErrorCount", "serverErrorCount", "notFoundCount", "totalDurationMs", "updatedAt")
-         VALUES
-          ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1, $10, $11, $12, $13, $14, $15)
-         ON CONFLICT ("id") DO UPDATE SET
-          "totalCount" = monitor_bff_execution_agg_minute."totalCount" + 1,
-          "successCount" = monitor_bff_execution_agg_minute."successCount" + EXCLUDED."successCount",
-          "clientErrorCount" = monitor_bff_execution_agg_minute."clientErrorCount" + EXCLUDED."clientErrorCount",
-          "serverErrorCount" = monitor_bff_execution_agg_minute."serverErrorCount" + EXCLUDED."serverErrorCount",
-          "notFoundCount" = monitor_bff_execution_agg_minute."notFoundCount" + EXCLUDED."notFoundCount",
-          "totalDurationMs" = monitor_bff_execution_agg_minute."totalDurationMs" + EXCLUDED."totalDurationMs",
-          "updatedAt" = EXCLUDED."updatedAt"`,
-        [
-          aggregateId,
-          toMinuteBucket(event.finishedAt),
-          event.routine,
-          event.module,
-          event.pageName,
-          event.command,
-          event.source,
-          event.statusCode,
-          event.statusGroup,
-          event.statusGroup === 'success' ? 1 : 0,
-          event.statusGroup === 'client_error' ? 1 : 0,
-          event.statusGroup === 'server_error' ? 1 : 0,
-          event.statusGroup === 'not_found' ? 1 : 0,
-          event.durationMs,
-          event.finishedAt,
-        ],
-      );
-
-    });
+    await pool.query(
+      `INSERT INTO monitor_bff_execution_log
+        ("id", "requestId", "traceId", "userId", "routine", "module", "pageName", "command", "source", "statusCode", "statusGroup", "ok", "durationMs", "errorCode", "errorStack", "startedAt", "finishedAt")
+       VALUES
+        ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+      [
+        event.requestId,
+        event.requestId,
+        event.traceId,
+        event.userId,
+        event.routine,
+        event.module,
+        event.pageName,
+        event.command,
+        event.source,
+        event.statusCode,
+        event.statusGroup,
+        event.ok,
+        event.durationMs,
+        event.errorCode ?? null,
+        event.errorStack ?? null,
+        event.startedAt,
+        event.finishedAt,
+      ],
+    );
   }
 
   public static isMissingMonitorStorageError(error: unknown) {
@@ -978,6 +938,8 @@ export class MonitorRuntimePostgres {
     database: {
       name: string;
       activeConnections: number;
+      activeConnectionsByState: Record<string, number>;
+      maxConnections: number;
       waitingLocks: number;
       cacheHitRate: number | null;
       commitCount: number;
@@ -1009,6 +971,8 @@ export class MonitorRuntimePostgres {
         database: {
           name: this.env.pgDatabase,
           activeConnections: 0,
+          activeConnectionsByState: {},
+          maxConnections: 0,
           waitingLocks: 0,
           cacheHitRate: null,
           commitCount: 0,
@@ -1039,7 +1003,7 @@ export class MonitorRuntimePostgres {
         this.getTableNameByRepositoryName('mdmOutbox'),
         this.getTableNameByRepositoryName('mdmReplicationFailures'),
       ]);
-      const [databaseRows, waitingLocksRows, queueRows, tables] = await Promise.all([
+      const [databaseRows, waitingLocksRows, queueRows, tables, connectionsByStateRows, maxConnectionsRows] = await Promise.all([
       queryRows<{
         databaseName: string;
         activeConnections: number;
@@ -1081,11 +1045,26 @@ export class MonitorRuntimePostgres {
          COALESCE((SELECT COUNT(*)::int FROM ${quoteIdent(documentTableName ?? 'mdm_documents')}), 0) AS "cacheEntries"`,
       ),
       this.listKnownPostgresTablesDetailed(targetDatabase),
+      queryRows<{ state: string | null; count: number }>(
+        pool,
+        `SELECT COALESCE(state, 'unknown') AS "state", COUNT(*)::int AS "count"
+         FROM pg_stat_activity
+         WHERE datname = current_database()
+         GROUP BY state`,
+      ),
+      queryRows<{ maxConnections: number }>(
+        pool,
+        `SELECT setting::int AS "maxConnections" FROM pg_settings WHERE name = 'max_connections'`,
+      ),
     ]);
 
       const database = databaseRows[0];
       const queue = queueRows[0];
       const blockReads = (database?.blocksRead ?? 0) + (database?.blocksHit ?? 0);
+      const activeConnectionsByState: Record<string, number> = {};
+      for (const row of connectionsByStateRows) {
+        activeConnectionsByState[row.state ?? 'unknown'] = row.count;
+      }
 
       return {
         runtimeMode: this.env.runtimeMode,
@@ -1098,6 +1077,8 @@ export class MonitorRuntimePostgres {
         database: {
           name: database?.databaseName ?? targetDatabase,
           activeConnections: database?.activeConnections ?? 0,
+          activeConnectionsByState,
+          maxConnections: maxConnectionsRows[0]?.maxConnections ?? 0,
           waitingLocks: waitingLocksRows[0]?.waitingLocks ?? 0,
           cacheHitRate: blockReads > 0 ? Number((((database?.blocksHit ?? 0) / blockReads) * 100).toFixed(2)) : null,
           commitCount: database?.commitCount ?? 0,
@@ -1537,5 +1518,105 @@ export class MonitorRuntimePostgres {
       },
       recentFailures: recentFailuresRows,
     };
+  }
+
+  public async recordTelemetry(events: Array<{
+    id: string;
+    requestId: string;
+    traceId: string;
+    userId: string;
+    module: string;
+    routine: string;
+    eventType: string;
+    label: string;
+    durationMs: number | null;
+    metadata: Record<string, unknown> | null;
+    recordedAt: string;
+    receivedAt: string;
+  }>): Promise<void> {
+    if (this.env.runtimeMode !== 'postgres' || events.length === 0) {
+      return;
+    }
+    const pool = getSharedPgPool(this.env);
+    for (const ev of events) {
+      await pool.query(
+        `INSERT INTO monitor_client_telemetry_event
+         ("id","requestId","traceId","userId","module","routine","eventType","label","durationMs","metadata","recordedAt","receivedAt")
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+         ON CONFLICT DO NOTHING`,
+        [
+          ev.id, ev.requestId, ev.traceId, ev.userId, ev.module, ev.routine,
+          ev.eventType, ev.label, ev.durationMs,
+          ev.metadata !== null ? JSON.stringify(ev.metadata) : null,
+          ev.recordedAt, ev.receivedAt,
+        ],
+      );
+    }
+  }
+
+  public async loadRequestTrace(input: {
+    requestId?: string;
+    traceId?: string;
+  }): Promise<Array<{
+    id: string;
+    requestId: string;
+    traceId: string;
+    userId: string;
+    routine: string;
+    module: string;
+    statusCode: number;
+    statusGroup: string;
+    ok: boolean;
+    durationMs: number;
+    errorCode: string | null;
+    errorStack: string | null;
+    startedAt: string;
+    finishedAt: string;
+  }>> {
+    if (this.env.runtimeMode !== 'postgres') {
+      return [];
+    }
+
+    const pool = getSharedPgPool(this.env);
+    const { requestId, traceId } = input;
+
+    if (!requestId && !traceId) {
+      return [];
+    }
+
+    const rows = await queryRows<{
+      id: string;
+      requestId: string;
+      traceId: string;
+      userId: string;
+      routine: string;
+      module: string;
+      statusCode: number;
+      statusGroup: string;
+      ok: boolean;
+      durationMs: number;
+      errorCode: string | null;
+      errorStack: string | null;
+      startedAt: Date;
+      finishedAt: Date;
+    }>(
+      pool,
+      `SELECT
+         "id", "requestId", "traceId", "userId", "routine", "module",
+         "statusCode", "statusGroup", "ok", "durationMs",
+         "errorCode", "errorStack", "startedAt", "finishedAt"
+       FROM monitor_bff_execution_log
+       WHERE ($1::text IS NOT NULL AND "requestId" = $1)
+          OR ($2::text IS NOT NULL AND "traceId" = $2)
+       ORDER BY "startedAt" ASC
+       LIMIT 200`,
+      [requestId ?? null, traceId ?? null],
+    );
+
+    return rows.map((row) => ({
+      ...row,
+      startedAt: row.startedAt instanceof Date ? row.startedAt.toISOString() : String(row.startedAt),
+      finishedAt: row.finishedAt instanceof Date ? row.finishedAt.toISOString() : String(row.finishedAt),
+    }));
   }
 }

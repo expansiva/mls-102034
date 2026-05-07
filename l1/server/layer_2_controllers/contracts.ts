@@ -1,6 +1,14 @@
 /// <mls fileReference="_102034_/l1/server/layer_2_controllers/contracts.ts" enhancement="_blank" />
 import type { IDataRuntime } from '/_102034_/l1/server/layer_1_external/data/runtime.js';
 
+export interface BffRequestTelemetryEvent {
+  eventType: string;
+  label: string;
+  durationMs?: number | null;
+  metadata?: Record<string, unknown> | null;
+  recordedAt: string;
+}
+
 export interface BffRequest {
   routine: string;
   params: unknown;
@@ -10,6 +18,7 @@ export interface BffRequest {
     authToken?: string;
     traceId?: string;
     source?: 'http' | 'message' | 'test';
+    telemetry?: BffRequestTelemetryEvent[];
   };
 }
 
@@ -73,6 +82,7 @@ export interface BffResponse<TData = unknown> {
   ok: boolean;
   data: TData | null;
   error: BffError | null;
+  telemetryReceived?: number;
 }
 
 export interface ILogger {

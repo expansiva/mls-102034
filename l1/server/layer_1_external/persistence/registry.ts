@@ -9,6 +9,7 @@ import type {
   ResolvedTableDefinition,
   SchemaSnapshot,
   TableDefinition,
+  ViewDefinition,
 } from '/_102034_/l1/server/layer_1_external/persistence/contracts.js';
 import {
   resolveDynamoTableName,
@@ -242,6 +243,20 @@ export async function buildSchemaSnapshot(
     appliedAt,
     tables,
   };
+}
+
+export async function loadViewDefinitions(): Promise<ViewDefinition[]> {
+  const registrations = getPersistenceModuleRegistrations();
+  const results = await Promise.all(registrations.map(async (registration) => {
+    const moduleUrl = resolveProjectModuleImportUrl(registration.persistenceEntrypoint);
+    const mod = await import(moduleUrl);
+    const exported = mod.viewDefinitions;
+    if (!Array.isArray(exported)) {
+      return [] as ViewDefinition[];
+    }
+    return exported as ViewDefinition[];
+  }));
+  return results.flat();
 }
 
 export async function findResolvedTableDefinition(

@@ -9,6 +9,7 @@ export interface MonitorBffExecutionLogRecord {
   id: string;
   requestId: string;
   traceId: string;
+  userId: string;
   routine: string;
   module: string;
   pageName: string;
@@ -19,12 +20,13 @@ export interface MonitorBffExecutionLogRecord {
   ok: boolean;
   durationMs: number;
   errorCode?: string | null;
+  errorStack?: string | null;
   startedAt: string;
   finishedAt: string;
 }
 
+/** Continuous aggregate — no id or updatedAt, maintained by TimescaleDB. */
 export interface MonitorBffExecutionAggregateMinuteRecord {
-  id: string;
   bucketStart: string;
   routine: string;
   module: string;
@@ -39,7 +41,21 @@ export interface MonitorBffExecutionAggregateMinuteRecord {
   serverErrorCount: number;
   notFoundCount: number;
   totalDurationMs: number;
-  updatedAt: string;
+}
+
+export interface MonitorClientTelemetryEventRecord {
+  id: string;
+  requestId: string;
+  traceId: string;
+  userId: string;
+  module: string;
+  routine: string;
+  eventType: string;
+  label?: string | null;
+  durationMs?: number | null;
+  metadata?: unknown;
+  recordedAt: string;
+  receivedAt: string;
 }
 
 export interface MonitorSeriesPoint {
@@ -54,6 +70,7 @@ export interface MonitorSeriesPoint {
 export interface MonitorExecutionEvent {
   requestId: string;
   traceId: string;
+  userId: string;
   routine: string;
   module: string;
   pageName: string;
@@ -64,6 +81,7 @@ export interface MonitorExecutionEvent {
   ok: boolean;
   durationMs: number;
   errorCode?: string | null;
+  errorStack?: string | null;
   startedAt: string;
   finishedAt: string;
 }
