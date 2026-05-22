@@ -49,30 +49,34 @@ function buildCreateIndexSql(definition: ResolvedTableDefinition): string[] {
   );
 }
 
+async function ensureTimescaleAvailable(pool: Pool): Promise<boolean> {
+  const existing = await pool.query<{ exists: boolean }>(
+    "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'timescaledb') AS exists",
+  );
+  if (existing.rows[0]?.exists) {
+    return true;
+  }
+
+  try {
+    await pool.query('CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE');
+    return true;
+  } catch {
+    console.warn('[bootstrapSchema] TimescaleDB extension not available — hypertables will be created as regular tables');
+    return false;
+  }
+}
+
 async function rebuildPostgresSchema(
   env: AppEnv,
   definitions: ResolvedTableDefinition[],
   snapshotId: string,
-): Promise<void> {
+): Promise<boolean> {
   const pool = getSharedPgPool(env);
   const hasTimescale = definitions.some((d) => d.timescale?.hypertable);
-
-  if (hasTimescale) {
-    await pool.query('DROP EXTENSION IF EXISTS timescaledb CASCADE');
-  }
+  const timescaleAvailable = hasTimescale ? await ensureTimescaleAvailable(pool) : false;
 
   await pool.query('DROP SCHEMA IF EXISTS public CASCADE');
   await pool.query('CREATE SCHEMA public');
-
-  let timescaleAvailable = false;
-  if (hasTimescale) {
-    try {
-      await pool.query('CREATE EXTENSION timescaledb CASCADE');
-      timescaleAvailable = true;
-    } catch {
-      console.warn('[bootstrapSchema] TimescaleDB extension not available — hypertables will be created as regular tables');
-    }
-  }
 
   const orderedDefinitions = [...definitions]
     .filter((definition) => usesPostgres(definition))
@@ -108,12 +112,17 @@ async function rebuildPostgresSchema(
   }
 
   await pool.query('INSERT INTO "_schema_migrations" ("id") VALUES ($1)', [snapshotId]);
+  return timescaleAvailable;
 }
 
-async function applyViewDefinitions(pool: Pool): Promise<void> {
+async function applyViewDefinitions(pool: Pool, input: { timescaleAvailable: boolean }): Promise<void> {
   const viewDefs = await loadViewDefinitions();
   for (const view of viewDefs) {
     for (const statement of view.statements) {
+      if (!input.timescaleAvailable && statement.includes('timescaledb')) {
+        console.warn(`[bootstrapSchema] Skipped TimescaleDB view statement for ${view.viewName}`);
+        continue;
+      }
       await pool.query(statement);
     }
   }
@@ -133,10 +142,10 @@ export async function bootstrapSchema(
 
   const definitions = await loadResolvedTableDefinitions(env);
   const snapshot = await buildSchemaSnapshot(env);
-  await rebuildPostgresSchema(env, definitions, snapshot.id);
+  const timescaleAvailable = await rebuildPostgresSchema(env, definitions, snapshot.id);
 
   const pool = getSharedPgPool(env);
-  await applyViewDefinitions(pool);
+  await applyViewDefinitions(pool, { timescaleAvailable });
 
   let dynamoTableCount = 0;
   if (input?.ensureDynamo !== false) {
