@@ -1,0 +1,81 @@
+<svg viewBox="0 0 780 600" xmlns="http://www.w3.org/2000/svg" role="img" font-family="ui-sans-serif, system-ui, sans-serif">
+  <title>Camadas do backend: layer_2 BFF, layer_3 usecases, layer_4 entities, layer_1 persistência</title>
+  <desc>Fluxo de um request: a página chama o BFF (layer_2), que executa usecases (layer_3), que operam entities (layer_4), único lugar com ctx.data, que persistem em layer_1 (tabelas, métricas e referências MDM). A numeração das camadas não é a ordem de chamada.</desc>
+
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8a8a8a"/>
+    </marker>
+    <marker id="arrAcc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2563eb"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="780" height="600" fill="#ffffff"/>
+
+  <!-- Página (fora do backend) -->
+  <rect x="60" y="18" width="540" height="44" rx="8" fill="none" stroke="#cfcfcf" stroke-dasharray="5 4"/>
+  <text x="78" y="45" font-size="14" font-weight="600" fill="#333333">Página (frontend)</text>
+  <text x="586" y="45" font-size="11.5" text-anchor="end" fill="#8a8a8a">fora do backend — só fala com o BFF</text>
+
+  <line x1="330" y1="62" x2="330" y2="92" stroke="#8a8a8a" stroke-width="1.4" marker-end="url(#arr)"/>
+  <text x="342" y="82" font-size="11" fill="#8a8a8a">comando BFF</text>
+
+  <!-- layer_2 -->
+  <rect x="60" y="94" width="540" height="76" rx="8" fill="none" stroke="#cfcfcf" stroke-width="1.4"/>
+  <text x="78" y="119" font-size="14" font-weight="700" fill="#333333">layer_2_controllers</text>
+  <text x="78" y="137" font-size="11.5" fill="#8a8a8a">BFF — recebe o request</text>
+  <text x="330" y="119" font-size="12" fill="#333333">• valida o input da página</text>
+  <text x="330" y="137" font-size="12" fill="#333333">• chama usecases por usecaseId</text>
+  <text x="330" y="155" font-size="12" fill="#333333">• nunca toca tabela</text>
+
+  <line x1="330" y1="170" x2="330" y2="200" stroke="#8a8a8a" stroke-width="1.4" marker-end="url(#arr)"/>
+  <text x="342" y="190" font-size="11" fill="#8a8a8a">executa usecase</text>
+
+  <!-- layer_3 -->
+  <rect x="60" y="202" width="540" height="86" rx="8" fill="none" stroke="#cfcfcf" stroke-width="1.4"/>
+  <text x="78" y="227" font-size="14" font-weight="700" fill="#333333">layer_3_usecases</text>
+  <text x="78" y="245" font-size="11.5" fill="#8a8a8a">decide O QUE acontece</text>
+  <text x="330" y="227" font-size="12" fill="#333333">• regras de negócio e validações</text>
+  <text x="330" y="245" font-size="12" fill="#333333">• transições de estado</text>
+  <text x="330" y="263" font-size="12" fill="#333333">• orquestra entities + transações</text>
+  <text x="330" y="281" font-size="12" fill="#8a8a8a">não conhece colunas nem JSONB</text>
+
+  <line x1="330" y1="288" x2="330" y2="318" stroke="#2563eb" stroke-width="1.4" marker-end="url(#arrAcc)"/>
+  <text x="342" y="308" font-size="11" fill="#2563eb">import { DealEntity, IDealEntity }</text>
+
+  <!-- exceção L2 -> L4 -->
+  <path d="M 600 132 H 668 V 364 H 608" fill="none" stroke="#8a8a8a" stroke-width="1.2" stroke-dasharray="4 4" marker-end="url(#arr)"/>
+  <text x="676" y="240" font-size="10.5" fill="#8a8a8a">exceção</text>
+  <text x="676" y="254" font-size="10.5" fill="#8a8a8a">(fase 2):</text>
+  <text x="676" y="268" font-size="10.5" fill="#8a8a8a">leitura</text>
+  <text x="676" y="282" font-size="10.5" fill="#8a8a8a">trivial,</text>
+  <text x="676" y="296" font-size="10.5" fill="#8a8a8a">sem regra</text>
+
+  <!-- layer_4 (destaque) -->
+  <rect x="60" y="320" width="540" height="104" rx="8" fill="none" stroke="#2563eb" stroke-width="2"/>
+  <text x="78" y="345" font-size="14" font-weight="700" fill="#2563eb">layer_4_entities</text>
+  <text x="78" y="363" font-size="11.5" fill="#8a8a8a">sabe COMO operar a tabela</text>
+  <text x="78" y="395" font-size="11.5" font-weight="600" fill="#2563eb">ctx.data.* SÓ existe aqui</text>
+  <text x="78" y="411" font-size="10.5" fill="#8a8a8a">(regra verificável por grep)</text>
+  <text x="330" y="345" font-size="12" fill="#333333">• contrato TS + implementação ({Entity}.ts)</text>
+  <text x="330" y="363" font-size="12" fill="#333333">• coluna vs details (JSONB)</text>
+  <text x="330" y="381" font-size="12" fill="#333333">• resolve refs MDM (102034)</text>
+  <text x="330" y="399" font-size="12" fill="#333333">• escreve metric tables</text>
+  <text x="330" y="417" font-size="12" fill="#333333">• operações semânticas (advanceStage, archive)</text>
+
+  <line x1="330" y1="424" x2="330" y2="454" stroke="#8a8a8a" stroke-width="1.4" marker-end="url(#arr)"/>
+  <text x="342" y="444" font-size="11" fill="#8a8a8a">ctx.data.*</text>
+
+  <!-- layer_1 -->
+  <rect x="60" y="456" width="540" height="104" rx="8" fill="none" stroke="#cfcfcf" stroke-width="1.4"/>
+  <text x="78" y="481" font-size="14" font-weight="700" fill="#333333">layer_1_external</text>
+  <text x="78" y="499" font-size="11.5" fill="#8a8a8a">ONDE persiste</text>
+  <text x="330" y="481" font-size="12" fill="#333333">• tabelas transacionais (generateTable: true)</text>
+  <text x="330" y="499" font-size="12" fill="#333333">• metric tables (TimescaleDB)</text>
+  <text x="330" y="517" font-size="12" fill="#333333">• refs MDM: só o shape (generateTable: false)</text>
+  <text x="330" y="535" font-size="12" fill="#8a8a8a">dados MDM vivem no 102034</text>
+  <text x="78" y="535" font-size="10.5" fill="#8a8a8a">implementação trocável:</text>
+  <text x="78" y="549" font-size="10.5" fill="#8a8a8a">Postgres · Dynamo · Memory</text>
+
+  <text x="60" y="586" font-size="11" fill="#8a8a8a">A numeração não é a ordem da chamada — o request percorre 2 → 3 → 4 → 1.</text>
+</svg>
