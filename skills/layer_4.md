@@ -10,16 +10,20 @@ operations or business rules — rules live in layer_3.
 
 ## Inputs
 
-1. The entity defs — **self-sufficient for most entities**: `{ entityId, title, purpose,
-   layer: 'layer_4_entities', fields[] / statusEnum[] / lifecycleStates[] (canonical domain
-   shape — NOT in l5/module.defs.ts, which keeps only the domain map), sourceTables[],
+1. The entity defs — **self-sufficient: the canonical source of the domain shape**: `{ entityId,
+   title, purpose, layer: 'layer_4_entities', fields[] (REQUIRED for every entity — complete
+   list, camelCase, semantic types, one abstraction level; NOT in l5/module.defs.ts, which keeps
+   only the domain map) / statusEnum[] / lifecycleStates[], sourceTables[],
    storage[] ({ kind: 'moduleTable'|'metricTable', tableId/metricTableId, tableName, fileRef }
-   or { kind: 'mdm', moduleRef: '102034', entity, fileRef }), allowedOperations[], usecaseRefs[],
+   or { kind: 'mdm', moduleRef: '102034', entity, domainId?, governanceRules?, sourceOfTruth? } —
+   MDM storage has NO fileRef: there is no layer_1 artifact for master data),
+   allowedOperations[], usecaseRefs[],
    metricShape? ({timeColumn, dimensions, measures} for metric entities),
    materialization: { fileName, className, contractName } }`.
-2. The table defs referenced by `storage[].fileRef` — needed only for the PHYSICAL form
-   (snake_case columns, primaryKey, detailsColumn, indexes) and for multi-table groups whose
-   defs omit `fields`.
+2. The table defs referenced by `storage[].fileRef` (module tables / metric tables only) —
+   needed only for the PHYSICAL form (snake_case columns, primaryKey, detailsColumn, indexes).
+   The physical defs is derived from this entity defs (L4 → L1); on any disagreement, the
+   entity defs wins and the mismatch is a planning error to report.
 
 ## Output file skeleton
 
@@ -31,7 +35,8 @@ operations or business rules — rules live in layer_3.
 import { AppError, type RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import type { IDataRuntime } from '/_102034_/l1/server/layer_1_external/data/runtime.js';
 
-// 1. Record types — derived from the table defs columns (snake_case fields, exact types).
+// 1. Record types — module tables: from the table defs columns (snake_case, exact types);
+//    MDM-backed: from this entity defs' canonical fields[] (camelCase).
 export type DealStatus = 'open' | 'won' | 'lost';                  // from status/lifecycle enums
 export interface DealRecord { deal_id: string; lead_id: string; /* ... every column */ details?: string | null; }
 export interface DealDetails { /* fields stored inside the JSONB details column */ }
@@ -79,12 +84,12 @@ numbers, and `insert` it. Metric tables are append-only: never `update`/`delete`
 
 ## MDM-backed entities
 
-When a sourceTable ownership is `mdmOwned` (table defs is an `mdmEntity` with
-`infrastructureModuleRef: '102034'`):
-- There is NO module table. Resolve through the shared MDM runtime:
+When a storage entry is `{ kind: 'mdm', moduleRef: '102034', entity }` (sourceTable ownership
+`mdmOwned`):
+- There is NO module table and NO layer_1 defs. Resolve through the shared MDM runtime:
   `data.mdmEntityIndex.findOne({ where: { mdmId } })`, `data.mdmDocument.get({ mdmId })` /
-  `getMany({ mdmIds })`; the entity fields come from the document `details` (use the defs
-  `fields[]` to type the result).
+  `getMany({ mdmIds })`; the entity fields come from the document `details` — type the result
+  with this entity defs' own `fields[]` (the canonical shape).
 - Expose the same contract style (`getById`, `list`, finders) so layer_3 cannot tell MDM from
   local tables. Writes to master data go through the MDM usecases of 102034 — do not write
   `mdm_*` tables directly from a client module.

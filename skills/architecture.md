@@ -13,7 +13,7 @@ A request flows **2 → 3 → 4 → 1** (the folder numbering is NOT the call or
 | layer_2 | `l1/{module}/layer_2_controllers` | BFF: receives page requests, validates input, calls usecases, shapes the response | touching tables or entities; business rules |
 | layer_3 | `l1/{module}/layer_3_usecases` | decides WHAT happens: business rules, validations, state transitions, orchestration across entities, transactions | `ctx.data.*`; knowing columns/JSONB shapes |
 | layer_4 | `l1/{module}/layer_4_entities` | knows HOW to operate one entity: query normalization, column vs `details` (JSONB), MDM resolution, metric writes, semantic operations | business rules that span entities |
-| layer_1 | `l1/{module}/layer_1_external` | WHERE data persists: table definitions consumed by the platform registry (Postgres / Dynamo / Memory / TimescaleDB) | application logic |
+| layer_1 | `l1/{module}/layer_1_external` | WHERE data persists: table definitions consumed by the platform registry (Postgres / Dynamo / Memory / TimescaleDB) — **module-owned physical storage ONLY** | application logic; artifacts for data the module does not own (MDM references) |
 
 ## Hard rules (mechanically verifiable)
 
@@ -24,12 +24,20 @@ A request flows **2 → 3 → 4 → 1** (the folder numbering is NOT the call or
    until the planning contracts declare it explicitly.
 3. **layer_3 imports entity contracts only from layer_4** (`import { DealEntity, type IDealEntity,
    type DealRecord } from '../layer_4_entities/DealEntity.js'`). Never redeclare record types.
-4. **Record types live in layer_4** (single source of truth, derived from the table defs). Layer_3
+4. **The layer_4 entity defs is the single source of truth for the domain shape.** It carries the
+   COMPLETE `fields[]` list (camelCase, semantic types, one abstraction level) for every entity —
+   MDM-backed or table-backed. Record types live in layer_4, derived from those fields; layer_3
    and layer_2 must import them, never duplicate them.
-5. **MDM master data** (entities with `infrastructureModuleRef: '102034'`) is never a local table:
-   layer_1 holds only the shape (`generateTable: false`); layer_4 resolves reads/writes through the
-   shared MDM runtime; layers 2/3 cannot tell the difference.
-6. **Transactions** are STARTED in layer_3 and EXECUTED by layer_4:
+5. **MDM master data** (storage entry `{ kind: 'mdm', moduleRef: '102034', entity }`) is never a
+   local table and has **NO artifact in layer_1**: the shape and the MDM governance metadata
+   (`domainId`, `governanceRules`, `sourceOfTruth`) live in the layer_4 entity defs storage block;
+   layer_4 resolves reads/writes through the shared MDM runtime; layers 2/3 cannot tell the
+   difference. (Legacy runs may still contain `mdmEntity` ref files in layer_1 — ignore them.)
+6. **Derivation direction is layer_4 → layer_1, deterministic.** For entities with module-owned
+   tables, the physical defs (snake_case columns, db types) is DERIVED from the entity defs
+   (`fieldId` → column) by template — never edited independently. Every entity field maps to a
+   storage column and every column maps back (validators check both directions).
+7. **Transactions** are STARTED in layer_3 and EXECUTED by layer_4:
    ```ts
    await ctx.data.runInTransaction(async (tx) => {
      await DealEntity.advanceStage(ctx, input, tx);
