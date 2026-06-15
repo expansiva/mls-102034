@@ -55,6 +55,7 @@ function buildBootConfigScript(app: FrontendAppRegistration) {
     navigation: app.navigation ?? [],
     moduleLinks: app.moduleLinks ?? [],
     layout: app.layout,
+    clientShell: app.clientShell,
   }).replace(/</gu, '\\u003c');
 
   return `<script>window.collabBoot=${payload};</script>`;

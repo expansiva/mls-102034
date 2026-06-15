@@ -41,11 +41,45 @@ export interface FrontendAppLayout {
     desktop: FrontendAsideMode;
     mobile: FrontendAsideMode;
   };
+  asideSize?: {
+    desktopWidthPx?: number;
+    drawerWidthPx?: number;
+  };
 }
 
 export interface FrontendRegionRendererRegistration {
   entrypoint: string;
   tag: string;
+}
+
+export type FrontendRegionName = 'header' | 'aside' | 'content';
+
+export interface FrontendDynamicRegionConfig {
+  renderer: FrontendRegionRendererRegistration;
+  widthPx?: number;
+  source?: string;
+  switchWithoutRouteReload?: boolean;
+  props?: Record<string, unknown>;
+  brand?: Record<string, unknown>;
+  component?: string;
+  appsMenuSource?: string;
+  [key: string]: unknown;
+}
+
+export interface FrontendShellRegionProfiles {
+  activeProfile: string;
+  switchWithoutRouteReload?: boolean;
+  profiles: Record<string, FrontendDynamicRegionConfig>;
+}
+
+export interface FrontendClientShellConfig {
+  mode: ShellMode;
+  activeProfile?: string;
+  runtimeControls?: Record<string, string>;
+  regions: {
+    header?: FrontendShellRegionProfiles;
+    aside?: FrontendShellRegionProfiles;
+  };
 }
 
 export type FrontendRouteMatchMode = 'exact' | 'prefix';
@@ -142,6 +176,7 @@ export interface FrontendAppRegistration {
   pageTitle?: string;
   navigation?: FrontendNavigationItem[];
   moduleLinks?: FrontendNavigationItem[];
+  clientShell?: FrontendClientShellConfig;
 }
 
 export interface RoutineResolution {

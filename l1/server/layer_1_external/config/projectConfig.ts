@@ -10,9 +10,59 @@ export interface ProjectModuleFrontendEntrypoint {
   componentTag: string;
 }
 
+export interface ProjectFrontendPageConfig {
+  pageId: string;
+  route: string;
+  source: string;
+  definition?: string;
+  componentTag: string;
+  title?: string;
+}
+
+export interface ProjectModuleFrontendConfig {
+  layer?: 'l2' | string;
+  moduleEntrypoint?: string;
+  moduleSource?: string;
+  pages?: ProjectFrontendPageConfig[];
+}
+
 export interface ProjectPersistenceModuleConfig {
   moduleId: string;
   persistenceEntrypoint: string;
+}
+
+export interface ProjectRegionRendererConfig {
+  entrypoint: string;
+  tag: string;
+  source?: string;
+}
+
+export interface ProjectDynamicRegionConfig {
+  renderer: ProjectRegionRendererConfig;
+  widthPx?: number;
+  source?: string;
+  switchWithoutRouteReload?: boolean;
+  props?: Record<string, unknown>;
+  brand?: Record<string, unknown>;
+  component?: string;
+  appsMenuSource?: string;
+  [key: string]: unknown;
+}
+
+export interface ProjectShellRegionProfiles {
+  activeProfile: string;
+  switchWithoutRouteReload?: boolean;
+  profiles: Record<string, ProjectDynamicRegionConfig>;
+}
+
+export interface ProjectClientShellConfig {
+  mode: 'spa' | 'pwa';
+  activeProfile?: string;
+  runtimeControls?: Record<string, string>;
+  regions: {
+    header?: ProjectShellRegionProfiles;
+    aside?: ProjectShellRegionProfiles;
+  };
 }
 
 export interface ProjectModuleConfig {
@@ -29,7 +79,9 @@ export interface ProjectModuleConfig {
     desktop?: ProjectModuleFrontendEntrypoint;
     mobile?: ProjectModuleFrontendEntrypoint;
   };
+  frontend?: ProjectModuleFrontendConfig;
   backendRouter?: string;
+  backend?: Record<string, unknown>;
 }
 
 export interface ProjectConfigRecord {
@@ -59,6 +111,7 @@ export interface ProjectsConfig {
     pwa: string;
   };
   publication: PublicationConfig;
+  clientShell?: ProjectClientShellConfig;
   projects: Record<string, ProjectConfigRecord>;
 }
 
