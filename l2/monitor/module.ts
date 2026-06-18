@@ -37,6 +37,7 @@ export const moduleFrontendDefinition: AuraModuleFrontendDefinition = {
     { id: 'dynamodb', label: 'DynamoDB', href: '/monitor/dynamodb', description: 'Tables and storage status' },
     { id: 'abend', label: 'Abends', href: '/monitor/abend', description: 'Failed BFF executions with error details' },
     { id: 'trace', label: 'Trace', href: '/monitor/trace', description: 'Correlate requests by requestId or traceId' },
+    { id: 'releases', label: 'Releases', href: '/monitor/releases', description: 'Deploy/rollback releases and view pm2 logs (admin)' },
   ],
   headerRenderer: {
     entrypoint: '/_102034_/l2/monitor/web/desktop/page11/header.js',
@@ -103,6 +104,12 @@ export const moduleFrontendDefinition: AuraModuleFrontendDefinition = {
       entrypoint: '/_102034_/l2/monitor/web/routes/trace.js',
       tag: 'monitor-web-desktop-home-page',
       title: 'Trace',
+    },
+    {
+      path: '/monitor/releases',
+      entrypoint: '/_102034_/l2/monitor/web/routes/releases.js',
+      tag: 'monitor-web-desktop-releases-page',
+      title: 'Releases',
     },
   ],
 };

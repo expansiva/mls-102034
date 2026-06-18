@@ -246,8 +246,10 @@ export async function handleHttpRequest(
   }
 }
 
-const isMainModule = process.argv[1]?.endsWith('/startServer.js');
-
+const isMainModule = process.argv[1]?.endsWith('startServer.js') ||
+                     process.argv[1]?.endsWith('ProcessContainerFork.js') || // pm2 cluster fork
+                     process.argv[1]?.endsWith('ProcessContainer.js'); // pm2 cluster master
+console.log(`Starting server with isMainModule=${isMainModule}, argv[1]=${process.argv[1]}`);                      
 if (isMainModule) {
   const env = readAppEnv();
   const server = buildHttpServer();

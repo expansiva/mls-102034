@@ -15,6 +15,11 @@ import {
 import { monitorAbendLoadHandler } from '/_102034_/l1/monitor/layer_2_controllers/abendHandlers.js';
 import { monitorProcessLoadHandler } from '/_102034_/l1/monitor/layer_2_controllers/processHealthHandlers.js';
 import { monitorRequestTraceLoadHandler } from '/_102034_/l1/monitor/layer_2_controllers/traceHandlers.js';
+import {
+  monitorLogsTailHandler,
+  monitorReleasesActivateHandler,
+  monitorReleasesListHandler,
+} from '/_102034_/l1/monitor/layer_2_controllers/releaseHandlers.js';
 
 export function createMonitorRouter(): Map<string, BffHandler> {
   return new Map<string, BffHandler>([
@@ -32,5 +37,9 @@ export function createMonitorRouter(): Map<string, BffHandler> {
     ['monitor.process.load', monitorProcessLoadHandler],
     ['monitor.requestTrace.load', monitorRequestTraceLoadHandler],
     ['monitor.telemetry.flush', async () => ok(null)],
+    // Release management + logs (ADMIN ONLY once auth exists).
+    ['monitor.releases.list', monitorReleasesListHandler],
+    ['monitor.releases.activate', monitorReleasesActivateHandler],
+    ['monitor.logs.tail', monitorLogsTailHandler],
   ]);
 }
