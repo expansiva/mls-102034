@@ -1,7 +1,9 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/persistence/registry.ts" enhancement="_blank" />
+import { readdirSync } from 'node:fs';
 import { AppError } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import {
   readProjectsConfig,
+  resolveProjectDistPath,
   resolveProjectModuleImportUrl,
   type ProjectPersistenceModuleConfig,
 } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
@@ -24,7 +26,8 @@ import { sha256Hex } from '/_102029_/l2/webCrypto.js';
 interface PersistenceModuleRegistration {
   projectId: string;
   moduleId: string;
-  persistenceEntrypoint: string;
+  persistenceEntrypoint?: string;
+  tableDefsDir?: string;
 }
 
 const registryCache = new Map<AppEnv['appEnv'], Promise<ResolvedTableDefinition[]>>();
@@ -36,13 +39,50 @@ function getPersistenceModuleRegistrations(): PersistenceModuleRegistration[] {
       projectId,
       moduleId: moduleConfig.moduleId,
       persistenceEntrypoint: moduleConfig.persistenceEntrypoint,
+      tableDefsDir: moduleConfig.tableDefsDir,
     })),
   );
+}
+
+function isTableDefinition(value: unknown): value is TableDefinition {
+  return !!value
+    && typeof value === 'object'
+    && typeof (value as TableDefinition).moduleId === 'string'
+    && typeof (value as TableDefinition).tableName === 'string'
+    && Array.isArray((value as TableDefinition).columns);
+}
+
+// Hexagonal model: discover every TableDefinition-shaped export across the module's table-def adapters.
+async function discoverTableDefinitions(tableDefsDir: string): Promise<TableDefinition[]> {
+  const dir = resolveProjectDistPath(tableDefsDir);
+  const defs: TableDefinition[] = [];
+  const files = readdirSync(dir).filter((file) => file.endsWith('.js') && !file.endsWith('.defs.js'));
+  for (const file of files) {
+    const moduleUrl = resolveProjectModuleImportUrl(`${tableDefsDir.replace(/\/$/u, '')}/${file}`);
+    const mod = await import(moduleUrl);
+    for (const value of Object.values(mod)) {
+      if (isTableDefinition(value)) {
+        defs.push(value);
+      }
+    }
+  }
+  return defs;
 }
 
 async function importTableDefinitions(
   registration: PersistenceModuleRegistration,
 ): Promise<TableDefinition[]> {
+  if (registration.tableDefsDir) {
+    return discoverTableDefinitions(registration.tableDefsDir);
+  }
+  if (!registration.persistenceEntrypoint) {
+    throw new AppError(
+      'PERSISTENCE_MANIFEST_INVALID',
+      'Persistence module must declare persistenceEntrypoint or tableDefsDir',
+      500,
+      registration,
+    );
+  }
   const moduleUrl = resolveProjectModuleImportUrl(registration.persistenceEntrypoint);
   const mod = await import(moduleUrl);
   const directExport = mod.tableDefinitions;

@@ -1,31 +1,59 @@
 /// <mls fileReference="_102034_/l1/server/layer_2_controllers/moduleRegistry.ts" enhancement="_blank" />
-import { AppError, type BffHandler, type ModuleBffRegistration, type RoutineResolution } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
-import { readProjectsConfig, resolveProjectModuleImportUrl } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
+import { readdirSync } from 'node:fs';
+import { AppError, type BffHandler, type ControllerRoute, type ModuleBffRegistration, type RoutineResolution } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
+import { readProjectsConfig, resolveProjectDistPath, resolveProjectModuleImportUrl } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 
 const routerCache = new Map<string, Promise<Map<string, BffHandler>>>();
+
+// Legacy model: a single generated router file exporting create*Router(): Map<routeKey, BffHandler>.
+async function loadRouterFromEntrypoint(backendRouter: string): Promise<Map<string, BffHandler>> {
+  const moduleUrl = resolveProjectModuleImportUrl(backendRouter);
+  const mod = await import(moduleUrl);
+  const exportedCreateRouter = Object.entries(mod).find(([key, value]) =>
+    key.startsWith('create') && key.endsWith('Router') && typeof value === 'function');
+  if (!exportedCreateRouter) {
+    throw new Error(`No router factory export found for ${backendRouter}`);
+  }
+  const [, createRouter] = exportedCreateRouter;
+  return (createRouter as () => Map<string, BffHandler>)();
+}
+
+// Hexagonal model: discover routes by enumerating the module's controllers folder and reading each
+// controller's exported `routes: ControllerRoute[]`. No generated router file.
+async function loadRouterFromControllers(controllersDir: string): Promise<Map<string, BffHandler>> {
+  const dir = resolveProjectDistPath(controllersDir);
+  const router = new Map<string, BffHandler>();
+  const files = readdirSync(dir).filter((file) => file.endsWith('.js') && !file.endsWith('.defs.js'));
+  for (const file of files) {
+    const moduleUrl = resolveProjectModuleImportUrl(`${controllersDir.replace(/\/$/u, '')}/${file}`);
+    const mod = await import(moduleUrl);
+    const routes = (mod as { routes?: ControllerRoute[] }).routes;
+    if (!Array.isArray(routes)) {
+      continue;
+    }
+    for (const route of routes) {
+      if (route && typeof route.key === 'string' && typeof route.handler === 'function') {
+        router.set(route.key, route.handler);
+      }
+    }
+  }
+  return router;
+}
 
 function getConfiguredModuleRegistrations(): ModuleBffRegistration[] {
   const config = readProjectsConfig();
   const configuredProjects = Object.entries(config.projects) as Array<[string, import('/_102034_/l1/server/layer_1_external/config/projectConfig.js').ProjectConfigRecord]>;
   return configuredProjects
     .flatMap(([projectId, project]) => (project.modules ?? [])
-      .filter((moduleConfig) => typeof moduleConfig.backendRouter === 'string')
+      .filter((moduleConfig) => typeof moduleConfig.backendControllers === 'string' || typeof moduleConfig.backendRouter === 'string')
       .map((moduleConfig) => ({
         projectId,
         moduleId: moduleConfig.moduleId,
         frontendBasePath: moduleConfig.basePath,
         frontendEntrypoint: '',
-        loadRouter: async () => {
-          const moduleUrl = resolveProjectModuleImportUrl(moduleConfig.backendRouter as string);
-          const mod = await import(moduleUrl);
-          const exportedCreateRouter = Object.entries(mod).find(([key, value]) =>
-            key.startsWith('create') && key.endsWith('Router') && typeof value === 'function');
-          if (!exportedCreateRouter) {
-            throw new Error(`No router factory export found for ${moduleConfig.backendRouter}`);
-          }
-          const [, createRouter] = exportedCreateRouter;
-          return (createRouter as () => Map<string, BffHandler>)();
-        },
+        loadRouter: async () => (typeof moduleConfig.backendControllers === 'string'
+          ? loadRouterFromControllers(moduleConfig.backendControllers)
+          : loadRouterFromEntrypoint(moduleConfig.backendRouter as string)),
       })));
 }
 

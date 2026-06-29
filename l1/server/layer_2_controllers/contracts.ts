@@ -152,6 +152,13 @@ export interface IRequestEnvelope {
 
 export type BffHandler = (input: IRequestEnvelope) => Promise<BffResponse>;
 
+// Self-describing route exported by a hexagonal http controller, so the runtime can discover
+// routes by enumerating the module's controllers folder (no generated router file).
+export interface ControllerRoute {
+  key: string;
+  handler: BffHandler;
+}
+
 export interface ModuleBffRegistration {
   projectId: string;
   moduleId: string;

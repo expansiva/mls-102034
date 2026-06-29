@@ -28,7 +28,11 @@ export interface ProjectModuleFrontendConfig {
 
 export interface ProjectPersistenceModuleConfig {
   moduleId: string;
-  persistenceEntrypoint: string;
+  // Legacy model: a single entrypoint exporting tableDefinitions/getTableDefinitions.
+  persistenceEntrypoint?: string;
+  // Hexagonal model: a folder of table-definition adapters; the runtime discovers every
+  // TableDefinition-shaped export inside it (no generated persistence index file).
+  tableDefsDir?: string;
 }
 
 export interface ProjectRegionRendererConfig {
@@ -80,7 +84,11 @@ export interface ProjectModuleConfig {
     mobile?: ProjectModuleFrontendEntrypoint;
   };
   frontend?: ProjectModuleFrontendConfig;
+  // Legacy model: a single generated router file exporting create*Router(): Map<routeKey, BffHandler>.
   backendRouter?: string;
+  // Hexagonal model: a folder of http controllers; the runtime discovers routes from each
+  // controller's exported `routes: ControllerRoute[]` (no generated router file).
+  backendControllers?: string;
   backend?: Record<string, unknown>;
 }
 
