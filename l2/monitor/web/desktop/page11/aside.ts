@@ -1,8 +1,8 @@
 /// <mls fileReference="_102034_/l2/monitor/web/desktop/page11/aside.ts" enhancement="_blank" />
 import { LitElement, html } from 'lit';
-import type { AuraBootConfig, AuraNavigationItem } from '/_102029_/l2/contracts/bootstrap.js';
+import type { MasterFrontendBootConfig, MasterFrontendNavigationItem } from '/_102029_/l2/contracts/bootstrap.js';
 import { beginExpectedNavigationLoad, runBlockingUiAction } from '/_102029_/l2/interactionRuntime.js';
-import { closeAuraAside } from '/_102029_/l2/shellEvents.js';
+import { closeAuraAside } from '../../../../../../mls-102033/l2/shellEvents.js';
 
 function traceLazy(event: string, details?: Record<string, unknown>) {
   if (!window.isTraceLazy) {
@@ -17,7 +17,7 @@ export class MonitorWebDesktopAside extends LitElement {
     currentPath: { state: true },
   };
 
-  declare bootConfig?: AuraBootConfig;
+  declare bootConfig?: MasterFrontendBootConfig;
   currentPath = '/monitor';
 
   createRenderRoot() {
@@ -40,7 +40,7 @@ export class MonitorWebDesktopAside extends LitElement {
     this.requestUpdate();
   };
 
-  private isActive(item: AuraNavigationItem) {
+  private isActive(item: MasterFrontendNavigationItem) {
     if (item.href === this.bootConfig?.basePath) {
       return (
         this.currentPath === item.href ||

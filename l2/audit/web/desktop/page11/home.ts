@@ -1,6 +1,6 @@
 /// <mls fileReference="_102034_/l2/audit/web/desktop/page11/home.ts" enhancement="_blank" />
 import { LitElement, html } from 'lit';
-import type { AuraInteractionMode, AuraNormalizedError } from '/_102029_/l2/contracts/bootstrap.js';
+import type { MasterFrontendInteractionMode, MasterFrontendNormalizedError } from '/_102029_/l2/contracts/bootstrap.js';
 import {
   beginExpectedNavigationLoad,
   bindExpectedNavigationLoad,
@@ -127,7 +127,7 @@ export class AuditWebDesktopHomePage extends LitElement {
   }
 
   private async loadCurrentRoute(options: {
-    mode?: AuraInteractionMode;
+    mode?: MasterFrontendInteractionMode;
     signal?: AbortSignal;
   } = {}) {
     traceLazy('loadCurrentRoute.start', {
@@ -151,7 +151,7 @@ export class AuditWebDesktopHomePage extends LitElement {
           throw (response.error ?? {
             code: 'UNEXPECTED_ERROR',
             message: 'Could not load audit overview.',
-          }) satisfies AuraNormalizedError;
+          }) satisfies MasterFrontendNormalizedError;
         }
         this.homeData = response.data;
         this.auditLogData = undefined;
@@ -175,7 +175,7 @@ export class AuditWebDesktopHomePage extends LitElement {
           throw (response.error ?? {
             code: 'UNEXPECTED_ERROR',
             message: 'Could not load audit log.',
-          }) satisfies AuraNormalizedError;
+          }) satisfies MasterFrontendNormalizedError;
         }
         this.auditLogData = response.data;
         this.homeData = undefined;
@@ -200,7 +200,7 @@ export class AuditWebDesktopHomePage extends LitElement {
           throw (response.error ?? {
             code: 'UNEXPECTED_ERROR',
             message: 'Could not load status history.',
-          }) satisfies AuraNormalizedError;
+          }) satisfies MasterFrontendNormalizedError;
         }
         this.statusHistoryData = response.data;
         this.homeData = undefined;
@@ -304,7 +304,7 @@ export class AuditWebDesktopHomePage extends LitElement {
       throw (response.error ?? {
         code: 'UNEXPECTED_ERROR',
         message: 'Could not load audit details.',
-      }) satisfies AuraNormalizedError;
+      }) satisfies MasterFrontendNormalizedError;
     }
     this.auditLogDetails = response.data ?? undefined;
     this.status = `Updated ${new Date().toLocaleTimeString('pt-BR')}`;

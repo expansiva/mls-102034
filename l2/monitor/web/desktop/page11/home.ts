@@ -1,7 +1,7 @@
 /// <mls fileReference="_102034_/l2/monitor/web/desktop/page11/home.ts" enhancement="_blank" />
 import { loadMonitorArchitecture } from '/_102034_/l2/monitor/web/shared/architecture.js';
 import { LitElement, html } from 'lit';
-import type { AuraInteractionMode, AuraNormalizedError } from '/_102029_/l2/contracts/bootstrap.js';
+import type { MasterFrontendInteractionMode, MasterFrontendNormalizedError } from '/_102029_/l2/contracts/bootstrap.js';
 import {
   beginExpectedNavigationLoad,
   bindExpectedNavigationLoad,
@@ -388,7 +388,7 @@ export class MonitorWebDesktopHomePage extends LitElement {
 
   private async navigate(route: MonitorRoute, options: {
     replace?: boolean;
-    mode?: AuraInteractionMode;
+    mode?: MasterFrontendInteractionMode;
   } = {}) {
     const href = buildMonitorHref(route);
     const currentHref = `${window.location.pathname}${window.location.search}`;
@@ -471,21 +471,21 @@ export class MonitorWebDesktopHomePage extends LitElement {
     this.status = `Live series updated ${new Date(response.data.generatedAt).toLocaleTimeString('pt-BR')}`;
   }
 
-  private toBlockingError(message: string, error?: AuraNormalizedError | null) {
+  private toBlockingError(message: string, error?: MasterFrontendNormalizedError | null) {
     return (error ?? {
       code: 'UNEXPECTED_ERROR',
       message,
-    }) satisfies AuraNormalizedError;
+    }) satisfies MasterFrontendNormalizedError;
   }
 
-  private routeErrorMessage(message: string, error?: AuraNormalizedError | null) {
+  private routeErrorMessage(message: string, error?: MasterFrontendNormalizedError | null) {
     return error?.details
       ? `${error.message ?? message} · ${JSON.stringify(error.details)}`
       : (error?.message ?? message);
   }
 
   private async loadActiveRoute(forceRefresh: boolean, options: {
-    mode?: AuraInteractionMode;
+    mode?: MasterFrontendInteractionMode;
     signal?: AbortSignal;
   } = {}) {
     traceLazy('loadActiveRoute.start', {
