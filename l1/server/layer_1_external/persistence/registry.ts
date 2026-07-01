@@ -288,6 +288,9 @@ export async function buildSchemaSnapshot(
 export async function loadViewDefinitions(): Promise<ViewDefinition[]> {
   const registrations = getPersistenceModuleRegistrations();
   const results = await Promise.all(registrations.map(async (registration) => {
+    if (!registration.persistenceEntrypoint) {
+      return [] as ViewDefinition[];
+    }
     const moduleUrl = resolveProjectModuleImportUrl(registration.persistenceEntrypoint);
     const mod = await import(moduleUrl);
     const exported = mod.viewDefinitions;
