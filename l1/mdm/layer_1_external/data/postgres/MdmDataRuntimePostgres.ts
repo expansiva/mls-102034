@@ -15,6 +15,7 @@ import type {
   MdmAttachmentRecord,
   MdmCommentRecord,
   MdmDocumentRecord,
+  MdmDocumentInput,
   MdmErrorLogRecord,
   MdmEntityIndexRecord,
   MdmMonitoringWriteRecord,
@@ -170,11 +171,13 @@ class DocumentRuntimePostgres implements IDocumentRuntime {
     );
   }
 
-  public async put(input: { record: MdmDocumentRecord; expectedVersion?: number | null }): Promise<void> {
+  public async put(input: { record: MdmDocumentInput; expectedVersion?: number | null }): Promise<void> {
+    // Mechanically sync details.mdmId from the record id (single source of truth) so callers may omit it.
+    const details: MdmDocumentRecord['details'] = { ...input.record.details, mdmId: input.record.mdmId } as MdmDocumentRecord['details'];
     if (input.expectedVersion !== undefined && input.expectedVersion !== null) {
       const result = await this.executor.query(
         `UPDATE "${this.tableName}" SET "version" = $2, "details" = $3::jsonb WHERE "mdmId" = $1 AND "version" = $4`,
-        [input.record.mdmId, input.record.version, input.record.details, input.expectedVersion],
+        [input.record.mdmId, input.record.version, details, input.expectedVersion],
       );
       if (result.rowCount === 0) {
         throw new AppError('CONCURRENCY_CONFLICT', 'Version mismatch', 409);
@@ -186,7 +189,7 @@ class DocumentRuntimePostgres implements IDocumentRuntime {
       `INSERT INTO "${this.tableName}" ("mdmId", "version", "details")
        VALUES ($1, $2, $3::jsonb)
        ON CONFLICT ("mdmId") DO UPDATE SET "version" = EXCLUDED."version", "details" = EXCLUDED."details"`,
-      [input.record.mdmId, input.record.version, input.record.details],
+      [input.record.mdmId, input.record.version, details],
     );
   }
 

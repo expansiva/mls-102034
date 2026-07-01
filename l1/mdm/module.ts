@@ -313,6 +313,20 @@ export interface MdmDocumentRecord {
   details: MdmDetailRecord;
 }
 
+// Distribute Omit over a union so each member drops the key (a plain Omit<Union,K> would collapse it).
+type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
+
+// Details as ACCEPTED by mdmDocument.put(): `mdmId` is optional because the runtime fills it
+// mechanically from record.mdmId (single source of truth). Callers building a fresh record no longer
+// need to repeat mdmId inside details; on update it is preserved (and re-synced) either way.
+export type MdmDetailInput = DistributiveOmit<MdmDetailRecord, 'mdmId'> & { mdmId?: string };
+
+export interface MdmDocumentInput {
+  mdmId: string;
+  version: number;
+  details: MdmDetailInput;
+}
+
 export interface MdmEntityIndexRecord {
   mdmId: string;
   subtype: MdmSubtype;

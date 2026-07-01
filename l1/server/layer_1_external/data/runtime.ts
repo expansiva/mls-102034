@@ -4,6 +4,7 @@ import type {
   MdmAttachmentRecord,
   MdmCommentRecord,
   MdmDocumentRecord,
+  MdmDocumentInput,
   MdmErrorLogRecord,
   MdmEntityIndexRecord,
   MdmMonitoringWriteRecord,
@@ -33,7 +34,8 @@ export interface IDocumentRuntime {
   get(input: { mdmId: string }): Promise<MdmDocumentRecord | null>;
   getMany(input: { mdmIds: string[] }): Promise<MdmDocumentRecord[]>;
   put(input: {
-    record: MdmDocumentRecord;
+    // Accepts MdmDocumentInput: details.mdmId is optional and filled mechanically from record.mdmId.
+    record: MdmDocumentInput;
     expectedVersion?: number | null;
   }): Promise<void>;
   delete(input: { mdmId: string }): Promise<void>;

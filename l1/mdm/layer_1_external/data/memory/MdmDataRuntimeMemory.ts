@@ -13,6 +13,7 @@ import type {
   MdmAttachmentRecord,
   MdmCommentRecord,
   MdmDocumentRecord,
+  MdmDocumentInput,
   MdmErrorLogRecord,
   MdmEntityIndexRecord,
   MdmMonitoringWriteRecord,
@@ -119,10 +120,12 @@ class DocumentRuntimeMemory implements IDocumentRuntime {
   }
 
   public async put(input: {
-    record: MdmDocumentRecord;
+    record: MdmDocumentInput;
     expectedVersion?: number | null;
   }): Promise<void> {
-    const currentRecord = this.records.get(input.record.mdmId);
+    // Mechanically sync details.mdmId from the record id (single source of truth) so callers may omit it.
+    const record: MdmDocumentRecord = { ...input.record, details: { ...input.record.details, mdmId: input.record.mdmId } as MdmDocumentRecord['details'] };
+    const currentRecord = this.records.get(record.mdmId);
     if (input.expectedVersion !== undefined && input.expectedVersion !== null) {
       if (!currentRecord || currentRecord.version !== input.expectedVersion) {
         throw new AppError('CONCURRENCY_CONFLICT', 'Version mismatch', 409, {
@@ -134,11 +137,11 @@ class DocumentRuntimeMemory implements IDocumentRuntime {
 
     if (currentRecord && input.expectedVersion === undefined) {
       throw new AppError('DOCUMENT_EXISTS', 'Document already exists', 409, {
-        mdmId: input.record.mdmId,
+        mdmId: record.mdmId,
       });
     }
 
-    this.records.set(input.record.mdmId, { ...input.record });
+    this.records.set(record.mdmId, record);
   }
 
   public async delete(input: { mdmId: string }): Promise<void> {
