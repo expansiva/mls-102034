@@ -80,6 +80,17 @@ export interface TableDefinition {
   dynamo?: DynamoTableConfig;
   retentionDays?: number;
   version: number;
+  // Mechanical mock rows applied when the table is (re)created empty: on every Postgres
+  // schema rebuild (migrate) and on every memory-runtime store init (dev preview).
+  // Keyed by column name; JSONB columns take plain objects.
+  seedRows?: Array<Record<string, unknown>>;
+}
+
+/** Seed rows shipped in a separate file inside the module's tableDefsDir (so generated
+ *  table definitions stay untouched). Discovered by shape, like TableDefinition. */
+export interface TableSeedRows {
+  seedFor: string; // repositoryName or tableName of the target TableDefinition
+  rows: Array<Record<string, unknown>>;
 }
 
 export interface ResolvedTableDefinition extends TableDefinition {

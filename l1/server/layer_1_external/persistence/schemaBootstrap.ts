@@ -75,8 +75,52 @@ async function rebuildPostgresSchema(
   const hasTimescale = definitions.some((d) => d.timescale?.hypertable);
   const timescaleAvailable = hasTimescale ? await ensureTimescaleAvailable(pool) : false;
 
-  await pool.query('DROP SCHEMA IF EXISTS public CASCADE');
-  await pool.query('CREATE SCHEMA public');
+  // Surgical cleanup instead of DROP SCHEMA public CASCADE: dropping the schema would
+  // CASCADE-drop the timescaledb extension (its functions live in public) and the app
+  // role cannot re-create it (superuser-only, see vmInitialSetup.sh). Drop only the
+  // user objects; the extension and its catalogs survive the rebuild.
+
+  // Continuous aggregates first: they show up in pg_views but Timescale requires
+  // DROP MATERIALIZED VIEW for them.
+  const droppedCaggs = new Set<string>();
+  if (timescaleAvailable) {
+    try {
+      const caggs = await pool.query<{ view_name: string }>(
+        "SELECT view_name FROM timescaledb_information.continuous_aggregates WHERE view_schema = 'public'",
+      );
+      for (const row of caggs.rows) {
+        await pool.query(`DROP MATERIALIZED VIEW IF EXISTS ${quoteIdentifier(row.view_name)} CASCADE`);
+        droppedCaggs.add(row.view_name);
+      }
+    } catch (error) {
+      console.warn('[bootstrapSchema] continuous aggregate cleanup skipped:', error instanceof Error ? error.message : error);
+    }
+  }
+
+  const existingViews = await pool.query<{ viewname: string }>(
+    "SELECT viewname FROM pg_views WHERE schemaname = 'public'",
+  );
+  for (const row of existingViews.rows) {
+    if (droppedCaggs.has(row.viewname)) continue;
+    try {
+      await pool.query(`DROP VIEW IF EXISTS ${quoteIdentifier(row.viewname)} CASCADE`);
+    } catch (error) {
+      // 0A000: a continuous aggregate not listed by the info view — retry the right way.
+      await pool.query(`DROP MATERIALIZED VIEW IF EXISTS ${quoteIdentifier(row.viewname)} CASCADE`);
+    }
+  }
+  const existingMatViews = await pool.query<{ matviewname: string }>(
+    "SELECT matviewname FROM pg_matviews WHERE schemaname = 'public'",
+  );
+  for (const row of existingMatViews.rows) {
+    await pool.query(`DROP MATERIALIZED VIEW IF EXISTS ${quoteIdentifier(row.matviewname)} CASCADE`);
+  }
+  const existingTables = await pool.query<{ tablename: string }>(
+    "SELECT tablename FROM pg_tables WHERE schemaname = 'public'",
+  );
+  for (const row of existingTables.rows) {
+    await pool.query(`DROP TABLE IF EXISTS ${quoteIdentifier(row.tablename)} CASCADE`);
+  }
 
   const orderedDefinitions = [...definitions]
     .filter((definition) => usesPostgres(definition))
@@ -104,10 +148,41 @@ async function rebuildPostgresSchema(
     for (const definition of orderedDefinitions.filter((d) => d.timescale?.hypertable)) {
       const { timeColumn, chunkTimeInterval } = definition.timescale!.hypertable;
       const intervalPart = chunkTimeInterval ? `, chunk_time_interval => INTERVAL '${chunkTimeInterval}'` : '';
-      await pool.query(
-        `SELECT create_hypertable($1, $2, if_not_exists => TRUE${intervalPart})`,
-        [definition.tableName, timeColumn],
-      );
+      // Explicit casts: extended-protocol params arrive as "unknown" and Postgres does
+      // not resolve create_hypertable(regclass, name, ...) with named notation otherwise.
+      // Non-fatal: the table already exists as a regular table at this point; a Timescale
+      // failure must not abort the whole migration/publish.
+      try {
+        await pool.query(
+          `SELECT create_hypertable($1::regclass, $2::name, if_not_exists => TRUE${intervalPart})`,
+          [definition.tableName, timeColumn],
+        );
+      } catch (error) {
+        console.warn(`[bootstrapSchema] create_hypertable failed for "${definition.tableName}" — kept as regular table:`, error instanceof Error ? error.message : error);
+      }
+    }
+  }
+
+  // Mechanical seed: the schema was just rebuilt (DROP SCHEMA above), so every table is
+  // empty — apply the definitions' seedRows. Non-fatal: bad seed data must not block a release.
+  for (const definition of orderedDefinitions.filter((d) => d.seedRows?.length)) {
+    try {
+      for (const row of definition.seedRows!) {
+        const columns = definition.columns.map((c) => c.name).filter((name) => row[name] !== undefined);
+        if (columns.length === 0) continue;
+        const placeholders = columns.map((_, index) => `$${index + 1}`);
+        const values = columns.map((name) => {
+          const value = row[name];
+          return value !== null && typeof value === 'object' ? JSON.stringify(value) : value;
+        });
+        await pool.query(
+          `INSERT INTO ${quoteIdentifier(definition.tableName)} (${columns.map(quoteIdentifier).join(', ')}) VALUES (${placeholders.join(', ')})`,
+          values,
+        );
+      }
+      console.info(`[bootstrapSchema] seeded ${definition.seedRows!.length} row(s) into "${definition.tableName}"`);
+    } catch (error) {
+      console.warn(`[bootstrapSchema] seed failed for "${definition.tableName}":`, error instanceof Error ? error.message : error);
     }
   }
 
@@ -115,15 +190,22 @@ async function rebuildPostgresSchema(
   return timescaleAvailable;
 }
 
+const TIMESCALE_STATEMENT_PATTERN = /timescaledb|time_bucket|create_hypertable|continuous aggregate|add_retention_policy|add_compression_policy/iu;
+
 async function applyViewDefinitions(pool: Pool, input: { timescaleAvailable: boolean }): Promise<void> {
   const viewDefs = await loadViewDefinitions();
   for (const view of viewDefs) {
     for (const statement of view.statements) {
-      if (!input.timescaleAvailable && statement.includes('timescaledb')) {
+      if (!input.timescaleAvailable && TIMESCALE_STATEMENT_PATTERN.test(statement)) {
         console.warn(`[bootstrapSchema] Skipped TimescaleDB view statement for ${view.viewName}`);
         continue;
       }
-      await pool.query(statement);
+      // Non-fatal: a broken view must not block the migration/publish.
+      try {
+        await pool.query(statement);
+      } catch (error) {
+        console.warn(`[bootstrapSchema] view statement failed for ${view.viewName}:`, error instanceof Error ? error.message : error);
+      }
     }
   }
 }

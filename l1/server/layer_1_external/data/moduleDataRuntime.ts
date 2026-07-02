@@ -415,7 +415,10 @@ class MemoryModuleDataRuntime implements IModuleDataRuntime {
     }
 
     if (!this.store.has(definition.repositoryName)) {
-      this.store.set(definition.repositoryName, []);
+      // Mechanical seed: memory stores are rebuilt on every dev preview, so the mock
+      // rows from the definition (see TableSeedRows) are applied on first access.
+      const seeded = (definition.seedRows ?? []).map((row) => ({ ...row })) as object[];
+      this.store.set(definition.repositoryName, seeded);
     }
 
     return new MemoryTableRepository<TRecord>(

@@ -11,6 +11,7 @@ import type {
   ResolvedTableDefinition,
   SchemaSnapshot,
   TableDefinition,
+  TableSeedRows,
   ViewDefinition,
 } from '/_102034_/l1/server/layer_1_external/persistence/contracts.js';
 import {
@@ -52,10 +53,20 @@ function isTableDefinition(value: unknown): value is TableDefinition {
     && Array.isArray((value as TableDefinition).columns);
 }
 
-// Hexagonal model: discover every TableDefinition-shaped export across the module's table-def adapters.
+function isTableSeedRows(value: unknown): value is TableSeedRows {
+  return !!value
+    && typeof value === 'object'
+    && typeof (value as TableSeedRows).seedFor === 'string'
+    && Array.isArray((value as TableSeedRows).rows);
+}
+
+// Hexagonal model: discover every TableDefinition-shaped export across the module's table-def
+// adapters. TableSeedRows-shaped exports (separate seeds file) are merged into the matching
+// definition's seedRows, keeping the generated table definitions untouched.
 async function discoverTableDefinitions(tableDefsDir: string): Promise<TableDefinition[]> {
   const dir = resolveProjectDistPath(tableDefsDir);
   const defs: TableDefinition[] = [];
+  const seeds: TableSeedRows[] = [];
   const files = readdirSync(dir).filter((file) => file.endsWith('.js') && !file.endsWith('.defs.js'));
   for (const file of files) {
     const moduleUrl = resolveProjectModuleImportUrl(`${tableDefsDir.replace(/\/$/u, '')}/${file}`);
@@ -63,7 +74,17 @@ async function discoverTableDefinitions(tableDefsDir: string): Promise<TableDefi
     for (const value of Object.values(mod)) {
       if (isTableDefinition(value)) {
         defs.push(value);
+      } else if (isTableSeedRows(value)) {
+        seeds.push(value);
       }
+    }
+  }
+  for (const seed of seeds) {
+    const def = defs.find((d) => d.repositoryName === seed.seedFor || d.tableName === seed.seedFor);
+    if (def) {
+      def.seedRows = [...(def.seedRows ?? []), ...seed.rows];
+    } else {
+      console.warn(`[persistence] seed target not found in ${tableDefsDir}: ${seed.seedFor}`);
     }
   }
   return defs;

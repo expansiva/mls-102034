@@ -1,0 +1,36 @@
+{
+  "modules": [
+    {
+      "moduleId": "mdm",
+      "basePath": "/mdm",
+      "shellMode": "spa",
+      "backendRouter": "./_102034_/l1/mdm/layer_2_controllers/router.js"
+    },
+    {
+      "moduleId": "monitor",
+      "basePath": "/monitor",
+      "shellMode": "spa",
+      "backendRouter": "./_102034_/l1/monitor/layer_2_controllers/router.js"
+    },
+    {
+      "moduleId": "audit",
+      "basePath": "/audit",
+      "shellMode": "spa",
+      "backendRouter": "./_102034_/l1/audit/layer_2_controllers/router.js"
+    }
+  ],
+  "persistenceModules": [
+    {
+      "moduleId": "platform",
+      "persistenceEntrypoint": "./_102034_/l1/server/persistence.js"
+    },
+    {
+      "moduleId": "mdm",
+      "persistenceEntrypoint": "./_102034_/l1/mdm/persistence.js"
+    },
+    {
+      "moduleId": "monitor",
+      "persistenceEntrypoint": "./_102034_/l1/monitor/persistence.js"
+    }
+  ]
+}

@@ -2,126 +2,32 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import type {
+  ProjectConfigRecord,
+  ProjectType,
+  ProjectsConfig,
+  PublicationConfig,
+} from '/_102029_/l2/runtimeConfigTypes.js';
 
-export type ProjectType = 'master frontend' | 'master backend' | 'client' | 'lib';
-
-export interface ProjectModuleFrontendEntrypoint {
-  entrypoint: string;
-  componentTag: string;
-}
-
-export interface ProjectFrontendPageConfig {
-  pageId: string;
-  route: string;
-  source: string;
-  definition?: string;
-  componentTag: string;
-  title?: string;
-}
-
-export interface ProjectModuleFrontendConfig {
-  layer?: 'l2' | string;
-  moduleEntrypoint?: string;
-  moduleSource?: string;
-  pages?: ProjectFrontendPageConfig[];
-}
-
-export interface ProjectPersistenceModuleConfig {
-  moduleId: string;
-  // Legacy model: a single entrypoint exporting tableDefinitions/getTableDefinitions.
-  persistenceEntrypoint?: string;
-  // Hexagonal model: a folder of table-definition adapters; the runtime discovers every
-  // TableDefinition-shaped export inside it (no generated persistence index file).
-  tableDefsDir?: string;
-}
-
-export interface ProjectRegionRendererConfig {
-  entrypoint: string;
-  tag: string;
-  source?: string;
-}
-
-export interface ProjectDynamicRegionConfig {
-  renderer: ProjectRegionRendererConfig;
-  widthPx?: number;
-  source?: string;
-  switchWithoutRouteReload?: boolean;
-  props?: Record<string, unknown>;
-  brand?: Record<string, unknown>;
-  component?: string;
-  appsMenuSource?: string;
-  [key: string]: unknown;
-}
-
-export interface ProjectShellRegionProfiles {
-  activeProfile: string;
-  switchWithoutRouteReload?: boolean;
-  profiles: Record<string, ProjectDynamicRegionConfig>;
-}
-
-export interface ProjectClientShellConfig {
-  mode: 'spa' | 'pwa';
-  activeProfile?: string;
-  runtimeControls?: Record<string, string>;
-  regions: {
-    header?: ProjectShellRegionProfiles;
-    aside?: ProjectShellRegionProfiles;
-  };
-}
-
-export interface ProjectModuleConfig {
-  moduleId: string;
-  basePath: string;
-  shellMode: 'spa' | 'pwa';
-  navigation?: Array<{
-    id: string;
-    label: string;
-    href: string;
-    description?: string;
-  }>;
-  frontendEntrypoints?: {
-    desktop?: ProjectModuleFrontendEntrypoint;
-    mobile?: ProjectModuleFrontendEntrypoint;
-  };
-  frontend?: ProjectModuleFrontendConfig;
-  // Legacy model: a single generated router file exporting create*Router(): Map<routeKey, BffHandler>.
-  backendRouter?: string;
-  // Hexagonal model: a folder of http controllers; the runtime discovers routes from each
-  // controller's exported `routes: ControllerRoute[]` (no generated router file).
-  backendControllers?: string;
-  backend?: Record<string, unknown>;
-}
-
-export interface ProjectConfigRecord {
-  root: string;
-  type?: ProjectType;
-  role?: string;
-  modules?: ProjectModuleConfig[];
-  persistenceModules?: ProjectPersistenceModuleConfig[];
-}
-
-export interface PublicationTargetConfig {
-  assetBaseUrl?: string;
-  serveStaticFromServer?: boolean;
-  minify?: boolean;
-  sourcemap?: boolean;
-}
-
-export interface PublicationConfig {
-  defaultTarget: string;
-  targets: Record<string, PublicationTargetConfig>;
-}
-
-export interface ProjectsConfig {
-  defaultProjectId: string;
-  shellTemplates: {
-    spa: string;
-    pwa: string;
-  };
-  publication: PublicationConfig;
-  clientShell?: ProjectClientShellConfig;
-  projects: Record<string, ProjectConfigRecord>;
-}
+// Config types are shared, master-agnostic contracts hosted by 102029 (they are also
+// used by the publish composers). Re-exported here to keep this module's public API.
+export type {
+  ProjectClientShellConfig,
+  ProjectConfigRecord,
+  ProjectDynamicRegionConfig,
+  ProjectFrontendPageConfig,
+  ProjectModuleConfig,
+  ProjectModuleFrontendConfig,
+  ProjectModuleFrontendEntrypoint,
+  ProjectNavigationEntry,
+  ProjectPersistenceModuleConfig,
+  ProjectRegionRendererConfig,
+  ProjectShellRegionProfiles,
+  ProjectType,
+  ProjectsConfig,
+  PublicationConfig,
+  PublicationTargetConfig,
+} from '/_102029_/l2/runtimeConfigTypes.js';
 
 let cachedConfig: ProjectsConfig | null = null;
 
