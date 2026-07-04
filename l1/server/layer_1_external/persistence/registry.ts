@@ -31,6 +31,12 @@ interface PersistenceModuleRegistration {
   tableDefsDir?: string;
 }
 
+interface ImportedPersistenceDefinitions {
+  definitions: TableDefinition[];
+  seeds: TableSeedRows[];
+  seedSource: string;
+}
+
 const registryCache = new Map<AppEnv['appEnv'], Promise<ResolvedTableDefinition[]>>();
 
 function getPersistenceModuleRegistrations(): PersistenceModuleRegistration[] {
@@ -61,11 +67,11 @@ function isTableSeedRows(value: unknown): value is TableSeedRows {
 }
 
 // Hexagonal model: discover every TableDefinition-shaped export across the module's table-def
-// adapters. TableSeedRows-shaped exports (separate seeds file) are merged into the matching
-// definition's seedRows, keeping the generated table definitions untouched.
-async function discoverTableDefinitions(tableDefsDir: string): Promise<TableDefinition[]> {
+// adapters. TableSeedRows-shaped exports are collected globally and merged after every persistence
+// module is loaded, so a client module can seed 102034-owned MDM tables without owning them.
+async function discoverTableDefinitions(tableDefsDir: string): Promise<ImportedPersistenceDefinitions> {
   const dir = resolveProjectDistPath(tableDefsDir);
-  const defs: TableDefinition[] = [];
+  const definitions: TableDefinition[] = [];
   const seeds: TableSeedRows[] = [];
   const files = readdirSync(dir).filter((file) => file.endsWith('.js') && !file.endsWith('.defs.js'));
   for (const file of files) {
@@ -73,26 +79,18 @@ async function discoverTableDefinitions(tableDefsDir: string): Promise<TableDefi
     const mod = await import(moduleUrl);
     for (const value of Object.values(mod)) {
       if (isTableDefinition(value)) {
-        defs.push(value);
+        definitions.push(value);
       } else if (isTableSeedRows(value)) {
         seeds.push(value);
       }
     }
   }
-  for (const seed of seeds) {
-    const def = defs.find((d) => d.repositoryName === seed.seedFor || d.tableName === seed.seedFor);
-    if (def) {
-      def.seedRows = [...(def.seedRows ?? []), ...seed.rows];
-    } else {
-      console.warn(`[persistence] seed target not found in ${tableDefsDir}: ${seed.seedFor}`);
-    }
-  }
-  return defs;
+  return { definitions, seeds, seedSource: tableDefsDir };
 }
 
 async function importTableDefinitions(
   registration: PersistenceModuleRegistration,
-): Promise<TableDefinition[]> {
+): Promise<ImportedPersistenceDefinitions> {
   if (registration.tableDefsDir) {
     return discoverTableDefinitions(registration.tableDefsDir);
   }
@@ -106,15 +104,16 @@ async function importTableDefinitions(
   }
   const moduleUrl = resolveProjectModuleImportUrl(registration.persistenceEntrypoint);
   const mod = await import(moduleUrl);
+  const seeds = Object.values(mod).filter(isTableSeedRows);
   const directExport = mod.tableDefinitions;
   if (Array.isArray(directExport)) {
-    return directExport as TableDefinition[];
+    return { definitions: directExport as TableDefinition[], seeds, seedSource: registration.persistenceEntrypoint };
   }
 
   if (typeof mod.getTableDefinitions === 'function') {
     const loaded = await mod.getTableDefinitions();
     if (Array.isArray(loaded)) {
-      return loaded as TableDefinition[];
+      return { definitions: loaded as TableDefinition[], seeds, seedSource: registration.persistenceEntrypoint };
     }
   }
 
@@ -124,6 +123,20 @@ async function importTableDefinitions(
     500,
     registration,
   );
+}
+
+function applySeedRows(
+  definitions: ResolvedTableDefinition[],
+  seeds: Array<{ seed: TableSeedRows; source: string }>,
+) {
+  for (const { seed, source } of seeds) {
+    const def = definitions.find((d) => d.repositoryName === seed.seedFor || d.tableName === seed.seedFor);
+    if (def) {
+      def.seedRows = [...(def.seedRows ?? []), ...seed.rows];
+    } else {
+      console.warn(`[persistence] seed target not found in ${source}: ${seed.seedFor}`);
+    }
+  }
 }
 
 function validateDefinition(
@@ -236,9 +249,9 @@ export async function loadResolvedTableDefinitions(
 
   const pending = (async () => {
     const registrations = getPersistenceModuleRegistrations();
-    const definitions = await Promise.all(registrations.map(async (registration) => {
+    const imported = await Promise.all(registrations.map(async (registration) => {
       const loaded = await importTableDefinitions(registration);
-      return loaded.map((definition): ResolvedTableDefinition => {
+      const definitions = loaded.definitions.map((definition): ResolvedTableDefinition => {
         validateDefinition(definition, registration, env);
         return {
           ...definition,
@@ -248,13 +261,18 @@ export async function loadResolvedTableDefinitions(
           dynamoResolvedTableName: resolveDynamoTableName(definition, env),
         };
       });
+      return {
+        definitions,
+        seeds: loaded.seeds.map((seed) => ({ seed, source: loaded.seedSource })),
+      };
     }));
 
-    const flattened = definitions.flat().sort((left, right) =>
+    const flattened = imported.flatMap((item) => item.definitions).sort((left, right) =>
       `${left.projectId}:${left.moduleId}:${left.tableName}`.localeCompare(
         `${right.projectId}:${right.moduleId}:${right.tableName}`,
       ),
     );
+    applySeedRows(flattened, imported.flatMap((item) => item.seeds));
     validateResolvedDefinitions(flattened);
     return flattened;
   })();
