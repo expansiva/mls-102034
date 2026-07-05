@@ -5,7 +5,7 @@ import { createPostgresDataRuntime } from '/_102034_/l1/mdm/layer_1_external/dat
 import { MdmDocumentRemoteRuntimeDynamo } from '/_102034_/l1/mdm/layer_1_external/data/dynamodb/MdmDocumentRemoteRuntimeDynamo.js';
 import { MdmRelationshipRemoteRuntimeDynamo } from '/_102034_/l1/mdm/layer_1_external/data/dynamodb/MdmRelationshipRemoteRuntimeDynamo.js';
 import { buildEntityIndex, buildProspectIndex } from '/_102034_/l1/mdm/layer_3_usecases/mdmSupport.js';
-import { MdmDocumentEntity } from '/_102034_/l1/mdm/layer_4_entities/MdmDocumentEntity.js';
+import { MdmDocumentEntity } from '/_102034_/l1/mdm/layer_3_usecases/internal/MdmDocumentStore.js';
 import type {
   MdmDetailRecord,
   MdmDocumentRecord,

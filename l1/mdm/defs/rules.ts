@@ -122,7 +122,7 @@ export const MdmRules = {
     description: 'A prospect is promoted to a permanent entity via an explicit promotion call. The workflow checks for duplicates in MdmEntity and either promotes directly or flags for operator review.',
     scope: ['MdmProspect', 'MdmEntity', 'cap_promote_prospect'],
     acceptanceCriteria: [
-      'Promotion is triggered by an explicit mdm.promoteProspect(prospectMdmId) call.',
+      'Promotion is triggered by an explicit ctx.mdm.prospect.promoteToEntity({ mdmId: prospectMdmId }) call.',
       'If no MdmEntity match is found: the DynamoDB document is unchanged; the PostgreSQL row is moved from MdmProspect to MdmEntity; the same mdmId is used.',
       'If a match is found: prospect status is set to PendingMerge; an operator review task is created.',
       'After promotion, the calling module updates its extension table to point to the final mdmId.',

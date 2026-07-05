@@ -1,7 +1,7 @@
-/// <mls fileReference="_102034_/l1/mdm/layer_3_usecases/recordUsecases.ts" enhancement="_blank" />
+/// <mls fileReference="_102034_/l1/mdm/layer_3_usecases/internal/entityPersistence.ts" enhancement="_blank" />
 import { AppError, type RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
-import { MdmDocumentEntity } from '/_102034_/l1/mdm/layer_4_entities/MdmDocumentEntity.js';
-import { MdmRecordEntity } from '/_102034_/l1/mdm/layer_4_entities/MdmRecordEntity.js';
+import { MdmDocumentEntity } from '/_102034_/l1/mdm/layer_3_usecases/internal/MdmDocumentStore.js';
+import { MdmRecordEntity } from '/_102034_/l1/mdm/layer_3_usecases/internal/MdmRecordStore.js';
 import {
   applyPatchToDetail,
   buildEntityIndex,
@@ -377,7 +377,7 @@ export async function promoteProspect(
       entityType: 'MdmProspect',
       entityId: params.mdmId,
       module: 'mdm',
-      routine: 'mdm.prospect.promote',
+      routine: 'mdm.prospect.promoteToEntity',
       action: 'transitionStatus',
     }, async () => {
       await ctx.data.runInTransaction(async (runtime) => {
@@ -403,14 +403,14 @@ export async function promoteProspect(
           fromStatus: String(detail.status),
           toStatus: 'PendingMerge',
           module: 'mdm',
-          routine: 'mdm.prospect.promote',
+          routine: 'mdm.prospect.promoteToEntity',
         });
         await AuditLogService.record(ctx, runtime, {
           entityType: 'MdmProspect',
           entityId: params.mdmId,
           action: 'transitionStatus',
           module: 'mdm',
-          routine: 'mdm.prospect.promote',
+          routine: 'mdm.prospect.promoteToEntity',
           before: mdmProspectDef.getAuditSnapshot(detail, buildProspectIndex(detail)),
           after: mdmProspectDef.getAuditSnapshot(nextDetail, buildProspectIndex(nextDetail)),
         });
@@ -443,7 +443,7 @@ export async function promoteProspect(
     entityType: 'MdmProspect',
     entityId: params.mdmId,
     module: 'mdm',
-    routine: 'mdm.prospect.promote',
+    routine: 'mdm.prospect.promoteToEntity',
     action: 'transitionStatus',
   }, async () => {
     await ctx.data.runInTransaction(async (runtime) => {
@@ -478,14 +478,14 @@ export async function promoteProspect(
         fromStatus: String(detail.status),
         toStatus: normalizeEntityStatus(nextDetail),
         module: 'mdm',
-        routine: 'mdm.prospect.promote',
+        routine: 'mdm.prospect.promoteToEntity',
       });
       await AuditLogService.record(ctx, runtime, {
         entityType: 'MdmProspect',
         entityId: params.mdmId,
         action: 'transitionStatus',
         module: 'mdm',
-        routine: 'mdm.prospect.promote',
+        routine: 'mdm.prospect.promoteToEntity',
         before: mdmProspectDef.getAuditSnapshot(detail, buildProspectIndex(detail)),
         after: mdmEntityDef.getAuditSnapshot(nextDetail, buildEntityIndex(nextDetail)),
       });

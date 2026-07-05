@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createRequestContext } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
 import { createMemoryDataRuntime } from '/_102034_/l1/mdm/layer_1_external/data/memory/MdmDataRuntimeMemory.js';
-import { createEntity, mergeEntity } from '/_102034_/l1/mdm/layer_3_usecases/recordUsecases.js';
+import { createEntity, mergeEntity } from '/_102034_/l1/mdm/layer_3_usecases/internal/entityPersistence.js';
 import {
   findLatestStatusByEntity,
   findStatusHistoryByEntity,

@@ -1,6 +1,6 @@
-/// <mls fileReference="_102034_/l1/mdm/layer_3_usecases/relationshipUsecases.ts" enhancement="_blank" />
+/// <mls fileReference="_102034_/l1/mdm/layer_3_usecases/internal/relationshipPersistence.ts" enhancement="_blank" />
 import { AppError, type RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
-import { MdmRelationshipEntity } from '/_102034_/l1/mdm/layer_4_entities/MdmRelationshipEntity.js';
+import { MdmRelationshipEntity } from '/_102034_/l1/mdm/layer_3_usecases/internal/MdmRelationshipStore.js';
 import {
   buildRelationshipSearchText,
   refreshRelationshipRefs,
@@ -13,7 +13,7 @@ import {
 import {
   enqueueRelationshipWriteBehind,
   enqueueWriteBehind,
-} from '/_102034_/l1/mdm/layer_3_usecases/recordUsecases.js';
+} from '/_102034_/l1/mdm/layer_3_usecases/internal/entityPersistence.js';
 import type {
   CreateRelationshipParams,
   ListRelationshipsParams,

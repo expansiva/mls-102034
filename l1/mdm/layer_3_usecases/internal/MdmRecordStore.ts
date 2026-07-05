@@ -1,6 +1,6 @@
-/// <mls fileReference="_102034_/l1/mdm/layer_4_entities/MdmRecordEntity.ts" enhancement="_blank" />
+/// <mls fileReference="_102034_/l1/mdm/layer_3_usecases/internal/MdmRecordStore.ts" enhancement="_blank" />
 import { AppError, type RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
-import { MdmDocumentEntity } from '/_102034_/l1/mdm/layer_4_entities/MdmDocumentEntity.js';
+import { MdmDocumentEntity } from '/_102034_/l1/mdm/layer_3_usecases/internal/MdmDocumentStore.js';
 import type {
   MdmEntityIndexRecord,
   MdmProspectIndexRecord,

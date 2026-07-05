@@ -120,6 +120,7 @@ export interface BaseMdmDetailRecord {
   subtype: MdmSubtype;
   name: string;
   status: MdmStatus | MdmProspectStatus;
+  moduleTypes?: string[];
   docType?: DocType | null;
   docId?: string | null;
   countryCode: string;
@@ -286,6 +287,7 @@ export type CreateableMdmDetailInput = {
   subtype: MdmSubtype;
   name: string;
   status: MdmStatus | MdmProspectStatus;
+  moduleTypes?: string[];
   docType?: DocType | null;
   docId?: string | null;
   countryCode?: string;

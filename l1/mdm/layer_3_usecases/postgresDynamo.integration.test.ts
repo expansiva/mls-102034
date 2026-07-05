@@ -18,11 +18,11 @@ import {
   mergeEntity,
   promoteProspect,
   updateEntity,
-} from '/_102034_/l1/mdm/layer_3_usecases/recordUsecases.js';
+} from '/_102034_/l1/mdm/layer_3_usecases/internal/entityPersistence.js';
 import {
   createRelationship,
   updateRelationship,
-} from '/_102034_/l1/mdm/layer_3_usecases/relationshipUsecases.js';
+} from '/_102034_/l1/mdm/layer_3_usecases/internal/relationshipPersistence.js';
 import { addComment } from '/_102034_/l1/mdm/layer_3_usecases/commentUsecases.js';
 import { nextSequence } from '/_102034_/l1/mdm/layer_3_usecases/numberSequenceUsecases.js';
 import { findLatestStatusByEntity } from '/_102034_/l1/mdm/layer_3_usecases/statusHistoryUsecases.js';

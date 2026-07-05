@@ -6,7 +6,7 @@ import { createMemoryDataRuntime } from '/_102034_/l1/mdm/layer_1_external/data/
 import { DataRecordService } from '/_102034_/l1/mdm/layer_3_usecases/core/DataRecordService.js';
 import { mdmEntityDef } from '/_102034_/l1/mdm/layer_3_usecases/core/mdmEntityDefs.js';
 import { normalizeDetailInput } from '/_102034_/l1/mdm/layer_3_usecases/mdmSupport.js';
-import { MdmDocumentEntity } from '/_102034_/l1/mdm/layer_4_entities/MdmDocumentEntity.js';
+import { MdmDocumentEntity } from '/_102034_/l1/mdm/layer_3_usecases/internal/MdmDocumentStore.js';
 import type { MdmDetailRecord } from '/_102034_/l1/mdm/module.js';
 
 function createCompanyDetail(ctx: ReturnType<typeof createRequestContext>, overrides: Record<string, unknown> = {}): MdmDetailRecord {

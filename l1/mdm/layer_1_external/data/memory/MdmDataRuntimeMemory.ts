@@ -1,4 +1,6 @@
 /// <mls fileReference="_102034_/l1/mdm/layer_1_external/data/memory/MdmDataRuntimeMemory.ts" enhancement="_blank" />
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { AppError } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import type { AppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
@@ -28,6 +30,10 @@ import type {
 } from '/_102034_/l1/mdm/module.js';
 
 async function loadSeedRows<TRecord>(env: AppEnv, repositoryName: string): Promise<TRecord[]> {
+  if (!existsSync(resolve(process.cwd(), 'config.json')) && !existsSync(resolve(process.cwd(), 'projects', 'config.json'))) {
+    return [];
+  }
+
   try {
     const definition = await findResolvedTableDefinition(repositoryName, env);
     return (definition.seedRows ?? []).map((row) => ({ ...row }) as TRecord);

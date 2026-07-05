@@ -15,7 +15,6 @@ import {
   entityCreateHandler,
   entityGetHandler,
   entityListHandler,
-  entityMergeHandler,
   entityUpdateHandler,
 } from '/_102034_/l1/mdm/layer_2_controllers/entityHandlers.js';
 import { numberSequenceNextHandler } from '/_102034_/l1/mdm/layer_2_controllers/numberSequenceHandlers.js';
@@ -23,15 +22,14 @@ import {
   prospectCreateHandler,
   prospectGetHandler,
   prospectListHandler,
-  prospectPromoteHandler,
+  prospectPromoteToEntityHandler,
   prospectUpdateHandler,
-} from '/_102034_/l1/mdm/layer_2_controllers/prospectHandlers.js';
+} from '/_102034_/l1/mdm/layer_2_controllers/prospectFacadeHandlers.js';
 import {
   relationshipCreateHandler,
   relationshipListHandler,
   relationshipUpdateHandler,
 } from '/_102034_/l1/mdm/layer_2_controllers/relationshipHandlers.js';
-import { searchHandler } from '/_102034_/l1/mdm/layer_2_controllers/searchHandler.js';
 import {
   tagAddHandler,
   tagFindByEntityHandler,
@@ -53,12 +51,11 @@ export function createMdmRouter(): Map<string, BffHandler> {
     ['mdm.entity.get', entityGetHandler],
     ['mdm.entity.list', entityListHandler],
     ['mdm.entity.update', entityUpdateHandler],
-    ['mdm.entity.merge', entityMergeHandler],
     ['mdm.prospect.create', prospectCreateHandler],
     ['mdm.prospect.get', prospectGetHandler],
     ['mdm.prospect.list', prospectListHandler],
     ['mdm.prospect.update', prospectUpdateHandler],
-    ['mdm.prospect.promote', prospectPromoteHandler],
+    ['mdm.prospect.promoteToEntity', prospectPromoteToEntityHandler],
     ['mdm.comment.add', commentAddHandler],
     ['mdm.comment.edit', commentEditHandler],
     ['mdm.comment.remove', commentRemoveHandler],
@@ -78,6 +75,5 @@ export function createMdmRouter(): Map<string, BffHandler> {
     ['mdm.statusHistory.findLatest', statusHistoryFindLatestHandler],
     ['mdm.kv.get', kvGetHandler],
     ['mdm.kv.put', kvPutHandler],
-    ['mdm.search.run', searchHandler],
   ]);
 }

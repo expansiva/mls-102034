@@ -14,6 +14,14 @@ test.beforeEach(() => {
   process.env.APP_ENV = 'development';
   process.env.RUNTIME_MODE = 'memory';
   process.env.WRITE_BEHIND_ENABLED = 'false';
+  delete process.env.ACTIVE_COMPANY_ID;
+  delete process.env.ACTIVE_UNIT_ID;
+  delete process.env.CURRENT_WORKSPACE_ID;
+  delete process.env.ACTOR_ID;
+  delete process.env.ACTOR_SCOPE;
+  delete process.env.PROJECT_ID;
+  delete process.env.PROJECT_DOMAIN;
+  delete process.env.STUDIO_ENABLED;
   resetSharedBffExecutionSeriesStore();
   resetModuleRouterCache();
 });
@@ -47,6 +55,29 @@ test('GET /health returns ok response', async () => {
 
   assert.equal(response.statusCode, 200);
   assert.deepEqual(body, { ok: true });
+});
+
+test('createRequestContext maps runtime businessContext into sessionContext', () => {
+  process.env.ACTIVE_COMPANY_ID = 'company-001';
+  process.env.ACTIVE_UNIT_ID = 'unit-002';
+  process.env.CURRENT_WORKSPACE_ID = 'workspace-pos';
+  process.env.ACTOR_ID = 'manager';
+  process.env.ACTOR_SCOPE = 'cafeFlow:manager,cafeFlow:owner';
+  process.env.PROJECT_ID = '102050';
+  process.env.PROJECT_DOMAIN = '102050.collab.codes';
+  process.env.STUDIO_ENABLED = 'true';
+
+  const ctx = createRequestContext();
+
+  assert.equal(ctx.sessionContext.activeCompanyId, 'company-001');
+  assert.equal(ctx.sessionContext.businessContext.activeCompanyId, 'company-001');
+  assert.equal(ctx.sessionContext.activeUnitId, 'unit-002');
+  assert.equal(ctx.sessionContext.currentWorkspace.workspaceId, 'workspace-pos');
+  assert.equal(ctx.sessionContext.actorSession.actorId, 'manager');
+  assert.deepEqual(ctx.sessionContext.actorSession.scope, ['cafeFlow:manager', 'cafeFlow:owner']);
+  assert.equal(ctx.sessionContext.project.projectId, '102050');
+  assert.equal(ctx.sessionContext.project.domain, '102050.collab.codes');
+  assert.equal(ctx.sessionContext.project.studioEnabled, true);
 });
 
 test('GET /index.html of a configured frontend app serves the registered frontend html', async () => {
@@ -173,6 +204,7 @@ test('execBff supports user-like person creation, get and list flow', async () =
           subtype: 'Person',
           name: 'Carlos Pereira',
           status: 'Active',
+          moduleTypes: ['crm.Person'],
           docType: 'CPF',
           docId: '123.456.789-00',
           aliases: ['Carl'],
@@ -215,6 +247,7 @@ test('execBff supports user-like person creation, get and list flow', async () =
     {
       routine: 'mdm.entity.list',
       params: {
+        type: 'crm.Person',
         subtype: 'Person',
       },
       meta: {
@@ -236,14 +269,14 @@ test('execBff supports user-like person creation, get and list flow', async () =
   const fetchedData = fetched.response.data as {
     details: { name: string; docId: string };
   };
-  const listedData = listed.response.data as Array<{ mdmId: string; subtype: string }>;
+  const listedData = listed.response.data as { items: Array<{ mdmId: string; subtype: string }> };
 
   assert.equal(fetchedData.details.name, 'Carlos Pereira');
   assert.equal(fetchedData.details.docId, '12345678900');
-  assert.equal(listedData.some((item) => item.mdmId === createdData.mdmId), true);
+  assert.equal(listedData.items.some((item) => item.mdmId === createdData.mdmId), true);
 });
 
-test('execBff search returns created company records', async () => {
+test('execBff list returns created company records by canonical module type', async () => {
   const ctx = createRequestContext();
 
   await execBff(
@@ -255,6 +288,7 @@ test('execBff search returns created company records', async () => {
           name: 'Searchable Labs',
           legalName: 'Searchable Labs LTDA',
           status: 'Active',
+          moduleTypes: ['crm.Company'],
           tags: ['innovation'],
         },
       },
@@ -267,10 +301,10 @@ test('execBff search returns created company records', async () => {
 
   const searched = await execBff(
     {
-      routine: 'mdm.search.run',
+      routine: 'mdm.entity.list',
       params: {
-        query: 'searchable',
-        scope: 'entity',
+        type: 'crm.Company',
+        name: 'searchable',
       },
       meta: {
         source: 'test',
@@ -286,9 +320,9 @@ test('execBff search returns created company records', async () => {
   }
 
   const data = searched.response.data as {
-    records: Array<{ name: string }>;
+    items: Array<{ name: string }>;
   };
-  assert.equal(data.records.some((item) => item.name === 'Searchable Labs'), true);
+  assert.equal(data.items.some((item) => item.name === 'Searchable Labs'), true);
 });
 
 test('execBff supports tag add and find flow', async () => {
@@ -382,73 +416,15 @@ test('execBff supports comment and numberSequence flows', async () => {
   assert.equal(sequence.response.ok, true);
 });
 
-test('execBff supports statusHistory query after merge', async () => {
+test('execBff blocks legacy public entity merge route', async () => {
   const ctx = createRequestContext();
-
-  const winner = await execBff(
-    {
-      routine: 'mdm.entity.create',
-      params: {
-        detail: {
-          subtype: 'Company',
-          name: 'History Winner',
-          legalName: 'History Winner LLC',
-          status: 'Active',
-        },
-      },
-      meta: {
-        source: 'test',
-        userId: 'user-status-1',
-      },
-    },
-    ctx,
-  );
-  const loser = await execBff(
-    {
-      routine: 'mdm.entity.create',
-      params: {
-        detail: {
-          subtype: 'Company',
-          name: 'History Loser',
-          legalName: 'History Loser LLC',
-          status: 'Active',
-        },
-      },
-      meta: {
-        source: 'test',
-        userId: 'user-status-1',
-      },
-    },
-    ctx,
-  );
-
-  if (!winner.response.ok || !winner.response.data || !loser.response.ok || !loser.response.data) {
-    throw new Error('Expected create responses');
-  }
-
-  const winnerId = (winner.response.data as { mdmId: string }).mdmId;
-  const loserId = (loser.response.data as { mdmId: string }).mdmId;
 
   const merge = await execBff(
     {
       routine: 'mdm.entity.merge',
       params: {
-        winnerMdmId: winnerId,
-        loserMdmId: loserId,
-      },
-      meta: {
-        source: 'test',
-        userId: 'user-status-1',
-      },
-    },
-    ctx,
-  );
-  const history = await execBff(
-    {
-      routine: 'mdm.statusHistory.findLatest',
-      params: {
-        entityType: 'MdmEntity',
-        entityId: loserId,
+        winnerMdmId: 'winner',
+        loserMdmId: 'loser',
       },
       meta: {
         source: 'test',
@@ -458,15 +434,9 @@ test('execBff supports statusHistory query after merge', async () => {
     ctx,
   );
 
-  assert.equal(merge.statusCode, 200);
-  assert.equal(history.statusCode, 200);
-  assert.equal(history.response.ok, true);
-  if (!history.response.ok || !history.response.data) {
-    throw new Error('Expected latest status history response');
-  }
-
-  const row = history.response.data as { toStatus: string };
-  assert.equal(row.toStatus, 'Merged');
+  assert.equal(merge.statusCode, 404);
+  assert.equal(merge.response.ok, false);
+  assert.equal(merge.response.error?.code, 'ROUTINE_NOT_FOUND');
 });
 
 test('monitor snapshot and series BFFs return monitor data', async () => {

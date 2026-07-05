@@ -1,4 +1,6 @@
 /// <mls fileReference="_102034_/l1/mdm/layer_3_usecases/core/DataRecordService.ts" enhancement="_blank" />
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { AppError, type RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { findResolvedTableDefinition } from '/_102034_/l1/server/layer_1_external/persistence/registry.js';
@@ -125,7 +127,11 @@ async function buildRegistryWriteBehindOutbox(
   ctx: RequestContext,
   repositoryName: string,
   item: Record<string, unknown>,
-): Promise<MdmOutboxRecord> {
+): Promise<MdmOutboxRecord | null> {
+  if (!existsSync(resolve(process.cwd(), 'config.json')) && !existsSync(resolve(process.cwd(), 'projects', 'config.json'))) {
+    return null;
+  }
+
   const definition = await findResolvedTableDefinition(repositoryName, readAppEnv());
   const key = Object.fromEntries(definition.primaryKey.map((field) => [field, item[field]]));
   const nowIso = ctx.clock.nowIso();
@@ -256,9 +262,10 @@ export class ErrorLogService {
 
     await runtime.mdmErrorLog.insert({ record });
     if (moduleConfig.persistence.writeMode === 'writeBehind') {
-      await runtime.mdmOutbox.insert({
-        record: await buildRegistryWriteBehindOutbox(ctx, 'mdmErrorLog', record as unknown as Record<string, unknown>),
-      });
+      const outbox = await buildRegistryWriteBehindOutbox(ctx, 'mdmErrorLog', record as unknown as Record<string, unknown>);
+      if (outbox) {
+        await runtime.mdmOutbox.insert({ record: outbox });
+      }
     }
   }
 }
@@ -299,9 +306,10 @@ export class StatusHistoryService {
 
     await runtime.mdmStatusHistory.insert({ record });
     if (moduleConfig.persistence.writeMode === 'writeBehind') {
-      await runtime.mdmOutbox.insert({
-        record: await buildRegistryWriteBehindOutbox(ctx, 'mdmStatusHistory', record as unknown as Record<string, unknown>),
-      });
+      const outbox = await buildRegistryWriteBehindOutbox(ctx, 'mdmStatusHistory', record as unknown as Record<string, unknown>);
+      if (outbox) {
+        await runtime.mdmOutbox.insert({ record: outbox });
+      }
     }
   }
 }

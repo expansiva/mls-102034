@@ -1,4 +1,4 @@
-/// <mls fileReference="_102034_/l1/mdm/layer_4_entities/MdmRelationshipEntity.ts" enhancement="_blank" />
+/// <mls fileReference="_102034_/l1/mdm/layer_3_usecases/internal/MdmRelationshipStore.ts" enhancement="_blank" />
 import { AppError, type RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import type { MdmRelationshipRecord } from '/_102034_/l1/mdm/module.js';
 

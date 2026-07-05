@@ -26,6 +26,14 @@ export interface AppEnv {
   writeBehindEnabled: boolean;
   logLevel: string;
   runtimeMode: 'memory' | 'postgres';
+  projectId?: string;
+  projectDomain?: string;
+  studioEnabled: boolean;
+  activeCompanyId?: string;
+  activeUnitId?: string;
+  currentWorkspaceId?: string;
+  actorId?: string;
+  actorScope: string[];
 }
 
 function parseBoolean(value: string | undefined, defaultValue: boolean): boolean {
@@ -34,6 +42,11 @@ function parseBoolean(value: string | undefined, defaultValue: boolean): boolean
   }
 
   return value === 'true';
+}
+
+function parseStringList(value: string | undefined): string[] {
+  if (!value) return [];
+  return value.split(',').map(item => item.trim()).filter(Boolean);
 }
 
 function readEnvValue(
@@ -140,5 +153,13 @@ export function readAppEnv(): AppEnv {
     writeBehindEnabled,
     logLevel: readEnvValue('LOG_LEVEL', appEnv) ?? 'info',
     runtimeMode,
+    projectId: readEnvValue('PROJECT_ID', appEnv) || undefined,
+    projectDomain: readEnvValue('PROJECT_DOMAIN', appEnv) || readEnvValue('DOMAIN', appEnv) || undefined,
+    studioEnabled: parseBoolean(readEnvValue('STUDIO_ENABLED', appEnv), false),
+    activeCompanyId: readEnvValue('ACTIVE_COMPANY_ID', appEnv) || undefined,
+    activeUnitId: readEnvValue('ACTIVE_UNIT_ID', appEnv) || undefined,
+    currentWorkspaceId: readEnvValue('CURRENT_WORKSPACE_ID', appEnv) || readEnvValue('WORKSPACE_ID', appEnv) || undefined,
+    actorId: readEnvValue('ACTOR_ID', appEnv) || undefined,
+    actorScope: parseStringList(readEnvValue('ACTOR_SCOPE', appEnv)),
   };
 }

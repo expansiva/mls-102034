@@ -1,5 +1,6 @@
 /// <mls fileReference="_102034_/l1/server/layer_2_controllers/contracts.ts" enhancement="_blank" />
 import type { IDataRuntime } from '/_102034_/l1/server/layer_1_external/data/runtime.js';
+import type { MdmFacade } from '/_102034_/l1/mdm/layer_3_usecases/mdmFacade.js';
 
 export interface BffRequestTelemetryEvent {
   eventType: string;
@@ -18,6 +19,11 @@ export interface BffRequest {
     authToken?: string;
     traceId?: string;
     source?: 'http' | 'message' | 'test';
+    actorId?: string;
+    actorScope?: string[];
+    activeCompanyId?: string;
+    activeUnitId?: string;
+    workspaceId?: string;
     telemetry?: BffRequestTelemetryEvent[];
   };
 }
@@ -132,11 +138,48 @@ export interface IIdGenerator {
   newId(): string;
 }
 
+export interface RequestBusinessContext {
+  activeCompanyId?: string;
+  activeUnitId?: string;
+}
+
+export interface RequestActorSession {
+  actorId?: string;
+  scope?: string[];
+}
+
+export interface RequestCurrentWorkspace {
+  workspaceId?: string;
+}
+
+export interface RequestProjectContext {
+  projectId?: string;
+  domain?: string;
+  port?: number;
+  databaseName?: string;
+  environment?: string;
+  studioEnabled?: boolean;
+}
+
+export interface RequestSessionContext {
+  activeCompanyId?: string;
+  activeUnitId?: string;
+  actorId?: string;
+  actorScope?: string[];
+  workspaceId?: string;
+  businessContext: RequestBusinessContext;
+  actorSession: RequestActorSession;
+  currentWorkspace: RequestCurrentWorkspace;
+  project: RequestProjectContext;
+}
+
 export interface RequestContext {
   data: IDataRuntime;
+  mdm: MdmFacade;
   log: ILogger;
   clock: IClock;
   idGenerator: IIdGenerator;
+  sessionContext: RequestSessionContext;
   requestMeta?: {
     requestId?: string;
     userId?: string;

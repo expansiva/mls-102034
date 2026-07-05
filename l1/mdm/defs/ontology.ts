@@ -335,7 +335,7 @@ export const MdmEntity = {
  * The separation is PostgreSQL-only.
  *
  * Promotion flow:
- *   1. Module calls mdm.promoteProspect(prospectMdmId)
+ *   1. Module calls ctx.mdm.prospect.promoteToEntity({ mdmId: prospectMdmId })
  *   2. MDM runs dedup: does MdmEntity have matching (docType, docId)?
  *   3a. No match  → insert into MdmEntity, delete from MdmProspect. Same mdmId survives.
  *   3b. Match     → set status PendingMerge. Operator confirms merge.

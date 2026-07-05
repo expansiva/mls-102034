@@ -6,7 +6,7 @@ import type {
   MdmSubtype,
   RelationshipType,
 } from '../defs/ontology.js';
-import { MdmDocumentEntity } from '/_102034_/l1/mdm/layer_4_entities/MdmDocumentEntity.js';
+import { MdmDocumentEntity } from '/_102034_/l1/mdm/layer_3_usecases/internal/MdmDocumentStore.js';
 import type {
   CompactRelationshipRefKey,
   CompactRelationshipRefs,
@@ -97,6 +97,25 @@ function normalizeRelationshipRefs(
   }
 
   return normalized;
+}
+
+function normalizeStringList(values?: unknown): string[] {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+
+  return [...new Set(values
+    .filter((value): value is string => typeof value === 'string')
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0))];
+}
+
+export function getMdmModuleTypes(detail: MdmDetailRecord | Record<string, unknown>): string[] {
+  return normalizeStringList((detail as Record<string, unknown>).moduleTypes);
+}
+
+function buildIndexedTags(detail: MdmDetailRecord): string[] {
+  return [...new Set([...detail.tags, ...getMdmModuleTypes(detail)])];
 }
 
 function mapRelationshipKeys(
@@ -340,6 +359,7 @@ export function normalizeDetailInput(
     subtype: rawInput.subtype as MdmSubtype,
     name: String(rawInput.name),
     status: rawInput.status as MdmStatus | MdmProspectStatus,
+    moduleTypes: normalizeStringList(rawInput.moduleTypes),
     docType: (rawInput.docType as DocType | null | undefined) ?? null,
     countryCode,
     docId,
@@ -390,6 +410,12 @@ export function normalizeDetailInput(
   Object.assign(detail, rawInput);
   const mutableDetail = detail as MdmDetailRecord & Record<string, unknown>;
   mutableDetail.mdmId = mdmId;
+  const moduleTypes = normalizeStringList(rawInput.moduleTypes);
+  if (moduleTypes.length > 0) {
+    mutableDetail.moduleTypes = moduleTypes;
+  } else {
+    delete mutableDetail.moduleTypes;
+  }
   mutableDetail.countryCode = countryCode;
   mutableDetail.docId = docId;
   mutableDetail.value = value ?? undefined;
@@ -449,6 +475,14 @@ export function applyPatchToDetail(
   nextDetail.relationshipRefs = normalizeRelationshipRefs(
     (patchRecord.relationshipRefs as CompactRelationshipRefs | undefined) ?? currentDetail.relationshipRefs,
   );
+  if ('moduleTypes' in patchRecord) {
+    const moduleTypes = normalizeStringList(patchRecord.moduleTypes);
+    if (moduleTypes.length > 0) {
+      (nextDetail as Record<string, unknown>).moduleTypes = moduleTypes;
+    } else {
+      delete (nextDetail as Record<string, unknown>).moduleTypes;
+    }
+  }
 
   nextDetail.status = normalizeStatus(nextDetail);
   validateDetail(nextDetail);
@@ -529,7 +563,7 @@ export function buildEntityIndex(detail: MdmDetailRecord): MdmEntityIndexRecord 
     docType: detail.docType ?? null,
     docId: detail.docId ?? null,
     countryCode: detail.countryCode,
-    tags: [...detail.tags],
+    tags: buildIndexedTags(detail),
     searchVector: buildSearchVector(detail),
     mergedInto: detail.mergedInto ?? null,
     dynamoPk: detail.mdmId,
@@ -547,7 +581,7 @@ export function buildProspectIndex(detail: MdmDetailRecord): MdmProspectIndexRec
     docType: detail.docType ?? null,
     docId: detail.docId ?? null,
     countryCode: detail.countryCode,
-    tags: [...detail.tags],
+    tags: buildIndexedTags(detail),
     promotionSource: String(detail.promotionSource ?? 'unknown'),
     promotedTo: (detail.promotedTo as string | null | undefined) ?? null,
     ttlExpiresAt: (detail.ttlExpiresAt as string | null | undefined) ?? null,
@@ -592,7 +626,7 @@ export function normalizeProspectStatus(detail: MdmDetailRecord): MdmProspectSta
 }
 
 export function buildSearchVector(detail: MdmDetailRecord): string {
-  return [detail.name, detail.docId, ...detail.aliases, ...detail.tags]
+  return [detail.name, detail.docId, ...detail.aliases, ...detail.tags, ...getMdmModuleTypes(detail)]
     .filter(Boolean)
     .join(' ')
     .toLowerCase();
