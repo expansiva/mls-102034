@@ -59,6 +59,139 @@ function isTableDefinition(value: unknown): value is TableDefinition {
     && Array.isArray((value as TableDefinition).columns);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function readStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+
+function normalizePostgresType(value: unknown) {
+  const normalized = readString(value)?.toLowerCase();
+  switch (normalized) {
+    case 'uuid':
+      return 'UUID';
+    case 'text':
+      return 'TEXT';
+    case 'int':
+    case 'integer':
+      return 'INTEGER';
+    case 'decimal':
+    case 'numeric':
+      return 'NUMERIC';
+    case 'timestamptz':
+      return 'TIMESTAMPTZ';
+    case 'bool':
+    case 'boolean':
+      return 'BOOLEAN';
+    case 'json':
+    case 'jsonb':
+      return 'JSONB';
+    default:
+      return normalized?.toUpperCase() ?? 'TEXT';
+  }
+}
+
+function normalizeDefaultSql(value: unknown): string | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value);
+  }
+  if (typeof value === 'boolean') {
+    return value ? 'TRUE' : 'FALSE';
+  }
+  if (typeof value === 'string') {
+    return `'${value.replace(/'/gu, "''")}'`;
+  }
+  return undefined;
+}
+
+function normalizePlannerTableDefinition(value: unknown): TableDefinition | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const moduleId = readString(value.moduleId);
+  const tableName = readString(value.tableName);
+  const rawColumns = Array.isArray(value.columns) ? value.columns.filter(isRecord) : [];
+  if (!moduleId || !tableName || rawColumns.length === 0) {
+    return null;
+  }
+
+  const columns: TableDefinition['columns'] = [];
+  for (const column of rawColumns) {
+    const name = readString(column.name);
+    if (!name) {
+      continue;
+    }
+    const normalizedColumn: TableDefinition['columns'][number] = {
+      name,
+      postgresType: normalizePostgresType(column.type),
+    };
+    if (typeof column.nullable === 'boolean') {
+      normalizedColumn.nullable = column.nullable;
+    }
+    const defaultSql = normalizeDefaultSql(column.default);
+    if (defaultSql) {
+      normalizedColumn.defaultSql = defaultSql;
+    }
+    const description = readString(column.description);
+    if (description) {
+      normalizedColumn.description = description;
+    }
+    columns.push(normalizedColumn);
+  }
+
+  const explicitPrimaryKey = readStringArray(value.primaryKey);
+  const primaryKey = explicitPrimaryKey.length > 0
+    ? explicitPrimaryKey
+    : rawColumns
+      .filter((column) => column.primaryKey === true)
+      .map((column) => readString(column.name))
+      .filter((name): name is string => !!name);
+
+  const indexes = Array.isArray(value.indexes)
+    ? value.indexes
+      .filter(isRecord)
+      .map((index) => ({
+        name: readString(index.indexName) ?? readString(index.name) ?? `idx_${tableName}`,
+        columns: readStringArray(index.columns),
+      }))
+      .filter((index) => index.columns.length > 0)
+    : undefined;
+
+  return {
+    moduleId,
+    repositoryName: readString(value.tableId),
+    tableName,
+    purpose: 'transacao',
+    description: readString(value.purpose) ?? readString(value.title) ?? tableName,
+    backupHot: false,
+    storageProfile: 'postgres',
+    writeMode: 'sync',
+    columns,
+    primaryKey,
+    indexes,
+    version: 1,
+  };
+}
+
+function normalizeTableDefinition(value: unknown): TableDefinition | null {
+  if (isTableDefinition(value)) {
+    return value;
+  }
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const data = isRecord(value.data) ? value.data : null;
+  return normalizePlannerTableDefinition(data?.tableDefinition);
+}
+
 function isTableSeedRows(value: unknown): value is TableSeedRows {
   return !!value
     && typeof value === 'object'
@@ -73,13 +206,22 @@ async function discoverTableDefinitions(tableDefsDir: string): Promise<ImportedP
   const dir = resolveProjectDistPath(tableDefsDir);
   const definitions: TableDefinition[] = [];
   const seeds: TableSeedRows[] = [];
-  const files = readdirSync(dir).filter((file) => file.endsWith('.js') && !file.endsWith('.defs.js'));
+  const files = readdirSync(dir).filter((file) =>
+    (file.endsWith('.js') || file.endsWith('.ts')) && !file.endsWith('.d.ts'));
   for (const file of files) {
     const moduleUrl = resolveProjectModuleImportUrl(`${tableDefsDir.replace(/\/$/u, '')}/${file}`);
     const mod = await import(moduleUrl);
+    const seenExports = new Set<unknown>();
     for (const value of Object.values(mod)) {
-      if (isTableDefinition(value)) {
-        definitions.push(value);
+      if (isRecord(value)) {
+        if (seenExports.has(value)) {
+          continue;
+        }
+        seenExports.add(value);
+      }
+      const definition = normalizeTableDefinition(value);
+      if (definition) {
+        definitions.push(definition);
       } else if (isTableSeedRows(value)) {
         seeds.push(value);
       }
@@ -107,7 +249,13 @@ async function importTableDefinitions(
   const seeds = Object.values(mod).filter(isTableSeedRows);
   const directExport = mod.tableDefinitions;
   if (Array.isArray(directExport)) {
-    return { definitions: directExport as TableDefinition[], seeds, seedSource: registration.persistenceEntrypoint };
+    return {
+      definitions: directExport
+        .map(normalizeTableDefinition)
+        .filter((definition): definition is TableDefinition => definition !== null),
+      seeds,
+      seedSource: registration.persistenceEntrypoint,
+    };
   }
 
   if (typeof mod.getTableDefinitions === 'function') {

@@ -16,6 +16,8 @@ function getContentType(filePath: string) {
     case '.html':
       return 'text/html; charset=utf-8';
     case '.js':
+    case '.ts':
+    case '.tsx':
       return 'text/javascript; charset=utf-8';
     case '.json':
       return 'application/json; charset=utf-8';

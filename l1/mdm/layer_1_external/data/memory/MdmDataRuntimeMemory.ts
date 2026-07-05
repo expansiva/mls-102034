@@ -1,9 +1,8 @@
 /// <mls fileReference="_102034_/l1/mdm/layer_1_external/data/memory/MdmDataRuntimeMemory.ts" enhancement="_blank" />
-import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { AppError } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import type { AppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
+import { projectsConfigExists } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import { createMemoryModuleDataRuntime } from '/_102034_/l1/server/layer_1_external/data/moduleDataRuntime.js';
 import { findResolvedTableDefinition } from '/_102034_/l1/server/layer_1_external/persistence/registry.js';
 import type {
@@ -30,7 +29,7 @@ import type {
 } from '/_102034_/l1/mdm/module.js';
 
 async function loadSeedRows<TRecord>(env: AppEnv, repositoryName: string): Promise<TRecord[]> {
-  if (!existsSync(resolve(process.cwd(), 'config.json')) && !existsSync(resolve(process.cwd(), 'projects', 'config.json'))) {
+  if (!projectsConfigExists()) {
     return [];
   }
 

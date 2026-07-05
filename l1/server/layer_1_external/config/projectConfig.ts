@@ -1,6 +1,6 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/config/projectConfig.ts" enhancement="_blank" />
 import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { extname, join, dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type {
   ProjectConfigRecord,
@@ -145,18 +145,78 @@ function normalizeProjectsConfig(config: ProjectsConfig): ProjectsConfig {
   return normalizedConfig;
 }
 
+function isProjectsConfigFile(configPath: string) {
+  if (!existsSync(configPath)) {
+    return false;
+  }
+
+  try {
+    const config = JSON.parse(readFileSync(configPath, 'utf8')) as Partial<ProjectsConfig>;
+    return typeof config.defaultProjectId === 'string' && !!config.projects && typeof config.projects === 'object';
+  } catch {
+    return false;
+  }
+}
+
+function findProjectsDir(startDir = process.cwd()) {
+  let current = resolve(startDir);
+
+  while (true) {
+    const cwdProjectsConfig = resolve(current, 'config.json');
+    if (isProjectsConfigFile(cwdProjectsConfig)) {
+      return current;
+    }
+
+    const nestedProjectsConfig = resolve(current, 'projects', 'config.json');
+    if (isProjectsConfigFile(nestedProjectsConfig)) {
+      return resolve(current, 'projects');
+    }
+
+    const parent = dirname(current);
+    if (parent === current) {
+      return resolve(startDir);
+    }
+    current = parent;
+  }
+}
+
 function getProjectsDir() {
-  const cwdProjectsConfig = resolve(process.cwd(), 'config.json');
-  if (existsSync(cwdProjectsConfig)) {
-    return resolve(process.cwd());
+  return findProjectsDir();
+}
+
+export function projectsConfigExists() {
+  return existsSync(resolve(getProjectsDir(), 'config.json'));
+}
+
+function normalizeVirtualPath(relativePath: string) {
+  return relativePath.replace(/^\.\//u, '').replace(/^\/+/u, '');
+}
+
+function resolveProjectSourcePath(relativePath: string): string | null {
+  const normalized = normalizeVirtualPath(relativePath);
+  const match = normalized.match(/^_(\d+)_\/(.*)$/u);
+  if (!match) {
+    return null;
   }
 
-  const nestedProjectsConfig = resolve(process.cwd(), 'projects', 'config.json');
-  if (existsSync(nestedProjectsConfig)) {
-    return resolve(process.cwd(), 'projects');
+  const [, projectId, rest] = match;
+  const base = resolve(getProjectsDir(), `mls-${projectId}`, rest);
+  const candidates = [base];
+  if (extname(base) === '.js') {
+    candidates.push(`${base.slice(0, -3)}.ts`, `${base.slice(0, -3)}.tsx`);
+  }
+  if (!extname(base)) {
+    candidates.push(base, `${base}.ts`, `${base}.tsx`, join(base, 'index.ts'), join(base, 'index.tsx'));
+  }
+  return candidates.find((candidate) => existsSync(candidate)) ?? null;
+}
+
+function withSourceFallback(distPath: string, relativePath: string) {
+  if (existsSync(distPath)) {
+    return distPath;
   }
 
-  return resolve(process.cwd());
+  return resolveProjectSourcePath(relativePath) ?? distPath;
 }
 
 export function readProjectsConfig(): ProjectsConfig {
@@ -182,14 +242,20 @@ export function resolveProjectsPath(relativePath: string) {
 }
 
 export function resolveProjectDistPath(relativePath: string) {
-  const normalized = relativePath.replace(/^\.\//u, '');
+  const normalized = normalizeVirtualPath(relativePath);
   const match = normalized.match(/^_(\d+)_\/(.*)$/u);
   if (!match) {
-    return resolve(getProjectsDir(), 'dist', 'local', normalized);
+    return withSourceFallback(
+      resolve(getProjectsDir(), 'dist', 'local', normalized),
+      normalized,
+    );
   }
 
   const [, projectId, rest] = match;
-  return resolve(getProjectsDir(), 'dist', 'local', `_${projectId}_`, rest);
+  return withSourceFallback(
+    resolve(getProjectsDir(), 'dist', 'local', `_${projectId}_`, rest),
+    normalized,
+  );
 }
 
 export function getPublicationTarget(targetName?: string) {
@@ -209,11 +275,15 @@ export function getPublicationTarget(targetName?: string) {
 }
 
 export function resolvePublicationDistPath(targetName: string, relativePath = '.') {
-  const normalized = relativePath.replace(/^\.\//u, '');
+  const normalized = normalizeVirtualPath(relativePath);
   if (!normalized || normalized === '.') {
     return resolve(getProjectsDir(), 'dist', targetName);
   }
-  return resolve(getProjectsDir(), 'dist', targetName, normalized);
+  const distPath = resolve(getProjectsDir(), 'dist', targetName, normalized);
+  if (targetName !== 'local') {
+    return distPath;
+  }
+  return withSourceFallback(distPath, normalized);
 }
 
 export function resolveActivePublicationDistPath(relativePath = '.') {

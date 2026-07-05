@@ -1,8 +1,7 @@
 /// <mls fileReference="_102034_/l1/mdm/layer_3_usecases/core/DataRecordService.ts" enhancement="_blank" />
-import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { AppError, type RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
+import { projectsConfigExists } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import { findResolvedTableDefinition } from '/_102034_/l1/server/layer_1_external/persistence/registry.js';
 import { microdiff } from '/_102034_/l1/mdm/layer_3_usecases/core/microdiff.js';
 import type {
@@ -128,7 +127,7 @@ async function buildRegistryWriteBehindOutbox(
   repositoryName: string,
   item: Record<string, unknown>,
 ): Promise<MdmOutboxRecord | null> {
-  if (!existsSync(resolve(process.cwd(), 'config.json')) && !existsSync(resolve(process.cwd(), 'projects', 'config.json'))) {
+  if (!projectsConfigExists()) {
     return null;
   }
 

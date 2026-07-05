@@ -26,14 +26,13 @@ test('persistence registry resolves Dynamo tables only for configured hot backup
   const env = readAppEnv();
   const allDefinitions = await loadResolvedTableDefinitions(env);
   const dynamoDefinitions = await loadResolvedDynamoTableDefinitions(env);
-  const externalDefinitions = allDefinitions.filter((definition) => definition.projectId !== '102034');
-  const externalDynamoDefinition = externalDefinitions.find((definition) => definition.dynamoResolvedTableName !== null);
 
   const monitorLog = allDefinitions.find((definition) => definition.repositoryName === 'monitorBffExecutionLog');
+  const relationship = allDefinitions.find((definition) => definition.repositoryName === 'mdmRelationship');
 
   assert.equal(monitorLog?.dynamoResolvedTableName ?? null, null);
-  assert.equal(typeof externalDynamoDefinition?.dynamoResolvedTableName, 'string');
-  assert.equal(externalDynamoDefinition ? dynamoDefinitions.some((definition) => definition.repositoryName === externalDynamoDefinition.repositoryName) : false, true);
+  assert.equal(typeof relationship?.dynamoResolvedTableName, 'string');
+  assert.equal(dynamoDefinitions.some((definition) => definition.repositoryName === 'mdmRelationship'), true);
   assert.equal(
     dynamoDefinitions.some((definition) => definition.repositoryName === 'monitorBffExecutionLog'),
     false,
