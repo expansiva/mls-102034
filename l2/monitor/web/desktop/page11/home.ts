@@ -337,7 +337,15 @@ export class MonitorWebDesktopHomePage extends LitElement {
 
   connectedCallback() {
     super.connectedCallback();
-    this.currentRoute = parseMonitorRoute(window.location);
+    // Allow a fixed initial route via the `data-route` attribute so the Studio aura preview
+    // (which has no shell/URL) can open a specific section. Falls back to window.location.
+    const initialRoute = this.getAttribute('data-route');
+    if (initialRoute) {
+      try { window.history.replaceState({}, '', initialRoute); } catch { /* preview sandbox */ }
+      this.currentRoute = parseMonitorRoute(new URL(initialRoute, 'http://monitor.local') as unknown as Location);
+    } else {
+      this.currentRoute = parseMonitorRoute(window.location);
+    }
     this.currentSection = this.currentRoute.section;
     window.addEventListener('popstate', this.handleLocationChange);
     document.addEventListener('visibilitychange', this.handleVisibilityChange);
