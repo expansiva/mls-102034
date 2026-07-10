@@ -222,7 +222,7 @@ export function createMemoryDataRuntime(): IDataRuntime {
     mdmDocument: new DocumentRuntimeMemory(() => loadSeedRows<MdmDocumentRecord>(env, 'mdmDocumentCache')),
     mdmEntityIndex: new TableRuntimeMemory<MdmEntityIndexRecord>(() => loadSeedRows<MdmEntityIndexRecord>(env, 'mdmEntityIndex')),
     mdmProspectIndex: new TableRuntimeMemory<MdmProspectIndexRecord>(),
-    mdmRelationship: new TableRuntimeMemory<MdmRelationshipRecord>(),
+    mdmRelationship: new TableRuntimeMemory<MdmRelationshipRecord>(() => loadSeedRows<MdmRelationshipRecord>(env, 'mdmRelationship')),
     mdmProspectRelationship: new TableRuntimeMemory<MdmRelationshipRecord>(),
     mdmAuditLog: new TableRuntimeMemory<MdmAuditLogIndexRecord>(),
     mdmComment: new TableRuntimeMemory<MdmCommentRecord>(),
