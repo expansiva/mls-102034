@@ -24,7 +24,7 @@ export const moduleShellPreferences = {
       mobile: 'fullscreen',
     },
   },
-} as const;
+} as const; 
 
 export const moduleFrontendDefinition: MasterFrontendModuleFrontendDefinition = {
   pageTitle: 'monitor',
