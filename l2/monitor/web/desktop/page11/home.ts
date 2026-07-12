@@ -19,10 +19,11 @@ import {
   formatTime,
 } from '/_102034_/l2/monitor/web/shared/homeFormatters.js';
 import { loadMonitorHome } from '/_102034_/l2/monitor/web/shared/home.js';
+import { loadMonitorOperationsSummary } from '/_102034_/l2/monitor/web/shared/operations.js';
 import { loadMonitorPostgres } from '/_102034_/l2/monitor/web/shared/postgres.js';
 import { loadMonitorProcess } from '/_102034_/l2/monitor/web/shared/process.js';
 import { loadMonitorSeries } from '/_102034_/l2/monitor/web/shared/series.js';
-import { loadMonitorAbend } from '/_102034_/l2/monitor/web/shared/abend.js';
+import { loadMonitorAbend, loadMonitorClientErrors } from '/_102034_/l2/monitor/web/shared/abend.js';
 import { loadMonitorTrace } from '/_102034_/l2/monitor/web/shared/trace.js';
 import { loadMonitorDynamoTableDetails } from '/_102034_/l2/monitor/web/shared/tableDetailsDynamodb.js';
 import { loadMonitorPostgresTableDetails } from '/_102034_/l2/monitor/web/shared/tableDetailsPostgres.js';
@@ -35,9 +36,13 @@ import type {
   MonitorHomeSeriesPoint,
   MonitorStatisticsSeriesResponse,
 } from '/_102034_/l2/monitor/shared/contracts/home.js';
+import type {
+  MonitorOperationsSummaryResponse,
+  MonitorOperationsWindow,
+} from '/_102034_/l2/monitor/shared/contracts/operations.js';
 import type { MonitorPostgresResponse } from '/_102034_/l2/monitor/shared/contracts/postgres.js';
 import type { MonitorProcessResponse } from '/_102034_/l2/monitor/shared/contracts/process.js';
-import type { MonitorAbendResponse } from '/_102034_/l2/monitor/shared/contracts/abend.js';
+import type { MonitorAbendResponse, MonitorClientErrorsResponse } from '/_102034_/l2/monitor/shared/contracts/abend.js';
 import type { MonitorTraceResponse } from '/_102034_/l2/monitor/shared/contracts/trace.js';
 import type { MonitorDynamoTableDetailsResponse } from '/_102034_/l2/monitor/shared/contracts/table-details-dynamodb.js';
 import type { MonitorPostgresTableDetailsResponse } from '/_102034_/l2/monitor/shared/contracts/table-details-postgres.js';
@@ -51,12 +56,18 @@ function traceLazy(event: string, details?: Record<string, unknown>) {
   console.log('[traceLazy][monitor]', event, details ?? {});
 }
 
-type MonitorSection = 'overview' | 'architecture' | 'postgres' | 'dynamodb' | 'process' | 'abend' | 'trace';
+type MonitorSection = 'overview' | 'operations' | 'architecture' | 'postgres' | 'dynamodb' | 'process' | 'abend' | 'trace';
 type MonitorStorage = 'postgres' | 'dynamodb';
 type MonitorRoute =
   | {
       section: 'overview';
       kind: 'section';
+    }
+  | {
+      section: 'operations';
+      kind: 'section';
+      window?: MonitorOperationsWindow;
+      module?: string;
     }
   | {
       section: 'architecture';
@@ -157,6 +168,18 @@ function parseMonitorRoute(locationValue: Location): MonitorRoute {
       databaseName,
     };
   }
+  if (pathname === '/monitor/operacao' || pathname === '/monitor/operations') {
+    const windowParam = searchParams.get('window');
+    const windowValue = windowParam === '1h' || windowParam === '6h' || windowParam === '24h' || windowParam === '7d'
+      ? windowParam
+      : undefined;
+    return {
+      section: 'operations',
+      kind: 'section',
+      window: windowValue,
+      module: searchParams.get('module') ?? undefined,
+    };
+  }
   if (pathname === '/monitor/architecture') {
     return {
       section: 'architecture',
@@ -220,11 +243,21 @@ function buildMonitorHref(route: MonitorRoute) {
       }
     });
   }
+  if (route.section === 'operations' && route.kind === 'section') {
+    if (route.window) {
+      searchParams.set('window', route.window);
+    }
+    if (route.module) {
+      searchParams.set('module', route.module);
+    }
+  }
 
   const query = searchParams.toString();
   let pathname = '/monitor';
   if (route.section === 'architecture' && route.kind === 'section') {
     pathname = '/monitor/architecture';
+  } else if (route.section === 'operations' && route.kind === 'section') {
+    pathname = '/monitor/operacao';
   } else if (route.section === 'postgres' && route.kind === 'section') {
     pathname = '/monitor/postgres';
   } else if (route.section === 'dynamodb' && route.kind === 'section') {
@@ -293,6 +326,8 @@ export class MonitorWebDesktopHomePage extends LitElement {
     status: { state: true },
     routeError: { state: true },
     homeData: { state: true },
+    operationsData: { state: true },
+    copiedOperationsSummary: { state: true },
     homeSeries: { state: true },
     seriesMeta: { state: true },
     architectureData: { state: true },
@@ -304,6 +339,8 @@ export class MonitorWebDesktopHomePage extends LitElement {
     dynamoInspectData: { state: true },
     dynamoDetailsData: { state: true },
     abendData: { state: true },
+    clientErrorsData: { state: true },
+    copiedAbendId: { state: true },
     processData: { state: true },
     traceData: { state: true },
     traceSearchInput: { state: true },
@@ -314,6 +351,8 @@ export class MonitorWebDesktopHomePage extends LitElement {
   status = 'Preparing monitor module...';
   routeError?: string;
   declare homeData?: MonitorHomeResponse;
+  declare operationsData?: MonitorOperationsSummaryResponse;
+  declare copiedOperationsSummary?: boolean;
   declare homeSeries?: MonitorHomeSeriesPoint[];
   declare seriesMeta?: MonitorStatisticsSeriesResponse;
   declare architectureData?: MonitorArchitectureResponse;
@@ -325,6 +364,8 @@ export class MonitorWebDesktopHomePage extends LitElement {
   declare dynamoInspectData?: MonitorDynamoTableInspectResponse;
   declare dynamoDetailsData?: MonitorDynamoTableDetailsResponse;
   declare abendData?: MonitorAbendResponse;
+  declare clientErrorsData?: MonitorClientErrorsResponse;
+  declare copiedAbendId?: string;
   declare processData?: MonitorProcessResponse;
   declare traceData?: MonitorTraceResponse;
   traceSearchInput = '';
@@ -531,6 +572,28 @@ export class MonitorWebDesktopHomePage extends LitElement {
     }
 
     this.stopOverviewPolling();
+
+    if (this.currentRoute.section === 'operations' && this.currentRoute.kind === 'section') {
+      this.routeError = undefined;
+      this.status = 'Loading operation summary...';
+      const response = await loadMonitorOperationsSummary({
+        window: this.currentRoute.window,
+        module: this.currentRoute.module,
+      }, {
+        mode: options.mode,
+        signal: options.signal,
+      });
+      if (!response.ok || !response.data) {
+        if (options.mode === 'blocking') {
+          throw this.toBlockingError('Could not load operation summary.', response.error);
+        }
+        this.status = response.error?.message ?? 'Could not load operation summary.';
+        return;
+      }
+      this.operationsData = response.data;
+      this.status = `Updated ${new Date(response.data.generatedAt).toLocaleTimeString('pt-BR')}`;
+      return;
+    }
 
     if (this.currentRoute.section === 'architecture' && this.currentRoute.kind === 'section') {
       this.routeError = undefined;
@@ -748,6 +811,12 @@ export class MonitorWebDesktopHomePage extends LitElement {
       }
       this.abendData = response.data;
       this.status = `${response.data.totalCount} failures found · ${new Date(response.data.generatedAt).toLocaleTimeString('pt-BR')}`;
+      // Frontend errors (client telemetry) — best-effort companion of the abends.
+      const clientErrors = await loadMonitorClientErrors(
+        { sinceHours: 24 },
+        { signal: options.signal },
+      );
+      this.clientErrorsData = clientErrors.ok ? clientErrors.data ?? undefined : undefined;
       return;
     }
 
@@ -896,7 +965,15 @@ export class MonitorWebDesktopHomePage extends LitElement {
       ? { section: 'postgres', kind: 'section', databaseName: 'databaseName' in route ? route.databaseName : this.selectedDatabaseName } as const
       : route.section === 'dynamodb'
         ? { section: 'dynamodb', kind: 'section' } as const
-        : { section: 'architecture', kind: 'section' } as const;
+        : route.section === 'operations'
+          ? { section: 'operations', kind: 'section', window: 'window' in route ? route.window : undefined, module: 'module' in route ? route.module : undefined } as const
+          : route.section === 'process'
+            ? { section: 'process', kind: 'section' } as const
+            : route.section === 'abend'
+              ? { section: 'abend', kind: 'section', module: 'module' in route ? route.module : undefined } as const
+              : route.section === 'trace'
+                ? { section: 'trace', kind: 'section', requestId: 'requestId' in route ? route.requestId : undefined, traceId: 'traceId' in route ? route.traceId : undefined } as const
+                : { section: 'architecture', kind: 'section' } as const;
 
     return html`
       <div class="mb-4 flex flex-wrap items-center gap-2 text-sm text-slate-500">
@@ -1004,6 +1081,232 @@ export class MonitorWebDesktopHomePage extends LitElement {
           </div>
         </div>
       </article>
+    `;
+  }
+
+  private severityClass(severity: MonitorOperationsSummaryResponse['severity']) {
+    if (severity === 'red') return 'bg-rose-100 text-rose-800 border-rose-200';
+    if (severity === 'yellow') return 'bg-amber-100 text-amber-800 border-amber-200';
+    return 'bg-emerald-100 text-emerald-800 border-emerald-200';
+  }
+
+  private async copyOperationsSummary() {
+    if (!this.operationsData) return;
+    try {
+      await navigator.clipboard.writeText(this.operationsData.copyText);
+      this.copiedOperationsSummary = true;
+      window.setTimeout(() => {
+        this.copiedOperationsSummary = false;
+      }, 2000);
+    } catch (err) {
+      console.error('[monitor] clipboard copy failed:', err);
+    }
+  }
+
+  private handleOperationsFilters(event: Event) {
+    event.preventDefault();
+    const form = event.currentTarget as HTMLFormElement;
+    const formData = new FormData(form);
+    const windowValue = String(formData.get('window') ?? '24h') as MonitorOperationsWindow;
+    const moduleValue = String(formData.get('module') ?? '').trim();
+    void this.navigate({
+      section: 'operations',
+      kind: 'section',
+      window: windowValue,
+      module: moduleValue.length > 0 ? moduleValue : undefined,
+    });
+  }
+
+  private renderOperations() {
+    const data = this.operationsData;
+    if (!data) {
+      return html`
+        <section class="space-y-6">
+          ${this.renderRouteError()}
+          <article class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+            <p class="text-sm text-slate-500">Loading operation summary...</p>
+          </article>
+        </section>
+      `;
+    }
+
+    const cards = [
+      { label: 'Executions', value: formatInteger(data.executions.total), hint: `${data.executions.okPercent}% ok` },
+      { label: 'Server errors', value: formatInteger(data.executions.serverError), hint: `${data.executions.change.serverError >= 0 ? '+' : ''}${formatInteger(data.executions.change.serverError)} vs previous` },
+      { label: 'Abends', value: formatInteger(data.abends.total), hint: `${formatInteger(data.abends.groups.length)} grouped routine(s)` },
+      { label: 'p95 duration', value: `${formatInteger(data.executions.p95DurationMs)} ms`, hint: `${data.executions.change.p95DurationMs >= 0 ? '+' : ''}${formatInteger(data.executions.change.p95DurationMs)} ms vs previous` },
+    ];
+
+    return html`
+      <section class="space-y-6">
+        ${this.renderRouteError()}
+        <article class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <div class="flex flex-wrap items-center gap-3">
+                <h1 class="text-2xl font-semibold text-slate-950">Operation</h1>
+                <span class="rounded-full border px-3 py-1 text-sm font-semibold ${this.severityClass(data.severity)}">${data.severity.toUpperCase()} · ${data.health.score}</span>
+              </div>
+              <p class="mt-2 text-sm text-slate-500">
+                ${data.window.label} window · ${formatDateTime(data.window.startedAt)} to ${formatDateTime(data.window.finishedAt)}
+              </p>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+              <form class="flex flex-wrap items-center gap-2" @submit=${(event: Event) => this.handleOperationsFilters(event)}>
+                <select name="window" class="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm">
+                  ${(['1h', '6h', '24h', '7d'] as MonitorOperationsWindow[]).map((entry) => html`
+                    <option value=${entry} ?selected=${data.window.label === entry}>${entry}</option>
+                  `)}
+                </select>
+                <input
+                  name="module"
+                  class="w-36 rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                  placeholder="module"
+                  .value=${data.filters.module ?? ''}
+                />
+                <button class="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700" type="submit">Verify</button>
+              </form>
+              <button
+                class="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+                @click=${() => void this.copyOperationsSummary()}
+              >${this.copiedOperationsSummary ? 'Copied' : 'Copy'}</button>
+            </div>
+          </div>
+
+          <div class="mt-5 flex flex-wrap gap-2">
+            ${data.health.reasons.map((reason) => html`
+              <span class="rounded-full bg-slate-100 px-3 py-1 text-sm text-slate-700">${reason}</span>
+            `)}
+          </div>
+        </article>
+
+        <div class="grid gap-4 md:grid-cols-4">
+          ${cards.map((card) => html`
+            <article class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div class="text-sm text-slate-500">${card.label}</div>
+              <div class="mt-2 text-2xl font-semibold text-slate-950">${card.value}</div>
+              <div class="mt-1 text-xs text-slate-500">${card.hint}</div>
+            </article>
+          `)}
+        </div>
+
+        <div class="grid gap-6 xl:grid-cols-2">
+          <article class="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
+            <div class="border-b border-slate-200 px-6 py-4">
+              <h2 class="text-lg font-semibold text-slate-900">Grouped abends</h2>
+              <p class="mt-1 text-sm text-slate-500">Repeated failures are grouped by routine.</p>
+            </div>
+            <div class="overflow-x-auto">
+              <table class="min-w-full text-left text-sm">
+                <thead class="bg-slate-50 text-slate-600">
+                  <tr>
+                    <th class="px-6 py-3 font-medium">Routine</th>
+                    <th class="px-6 py-3 font-medium">Count</th>
+                    <th class="px-6 py-3 font-medium">Last</th>
+                    <th class="px-6 py-3 font-medium">Error</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${data.abends.groups.length > 0
+                    ? data.abends.groups.map((entry) => html`
+                        <tr class="border-t border-slate-100 align-top">
+                          <td class="px-6 py-4">
+                            <div class="font-medium text-slate-900">${entry.routine}</div>
+                            <div class="text-xs text-slate-500">${entry.module}</div>
+                          </td>
+                          <td class="px-6 py-4">${formatInteger(entry.count)}</td>
+                          <td class="px-6 py-4">${formatDateTime(entry.lastAt)}</td>
+                          <td class="px-6 py-4">
+                            <div>${entry.latest.errorCode ?? `HTTP ${entry.latest.statusCode}`}</div>
+                            ${entry.latest.errorStack
+                              ? html`<details class="mt-1"><summary class="cursor-pointer text-xs text-slate-500">stack</summary><pre class="mt-2 max-h-48 overflow-auto rounded-xl bg-slate-950 p-3 text-xs text-slate-100">${entry.latest.errorStack}</pre></details>`
+                              : null}
+                          </td>
+                        </tr>
+                      `)
+                    : html`<tr><td class="px-6 py-8 text-center text-slate-500" colspan="4">No abends in this window.</td></tr>`}
+                </tbody>
+              </table>
+            </div>
+          </article>
+
+          <article class="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
+            <div class="border-b border-slate-200 px-6 py-4">
+              <h2 class="text-lg font-semibold text-slate-900">Frontend errors</h2>
+              <p class="mt-1 text-sm text-slate-500">Browser errors captured by runtime telemetry.</p>
+            </div>
+            <div class="overflow-x-auto">
+              <table class="min-w-full text-left text-sm">
+                <thead class="bg-slate-50 text-slate-600">
+                  <tr>
+                    <th class="px-6 py-3 font-medium">Routine</th>
+                    <th class="px-6 py-3 font-medium">Type</th>
+                    <th class="px-6 py-3 font-medium">Count</th>
+                    <th class="px-6 py-3 font-medium">Last</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${data.frontendErrors.groups.length > 0
+                    ? data.frontendErrors.groups.map((entry) => html`
+                        <tr class="border-t border-slate-100 align-top">
+                          <td class="px-6 py-4">
+                            <div class="font-medium text-slate-900">${entry.routine}</div>
+                            <div class="text-xs text-slate-500">${entry.latestLabel ?? ''}</div>
+                          </td>
+                          <td class="px-6 py-4">${entry.eventType}</td>
+                          <td class="px-6 py-4">${formatInteger(entry.count)}</td>
+                          <td class="px-6 py-4">${formatDateTime(entry.lastAt)}</td>
+                        </tr>
+                      `)
+                    : html`<tr><td class="px-6 py-8 text-center text-slate-500" colspan="4">No frontend errors in this window.</td></tr>`}
+                </tbody>
+              </table>
+            </div>
+          </article>
+        </div>
+
+        <div class="grid gap-6 xl:grid-cols-2">
+          <article class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+            <h2 class="text-lg font-semibold text-slate-900">Slowest routines</h2>
+            <div class="mt-4 space-y-3">
+              ${data.executions.slowestRoutines.length > 0
+                ? data.executions.slowestRoutines.map((entry) => html`
+                    <div class="rounded-2xl border border-slate-100 p-4">
+                      <div class="flex items-center justify-between gap-4">
+                        <div class="font-medium text-slate-900">${entry.routine}</div>
+                        <div class="text-sm text-slate-600">p95 ${formatInteger(entry.p95DurationMs)} ms</div>
+                      </div>
+                      <div class="mt-1 text-xs text-slate-500">${entry.module} · avg ${formatInteger(entry.avgDurationMs)} ms · ${formatInteger(entry.total)} call(s)</div>
+                    </div>
+                  `)
+                : html`<p class="text-sm text-slate-500">No execution data in this window.</p>`}
+            </div>
+          </article>
+
+          <article class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+            <h2 class="text-lg font-semibold text-slate-900">Infra</h2>
+            <div class="mt-4 grid gap-3 text-sm md:grid-cols-2">
+              <div class="rounded-2xl bg-slate-50 p-4">
+                <div class="text-slate-500">Process</div>
+                <div class="mt-1 font-medium text-slate-900">RSS ${data.infra.process.rssMb} MB · heap ${data.infra.process.heapUsedMb} MB</div>
+                <div class="mt-1 text-xs text-slate-500">${data.infra.process.nodeVersion} · pid ${data.infra.process.pid}</div>
+              </div>
+              <div class="rounded-2xl bg-slate-50 p-4">
+                <div class="text-slate-500">Postgres</div>
+                <div class="mt-1 font-medium text-slate-900">${formatInteger(data.infra.postgres.activeConnections)} connection(s)</div>
+                <div class="mt-1 text-xs text-slate-500">${data.infra.postgres.currentDatabase} · locks ${formatInteger(data.infra.postgres.waitingLocks)}</div>
+              </div>
+              ${data.infra.disks.map((disk) => html`
+                <div class="rounded-2xl bg-slate-50 p-4">
+                  <div class="text-slate-500">Disk ${disk.path}</div>
+                  <div class="mt-1 font-medium text-slate-900">${disk.exists ? `${disk.usedPercent}% used` : 'not found'}</div>
+                  <div class="mt-1 text-xs text-slate-500">${disk.exists ? `${formatBytes(disk.freeBytes ?? 0)} free of ${formatBytes(disk.sizeBytes ?? 0)}` : ''}</div>
+                </div>
+              `)}
+            </div>
+          </article>
+        </div>
+      </section>
     `;
   }
 
@@ -1918,6 +2221,132 @@ export class MonitorWebDesktopHomePage extends LitElement {
     `;
   }
 
+  /** LLM-friendly plain-text block for one abend entry (paste-ready). */
+  private buildAbendClipboardText(entry: MonitorAbendResponse['entries'][number]): string {
+    const lines = [
+      '### BFF abend',
+      `- routine: ${entry.routine}`,
+      `- module: ${entry.module} | status: ${entry.statusCode} ${entry.statusGroup}${entry.errorCode ? ` | errorCode: ${entry.errorCode}` : ''}`,
+      `- started: ${entry.startedAt} | finished: ${entry.finishedAt} | duration: ${entry.durationMs} ms`,
+      `- user: ${entry.userId} | requestId: ${entry.requestId} | traceId: ${entry.traceId}`,
+    ];
+    if (entry.errorStack) {
+      lines.push('', 'stack trace:', '```', entry.errorStack, '```');
+    }
+    return lines.join('\n');
+  }
+
+  private async copyAbendEntry(entry: MonitorAbendResponse['entries'][number]) {
+    try {
+      await navigator.clipboard.writeText(this.buildAbendClipboardText(entry));
+      this.copiedAbendId = entry.id;
+      window.setTimeout(() => {
+        if (this.copiedAbendId === entry.id) this.copiedAbendId = undefined;
+      }, 2000);
+    } catch (err) {
+      console.error('[monitor] clipboard copy failed:', err);
+    }
+  }
+
+  /** LLM-friendly plain-text block for one frontend error entry. */
+  private buildClientErrorClipboardText(entry: MonitorClientErrorsResponse['entries'][number]): string {
+    const meta = (entry.metadata ?? {}) as { filename?: string; lineno?: number; colno?: number; stack?: string; repeatCount?: number };
+    const lines = [
+      '### Frontend error',
+      `- type: ${entry.eventType} | message: ${entry.label}`,
+      `- occurred: ${entry.recordedAt}${meta.repeatCount && meta.repeatCount > 1 ? ` | repeated: ${meta.repeatCount}x` : ''}`,
+      `- source: ${meta.filename ?? 'n/a'}${meta.lineno ? `:${meta.lineno}:${meta.colno ?? 0}` : ''}`,
+      `- user: ${entry.userId} | requestId: ${entry.requestId} | traceId: ${entry.traceId}`,
+    ];
+    if (meta.stack) {
+      lines.push('', 'stack trace:', '```', meta.stack, '```');
+    }
+    return lines.join('\n');
+  }
+
+  private async copyClientErrorEntry(entry: MonitorClientErrorsResponse['entries'][number]) {
+    try {
+      await navigator.clipboard.writeText(this.buildClientErrorClipboardText(entry));
+      this.copiedAbendId = entry.id;
+      window.setTimeout(() => {
+        if (this.copiedAbendId === entry.id) this.copiedAbendId = undefined;
+      }, 2000);
+    } catch (err) {
+      console.error('[monitor] clipboard copy failed:', err);
+    }
+  }
+
+  private renderClientErrors() {
+    const data = this.clientErrorsData;
+    if (!data) return null;
+    const entries = data.entries;
+
+    return html`
+      <article class="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
+        <div class="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 px-6 py-4">
+          <h2 class="text-lg font-semibold text-slate-900">Frontend errors (last ${data.sinceHours}h)</h2>
+          <span class="text-sm text-slate-500">${formatInteger(data.totalCount)} event(s) reported by browsers</span>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="min-w-full text-left text-sm">
+            <thead class="bg-slate-50 text-slate-600">
+              <tr>
+                <th class="px-6 py-3 font-medium">Message</th>
+                <th class="px-6 py-3 font-medium">Type</th>
+                <th class="px-6 py-3 font-medium">User</th>
+                <th class="px-6 py-3 font-medium">Occurred</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${entries.length > 0
+                ? entries.map((entry) => {
+                    const meta = (entry.metadata ?? {}) as { filename?: string; lineno?: number; stack?: string; repeatCount?: number };
+                    return html`
+                      <tr class="border-t border-slate-100 align-top">
+                        <td class="px-6 py-4">
+                          <div class="flex items-start gap-2">
+                            <div class="font-medium text-slate-900">${entry.label}</div>
+                            ${meta.repeatCount && meta.repeatCount > 1
+                              ? html`<span class="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">${meta.repeatCount}x</span>`
+                              : null}
+                            <button
+                              class="rounded-full border border-slate-300 px-2 py-0.5 text-xs font-medium ${this.copiedAbendId === entry.id ? 'bg-emerald-100 text-emerald-700 border-emerald-300' : 'text-slate-600 hover:bg-slate-100'}"
+                              title="Copy this error as an LLM-ready text block"
+                              @click=${() => void this.copyClientErrorEntry(entry)}
+                            >${this.copiedAbendId === entry.id ? 'Copied!' : 'Copy'}</button>
+                          </div>
+                          ${meta.filename
+                            ? html`<div class="mt-1 text-xs text-slate-500">${meta.filename}${meta.lineno ? `:${meta.lineno}` : ''}</div>`
+                            : null}
+                          ${meta.stack
+                            ? html`
+                                <details class="mt-2">
+                                  <summary class="cursor-pointer text-xs text-rose-500">stack trace</summary>
+                                  <pre class="mt-2 max-w-xs overflow-x-auto whitespace-pre-wrap break-all text-xs text-rose-700">${meta.stack}</pre>
+                                </details>
+                              `
+                            : null}
+                        </td>
+                        <td class="px-6 py-4">
+                          <span class="rounded-full bg-orange-100 px-2 py-1 text-xs font-medium text-orange-800">${entry.eventType}</span>
+                        </td>
+                        <td class="px-6 py-4 text-slate-600">${entry.userId}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-slate-700" title="${entry.recordedAt}">${formatDateTime(entry.recordedAt)}</td>
+                      </tr>
+                    `;
+                  })
+                : html`
+                    <tr>
+                      <td class="px-6 py-8 text-sm text-slate-500" colspan="4">No frontend errors reported in the last ${data.sinceHours}h.</td>
+                    </tr>
+                  `}
+            </tbody>
+          </table>
+        </div>
+      </article>
+    `;
+  }
+
   private renderAbend() {
     const data = this.abendData;
     const entries = data?.entries ?? [];
@@ -1971,7 +2400,14 @@ export class MonitorWebDesktopHomePage extends LitElement {
                   ? entries.map((entry) => html`
                       <tr class="border-t border-slate-100 align-top">
                         <td class="px-6 py-4">
-                          <div class="font-medium text-slate-900">${entry.routine}</div>
+                          <div class="flex items-start gap-2">
+                            <div class="font-medium text-slate-900">${entry.routine}</div>
+                            <button
+                              class="rounded-full border border-slate-300 px-2 py-0.5 text-xs font-medium ${this.copiedAbendId === entry.id ? 'bg-emerald-100 text-emerald-700 border-emerald-300' : 'text-slate-600 hover:bg-slate-100'}"
+                              title="Copy this abend as an LLM-ready text block"
+                              @click=${() => void this.copyAbendEntry(entry)}
+                            >${this.copiedAbendId === entry.id ? 'Copied!' : 'Copy'}</button>
+                          </div>
                           ${entry.errorCode
                             ? html`<div class="mt-1 text-xs font-medium text-rose-600">${entry.errorCode}</div>`
                             : null}
@@ -1979,6 +2415,7 @@ export class MonitorWebDesktopHomePage extends LitElement {
                             ? html`
                                 <details class="mt-2">
                                   <summary class="cursor-pointer text-xs text-rose-500">stack trace</summary>
+                                  <div class="mt-2 text-xs text-slate-500">occurred at ${formatDateTime(entry.startedAt)} (${entry.startedAt})</div>
                                   <pre class="mt-2 max-w-xs overflow-x-auto whitespace-pre-wrap break-all text-xs text-rose-700">${entry.errorStack}</pre>
                                 </details>
                               `
@@ -1991,7 +2428,7 @@ export class MonitorWebDesktopHomePage extends LitElement {
                         </td>
                         <td class="px-6 py-4 text-slate-700">${formatInteger(entry.durationMs)} ms</td>
                         <td class="px-6 py-4 text-slate-600">${entry.userId}</td>
-                        <td class="px-6 py-4 text-slate-500">${formatDateTime(entry.startedAt)}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-slate-700" title="${entry.startedAt}">${formatDateTime(entry.startedAt)}</td>
                       </tr>
                     `)
                   : html`
@@ -2003,6 +2440,8 @@ export class MonitorWebDesktopHomePage extends LitElement {
             </table>
           </div>
         </article>
+
+        ${this.renderClientErrors()}
       </section>
     `;
   }
@@ -2034,6 +2473,8 @@ export class MonitorWebDesktopHomePage extends LitElement {
 
         ${this.currentRoute.section === 'architecture' && this.currentRoute.kind === 'section'
           ? this.renderArchitecture()
+          : this.currentRoute.section === 'operations' && this.currentRoute.kind === 'section'
+          ? this.renderOperations()
           : this.currentRoute.section === 'postgres' && this.currentRoute.kind === 'section'
           ? this.renderPostgres()
           : this.currentRoute.section === 'dynamodb' && this.currentRoute.kind === 'section'

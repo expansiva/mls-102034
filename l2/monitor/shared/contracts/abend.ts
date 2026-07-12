@@ -20,3 +20,24 @@ export interface MonitorAbendResponse {
   totalCount: number;
   generatedAt: string;
 }
+
+/** Frontend error captured by the client telemetry (js_error / unhandled_rejection). */
+export interface MonitorClientErrorEntry {
+  id: string;
+  requestId: string;
+  traceId: string;
+  userId: string;
+  routine: string;
+  eventType: string;
+  label: string;
+  metadata: Record<string, unknown> | null;
+  recordedAt: string;
+  receivedAt: string;
+}
+
+export interface MonitorClientErrorsResponse {
+  entries: MonitorClientErrorEntry[];
+  totalCount: number;
+  sinceHours: number;
+  generatedAt: string;
+}

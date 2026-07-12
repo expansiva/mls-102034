@@ -2,7 +2,7 @@
 export const skill = {
   moduleId: 'monitor',
   purpose: 'Operational monitoring module for system overview, Postgres diagnostics and DynamoDB diagnostics.',
-  pages: ['home', 'postgres', 'dynamodb'],
+  pages: ['home', 'operations', 'postgres', 'dynamodb'],
   genome: {
     page11: 'desktop-standard',
     page21: 'mobile-standard',

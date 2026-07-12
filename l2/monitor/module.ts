@@ -31,6 +31,7 @@ export const moduleFrontendDefinition: MasterFrontendModuleFrontendDefinition = 
   device: 'desktop',
   navigation: [
     { id: 'overview', label: 'Overview', href: '/monitor', description: 'System status and endpoint activity' },
+    { id: 'operations', label: 'Operacao', href: '/monitor/operacao', description: '24h operational summary for support' },
     { id: 'process', label: 'Process', href: '/monitor/process', description: 'Node.js runtime health — memory, uptime, load' },
     { id: 'architecture', label: 'Architecture', href: '/monitor/architecture', description: 'Module topology and storage design' },
     { id: 'postgres', label: 'Postgres', href: '/monitor/postgres', description: 'Tables, cache and queue status' },
@@ -60,6 +61,13 @@ export const moduleFrontendDefinition: MasterFrontendModuleFrontendDefinition = 
       entrypoint: '/_102034_/l2/monitor/web/routes/architecture.js',
       tag: 'monitor-web-desktop-home-page',
       title: 'Architecture',
+    },
+    {
+      path: '/monitor/operacao',
+      aliases: ['/monitor/operations'],
+      entrypoint: '/_102034_/l2/monitor/web/routes/operations.js',
+      tag: 'monitor-web-desktop-home-page',
+      title: 'Operacao',
     },
     {
       path: '/monitor/postgres',

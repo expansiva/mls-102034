@@ -19,6 +19,7 @@ import type {
   MonitorBffExecutionLogRecord,
   MonitorExecutionEvent,
 } from '/_102034_/l1/monitor/module.js';
+import type { MonitorOperationsSummaryResponse } from '/_102034_/l2/monitor/shared/contracts/operations.js';
 
 const POSTGRES_INSPECT_PAGE_SIZE = 50;
 const DYNAMO_INSPECT_PAGE_SIZE = 50;
@@ -1541,6 +1542,319 @@ export class MonitorRuntimePostgres {
     };
   }
 
+  public async loadOperationsSummaryData(input: {
+    windowHours: number;
+    module?: string;
+  }): Promise<{
+    executions: MonitorOperationsSummaryResponse['executions'];
+    abends: MonitorOperationsSummaryResponse['abends'];
+    frontendErrors: MonitorOperationsSummaryResponse['frontendErrors'];
+    postgres: MonitorOperationsSummaryResponse['infra']['postgres'];
+  }> {
+    const emptyExecutions: MonitorOperationsSummaryResponse['executions'] = {
+      total: 0,
+      success: 0,
+      clientError: 0,
+      serverError: 0,
+      notFound: 0,
+      okPercent: 0,
+      avgDurationMs: 0,
+      p95DurationMs: 0,
+      p99DurationMs: 0,
+      previous: {
+        total: 0,
+        serverError: 0,
+        okPercent: 0,
+        p95DurationMs: 0,
+      },
+      change: {
+        total: 0,
+        serverError: 0,
+        okPercent: 0,
+        p95DurationMs: 0,
+      },
+      slowestRoutines: [],
+      failingRoutines: [],
+    };
+
+    const emptyPostgres: MonitorOperationsSummaryResponse['infra']['postgres'] = {
+      currentDatabase: this.env.pgDatabase,
+      activeConnections: 0,
+      waitingLocks: 0,
+      cacheHitRate: null,
+      pendingOutbox: 0,
+      replicationFailures: 0,
+    };
+
+    if (this.env.runtimeMode !== 'postgres') {
+      return {
+        executions: emptyExecutions,
+        abends: {
+          total: 0,
+          groups: [],
+        },
+        frontendErrors: {
+          total: 0,
+          groups: [],
+        },
+        postgres: emptyPostgres,
+      };
+    }
+
+    const pool = getSharedPgPool(this.env);
+    const currentParams: unknown[] = [String(input.windowHours)];
+    const previousParams: unknown[] = [String(input.windowHours)];
+    const moduleClause = input.module ? `AND "module" = $${currentParams.push(input.module)}` : '';
+    const previousModuleClause = input.module ? `AND "module" = $${previousParams.push(input.module)}` : '';
+
+    const [summaryRows, previousRows, slowestRows, failingRows, abendRows, frontendRows, postgresSnapshot] = await Promise.all([
+      queryRows<{
+        total: number;
+        success: number;
+        clientError: number;
+        serverError: number;
+        notFound: number;
+        okPercent: number | null;
+        avgDurationMs: number | null;
+        p95DurationMs: number | null;
+        p99DurationMs: number | null;
+      }>(
+        pool,
+        `SELECT
+          COUNT(*)::int AS "total",
+          COUNT(*) FILTER (WHERE "statusGroup" = 'success')::int AS "success",
+          COUNT(*) FILTER (WHERE "statusGroup" = 'client_error')::int AS "clientError",
+          COUNT(*) FILTER (WHERE "statusGroup" = 'server_error')::int AS "serverError",
+          COUNT(*) FILTER (WHERE "statusGroup" = 'not_found')::int AS "notFound",
+          ROUND((COUNT(*) FILTER (WHERE "ok" = TRUE)::numeric / NULLIF(COUNT(*), 0)) * 100, 1)::float AS "okPercent",
+          ROUND(AVG("durationMs"))::int AS "avgDurationMs",
+          ROUND(percentile_cont(0.95) WITHIN GROUP (ORDER BY "durationMs"))::int AS "p95DurationMs",
+          ROUND(percentile_cont(0.99) WITHIN GROUP (ORDER BY "durationMs"))::int AS "p99DurationMs"
+         FROM monitor_bff_execution_log
+         WHERE "finishedAt" >= NOW() - ($1 || ' hours')::interval
+           ${moduleClause}`,
+        currentParams,
+      ),
+      queryRows<{
+        total: number;
+        serverError: number;
+        okPercent: number | null;
+        p95DurationMs: number | null;
+      }>(
+        pool,
+        `SELECT
+          COUNT(*)::int AS "total",
+          COUNT(*) FILTER (WHERE "statusGroup" = 'server_error')::int AS "serverError",
+          ROUND((COUNT(*) FILTER (WHERE "ok" = TRUE)::numeric / NULLIF(COUNT(*), 0)) * 100, 1)::float AS "okPercent",
+          ROUND(percentile_cont(0.95) WITHIN GROUP (ORDER BY "durationMs"))::int AS "p95DurationMs"
+         FROM monitor_bff_execution_log
+         WHERE "finishedAt" >= NOW() - (($1::int * 2)::text || ' hours')::interval
+           AND "finishedAt" < NOW() - ($1 || ' hours')::interval
+           ${previousModuleClause}`,
+        previousParams,
+      ),
+      queryRows<MonitorOperationsSummaryResponse['executions']['slowestRoutines'][number]>(
+        pool,
+        `SELECT
+          "routine",
+          "module",
+          COUNT(*)::int AS "total",
+          ROUND(AVG("durationMs"))::int AS "avgDurationMs",
+          ROUND(percentile_cont(0.95) WITHIN GROUP (ORDER BY "durationMs"))::int AS "p95DurationMs",
+          MAX("finishedAt")::text AS "lastFinishedAt"
+         FROM monitor_bff_execution_log
+         WHERE "finishedAt" >= NOW() - ($1 || ' hours')::interval
+           ${moduleClause}
+         GROUP BY "routine", "module"
+         HAVING COUNT(*) > 0
+         ORDER BY "p95DurationMs" DESC NULLS LAST, "avgDurationMs" DESC NULLS LAST
+         LIMIT 5`,
+        currentParams,
+      ),
+      queryRows<MonitorOperationsSummaryResponse['executions']['failingRoutines'][number]>(
+        pool,
+        `WITH grouped AS (
+          SELECT
+            "routine",
+            "module",
+            COUNT(*)::int AS "total",
+            COUNT(*) FILTER (WHERE "ok" = FALSE)::int AS "failures",
+            ROUND((COUNT(*) FILTER (WHERE "ok" = FALSE)::numeric / NULLIF(COUNT(*), 0)) * 100, 1)::float AS "failurePercent",
+            MAX("finishedAt")::text AS "lastFinishedAt"
+          FROM monitor_bff_execution_log
+          WHERE "finishedAt" >= NOW() - ($1 || ' hours')::interval
+            ${moduleClause}
+          GROUP BY "routine", "module"
+        ),
+        latest_error AS (
+          SELECT DISTINCT ON ("routine")
+            "routine",
+            "errorCode" AS "lastErrorCode"
+          FROM monitor_bff_execution_log
+          WHERE "finishedAt" >= NOW() - ($1 || ' hours')::interval
+            AND "ok" = FALSE
+            ${moduleClause}
+          ORDER BY "routine", "finishedAt" DESC
+        )
+        SELECT grouped.*, latest_error."lastErrorCode"
+        FROM grouped
+        LEFT JOIN latest_error ON latest_error."routine" = grouped."routine"
+        WHERE grouped."failures" > 0
+        ORDER BY grouped."failures" DESC, grouped."failurePercent" DESC, grouped."lastFinishedAt" DESC
+        LIMIT 5`,
+        currentParams,
+      ),
+      queryRows<MonitorOperationsSummaryResponse['abends']['groups'][number]>(
+        pool,
+        `WITH failures AS (
+          SELECT *
+          FROM monitor_bff_execution_log
+          WHERE "finishedAt" >= NOW() - ($1 || ' hours')::interval
+            AND "ok" = FALSE
+            ${moduleClause}
+        ),
+        grouped AS (
+          SELECT
+            "routine",
+            "module",
+            COUNT(*)::int AS "count",
+            MIN("finishedAt")::text AS "firstAt",
+            MAX("finishedAt")::text AS "lastAt"
+          FROM failures
+          GROUP BY "routine", "module"
+        ),
+        latest AS (
+          SELECT DISTINCT ON ("routine")
+            "routine",
+            "requestId",
+            "traceId",
+            "statusCode",
+            "errorCode",
+            "errorStack",
+            "durationMs"
+          FROM failures
+          ORDER BY "routine", "finishedAt" DESC
+        )
+        SELECT
+          grouped."routine",
+          grouped."module",
+          grouped."count",
+          grouped."firstAt",
+          grouped."lastAt",
+          json_build_object(
+            'requestId', latest."requestId",
+            'traceId', latest."traceId",
+            'statusCode', latest."statusCode",
+            'errorCode', latest."errorCode",
+            'errorStack', latest."errorStack",
+            'durationMs', latest."durationMs"
+          ) AS "latest"
+        FROM grouped
+        JOIN latest ON latest."routine" = grouped."routine"
+        ORDER BY grouped."count" DESC, grouped."lastAt" DESC
+        LIMIT 20`,
+        currentParams,
+      ),
+      queryRows<MonitorOperationsSummaryResponse['frontendErrors']['groups'][number]>(
+        pool,
+        `WITH errors AS (
+          SELECT *
+          FROM monitor_client_telemetry_event
+          WHERE "recordedAt" >= NOW() - ($1 || ' hours')::interval
+            AND "eventType" IN ('js_error', 'unhandled_rejection')
+            ${moduleClause}
+        ),
+        grouped AS (
+          SELECT
+            "routine",
+            "eventType",
+            COUNT(*)::int AS "count",
+            MIN("recordedAt")::text AS "firstAt",
+            MAX("recordedAt")::text AS "lastAt"
+          FROM errors
+          GROUP BY "routine", "eventType"
+        ),
+        latest AS (
+          SELECT DISTINCT ON ("routine", "eventType")
+            "routine",
+            "eventType",
+            "label" AS "latestLabel"
+          FROM errors
+          ORDER BY "routine", "eventType", "recordedAt" DESC
+        )
+        SELECT grouped.*, latest."latestLabel"
+        FROM grouped
+        JOIN latest ON latest."routine" = grouped."routine" AND latest."eventType" = grouped."eventType"
+        ORDER BY grouped."count" DESC, grouped."lastAt" DESC
+        LIMIT 20`,
+        currentParams,
+      ),
+      this.getPostgresSnapshot(),
+    ]);
+
+    const summary = summaryRows[0] ?? {
+      total: 0,
+      success: 0,
+      clientError: 0,
+      serverError: 0,
+      notFound: 0,
+      okPercent: 0,
+      avgDurationMs: 0,
+      p95DurationMs: 0,
+      p99DurationMs: 0,
+    };
+    const previous = previousRows[0] ?? {
+      total: 0,
+      serverError: 0,
+      okPercent: 0,
+      p95DurationMs: 0,
+    };
+
+    return {
+      executions: {
+        total: summary.total,
+        success: summary.success,
+        clientError: summary.clientError,
+        serverError: summary.serverError,
+        notFound: summary.notFound,
+        okPercent: summary.okPercent ?? 0,
+        avgDurationMs: summary.avgDurationMs ?? 0,
+        p95DurationMs: summary.p95DurationMs ?? 0,
+        p99DurationMs: summary.p99DurationMs ?? 0,
+        previous: {
+          total: previous.total,
+          serverError: previous.serverError,
+          okPercent: previous.okPercent ?? 0,
+          p95DurationMs: previous.p95DurationMs ?? 0,
+        },
+        change: {
+          total: summary.total - previous.total,
+          serverError: summary.serverError - previous.serverError,
+          okPercent: (summary.okPercent ?? 0) - (previous.okPercent ?? 0),
+          p95DurationMs: (summary.p95DurationMs ?? 0) - (previous.p95DurationMs ?? 0),
+        },
+        slowestRoutines: slowestRows,
+        failingRoutines: failingRows,
+      },
+      abends: {
+        total: abendRows.reduce((sum, row) => sum + row.count, 0),
+        groups: abendRows,
+      },
+      frontendErrors: {
+        total: frontendRows.reduce((sum, row) => sum + row.count, 0),
+        groups: frontendRows,
+      },
+      postgres: {
+        currentDatabase: postgresSnapshot.connection.currentDatabase,
+        activeConnections: postgresSnapshot.database.activeConnections,
+        waitingLocks: postgresSnapshot.database.waitingLocks,
+        cacheHitRate: postgresSnapshot.database.cacheHitRate,
+        pendingOutbox: postgresSnapshot.queue.pendingOutbox,
+        replicationFailures: postgresSnapshot.queue.replicationFailures,
+      },
+    };
+  }
+
   public async recordTelemetry(events: Array<{
     id: string;
     requestId: string;
@@ -1573,6 +1887,56 @@ export class MonitorRuntimePostgres {
         ],
       );
     }
+  }
+
+  /** Recent frontend errors (js_error / unhandled_rejection) captured by the client telemetry. */
+  public async loadClientErrors(input: {
+    limit?: number;
+    sinceHours?: number;
+  }): Promise<Array<{
+    id: string;
+    requestId: string;
+    traceId: string;
+    userId: string;
+    routine: string;
+    eventType: string;
+    label: string;
+    metadata: Record<string, unknown> | null;
+    recordedAt: string;
+    receivedAt: string;
+  }>> {
+    if (this.env.runtimeMode !== 'postgres') {
+      return [];
+    }
+    const pool = getSharedPgPool(this.env);
+    const limit = Math.min(Math.max(1, input.limit ?? 100), 500);
+    const sinceHours = Math.min(Math.max(1, input.sinceHours ?? 24), 24 * 30);
+    const rows = await queryRows<{
+      id: string;
+      requestId: string;
+      traceId: string;
+      userId: string;
+      routine: string;
+      eventType: string;
+      label: string;
+      metadata: Record<string, unknown> | null;
+      recordedAt: Date;
+      receivedAt: Date;
+    }>(
+      pool,
+      `SELECT "id", "requestId", "traceId", "userId", "routine", "eventType", "label", "metadata", "recordedAt", "receivedAt"
+       FROM monitor_client_telemetry_event
+       WHERE "eventType" IN ('js_error', 'unhandled_rejection')
+         AND "recordedAt" >= NOW() - ($2 || ' hours')::interval
+       ORDER BY "recordedAt" DESC
+       LIMIT $1`,
+      [limit, String(sinceHours)],
+    );
+    return rows.map((row) => ({
+      ...row,
+      recordedAt: row.recordedAt instanceof Date ? row.recordedAt.toISOString() : String(row.recordedAt),
+      receivedAt: row.receivedAt instanceof Date ? row.receivedAt.toISOString() : String(row.receivedAt),
+    }));
   }
 
   public async loadRequestTrace(input: {

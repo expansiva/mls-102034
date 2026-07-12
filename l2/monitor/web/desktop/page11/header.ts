@@ -1,7 +1,7 @@
 /// <mls fileReference="_102034_/l2/monitor/web/desktop/page11/header.ts" enhancement="_blank" />
 import { LitElement, html } from 'lit';
 import type { MasterFrontendBootConfig } from '/_102029_/l2/contracts/bootstrap.js';
-import { toggleAuraAside } from '../../../../../../mls-102033/l2/shellEvents.js';
+import { toggleAuraAside } from '/_102033_/l2/shellEvents.js';
 
 function readMonitorSection(pathname: string) {
   if (pathname.startsWith('/monitor/architecture')) {

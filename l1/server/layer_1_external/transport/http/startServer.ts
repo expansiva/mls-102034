@@ -6,6 +6,7 @@ import { getFrontendAppByBasePath, getFrontendAppRegistrations, getAppPublicRoot
 import { getPublicationTarget, readProjectsConfig, resolveActivePublicationDistPath } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { execBff } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
+import { registerCbeRoutes } from '/_102034_/l1/server/layer_1_external/cbe/cbeRoutes.js';
 import { WriteBehindWorker } from '/_102034_/l1/mdm/layer_1_external/queue/WriteBehindWorker.js';
 import type { BffRequest, FrontendAppRegistration, RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 
@@ -148,6 +149,9 @@ export function buildHttpServer() {
   const app = Fastify({ logger: false });
 
   app.get('/health', async () => ({ ok: true }));
+  // cbe-compatible endpoints (login + mls lib assets) for the runtime VM.
+  // Registered before the catch-all GET /* so /libs/* wins the route match.
+  registerCbeRoutes(app);
   app.get('/', async (_request, reply) => {
     reply.redirect(await resolveDefaultFrontendLocation());
   });
@@ -162,8 +166,8 @@ export function buildHttpServer() {
   app.get('/*', async (request, reply) => {
     const result = await handleHttpRequest('GET', request.url);
     reply.status(result.statusCode);
-    if (result.headers?.['content-type']) {
-      reply.type(result.headers['content-type']);
+    if (result.headers) {
+      reply.headers(result.headers);
     }
     return result.body;
   });
@@ -203,6 +207,11 @@ export async function handleHttpRequest(
         body: staticAsset.body,
         headers: {
           'content-type': staticAsset.contentType,
+          // Force revalidation: without this the browser heuristically caches
+          // app files (incl. /_chunks/*) and, after a new release, stale files
+          // reference chunk hashes that no longer exist — dynamic imports then
+          // fail. The server is local to the VM, so revalidation is cheap.
+          'cache-control': 'no-cache',
         },
       };
     }

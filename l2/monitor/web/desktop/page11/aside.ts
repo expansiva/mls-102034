@@ -2,7 +2,7 @@
 import { LitElement, html } from 'lit';
 import type { MasterFrontendBootConfig } from '/_102029_/l2/contracts/bootstrap.js';
 import { beginExpectedNavigationLoad, runBlockingUiAction } from '/_102029_/l2/interactionRuntime.js';
-import { closeAuraAside } from '../../../../../../mls-102033/l2/shellEvents.js';
+import { closeAuraAside } from '/_102033_/l2/shellEvents.js';
 import type { ProjectNavigationEntry } from '/_102029_/l2/runtimeConfigTypes.ts';
 
 function traceLazy(event: string, details?: Record<string, unknown>) {
