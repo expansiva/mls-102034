@@ -32,13 +32,13 @@ jobs:
     - name: Fix package name
       run: |
         if [ -f packagelib.json ]; then
-          mv packagelib.json package.json
+          cp packagelib.json package.json
         fi
 
     - name: Fix tsconfig name
       run: |
         if [ -f tsconfiglib.json ]; then
-          mv tsconfiglib.json tsconfig.json
+          cp tsconfiglib.json tsconfig.json
         fi
 
     - name: Install dependencies
