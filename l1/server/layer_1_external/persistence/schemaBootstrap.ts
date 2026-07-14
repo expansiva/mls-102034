@@ -168,15 +168,16 @@ async function rebuildPostgresSchema(
   for (const definition of orderedDefinitions.filter((d) => d.seedRows?.length)) {
     try {
       for (const row of definition.seedRows!) {
-        const columns = definition.columns.map((c) => c.name).filter((name) => row[name] !== undefined);
+        const columns = definition.columns.filter((column) => row[column.name] !== undefined);
         if (columns.length === 0) continue;
         const placeholders = columns.map((_, index) => `$${index + 1}`);
-        const values = columns.map((name) => {
-          const value = row[name];
-          return value !== null && typeof value === 'object' ? JSON.stringify(value) : value;
+        const values = columns.map((column) => {
+          const value = row[column.name];
+          if (value === null || typeof value !== 'object') return value;
+          return column.postgresType.endsWith('[]') ? value : JSON.stringify(value);
         });
         await pool.query(
-          `INSERT INTO ${quoteIdentifier(definition.tableName)} (${columns.map(quoteIdentifier).join(', ')}) VALUES (${placeholders.join(', ')})`,
+          `INSERT INTO ${quoteIdentifier(definition.tableName)} (${columns.map((column) => quoteIdentifier(column.name)).join(', ')}) VALUES (${placeholders.join(', ')})`,
           values,
         );
       }
