@@ -39,6 +39,7 @@ export const moduleFrontendDefinition: MasterFrontendModuleFrontendDefinition = 
     { id: 'abend', label: 'Abends', href: '/monitor/abend', description: 'Failed BFF executions with error details' },
     { id: 'trace', label: 'Trace', href: '/monitor/trace', description: 'Correlate requests by requestId or traceId' },
     { id: 'releases', label: 'Releases', href: '/monitor/releases', description: 'Deploy/rollback releases and view pm2 logs (admin)' },
+    { id: 'config', label: 'Config', href: '/monitor/config', description: 'Composed workspace config.json (read-only inspect)' },
   ],
   headerRenderer: {
     entrypoint: '/_102034_/l2/monitor/web/desktop/page11/header.js',
@@ -118,6 +119,12 @@ export const moduleFrontendDefinition: MasterFrontendModuleFrontendDefinition = 
       entrypoint: '/_102034_/l2/monitor/web/routes/releases.js',
       tag: 'monitor-web-desktop-releases-page',
       title: 'Releases',
+    },
+    {
+      path: '/monitor/config',
+      entrypoint: '/_102034_/l2/monitor/web/routes/config.js',
+      tag: 'monitor-web-desktop-config-page',
+      title: 'Config',
     },
   ],
 };

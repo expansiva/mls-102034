@@ -14,6 +14,7 @@ import {
 } from '/_102034_/l1/monitor/layer_2_controllers/monitorGetStatistics.js';
 import { monitorAbendLoadHandler, monitorClientErrorsLoadHandler } from '/_102034_/l1/monitor/layer_2_controllers/abendHandlers.js';
 import { monitorProcessLoadHandler } from '/_102034_/l1/monitor/layer_2_controllers/processHealthHandlers.js';
+import { monitorConfigLoadHandler } from '/_102034_/l1/monitor/layer_2_controllers/configHandlers.js';
 import { monitorOperationsSummaryHandler } from '/_102034_/l1/monitor/layer_2_controllers/operationsHandlers.js';
 import { monitorRequestTraceLoadHandler } from '/_102034_/l1/monitor/layer_2_controllers/traceHandlers.js';
 import {
@@ -37,6 +38,7 @@ export function createMonitorRouter(): Map<string, BffHandler> {
     ['monitor.abend.load', monitorAbendLoadHandler],
     ['monitor.clientErrors.load', monitorClientErrorsLoadHandler],
     ['monitor.process.load', monitorProcessLoadHandler],
+    ['monitor.config.load', monitorConfigLoadHandler],
     ['monitor.operations.summary', monitorOperationsSummaryHandler],
     ['monitor.requestTrace.load', monitorRequestTraceLoadHandler],
     ['monitor.telemetry.flush', async () => ok(null)],
