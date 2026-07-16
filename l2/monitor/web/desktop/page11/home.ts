@@ -25,6 +25,7 @@ import { loadMonitorProcess } from '/_102034_/l2/monitor/web/shared/process.js';
 import { loadMonitorSeries } from '/_102034_/l2/monitor/web/shared/series.js';
 import { loadMonitorAbend, loadMonitorClientErrors } from '/_102034_/l2/monitor/web/shared/abend.js';
 import { loadMonitorTrace } from '/_102034_/l2/monitor/web/shared/trace.js';
+import { loadMonitorTestsList, runMonitorTests } from '/_102034_/l2/monitor/web/shared/tests.js';
 import { loadMonitorDynamoTableDetails } from '/_102034_/l2/monitor/web/shared/tableDetailsDynamodb.js';
 import { loadMonitorPostgresTableDetails } from '/_102034_/l2/monitor/web/shared/tableDetailsPostgres.js';
 import { loadMonitorDynamoTableInspect } from '/_102034_/l2/monitor/web/shared/tableInspectDynamodb.js';
@@ -44,6 +45,7 @@ import type { MonitorPostgresResponse } from '/_102034_/l2/monitor/shared/contra
 import type { MonitorProcessResponse } from '/_102034_/l2/monitor/shared/contracts/process.js';
 import type { MonitorAbendResponse, MonitorClientErrorsResponse } from '/_102034_/l2/monitor/shared/contracts/abend.js';
 import type { MonitorTraceResponse } from '/_102034_/l2/monitor/shared/contracts/trace.js';
+import type { MonitorTestsListResponse } from '/_102034_/l2/monitor/shared/contracts/tests.js';
 import type { MonitorDynamoTableDetailsResponse } from '/_102034_/l2/monitor/shared/contracts/table-details-dynamodb.js';
 import type { MonitorPostgresTableDetailsResponse } from '/_102034_/l2/monitor/shared/contracts/table-details-postgres.js';
 import type { MonitorDynamoTableInspectResponse } from '/_102034_/l2/monitor/shared/contracts/table-inspect-dynamodb.js';
@@ -56,7 +58,7 @@ function traceLazy(event: string, details?: Record<string, unknown>) {
   console.log('[traceLazy][monitor]', event, details ?? {});
 }
 
-type MonitorSection = 'overview' | 'operations' | 'architecture' | 'postgres' | 'dynamodb' | 'process' | 'abend' | 'trace';
+type MonitorSection = 'overview' | 'operations' | 'architecture' | 'postgres' | 'dynamodb' | 'process' | 'abend' | 'trace' | 'tests';
 type MonitorStorage = 'postgres' | 'dynamodb';
 type MonitorRoute =
   | {
@@ -96,6 +98,10 @@ type MonitorRoute =
       kind: 'section';
       requestId?: string;
       traceId?: string;
+    }
+  | {
+      section: 'tests';
+      kind: 'section';
     }
   | {
       section: 'postgres';
@@ -213,6 +219,12 @@ function parseMonitorRoute(locationValue: Location): MonitorRoute {
       traceId: searchParams.get('traceId') ?? undefined,
     };
   }
+  if (pathname === '/monitor/tests') {
+    return {
+      section: 'tests',
+      kind: 'section',
+    };
+  }
   return {
     section: 'overview',
     kind: 'section',
@@ -281,6 +293,8 @@ function buildMonitorHref(route: MonitorRoute) {
     if (route.traceId) {
       searchParams.set('traceId', route.traceId);
     }
+  } else if (route.section === 'tests') {
+    pathname = '/monitor/tests';
   } else {
     pathname = '/monitor';
   }
@@ -344,6 +358,8 @@ export class MonitorWebDesktopHomePage extends LitElement {
     processData: { state: true },
     traceData: { state: true },
     traceSearchInput: { state: true },
+    testsData: { state: true },
+    testsRunning: { state: true },
   };
 
   currentSection: MonitorSection = 'overview';
@@ -369,6 +385,8 @@ export class MonitorWebDesktopHomePage extends LitElement {
   declare processData?: MonitorProcessResponse;
   declare traceData?: MonitorTraceResponse;
   traceSearchInput = '';
+  declare testsData?: MonitorTestsListResponse;
+  testsRunning = false;
 
   private overviewPollTimer: number | null = null;
 
@@ -843,6 +861,25 @@ export class MonitorWebDesktopHomePage extends LitElement {
       }
       this.traceData = response.data;
       this.status = `${response.data.totalCount} entries found`;
+      return;
+    }
+
+    if (this.currentRoute.section === 'tests' && this.currentRoute.kind === 'section') {
+      this.routeError = undefined;
+      this.status = 'Loading generated BFF tests...';
+      const response = await loadMonitorTestsList({ mode: options.mode, signal: options.signal });
+      if (!response.ok || !response.data) {
+        if (options.mode === 'blocking') {
+          throw this.toBlockingError('Could not load tests.', response.error);
+        }
+        this.status = response.error?.message ?? 'Could not load tests.';
+        return;
+      }
+      this.testsData = response.data;
+      const pageCount = response.data.modules.reduce((sum, module) => sum + module.pages.length, 0);
+      this.status = response.data.executionEnabled
+        ? `${pageCount} page(s) with tests · execution enabled (${response.data.appEnv})`
+        : `${pageCount} page(s) with tests · execution disabled outside development (${response.data.appEnv})`;
       return;
     }
 
@@ -2446,6 +2483,156 @@ export class MonitorWebDesktopHomePage extends LitElement {
     `;
   }
 
+  private async handleRunTests(scope: { moduleId?: string; page?: string }) {
+    if (this.testsRunning) return;
+    if (!this.testsData?.executionEnabled) return;
+    this.testsRunning = true;
+    this.status = 'Running BFF tests...';
+    try {
+      await runBlockingUiAction(
+        async (signal) => {
+          const response = await runMonitorTests(scope, { mode: 'blocking', signal });
+          if (!response.ok || !response.data) {
+            throw this.toBlockingError('Could not run tests.', response.error);
+          }
+          const run = response.data;
+          this.status = `Run finished: ${run.passed} passed, ${run.failed} failed, ${run.skipped} skipped`;
+          // Refresh the list so recentRuns reflects the new run.
+          const list = await loadMonitorTestsList({ signal });
+          if (list.ok && list.data) this.testsData = list.data;
+        },
+        {
+          busyLabel: 'Executando testes...',
+          errorTitle: 'Nao foi possivel executar os testes',
+          retry: () => this.handleRunTests(scope),
+        },
+      );
+    } catch {
+      // handled by runBlockingUiAction UI
+    } finally {
+      this.testsRunning = false;
+    }
+  }
+
+  private renderTestStatusBadge(status: 'pass' | 'fail' | 'skipped') {
+    const cls = status === 'pass'
+      ? 'rounded-full bg-emerald-100 px-2 py-1 text-xs font-medium text-emerald-800'
+      : status === 'fail'
+        ? 'rounded-full bg-rose-100 px-2 py-1 text-xs font-medium text-rose-800'
+        : 'rounded-full bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600';
+    return html`<span class="${cls}">${status}</span>`;
+  }
+
+  private renderTests() {
+    const data = this.testsData;
+    if (!data) return null;
+    const enabled = data.executionEnabled && !this.testsRunning;
+    const runButton = (label: string, scope: { moduleId?: string; page?: string }) => html`
+      <button
+        class="rounded-full px-4 py-2 text-xs font-medium text-white transition ${data.executionEnabled ? 'bg-aura-navy hover:bg-aura-blue' : 'cursor-not-allowed bg-slate-300'}"
+        ?disabled=${!enabled}
+        @click=${() => this.handleRunTests(scope)}
+      >${label}</button>`;
+    const lastRun = data.recentRuns[0];
+
+    return html`
+      <section class="space-y-6">
+        ${this.renderRouteError()}
+        <article class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <h2 class="text-lg font-semibold text-slate-900">Generated BFF tests</h2>
+              <p class="mt-1 text-sm text-slate-500">
+                Declarative test cases generated per page (page11). Each case runs through the real
+                /execBff pipeline with source=test.
+              </p>
+            </div>
+            ${runButton('Run all', {})}
+          </div>
+          ${data.executionEnabled
+            ? null
+            : html`<p class="mt-4 rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-800">Execution disabled outside development (appEnv: ${data.appEnv}). Showing discovered tests and history only.</p>`}
+        </article>
+
+        ${data.modules.length === 0
+          ? html`<article class="rounded-3xl border border-slate-200 bg-white p-6 text-sm text-slate-500 shadow-sm">No generated test files found in config.json (modules[].frontend.pageTests).</article>`
+          : data.modules.map((module) => html`
+            <article class="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
+              <div class="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 px-6 py-4">
+                <h3 class="text-base font-semibold text-slate-900">${module.moduleId} <span class="text-xs font-normal text-slate-400">· project ${module.projectId}</span></h3>
+                ${runButton('Run module', { moduleId: module.moduleId })}
+              </div>
+              <div class="divide-y divide-slate-100">
+                ${module.pages.map((page) => html`
+                  <div class="px-6 py-4">
+                    <div class="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <div class="font-medium text-slate-900">${page.page} <span class="text-xs font-normal text-slate-400">· ${page.variant} · ${page.cases.length} case(s)</span></div>
+                        ${page.loadError ? html`<div class="mt-1 text-xs text-rose-600">load error: ${page.loadError}</div>` : null}
+                      </div>
+                      ${runButton('Run page', { moduleId: module.moduleId, page: page.page })}
+                    </div>
+                    <ul class="mt-3 flex flex-wrap gap-2">
+                      ${page.cases.map((testCase) => html`
+                        <li class="rounded-2xl border border-slate-200 px-3 py-1 text-xs text-slate-600">
+                          <span class="font-medium text-slate-800">${testCase.id}</span>
+                          ${testCase.mutating ? html`<span class="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-800">mutating</span>` : null}
+                        </li>
+                      `)}
+                    </ul>
+                  </div>
+                `)}
+              </div>
+            </article>
+          `)}
+
+        ${lastRun
+          ? html`
+            <article class="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
+              <div class="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 px-6 py-4">
+                <h3 class="text-base font-semibold text-slate-900">Last run</h3>
+                <span class="text-sm text-slate-500">
+                  ${lastRun.passed} passed · ${lastRun.failed} failed · ${lastRun.skipped} skipped · ${formatDateTime(lastRun.finishedAt)}
+                </span>
+              </div>
+              <div class="overflow-x-auto">
+                <table class="min-w-full text-left text-sm">
+                  <thead class="bg-slate-50 text-slate-600">
+                    <tr>
+                      <th class="px-6 py-3 font-medium">Case</th>
+                      <th class="px-6 py-3 font-medium">Routine</th>
+                      <th class="px-6 py-3 font-medium">Status</th>
+                      <th class="px-6 py-3 font-medium">Duration</th>
+                      <th class="px-6 py-3 font-medium">Error</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${lastRun.cases.map((testCase) => html`
+                      <tr class="border-t border-slate-100 align-top">
+                        <td class="px-6 py-4">
+                          <div class="font-medium text-slate-900">${testCase.id}</div>
+                          <div class="text-xs text-slate-400">${testCase.module} · ${testCase.page}</div>
+                        </td>
+                        <td class="px-6 py-4 text-slate-600">${testCase.routine}</td>
+                        <td class="px-6 py-4">${this.renderTestStatusBadge(testCase.status)}</td>
+                        <td class="px-6 py-4 text-slate-500">${testCase.status === 'skipped' ? '—' : `${formatInteger(testCase.durationMs)} ms`}</td>
+                        <td class="px-6 py-4 text-xs text-rose-600">
+                          ${testCase.status === 'fail'
+                            ? html`<div>${testCase.reason || testCase.errorCode || 'failed'}</div>${testCase.errorMessage ? html`<div class="mt-1 text-rose-500">${testCase.errorMessage}</div>` : null}`
+                            : testCase.errorCode ?? ''}
+                        </td>
+                      </tr>
+                    `)}
+                  </tbody>
+                </table>
+              </div>
+            </article>
+          `
+          : html`<article class="rounded-3xl border border-slate-200 bg-white p-6 text-sm text-slate-500 shadow-sm">No runs yet${data.executionEnabled ? ' — use Run all / Run module / Run page.' : '.'}</article>`}
+      </section>
+    `;
+  }
+
   private renderMetricCard(title: string, value: string, caption: string) {
     return html`
       <article class="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -2485,6 +2672,8 @@ export class MonitorWebDesktopHomePage extends LitElement {
                 ? this.renderAbend()
                 : this.currentRoute.section === 'trace' && this.currentRoute.kind === 'section'
                 ? this.renderTrace()
+                : this.currentRoute.section === 'tests' && this.currentRoute.kind === 'section'
+                ? this.renderTests()
                 : this.currentRoute.section === 'postgres' && this.currentRoute.kind === 'inspect'
                   ? this.renderPostgresInspect()
                   : this.currentRoute.section === 'postgres' && this.currentRoute.kind === 'details'

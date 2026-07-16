@@ -22,6 +22,11 @@ import {
   monitorReleasesActivateHandler,
   monitorReleasesListHandler,
 } from '/_102034_/l1/monitor/layer_2_controllers/releaseHandlers.js';
+import {
+  monitorTestsListHandler,
+  monitorTestsResultsHandler,
+  monitorTestsRunHandler,
+} from '/_102034_/l1/monitor/layer_2_controllers/testsHandlers.js';
 
 export function createMonitorRouter(): Map<string, BffHandler> {
   return new Map<string, BffHandler>([
@@ -46,5 +51,9 @@ export function createMonitorRouter(): Map<string, BffHandler> {
     ['monitor.releases.list', monitorReleasesListHandler],
     ['monitor.releases.activate', monitorReleasesActivateHandler],
     ['monitor.logs.tail', monitorLogsTailHandler],
+    // Generated BFF tests (devenv). run is gated to development inside the usecase.
+    ['monitor.tests.list', monitorTestsListHandler],
+    ['monitor.tests.run', monitorTestsRunHandler],
+    ['monitor.tests.results', monitorTestsResultsHandler],
   ]);
 }

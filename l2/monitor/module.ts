@@ -38,6 +38,7 @@ export const moduleFrontendDefinition: MasterFrontendModuleFrontendDefinition = 
     { id: 'dynamodb', label: 'DynamoDB', href: '/monitor/dynamodb', description: 'Tables and storage status' },
     { id: 'abend', label: 'Abends', href: '/monitor/abend', description: 'Failed BFF executions with error details' },
     { id: 'trace', label: 'Trace', href: '/monitor/trace', description: 'Correlate requests by requestId or traceId' },
+    { id: 'tests', label: 'Tests', href: '/monitor/tests', description: 'Generated BFF test cases — view runs and execute (dev only)' },
     { id: 'releases', label: 'Releases', href: '/monitor/releases', description: 'Deploy/rollback releases and view pm2 logs (admin)' },
     { id: 'config', label: 'Config', href: '/monitor/config', description: 'Composed workspace config.json (read-only inspect)' },
   ],
@@ -113,6 +114,12 @@ export const moduleFrontendDefinition: MasterFrontendModuleFrontendDefinition = 
       entrypoint: '/_102034_/l2/monitor/web/routes/trace.js',
       tag: 'monitor-web-desktop-home-page',
       title: 'Trace',
+    },
+    {
+      path: '/monitor/tests',
+      entrypoint: '/_102034_/l2/monitor/web/routes/tests.js',
+      tag: 'monitor-web-desktop-home-page',
+      title: 'Tests',
     },
     {
       path: '/monitor/releases',
