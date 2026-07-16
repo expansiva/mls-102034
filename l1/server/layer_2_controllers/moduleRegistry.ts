@@ -1,5 +1,5 @@
 /// <mls fileReference="_102034_/l1/server/layer_2_controllers/moduleRegistry.ts" enhancement="_blank" />
-import { readdirSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { AppError, type BffHandler, type ControllerRoute, type ModuleBffRegistration, type RoutineResolution } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import { readProjectsConfig, resolveProjectDistPath, resolveProjectModuleImportUrl } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 
@@ -40,21 +40,43 @@ async function loadRouterFromControllers(controllersDir: string): Promise<Map<st
   return router;
 }
 
+// Hexagonal model: the module's composition root (registerRepositories.js inside its tableDefsDir)
+// binds each repository port to its adapter factory via registerRepository(). It is discovered
+// through the same config link as the table definitions (persistenceModules[].tableDefsDir), so the
+// runtime never imports a client project directly — usecases resolve ports only after this ran.
+async function loadCompositionRoot(tableDefsDir: string, moduleId: string): Promise<void> {
+  const relativePath = `${tableDefsDir.replace(/\/$/u, '')}/registerRepositories.js`;
+  if (!existsSync(resolveProjectDistPath(relativePath))) {
+    console.warn(`[moduleRegistry] module "${moduleId}" has no composition root (${relativePath}) — its repository ports will not resolve`);
+    return;
+  }
+  await import(resolveProjectModuleImportUrl(relativePath));
+}
+
 function getConfiguredModuleRegistrations(): ModuleBffRegistration[] {
   const config = readProjectsConfig();
   const configuredProjects = Object.entries(config.projects) as Array<[string, import('/_102034_/l1/server/layer_1_external/config/projectConfig.js').ProjectConfigRecord]>;
   return configuredProjects
     .flatMap(([projectId, project]) => (project.modules ?? [])
       .filter((moduleConfig) => typeof moduleConfig.backendControllers === 'string' || typeof moduleConfig.backendRouter === 'string')
-      .map((moduleConfig) => ({
-        projectId,
-        moduleId: moduleConfig.moduleId,
-        frontendBasePath: moduleConfig.basePath,
-        frontendEntrypoint: '',
-        loadRouter: async () => (typeof moduleConfig.backendControllers === 'string'
-          ? loadRouterFromControllers(moduleConfig.backendControllers)
-          : loadRouterFromEntrypoint(moduleConfig.backendRouter as string)),
-      })));
+      .map((moduleConfig) => {
+        const tableDefsDir = (project.persistenceModules ?? [])
+          .find((persistenceModule) => persistenceModule.moduleId === moduleConfig.moduleId)?.tableDefsDir;
+        return {
+          projectId,
+          moduleId: moduleConfig.moduleId,
+          frontendBasePath: moduleConfig.basePath,
+          frontendEntrypoint: '',
+          loadRouter: async () => {
+            if (tableDefsDir) {
+              await loadCompositionRoot(tableDefsDir, moduleConfig.moduleId);
+            }
+            return typeof moduleConfig.backendControllers === 'string'
+              ? loadRouterFromControllers(moduleConfig.backendControllers)
+              : loadRouterFromEntrypoint(moduleConfig.backendRouter as string);
+          },
+        };
+      }));
 }
 
 export function getModuleBffRegistrations() {
