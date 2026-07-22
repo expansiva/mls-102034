@@ -1,5 +1,8 @@
 {
   "workspaceDependencies": {
+    "102020": {
+      "repo": "https://github.com/expansiva/mls-102020.git"
+    },
     "102029": {
       "repo": "https://github.com/expansiva/mls-102029.git"
     }
