@@ -1,4 +1,4 @@
-/// <mls fileReference="_102033_/l2/designSystem.ts" enhancement="_blank" /> 
+/// <mls fileReference="_102033_/l2/designSystem.ts" enhancement="_blank" />  
 
 import { IDesignSystemTokens } from '/_102029_/l2/designSystemBase.js';  
 
