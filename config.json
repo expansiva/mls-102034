@@ -1,8 +1,0 @@
-{
-  "workspaceDependencies": {
-    "102029": {
-      "repo": "https://github.com/expansiva/mls-102029.git",
-      "commit": "7b65a3cac3969eeaa511de67ffcabfc859288b4d"
-    }
-  }
-}
