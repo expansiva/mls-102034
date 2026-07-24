@@ -6,6 +6,7 @@ export interface MonitorPostgresResponse {
     connection: {
       host: string;
       port: number;
+      runtimeDatabase: string;
       currentDatabase: string;
       availableDatabases: string[];
     };

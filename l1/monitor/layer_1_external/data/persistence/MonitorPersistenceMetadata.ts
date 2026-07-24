@@ -10,7 +10,13 @@ export interface MonitorTableMetadata {
   projectId: string;
   moduleId: string;
   repositoryName: string;
+  // Physical name in the database (namespaced per client project, e.g. mls102051_order).
   tableName: string;
+  // Logical/base name the module code refers to (e.g. order); equals tableName for platform tables.
+  logicalTableName: string;
+  // Runtime database the table lives in (e.g. mdm), so the monitor can distinguish global from
+  // project-specific tables at a glance.
+  runtimeDatabase: string;
   description: string;
   purpose: string;
   storageProfile: string;
@@ -38,6 +44,8 @@ export class MonitorPersistenceMetadata {
       moduleId: definition.moduleId,
       repositoryName: definition.repositoryName,
       tableName: definition.tableName,
+      logicalTableName: definition.logicalTableName,
+      runtimeDatabase: this.env.pgDatabase,
       description: definition.description,
       purpose: definition.purpose,
       storageProfile: definition.storageProfile,

@@ -12,8 +12,15 @@ interface ReleasesList {
   releases: ReleaseItem[];
 }
 interface LogsTail {
+  app: string;
   file: string;
   stream: 'out' | 'error';
+  updatedAt: string | null;
+  available: Array<{
+    app: string;
+    file: string;
+    updatedAt: string | null;
+  }>;
   lines: string[];
 }
 
@@ -28,6 +35,9 @@ export class MonitorWebDesktopReleasesPage extends LitElement {
     active: { state: true },
     releases: { state: true },
     logStream: { state: true },
+    logApp: { state: true },
+    logFile: { state: true },
+    logTargets: { state: true },
     logLines: { state: true },
   };
 
@@ -36,11 +46,15 @@ export class MonitorWebDesktopReleasesPage extends LitElement {
   active: string | null = null;
   declare releases: ReleaseItem[];
   logStream: 'out' | 'error' = 'out';
+  logApp = '';
+  logFile = '';
+  declare logTargets: LogsTail['available'];
   declare logLines: string[];
 
   constructor() {
     super();
     this.releases = [];
+    this.logTargets = [];
     this.logLines = [];
   }
 
@@ -67,8 +81,21 @@ export class MonitorWebDesktopReleasesPage extends LitElement {
 
   private async loadLogs(stream: 'out' | 'error' = this.logStream) {
     this.logStream = stream;
-    const res = await execBff<LogsTail>('monitor.logs.tail', { stream, lines: 200 }, { mode: 'silent' });
-    this.logLines = res.ok && res.data ? res.data.lines : [res.error?.message ?? 'Could not load logs.'];
+    const params = this.logApp ? { stream, lines: 200, app: this.logApp } : { stream, lines: 200 };
+    const res = await execBff<LogsTail>('monitor.logs.tail', params, { mode: 'silent' });
+    if (!res.ok || !res.data) {
+      this.logLines = [res.error?.message ?? 'Could not load logs.'];
+      return;
+    }
+    this.logApp = res.data.app;
+    this.logFile = res.data.file;
+    this.logTargets = res.data.available;
+    this.logLines = res.data.lines;
+  }
+
+  private async changeLogApp(event: Event) {
+    this.logApp = (event.currentTarget as HTMLSelectElement).value;
+    await this.loadLogs(this.logStream);
   }
 
   private async activate(releaseId: string) {
@@ -145,8 +172,22 @@ export class MonitorWebDesktopReleasesPage extends LitElement {
 
         <article class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <div class="mb-3 flex items-center justify-between gap-4">
-            <h2 class="text-lg font-semibold text-slate-900">pm2 logs</h2>
-            <div class="flex gap-2 text-xs">
+            <div>
+              <h2 class="text-lg font-semibold text-slate-900">pm2 logs</h2>
+              <p class="mt-1 text-xs text-slate-500">${this.logFile || 'Loading log source...'}</p>
+            </div>
+            <div class="flex flex-wrap items-center justify-end gap-2 text-xs">
+              ${this.logTargets.length > 0
+                ? html`
+                    <select class="rounded-full bg-slate-100 px-3 py-1 text-slate-700" @change=${(event: Event) => { void this.changeLogApp(event); }}>
+                      ${this.logTargets.map((target) => html`
+                        <option value=${target.app} ?selected=${target.app === this.logApp}>
+                          ${target.app}${target.updatedAt ? ` · ${new Date(target.updatedAt).toLocaleString('pt-BR')}` : ''}
+                        </option>
+                      `)}
+                    </select>
+                  `
+                : null}
               <button class="rounded-full px-3 py-1 ${this.logStream === 'out' ? 'bg-aura-blue text-white' : 'bg-slate-100 text-slate-700'}" @click=${() => { void this.loadLogs('out'); }}>stdout</button>
               <button class="rounded-full px-3 py-1 ${this.logStream === 'error' ? 'bg-aura-blue text-white' : 'bg-slate-100 text-slate-700'}" @click=${() => { void this.loadLogs('error'); }}>stderr</button>
             </div>

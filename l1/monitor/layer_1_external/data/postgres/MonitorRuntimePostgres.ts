@@ -616,6 +616,11 @@ export class MonitorRuntimePostgres {
   }): Promise<{
     databaseName: string;
     tableName: string;
+    // Logical/base name (e.g. order) vs the physical tableName (e.g. mls102051_order); equal for
+    // platform tables. projectId is the owning project. Together with moduleId (module owner) and
+    // databaseName (runtime db) the monitor can tell a global table from a project-specific one.
+    logicalTableName: string | null;
+    projectId: string | null;
     description: string | null;
     moduleId: string | null;
     repositoryName: string | null;
@@ -637,6 +642,8 @@ export class MonitorRuntimePostgres {
       return {
         databaseName: input.databaseName ?? this.env.pgDatabase,
         tableName: input.tableName,
+        logicalTableName: metadata?.logicalTableName ?? null,
+        projectId: metadata?.projectId ?? null,
         description: metadata?.description ?? null,
         moduleId: metadata?.moduleId ?? null,
         repositoryName: metadata?.repositoryName ?? null,
@@ -665,6 +672,8 @@ export class MonitorRuntimePostgres {
       return {
         databaseName: targetDatabase,
         tableName: input.tableName,
+        logicalTableName: metadata?.logicalTableName ?? null,
+        projectId: metadata?.projectId ?? null,
         description: metadata?.description ?? null,
         moduleId: metadata?.moduleId ?? null,
         repositoryName: metadata?.repositoryName ?? null,
@@ -934,6 +943,7 @@ export class MonitorRuntimePostgres {
     connection: {
       host: string;
       port: number;
+      runtimeDatabase: string;
       currentDatabase: string;
       availableDatabases: string[];
     };
@@ -967,6 +977,7 @@ export class MonitorRuntimePostgres {
         connection: {
           host: this.env.pgHost,
           port: this.env.pgPort,
+          runtimeDatabase: this.env.pgDatabase,
           currentDatabase: this.env.pgDatabase,
           availableDatabases: [this.env.pgDatabase],
         },
@@ -1093,6 +1104,7 @@ export class MonitorRuntimePostgres {
         connection: {
           host: this.env.pgHost,
           port: this.env.pgPort,
+          runtimeDatabase: this.env.pgDatabase,
           currentDatabase: database?.databaseName ?? targetDatabase,
           availableDatabases,
         },

@@ -1567,6 +1567,8 @@ export class MonitorWebDesktopHomePage extends LitElement {
   private renderPostgres() {
     const data = this.postgresData?.postgres;
     const tables = data?.tables ?? [];
+    const runtimeDatabase = data?.connection.runtimeDatabase;
+    const inspectingRuntimeDatabase = !runtimeDatabase || data?.connection.currentDatabase === runtimeDatabase;
 
     return html`
       <section class="space-y-6">
@@ -1594,23 +1596,32 @@ export class MonitorWebDesktopHomePage extends LitElement {
               <select class="rounded-full border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900" @change=${(event: Event) => this.handleDatabaseChange(event)}>
                 ${(data?.connection.availableDatabases ?? []).map((databaseName) => html`
                   <option value="${databaseName}" ?selected=${databaseName === this.selectedDatabaseName}>
-                    ${databaseName}
+                    ${databaseName}${databaseName === runtimeDatabase ? ' (runtime)' : ''}
                   </option>
                 `)}
               </select>
             </label>
           </div>
+          ${inspectingRuntimeDatabase
+            ? null
+            : html`
+                <div class="mb-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                  You are inspecting <strong>${data?.connection.currentDatabase}</strong>, but the runtime database configured for this app is
+                  <strong>${runtimeDatabase}</strong>. Missing tables here do not mean the publish migration failed.
+                </div>
+              `}
           <div class="grid gap-4 md:grid-cols-[0.8fr_1.2fr]">
             <div class="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-4">
-              <div class="text-sm uppercase tracking-wide text-slate-500">Current database</div>
+              <div class="text-sm uppercase tracking-wide text-slate-500">Inspecting database</div>
               <div class="mt-2 text-2xl font-semibold text-slate-950">${data?.connection.currentDatabase ?? 'n/a'}</div>
+              <div class="mt-1 text-xs text-slate-500">Runtime database: ${runtimeDatabase ?? 'n/a'}</div>
             </div>
             <div class="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-4">
               <div class="text-sm uppercase tracking-wide text-slate-500">Available databases</div>
               <div class="mt-3 flex flex-wrap gap-2">
                 ${(data?.connection.availableDatabases ?? []).map((databaseName) => html`
                   <span class="${databaseName === data?.connection.currentDatabase ? 'rounded-full bg-aura-blue px-3 py-1 text-sm font-medium text-white' : 'rounded-full bg-slate-200 px-3 py-1 text-sm font-medium text-slate-700'}">
-                    ${databaseName}
+                    ${databaseName}${databaseName === runtimeDatabase ? ' · runtime' : ''}
                   </span>
                 `)}
               </div>

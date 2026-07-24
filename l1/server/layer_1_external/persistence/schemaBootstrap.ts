@@ -6,7 +6,7 @@ import type {
   ResolvedTableDefinition,
   TableIndexColumnDefinition,
 } from '/_102034_/l1/server/layer_1_external/persistence/contracts.js';
-import { usesPostgres } from '/_102034_/l1/server/layer_1_external/persistence/contracts.js';
+import { projectTableNamespacePrefix, usesPostgres } from '/_102034_/l1/server/layer_1_external/persistence/contracts.js';
 import {
   buildSchemaSnapshot,
   loadResolvedTableDefinitions,
@@ -75,10 +75,35 @@ async function rebuildPostgresSchema(
   const hasTimescale = definitions.some((d) => d.timescale?.hypertable);
   const timescaleAvailable = hasTimescale ? await ensureTimescaleAvailable(pool) : false;
 
+  // Multi-project isolation: several client projects can share one database/schema on a VM, so this
+  // publish must rebuild ONLY the objects this workspace owns and never drop another project's tables.
+  // "Owned" = every physical name we are about to (re)create, plus any stale object still carrying this
+  // workspace's client prefix (mls<projectId>_) from a prior publish. Platform tables (mdm_*, monitor,
+  // _schema_migrations) are unprefixed and part of `definitions`, so they are owned and rebuilt as
+  // before; another project's mls<otherId>_* tables match neither set and are left untouched.
+  const ownedNames = new Set(
+    definitions
+      .filter((d) => usesPostgres(d))
+      .flatMap((d) => d.tableName === d.logicalTableName
+        ? [d.tableName]
+        : [d.tableName, d.logicalTableName]),
+  );
+  const clientPrefixes = [
+    ...new Set(
+      definitions
+        .filter((d) => d.tableName !== d.logicalTableName)
+        .map((d) => projectTableNamespacePrefix(d.projectId)),
+    ),
+  ];
+  const viewDefs = await loadViewDefinitions();
+  const ownedViewNames = new Set(viewDefs.map((view) => view.viewName));
+  const isOwned = (name: string): boolean =>
+    ownedNames.has(name) || ownedViewNames.has(name) || clientPrefixes.some((prefix) => name.startsWith(prefix));
+
   // Surgical cleanup instead of DROP SCHEMA public CASCADE: dropping the schema would
   // CASCADE-drop the timescaledb extension (its functions live in public) and the app
   // role cannot re-create it (superuser-only, see vmInitialSetup.sh). Drop only the
-  // user objects; the extension and its catalogs survive the rebuild.
+  // user objects THIS workspace owns; the extension, its catalogs, and other projects survive.
 
   // Continuous aggregates first: they show up in pg_views but Timescale requires
   // DROP MATERIALIZED VIEW for them.
@@ -89,6 +114,7 @@ async function rebuildPostgresSchema(
         "SELECT view_name FROM timescaledb_information.continuous_aggregates WHERE view_schema = 'public'",
       );
       for (const row of caggs.rows) {
+        if (!isOwned(row.view_name)) continue;
         await pool.query(`DROP MATERIALIZED VIEW IF EXISTS ${quoteIdentifier(row.view_name)} CASCADE`);
         droppedCaggs.add(row.view_name);
       }
@@ -101,7 +127,7 @@ async function rebuildPostgresSchema(
     "SELECT viewname FROM pg_views WHERE schemaname = 'public'",
   );
   for (const row of existingViews.rows) {
-    if (droppedCaggs.has(row.viewname)) continue;
+    if (droppedCaggs.has(row.viewname) || !isOwned(row.viewname)) continue;
     try {
       await pool.query(`DROP VIEW IF EXISTS ${quoteIdentifier(row.viewname)} CASCADE`);
     } catch (error) {
@@ -113,12 +139,14 @@ async function rebuildPostgresSchema(
     "SELECT matviewname FROM pg_matviews WHERE schemaname = 'public'",
   );
   for (const row of existingMatViews.rows) {
+    if (!isOwned(row.matviewname)) continue;
     await pool.query(`DROP MATERIALIZED VIEW IF EXISTS ${quoteIdentifier(row.matviewname)} CASCADE`);
   }
   const existingTables = await pool.query<{ tablename: string }>(
     "SELECT tablename FROM pg_tables WHERE schemaname = 'public'",
   );
   for (const row of existingTables.rows) {
+    if (!isOwned(row.tablename)) continue;
     await pool.query(`DROP TABLE IF EXISTS ${quoteIdentifier(row.tablename)} CASCADE`);
   }
 

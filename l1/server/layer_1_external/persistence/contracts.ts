@@ -96,6 +96,10 @@ export interface TableSeedRows {
 export interface ResolvedTableDefinition extends TableDefinition {
   projectId: string;
   repositoryName: string;
+  // Physical table name (`tableName`) namespaced per client project. `logicalTableName` is the
+  // pre-namespace base name, kept as a lookup key so `getTable('order')` / a `seedFor: 'order'` still
+  // resolve after the physical name becomes `mls<projectId>_order`.
+  logicalTableName: string;
   dynamoResolvedTableName: string | null;
 }
 
@@ -139,6 +143,37 @@ export function resolvePostgresTableName(
   env: Pick<AppEnv, 'appEnv'>,
 ): string {
   return definition.tableNameByEnv?.[env.appEnv] ?? definition.tableName;
+}
+
+/** A project is namespaced when it owns application (client) tables. Platform tables live in
+ *  master-backend / lib projects and stay on their canonical, shared names. */
+export function isClientProjectType(projectType: string | undefined): boolean {
+  return projectType === 'client';
+}
+
+/** Physical-name prefix for a client project. `mls` keeps the identifier unquoted-safe in Postgres
+ *  (a bare `102051_order` would require quoting everywhere), and readable. */
+export function projectTableNamespacePrefix(projectId: string): string {
+  return `mls${projectId}_`;
+}
+
+/**
+ * Namespaces a physical storage name (Postgres table or DynamoDB table) with the owning project when
+ * that project owns application tables, so several client projects can share one database/schema on a
+ * VM without colliding on generic names (`order`, `daily_shift`, ...). Platform tables (mdm_*, monitor,
+ * _schema_migrations) belong to master/lib projects and are left on their canonical names. Idempotent:
+ * a name already carrying the prefix is returned unchanged.
+ */
+export function applyProjectTableNamespace(
+  physicalName: string,
+  projectId: string,
+  projectType: string | undefined,
+): string {
+  if (!isClientProjectType(projectType)) {
+    return physicalName;
+  }
+  const prefix = projectTableNamespacePrefix(projectId);
+  return physicalName.startsWith(prefix) ? physicalName : `${prefix}${physicalName}`;
 }
 
 export function usesPostgres(definition: TableDefinition): boolean {

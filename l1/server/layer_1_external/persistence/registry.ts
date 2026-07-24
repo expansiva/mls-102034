@@ -15,6 +15,7 @@ import type {
   ViewDefinition,
 } from '/_102034_/l1/server/layer_1_external/persistence/contracts.js';
 import {
+  applyProjectTableNamespace,
   resolveDynamoTableName,
   resolvePostgresTableName,
   resolveRepositoryName,
@@ -26,6 +27,7 @@ import { sha256Hex } from '/_102029_/l2/webCrypto.js';
 
 interface PersistenceModuleRegistration {
   projectId: string;
+  projectType?: string;
   moduleId: string;
   persistenceEntrypoint?: string;
   tableDefsDir?: string;
@@ -44,6 +46,7 @@ function getPersistenceModuleRegistrations(): PersistenceModuleRegistration[] {
   return Object.entries(config.projects).flatMap(([projectId, project]) =>
     (project.persistenceModules ?? []).map((moduleConfig: ProjectPersistenceModuleConfig) => ({
       projectId,
+      projectType: project.type,
       moduleId: moduleConfig.moduleId,
       persistenceEntrypoint: moduleConfig.persistenceEntrypoint,
       tableDefsDir: moduleConfig.tableDefsDir,
@@ -278,7 +281,10 @@ function applySeedRows(
   seeds: Array<{ seed: TableSeedRows; source: string }>,
 ) {
   for (const { seed, source } of seeds) {
-    const def = definitions.find((d) => d.repositoryName === seed.seedFor || d.tableName === seed.seedFor);
+    // Seeds target the logical name (repositoryName like 'cafeFlowOrder', or the base table name
+    // 'order'); the physical tableName is namespaced, so match logicalTableName too.
+    const def = definitions.find((d) =>
+      d.repositoryName === seed.seedFor || d.logicalTableName === seed.seedFor || d.tableName === seed.seedFor);
     if (def) {
       def.seedRows = [...(def.seedRows ?? []), ...seed.rows];
     } else {
@@ -401,12 +407,17 @@ export async function loadResolvedTableDefinitions(
       const loaded = await importTableDefinitions(registration);
       const definitions = loaded.definitions.map((definition): ResolvedTableDefinition => {
         validateDefinition(definition, registration, env);
+        const logicalTableName = resolvePostgresTableName(definition, env);
+        const dynamoBaseName = resolveDynamoTableName(definition, env);
         return {
           ...definition,
-          tableName: resolvePostgresTableName(definition, env),
+          logicalTableName,
+          tableName: applyProjectTableNamespace(logicalTableName, registration.projectId, registration.projectType),
           projectId: registration.projectId,
           repositoryName: resolveRepositoryName(definition),
-          dynamoResolvedTableName: resolveDynamoTableName(definition, env),
+          dynamoResolvedTableName: dynamoBaseName
+            ? applyProjectTableNamespace(dynamoBaseName, registration.projectId, registration.projectType)
+            : null,
         };
       });
       return {
@@ -496,6 +507,7 @@ export async function findResolvedTableDefinition(
   const definitions = await loadResolvedTableDefinitions(env);
   const definition = definitions.find((entry) =>
     entry.repositoryName === repositoryNameOrTableName ||
+    entry.logicalTableName === repositoryNameOrTableName ||
     entry.tableName === repositoryNameOrTableName,
   );
   if (!definition) {
