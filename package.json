@@ -8,7 +8,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "mls-102020": "git+https://github.com/expansiva/mls-102020.git",
+    "mls-102033": "git+https://github.com/expansiva/mls-102033.git",
     "mls-102029": "git+https://github.com/expansiva/mls-102029.git"
   }
 }

@@ -2,7 +2,7 @@
 import Fastify from 'fastify';
 import { existsSync, readFileSync } from 'node:fs';
 import { extname, join, normalize, resolve } from 'node:path';
-import { getFrontendAppByBasePath, getFrontendAppRegistrations, getAppPublicRootDir } from '/_102034_/l1/server/layer_1_external/frontend/appRegistry.js';
+import { getFrontendAppByBasePath, getFrontendAppRegistrations, getAppPublicRootDir, getAppAssetRootDirs } from '/_102034_/l1/server/layer_1_external/frontend/appRegistry.js';
 import { getPublicationTarget, readProjectsConfig, resolveActivePublicationDistPath } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { execBff } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
@@ -26,6 +26,29 @@ function getContentType(filePath: string) {
       return 'image/svg+xml; charset=utf-8';
     case '.css':
       return 'text/css; charset=utf-8';
+    // Binary asset payloads (seed images live in l3/<module>/assets). Without these a served .webp
+    // would go out as `text/plain` and the browser would refuse to paint it (bugimage.md).
+    case '.webp':
+      return 'image/webp';
+    case '.png':
+      return 'image/png';
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg';
+    case '.gif':
+      return 'image/gif';
+    case '.avif':
+      return 'image/avif';
+    case '.ico':
+      return 'image/x-icon';
+    case '.woff2':
+      return 'font/woff2';
+    case '.woff':
+      return 'font/woff';
+    case '.mp4':
+      return 'video/mp4';
+    case '.pdf':
+      return 'application/pdf';
     default:
       return 'text/plain; charset=utf-8';
   }
@@ -126,12 +149,17 @@ async function tryReadAppFile(urlPath: string) {
   const relativePath = urlPath.slice(app.basePath.length).replace(/^\/+/u, '');
   const hasExplicitFile = relativePath.length > 0 && extname(relativePath) !== '';
   if (hasExplicitFile) {
-    const filePath = normalize(join(publicRootDir, relativePath));
-    if (filePath.startsWith(publicRootDir) && existsSync(filePath)) {
-      if (extname(filePath) === '.html') {
-        return readAppHtml(filePath, app);
-      }
-      return readStaticFile(filePath);
+    // The shell's own directory first (index.html and anything published beside it), then the app's
+    // ASSET ROOTS. The latter is what makes a seed image reachable: the BFF returns
+    // `/cafeFlow/assets/seed/MenuItem/x.webp`, whose bytes live in `_<project>_/l3/cafeFlow/assets/...`,
+    // a directory the shell root does not contain. Before this, any such request silently fell through
+    // to `readAppHtml` below and the browser received the SPA shell with HTTP 200 (bugimage.md) — the
+    // most confusing possible failure, since nothing 404s.
+    for (const root of [publicRootDir, ...getAppAssetRootDirs(app)]) {
+      const filePath = normalize(join(root, relativePath));
+      // Containment check: `relativePath` comes from the URL, so `..` must never escape the root.
+      if (!filePath.startsWith(root) || !existsSync(filePath)) continue;
+      return extname(filePath) === '.html' ? readAppHtml(filePath, app) : readStaticFile(filePath);
     }
   }
 

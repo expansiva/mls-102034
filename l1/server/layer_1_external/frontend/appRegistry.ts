@@ -345,3 +345,23 @@ export async function getFrontendAppByBasePath(urlPath: string) {
 export function getAppPublicRootDir(app: FrontendAppRegistration) {
   return dirname(app.indexHtmlPath);
 }
+
+/**
+ * Directories that back this app's own `/{basePath}/...` asset URLs, tried after the shell root.
+ *
+ * Exactly ONE root: the module's own l3 asset dir (`_<project>_/l3/<moduleId>`). That makes
+ * `/cafeFlow/assets/seed/MenuItem/x.webp` resolve to `_<project>_/l3/cafeFlow/assets/seed/...` — the
+ * exact path the seed generator writes into `imageUrl` — and keeps it module-scoped, so two modules can
+ * hold same-named assets without colliding. Before this, no root was consulted at all and a seed image
+ * answered 200 with the SPA shell instead of its bytes (todo/runtime/bugimage.md).
+ *
+ * Deliberately NOT including `app.assetRoots` (every project's published l2): those files are already
+ * reachable at `/_<project>_/l2/...` via tryReadProjectAsset, and mirroring them under every app's
+ * basePath would add a second path to the same bytes for no benefit.
+ */
+export function getAppAssetRootDirs(app: FrontendAppRegistration): string[] {
+  const publicationTarget = getPublicationTarget();
+  return [publicationTarget.serveStaticFromServer
+    ? resolveActivePublicationDistPath(`./_${app.projectId}_/l3/${app.appId}`)
+    : resolveProjectDistPath(`./_${app.projectId}_/l3/${app.appId}`)];
+}
