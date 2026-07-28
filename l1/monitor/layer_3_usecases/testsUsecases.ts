@@ -6,20 +6,28 @@
 // composition root, tables and seeds are all exercised together.
 //
 // Isolation & environment:
-// - `runPageTests` only executes when appEnv === 'development' (else 403 TESTS_DISABLED). `list`/`results`
-//   run everywhere (history/inspection).
-// - Mutating cases (command "ok" cases) run inside `ctx.data.runInTransaction` and are rolled back so a
-//   run never dirties the data a developer is using. When `skipMutating` is set they are reported as
-//   'skipped' instead.
-// - `<seedRef>` params are resolved from a pool harvested by first running the page's parameterless
-//   read queries, so a validation case's only wrong input is the omitted required field.
+// - `runPageTests` only executes when TESTS_ENABLED is on (default: appEnv === 'development'), else
+//   403 TESTS_DISABLED. `list`/`results` run everywhere (history/inspection).
+// - EVERY run gets its OWN disposable in-memory runtime — never the process singleton. Tables and
+//   mdm are rebuilt from the seed rows on first access and thrown away with the run, so the run is
+//   deterministic and cannot touch data anyone else is using: production Postgres on a VM, or the
+//   store behind a developer's live preview in devenv. That is also why the mutating cases need no
+//   transaction/rollback (the memory runtime has no real rollback anyway). `skipMutating` still
+//   reports them as 'skipped' when the caller does not want them executed at all.
+// - `<seedRef>` params are resolved from a pool harvested by first running the page's read queries
+//   (phase A) — every scalar of every response, including the rows of any array it carries — so a
+//   validation case's only wrong input is the omitted required field.
+// - A case that could not verify what it claims is reported 'inconclusive', never 'pass': a
+//   <seedRef> that never resolved, or a `<command>.<field>.required` case rejected on another
+//   field. `failed` is reserved for the backend actually misbehaving.
 //
 // Results are captured directly from execBff's return value and kept in a small in-memory ring (the
 // execution log/series store only keeps aggregates and Postgres monitor storage is optional in devenv).
 
-import { AppError, fail, type BffRequest, type BffResponse, type RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
-import { createDefaultRequestContext, createRequestContext, execBff } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
+import { AppError, type BffRequest, type BffResponse } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
+import { createRequestContext, execBff } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
+import { createMemoryDataRuntime } from '/_102034_/l1/mdm/layer_1_external/data/memory/MdmDataRuntimeMemory.js';
 import { readProjectsConfig, resolveProjectModuleImportUrl } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import { createUuidV7 } from '/_102029_/l2/uuidv7.js';
 
@@ -53,12 +61,17 @@ interface DiscoveredTestFile {
   loadError?: string;
 }
 
+// 'inconclusive' = the case could not verify what it claims (a <seedRef> param never resolved, or a
+// `<command>.<field>.required` case was rejected on a different field). It is NOT an app defect —
+// keeping it out of `failed` is what makes the failed count mean "the backend misbehaved".
+export type TestCaseStatus = 'pass' | 'fail' | 'inconclusive' | 'skipped';
+
 export interface TestCaseResult {
   module: string;
   page: string;
   id: string;
   routine: string;
-  status: 'pass' | 'fail' | 'skipped';
+  status: TestCaseStatus;
   ok: boolean;
   statusCode: number;
   durationMs: number;
@@ -77,6 +90,7 @@ export interface TestRunSummary {
   total: number;
   passed: number;
   failed: number;
+  inconclusive: number;
   skipped: number;
   cases: TestCaseResult[];
 }
@@ -196,15 +210,13 @@ export async function listPageTests(): Promise<TestListResult> {
   }
   return {
     appEnv: env.appEnv,
-    executionEnabled: env.appEnv === 'development',
+    executionEnabled: env.testsEnabled,
     modules: [...byModule.values()],
     recentRuns: getRecentRuns({}, 10),
   };
 }
 
 // ---- run ----
-
-class RollbackSignal extends Error {}
 
 function describeShape(data: unknown): string {
   if (Array.isArray(data)) return 'array';
@@ -231,71 +243,100 @@ function countItems(data: unknown): number {
   return 0;
 }
 
-function harvestRows(pool: Record<string, unknown>, data: unknown): void {
-  const rows: unknown[] = Array.isArray(data)
-    ? data
-    : isRecord(data) && Array.isArray(data.items)
-      ? data.items
-      : isRecord(data)
-        ? [data]
-        : [];
-  for (const row of rows) {
-    if (!isRecord(row)) continue;
-    for (const [key, value] of Object.entries(row)) {
-      if (pool[key] === undefined && value !== null && value !== undefined) pool[key] = value;
-    }
+// Only scalars are usable as a <seedRef> value; nested arrays/objects are containers to descend into.
+function harvestRecord(pool: Record<string, unknown>, row: unknown): void {
+  if (!isRecord(row)) return;
+  for (const [key, value] of Object.entries(row)) {
+    if (pool[key] !== undefined || value === null || value === undefined) continue;
+    if (Array.isArray(value) || isRecord(value)) continue;
+    pool[key] = value;
   }
 }
 
-function resolveParams(params: Record<string, unknown>, pool: Record<string, unknown>): Record<string, unknown> {
+// Harvest every scalar the response exposes: the envelope itself plus the rows of ANY array it
+// carries. Collections are named after the entity on this wire (`{ menuItems: [...] }`,
+// `{ orders: [...] }`), not `items`, so descending only into `data.items` harvested the envelope
+// counters and never the ids the <seedRef> params need.
+function harvestRows(pool: Record<string, unknown>, data: unknown): void {
+  if (Array.isArray(data)) {
+    for (const row of data) harvestRecord(pool, row);
+    return;
+  }
+  if (!isRecord(data)) return;
+  harvestRecord(pool, data);
+  for (const value of Object.values(data)) {
+    if (!Array.isArray(value)) continue;
+    for (const row of value) harvestRecord(pool, row);
+  }
+}
+
+interface ResolvedParams {
+  params: Record<string, unknown>;
+  unresolved: string[];
+}
+
+function resolveParams(params: Record<string, unknown>, pool: Record<string, unknown>): ResolvedParams {
   const resolved: Record<string, unknown> = {};
+  const unresolved: string[] = [];
   for (const [key, value] of Object.entries(params)) {
     if (value === SEED_REF_MARKER) {
-      if (pool[key] !== undefined) resolved[key] = pool[key];
-      // unresolved seedRef -> omit the key (best-effort; runner cannot invent a valid id)
+      // unresolved seedRef -> omit the key (the runner cannot invent a valid id) and remember it:
+      // the request no longer matches the case, so the verdict cannot be trusted.
+      if (pool[key] === undefined) unresolved.push(key);
+      else resolved[key] = pool[key];
     } else {
       resolved[key] = value;
     }
   }
-  return resolved;
+  return { params: resolved, unresolved };
 }
 
-// A parameterless, non-mutating success case is a read query — used both as its own case and to
-// harvest the seed pool that resolves <seedRef> params for the remaining cases.
-function isHarvestCase(testCase: PageTestCase): boolean {
-  return testCase.expect.ok && !testCase.mutating && Object.keys(testCase.params).length === 0;
+// A non-mutating success case is a read query — run first so its output feeds the seed pool that
+// resolves <seedRef> for the remaining cases.
+function isReadCase(testCase: PageTestCase): boolean {
+  return testCase.expect.ok && !testCase.mutating;
 }
 
-async function runIsolated(baseCtx: RequestContext, request: BffRequest): Promise<{ response: BffResponse; statusCode: number }> {
-  let captured: { response: BffResponse; statusCode: number } | null = null;
-  try {
-    await baseCtx.data.runInTransaction(async (txRuntime) => {
-      const txCtx = createRequestContext(txRuntime);
-      captured = await execBff(request, txCtx);
-      throw new RollbackSignal(); // discard the write; keep the captured result
-    });
-  } catch (error) {
-    if (!(error instanceof RollbackSignal) && !captured) {
-      const appError = error instanceof AppError ? error : new AppError('TEST_ISOLATION_ERROR', error instanceof Error ? error.message : String(error), 500);
-      return { response: fail(appError), statusCode: appError.statusCode };
-    }
-  }
-  return captured ?? { response: fail(new AppError('TEST_ISOLATION_ERROR', 'isolated run produced no result', 500)), statusCode: 500 };
+// Negative cases are generated as `<command>.<field>.required`. The case only proves what it claims
+// when the rejection names that field; rejected on another field it never reached the field at all.
+function fieldUnderTest(testCase: PageTestCase): string | null {
+  const parts = testCase.id.split('.');
+  return parts.length >= 3 && parts[parts.length - 1] === 'required' ? parts[parts.length - 2] : null;
 }
 
-function evaluate(testCase: PageTestCase, module: string, page: string, exec: { response: BffResponse; statusCode: number }, durationMs: number): TestCaseResult {
+function rejectedField(response: BffResponse): string | null {
+  const details = response.error?.details;
+  if (isRecord(details) && typeof details.field === 'string') return details.field;
+  const match = /^([A-Za-z0-9_]+) is required/u.exec(response.error?.message ?? '');
+  return match ? match[1] : null;
+}
+
+function evaluate(
+  testCase: PageTestCase,
+  module: string,
+  page: string,
+  exec: { response: BffResponse; statusCode: number },
+  durationMs: number,
+  unresolved: string[],
+): TestCaseResult {
   const { response, statusCode } = exec;
-  let status: 'pass' | 'fail' = 'pass';
+  let status: TestCaseStatus = 'pass';
   let reason = '';
+  const unresolvedReason = `unverifiable: <seedRef> not resolved for ${unresolved.join(', ')} (param omitted from the request)`;
   if (testCase.expect.ok) {
     if (!response.ok) {
-      status = 'fail';
-      reason = `expected ok, got error ${response.error?.code ?? 'unknown'}`;
+      // The omitted params are the likely cause of the rejection — the case never ran as written.
+      status = unresolved.length > 0 ? 'inconclusive' : 'fail';
+      reason = unresolved.length > 0 ? unresolvedReason : `expected ok, got error ${response.error?.code ?? 'unknown'}`;
     } else {
+      // The output shape does not depend on the inputs, so a mismatch is real drift either way.
       const shapeReason = testCase.expect.shape ? checkShape(response.data, testCase.expect.shape) : '';
       if (shapeReason) {
         status = 'fail';
         reason = shapeReason;
+      } else if (unresolved.length > 0) {
+        status = 'inconclusive';
+        reason = unresolvedReason;
       } else if (testCase.expect.minItems !== undefined) {
         const count = countItems(response.data);
         if (count < testCase.expect.minItems) {
@@ -310,6 +351,18 @@ function evaluate(testCase: PageTestCase, module: string, page: string, exec: { 
   } else if (testCase.expect.errorCode && response.error?.code !== testCase.expect.errorCode) {
     status = 'fail';
     reason = `expected errorCode ${testCase.expect.errorCode}, got ${response.error?.code ?? 'unknown'}`;
+  } else {
+    const expectedField = fieldUnderTest(testCase);
+    const actualField = expectedField ? rejectedField(response) : null;
+    if (expectedField && actualField !== expectedField) {
+      status = 'inconclusive';
+      reason = actualField
+        ? `unverifiable: rejected on '${actualField}', not on the field under test '${expectedField}'`
+        : `unverifiable: rejection does not name the field under test '${expectedField}'`;
+    } else if (unresolved.length > 0) {
+      status = 'inconclusive';
+      reason = unresolvedReason;
+    }
   }
   return {
     module,
@@ -328,45 +381,49 @@ function evaluate(testCase: PageTestCase, module: string, page: string, exec: { 
 
 export async function runPageTests(input: { moduleId?: string; page?: string; skipMutating?: boolean } = {}): Promise<TestRunSummary> {
   const env = readAppEnv();
-  if (env.appEnv !== 'development') {
-    throw new AppError('TESTS_DISABLED', 'BFF test execution is only available in development (devenv).', 403, { appEnv: env.appEnv });
+  if (!env.testsEnabled) {
+    throw new AppError('TESTS_DISABLED', 'BFF test execution is disabled (set TESTS_ENABLED=true to allow it).', 403, { appEnv: env.appEnv });
   }
 
   const runId = createUuidV7();
   const traceId = createUuidV7();
   const startedAt = new Date().toISOString();
   const files = (await discoverTestFiles({ moduleId: input.moduleId, page: input.page })).filter(file => file.tests);
-  const baseCtx = createDefaultRequestContext();
+  // Sandbox: a runtime built for this run only (tables + mdm seeded from the definitions on first
+  // access) — never the process singleton, so nobody else's data is in reach and the mutating cases
+  // need no transaction/rollback because the whole store is discarded with the run.
+  const baseCtx = createRequestContext(createMemoryDataRuntime(), { sandbox: true });
   const cases: TestCaseResult[] = [];
 
   for (const file of files) {
     const tests = file.tests!;
     const pool: Record<string, unknown> = {};
 
-    const runOne = async (testCase: PageTestCase, params: Record<string, unknown>, mutating: boolean): Promise<{ result: TestCaseResult; response: BffResponse }> => {
+    // Every successful response feeds the pool, whatever the case's own verdict was — a read that
+    // fails its shape assertion still carries the ids the later cases need.
+    const runOne = async (testCase: PageTestCase): Promise<TestCaseResult> => {
+      const { params, unresolved } = resolveParams(testCase.params, pool);
       const request: BffRequest = { routine: testCase.routine, params, meta: { source: 'test', traceId, requestId: createUuidV7() } };
       const startedMs = Date.now();
-      const exec = mutating ? await runIsolated(baseCtx, request) : await execBff(request, baseCtx);
-      return { result: evaluate(testCase, file.moduleId, tests.page, exec, Math.max(0, Date.now() - startedMs)), response: exec.response };
+      const exec = await execBff(request, baseCtx);
+      if (exec.response.ok) harvestRows(pool, exec.response.data);
+      return evaluate(testCase, file.moduleId, tests.page, exec, Math.max(0, Date.now() - startedMs), unresolved);
     };
 
-    // Phase A: parameterless read queries — record and harvest the seed pool.
+    // Phase A: the read queries — they build the seed pool for everything else.
     for (const testCase of tests.cases) {
-      if (!isHarvestCase(testCase)) continue;
-      const { result, response } = await runOne(testCase, {}, false);
-      cases.push(result);
-      if (response.ok) harvestRows(pool, response.data);
+      if (!isReadCase(testCase)) continue;
+      cases.push(await runOne(testCase));
     }
 
-    // Phase B: everything else — resolve <seedRef> from the pool; isolate mutating cases.
+    // Phase B: negative cases and commands — <seedRef> now resolves from the pool.
     for (const testCase of tests.cases) {
-      if (isHarvestCase(testCase)) continue;
+      if (isReadCase(testCase)) continue;
       if (testCase.mutating && input.skipMutating) {
         cases.push({ module: file.moduleId, page: tests.page, id: testCase.id, routine: testCase.routine, status: 'skipped', ok: false, statusCode: 0, durationMs: 0, errorCode: null, errorMessage: null, reason: 'mutating case skipped (skipMutating)' });
         continue;
       }
-      const { result } = await runOne(testCase, resolveParams(testCase.params, pool), testCase.mutating);
-      cases.push(result);
+      cases.push(await runOne(testCase));
     }
   }
 
@@ -376,10 +433,11 @@ export async function runPageTests(input: { moduleId?: string; page?: string; sk
     startedAt,
     finishedAt: new Date().toISOString(),
     appEnv: env.appEnv,
-    scope: { moduleId: input.moduleId, page: input.page },
+    scope:{ moduleId: input.moduleId, page: input.page },
     total: cases.length,
     passed: cases.filter(c => c.status === 'pass').length,
     failed: cases.filter(c => c.status === 'fail').length,
+    inconclusive: cases.filter(c => c.status === 'inconclusive').length,
     skipped: cases.filter(c => c.status === 'skipped').length,
     cases,
   };

@@ -180,6 +180,9 @@ export interface RequestContext {
   clock: IClock;
   idGenerator: IIdGenerator;
   sessionContext: RequestSessionContext;
+  // Disposable runtime (test sandbox): the execution is not real traffic, so execBff
+  // keeps it out of the monitor execution log and telemetry.
+  sandbox?: boolean;
   requestMeta?: {
     requestId?: string;
     userId?: string;

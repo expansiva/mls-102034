@@ -38,6 +38,7 @@ type SessionContextInput = Partial<RequestSessionContext> & {
 
 export interface CreateRequestContextOptions {
   sessionContext?: SessionContextInput;
+  sandbox?: boolean;
 }
 
 export function createRequestContext(
@@ -53,6 +54,7 @@ export function createRequestContext(
       newId: () => createUuidV7(),
     },
     sessionContext: createSessionContext(options.sessionContext),
+    sandbox: options.sandbox === true,
     requestMeta: undefined,
   };
   ctx.mdm = createMdmFacade(ctx);
@@ -179,45 +181,49 @@ export async function execBff(
         ? ((request as { meta?: { source?: 'http' | 'message' | 'test' } }).meta?.source as 'http' | 'message' | 'test')
         : (readAppEnv().runtimeMode === 'memory' ? 'test' : 'http'));
 
-    try {
-      await MonitorExecutionEntity.record({
-        requestId:
-          normalizedRequest?.meta?.requestId ??
-          (request as { meta?: { requestId?: string } } | null | undefined)?.meta?.requestId ??
-          createUuidV7(),
-        traceId:
-          normalizedRequest?.meta?.traceId ??
-          (request as { meta?: { traceId?: string; requestId?: string } } | null | undefined)?.meta?.traceId ??
-          (request as { meta?: { requestId?: string } } | null | undefined)?.meta?.requestId ??
-          createUuidV7(),
-        userId:
-          normalizedRequest?.meta?.userId ??
-          (request as { meta?: { userId?: string } } | null | undefined)?.meta?.userId ??
-          'anonymous',
-        routine: inferredRoutine,
-        module: parts.module,
-        pageName: parts.pageName,
-        command: parts.command,
-        source,
-        statusCode,
-        statusGroup: getStatusGroup(statusCode),
-        ok: response?.ok ?? false,
-        durationMs: Math.max(0, Date.now() - startedAt),
-        errorCode: response?.error?.code ?? null,
-        errorStack: caughtErrorStack,
-        startedAt: startedAtIso,
-        finishedAt: finishedAtIso,
-      });
-    } catch (error) {
-      ctx.log.error('Monitor execution recording failed', {
-        cause: error instanceof Error ? error.message : String(error),
-        routine: inferredRoutine,
-      });
+    // Sandbox runs (test runner on a disposable runtime) are not production traffic:
+    // they are kept out of the execution log, the series store and the telemetry.
+    if (!ctx.sandbox) {
+      try {
+        await MonitorExecutionEntity.record({
+          requestId:
+            normalizedRequest?.meta?.requestId ??
+            (request as { meta?: { requestId?: string } } | null | undefined)?.meta?.requestId ??
+            createUuidV7(),
+          traceId:
+            normalizedRequest?.meta?.traceId ??
+            (request as { meta?: { traceId?: string; requestId?: string } } | null | undefined)?.meta?.traceId ??
+            (request as { meta?: { requestId?: string } } | null | undefined)?.meta?.requestId ??
+            createUuidV7(),
+          userId:
+            normalizedRequest?.meta?.userId ??
+            (request as { meta?: { userId?: string } } | null | undefined)?.meta?.userId ??
+            'anonymous',
+          routine: inferredRoutine,
+          module: parts.module,
+          pageName: parts.pageName,
+          command: parts.command,
+          source,
+          statusCode,
+          statusGroup: getStatusGroup(statusCode),
+          ok: response?.ok ?? false,
+          durationMs: Math.max(0, Date.now() - startedAt),
+          errorCode: response?.error?.code ?? null,
+          errorStack: caughtErrorStack,
+          startedAt: startedAtIso,
+          finishedAt: finishedAtIso,
+        });
+      } catch (error) {
+        ctx.log.error('Monitor execution recording failed', {
+          cause: error instanceof Error ? error.message : String(error),
+          routine: inferredRoutine,
+        });
+      }
     }
 
     const rawTelemetry = normalizedRequest?.meta?.telemetry ??
       (request as { meta?: { telemetry?: unknown } } | null | undefined)?.meta?.telemetry;
-    if (Array.isArray(rawTelemetry) && rawTelemetry.length > 0) {
+    if (!ctx.sandbox && Array.isArray(rawTelemetry) && rawTelemetry.length > 0) {
       const TELEMETRY_LIMIT = 20;
       const receivedAt = finishedAtIso;
       const requestId =

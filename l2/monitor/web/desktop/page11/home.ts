@@ -45,7 +45,7 @@ import type { MonitorPostgresResponse } from '/_102034_/l2/monitor/shared/contra
 import type { MonitorProcessResponse } from '/_102034_/l2/monitor/shared/contracts/process.js';
 import type { MonitorAbendResponse, MonitorClientErrorsResponse } from '/_102034_/l2/monitor/shared/contracts/abend.js';
 import type { MonitorTraceResponse } from '/_102034_/l2/monitor/shared/contracts/trace.js';
-import type { MonitorTestsListResponse } from '/_102034_/l2/monitor/shared/contracts/tests.js';
+import type { MonitorTestCaseStatus, MonitorTestsListResponse } from '/_102034_/l2/monitor/shared/contracts/tests.js';
 import type { MonitorDynamoTableDetailsResponse } from '/_102034_/l2/monitor/shared/contracts/table-details-dynamodb.js';
 import type { MonitorPostgresTableDetailsResponse } from '/_102034_/l2/monitor/shared/contracts/table-details-postgres.js';
 import type { MonitorDynamoTableInspectResponse } from '/_102034_/l2/monitor/shared/contracts/table-inspect-dynamodb.js';
@@ -878,8 +878,8 @@ export class MonitorWebDesktopHomePage extends LitElement {
       this.testsData = response.data;
       const pageCount = response.data.modules.reduce((sum, module) => sum + module.pages.length, 0);
       this.status = response.data.executionEnabled
-        ? `${pageCount} page(s) with tests · execution enabled (${response.data.appEnv})`
-        : `${pageCount} page(s) with tests · execution disabled outside development (${response.data.appEnv})`;
+        ? `${pageCount} page(s) with tests · execution enabled (${response.data.appEnv} · memory sandbox)`
+        : `${pageCount} page(s) with tests · execution disabled (${response.data.appEnv})`;
       return;
     }
 
@@ -2507,10 +2507,17 @@ export class MonitorWebDesktopHomePage extends LitElement {
             throw this.toBlockingError('Could not run tests.', response.error);
           }
           const run = response.data;
-          this.status = `Run finished: ${run.passed} passed, ${run.failed} failed, ${run.skipped} skipped`;
+          this.status = `Run finished: ${run.passed} passed, ${run.failed} failed, ${run.inconclusive} inconclusive, ${run.skipped} skipped`;
           // Refresh the list so recentRuns reflects the new run.
           const list = await loadMonitorTestsList({ signal });
-          if (list.ok && list.data) this.testsData = list.data;
+          if (list.ok && list.data) {
+            // The run history is a per-process ring and pm2 runs in cluster mode, so this list
+            // may come from the other instance: keep the run we just triggered visible.
+            const recentRuns = list.data.recentRuns.some((entry) => entry.runId === run.runId)
+              ? list.data.recentRuns
+              : [run, ...list.data.recentRuns];
+            this.testsData = { ...list.data, recentRuns };
+          }
         },
         {
           busyLabel: 'Executando testes...',
@@ -2525,12 +2532,14 @@ export class MonitorWebDesktopHomePage extends LitElement {
     }
   }
 
-  private renderTestStatusBadge(status: 'pass' | 'fail' | 'skipped') {
+  private renderTestStatusBadge(status: MonitorTestCaseStatus) {
     const cls = status === 'pass'
       ? 'rounded-full bg-emerald-100 px-2 py-1 text-xs font-medium text-emerald-800'
       : status === 'fail'
         ? 'rounded-full bg-rose-100 px-2 py-1 text-xs font-medium text-rose-800'
-        : 'rounded-full bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600';
+        : status === 'inconclusive'
+          ? 'rounded-full bg-amber-100 px-2 py-1 text-xs font-medium text-amber-800'
+          : 'rounded-full bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600';
     return html`<span class="${cls}">${status}</span>`;
   }
 
@@ -2561,8 +2570,8 @@ export class MonitorWebDesktopHomePage extends LitElement {
             ${runButton('Run all', {})}
           </div>
           ${data.executionEnabled
-            ? null
-            : html`<p class="mt-4 rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-800">Execution disabled outside development (appEnv: ${data.appEnv}). Showing discovered tests and history only.</p>`}
+            ? html`<p class="mt-4 rounded-2xl bg-sky-50 px-4 py-3 text-sm text-sky-800">Memory sandbox (appEnv: ${data.appEnv}): each run gets a disposable in-memory database seeded from the table definitions. No data outside the run is read or written — not the production tables, not a developer's preview store.</p>`
+            : html`<p class="mt-4 rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-800">Execution disabled (appEnv: ${data.appEnv}). Set TESTS_ENABLED=true on the server to allow it. Showing discovered tests and history only.</p>`}
         </article>
 
         ${data.modules.length === 0
@@ -2603,7 +2612,7 @@ export class MonitorWebDesktopHomePage extends LitElement {
               <div class="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 px-6 py-4">
                 <h3 class="text-base font-semibold text-slate-900">Last run</h3>
                 <span class="text-sm text-slate-500">
-                  ${lastRun.passed} passed · ${lastRun.failed} failed · ${lastRun.skipped} skipped · ${formatDateTime(lastRun.finishedAt)}
+                  ${lastRun.passed} passed · ${lastRun.failed} failed · ${lastRun.inconclusive} inconclusive · ${lastRun.skipped} skipped · ${formatDateTime(lastRun.finishedAt)}
                 </span>
               </div>
               <div class="overflow-x-auto">
@@ -2627,9 +2636,9 @@ export class MonitorWebDesktopHomePage extends LitElement {
                         <td class="px-6 py-4 text-slate-600">${testCase.routine}</td>
                         <td class="px-6 py-4">${this.renderTestStatusBadge(testCase.status)}</td>
                         <td class="px-6 py-4 text-slate-500">${testCase.status === 'skipped' ? '—' : `${formatInteger(testCase.durationMs)} ms`}</td>
-                        <td class="px-6 py-4 text-xs text-rose-600">
-                          ${testCase.status === 'fail'
-                            ? html`<div>${testCase.reason || testCase.errorCode || 'failed'}</div>${testCase.errorMessage ? html`<div class="mt-1 text-rose-500">${testCase.errorMessage}</div>` : null}`
+                        <td class="px-6 py-4 text-xs ${testCase.status === 'inconclusive' ? 'text-amber-700' : 'text-rose-600'}">
+                          ${testCase.status === 'fail' || testCase.status === 'inconclusive'
+                            ? html`<div>${testCase.reason || testCase.errorCode || testCase.status}</div>${testCase.errorMessage ? html`<div class="mt-1 opacity-80">${testCase.errorMessage}</div>` : null}`
                             : testCase.errorCode ?? ''}
                         </td>
                       </tr>

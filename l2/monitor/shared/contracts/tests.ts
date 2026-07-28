@@ -2,12 +2,16 @@
 // Frontend view of the monitor Tests API (l1/monitor/layer_3_usecases/testsUsecases.ts). Kept as a
 // standalone contract so the render layer does not import backend code.
 
+// 'inconclusive' = the case could not verify what it claims (unresolved <seedRef>, or a
+// `<field>.required` case rejected on another field) — not an app defect.
+export type MonitorTestCaseStatus = 'pass' | 'fail' | 'inconclusive' | 'skipped';
+
 export interface MonitorTestCaseResult {
   module: string;
   page: string;
   id: string;
   routine: string;
-  status: 'pass' | 'fail' | 'skipped';
+  status: MonitorTestCaseStatus;
   ok: boolean;
   statusCode: number;
   durationMs: number;
@@ -26,6 +30,7 @@ export interface MonitorTestRunSummary {
   total: number;
   passed: number;
   failed: number;
+  inconclusive: number;
   skipped: number;
   cases: MonitorTestCaseResult[];
 }

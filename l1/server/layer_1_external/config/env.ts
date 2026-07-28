@@ -26,6 +26,7 @@ export interface AppEnv {
   writeBehindEnabled: boolean;
   logLevel: string;
   runtimeMode: 'memory' | 'postgres';
+  testsEnabled: boolean;
   projectId?: string;
   projectDomain?: string;
   studioEnabled: boolean;
@@ -153,6 +154,9 @@ export function readAppEnv(): AppEnv {
     writeBehindEnabled,
     logLevel: readEnvValue('LOG_LEVEL', appEnv) ?? 'info',
     runtimeMode,
+    // Opt-in gate for /monitor/tests execution. Outside development the runner uses a
+    // disposable in-memory sandbox, so enabling it never touches the production data.
+    testsEnabled: parseBoolean(readEnvValue('TESTS_ENABLED', appEnv), appEnv === 'development'),
     projectId: readEnvValue('PROJECT_ID', appEnv) || undefined,
     projectDomain: readEnvValue('PROJECT_DOMAIN', appEnv) || readEnvValue('DOMAIN', appEnv) || undefined,
     studioEnabled: parseBoolean(readEnvValue('STUDIO_ENABLED', appEnv), false),
