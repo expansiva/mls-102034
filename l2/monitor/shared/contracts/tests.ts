@@ -39,7 +39,8 @@ export interface MonitorTestPageCase {
   id: string;
   routine: string;
   mutating: boolean;
-  expect: { ok: boolean; errorCode?: string; minItems?: number; shape?: 'object' | 'array' | 'paginated' };
+  // itemsKey names the collection of a `paginated` envelope (`{ menuItems: [...] }`); absent -> `items`.
+  expect: { ok: boolean; errorCode?: string; minItems?: number; shape?: 'object' | 'array' | 'paginated'; itemsKey?: string };
 }
 
 export interface MonitorTestModule {

@@ -20,6 +20,9 @@
 // - A case that could not verify what it claims is reported 'inconclusive', never 'pass': a
 //   <seedRef> that never resolved, or a `<command>.<field>.required` case rejected on another
 //   field. `failed` is reserved for the backend actually misbehaving.
+// - `expect.shape: 'paginated'` checks the collection the case declares in `expect.itemsKey`
+//   (`{ menuItems: [...] }`); absent, it falls back to `items` so files generated before the key
+//   existed keep working.
 //
 // Results are captured directly from execBff's return value and kept in a small in-memory ring (the
 // execution log/series store only keeps aggregates and Postgres monitor storage is optional in devenv).
@@ -38,11 +41,15 @@ const MAX_STORED_RUNS = 50;
 
 type TestShape = 'object' | 'array' | 'paginated';
 
+// A paginated envelope names its collection after the entity (`{ menuItems: [...] }`), so the case
+// declares the key. Absent -> 'items', which is what the files generated before this existed assume.
+const DEFAULT_ITEMS_KEY = 'items';
+
 interface PageTestCase {
   id: string;
   routine: string;
   params: Record<string, unknown>;
-  expect: { ok: boolean; errorCode?: string; minItems?: number; shape?: TestShape };
+  expect: { ok: boolean; errorCode?: string; minItems?: number; shape?: TestShape; itemsKey?: string };
   mutating: boolean;
 }
 
@@ -135,7 +142,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function coercePageTestsFile(raw: unknown): PageTestsFile | null {
+export function coercePageTestsFile(raw: unknown): PageTestsFile | null {
   if (!isRecord(raw)) return null;
   const moduleName = typeof raw.moduleName === 'string' ? raw.moduleName : '';
   const page = typeof raw.page === 'string' ? raw.page : '';
@@ -157,6 +164,7 @@ function coercePageTestsFile(raw: unknown): PageTestsFile | null {
         errorCode: typeof expectRaw.errorCode === 'string' ? expectRaw.errorCode : undefined,
         minItems: typeof expectRaw.minItems === 'number' ? expectRaw.minItems : undefined,
         shape: expectRaw.shape === 'object' || expectRaw.shape === 'array' || expectRaw.shape === 'paginated' ? expectRaw.shape : undefined,
+        itemsKey: typeof expectRaw.itemsKey === 'string' && expectRaw.itemsKey.trim() ? expectRaw.itemsKey.trim() : undefined,
       },
       mutating: item.mutating === true,
     });
@@ -225,20 +233,23 @@ function describeShape(data: unknown): string {
 }
 
 // Item 5 drift guard: the actual response shape must match the shape the FE contract declares.
-// Returns '' when compatible, else a failure reason (object×array, or paginated missing items[]).
-function checkShape(data: unknown, shape: TestShape): string {
+// Returns '' when compatible, else a failure reason (object×array, or paginated missing the
+// declared collection). The reason names the expected key so a drift is readable at a glance.
+export function checkShape(data: unknown, shape: TestShape, itemsKey = DEFAULT_ITEMS_KEY): string {
   if (shape === 'array') {
     return Array.isArray(data) ? '' : `expected array output, got ${describeShape(data)}`;
   }
   if (shape === 'paginated') {
-    return isRecord(data) && Array.isArray(data.items) ? '' : `expected paginated { items: [] }, got ${describeShape(data)}`;
+    return isRecord(data) && Array.isArray(data[itemsKey])
+      ? ''
+      : `expected paginated { ${itemsKey}: [] }, got ${describeShape(data)}`;
   }
   return isRecord(data) && !Array.isArray(data) ? '' : `expected object output, got ${describeShape(data)}`;
 }
 
-function countItems(data: unknown): number {
+export function countItems(data: unknown, itemsKey = DEFAULT_ITEMS_KEY): number {
   if (Array.isArray(data)) return data.length;
-  if (isRecord(data) && Array.isArray(data.items)) return data.items.length;
+  if (isRecord(data) && Array.isArray(data[itemsKey])) return data[itemsKey].length;
   if (data !== null && data !== undefined) return 1;
   return 0;
 }
@@ -330,7 +341,7 @@ function evaluate(
       reason = unresolved.length > 0 ? unresolvedReason : `expected ok, got error ${response.error?.code ?? 'unknown'}`;
     } else {
       // The output shape does not depend on the inputs, so a mismatch is real drift either way.
-      const shapeReason = testCase.expect.shape ? checkShape(response.data, testCase.expect.shape) : '';
+      const shapeReason = testCase.expect.shape ? checkShape(response.data, testCase.expect.shape, testCase.expect.itemsKey) : '';
       if (shapeReason) {
         status = 'fail';
         reason = shapeReason;
@@ -338,7 +349,7 @@ function evaluate(
         status = 'inconclusive';
         reason = unresolvedReason;
       } else if (testCase.expect.minItems !== undefined) {
-        const count = countItems(response.data);
+        const count = countItems(response.data, testCase.expect.itemsKey);
         if (count < testCase.expect.minItems) {
           status = 'fail';
           reason = `expected >= ${testCase.expect.minItems} item(s), got ${count}`;
