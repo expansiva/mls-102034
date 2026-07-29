@@ -55,3 +55,16 @@ test('countItems falls back to 1 for a non-collection payload', () => {
   assert.equal(countItems({ menuItemId: 'a' }, 'menuItems'), 1);
   assert.equal(countItems(null, 'menuItems'), 0);
 });
+
+// The page's l4 actor drives the session the run executes as (a field worker must see THEIR tasks).
+// Optional by design: files generated before actor-scoped runs must keep loading.
+test('the page actor survives coercion; absent/blank/non-string is undefined', () => {
+  const withActor = coercePageTestsFile({ moduleName: 'm', page: 'p', actor: ' fieldWorker ', cases: [{ id: 'a.ok', routine: 'r.a', expect: { ok: true } }] });
+  assert.ok(withActor);
+  assert.equal(withActor.actor, 'fieldWorker');
+  for (const actor of [undefined, '   ', 42, null]) {
+    const file = coercePageTestsFile({ moduleName: 'm', page: 'p', actor, cases: [{ id: 'a.ok', routine: 'r.a', expect: { ok: true } }] });
+    assert.ok(file, `still loads with actor=${JSON.stringify(actor)}`);
+    assert.equal(file.actor, undefined);
+  }
+});

@@ -27,7 +27,7 @@
 // Results are captured directly from execBff's return value and kept in a small in-memory ring (the
 // execution log/series store only keeps aggregates and Postgres monitor storage is optional in devenv).
 
-import { AppError, type BffRequest, type BffResponse } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
+import { AppError, type BffRequest, type BffResponse, type RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import { createRequestContext, execBff } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { createMemoryDataRuntime } from '/_102034_/l1/mdm/layer_1_external/data/memory/MdmDataRuntimeMemory.js';
@@ -57,6 +57,11 @@ interface PageTestsFile {
   moduleName: string;
   page: string;
   variant: string;
+  // The l4 actor this page is scoped to (the workspace's declared actor). When present, the run executes
+  // the page's cases AS that actor: routes that read the id from the session (a field worker seeing the
+  // tasks assigned to them) are otherwise unrunnable headless. Optional for back-compat: an older
+  // generated file without it runs with no actor session, exactly as before.
+  actor?: string;
   cases: PageTestCase[];
 }
 
@@ -169,7 +174,9 @@ export function coercePageTestsFile(raw: unknown): PageTestsFile | null {
       mutating: item.mutating === true,
     });
   }
-  return { moduleName, page, variant, cases };
+  // Optional: the page's l4 actor. Absent in files generated before actor-scoped runs existed.
+  const actor = typeof raw.actor === 'string' && raw.actor.trim() ? raw.actor.trim() : undefined;
+  return { moduleName, page, variant, ...(actor ? { actor } : {}), cases };
 }
 
 async function discoverTestFiles(filter: { moduleId?: string; page?: string } = {}): Promise<DiscoveredTestFile[]> {
@@ -390,6 +397,28 @@ function evaluate(
   };
 }
 
+/**
+ * The mdmId of the seeded platform identity for an l4 actor, resolved BY DATA: agentCbSeeds emits one MDM
+ * Person per actor tagged ['<module>.Person', '<module>', 'actor', '<actorId>'], so the tags alone
+ * identify it. Deliberately NOT recomputing the seed's stableUuid hash — that convention has one owner
+ * (cbSeedsCore in mls-102021) and duplicating it here would create a second.
+ * Empty when the module seeded no identity for that actor (the caller then runs with no actor session).
+ */
+async function resolveSeededActorMdmId(ctx: RequestContext, moduleName: string, actorId: string): Promise<string> {
+  if (!actorId) return '';
+  try {
+    const rows = await ctx.data.mdmEntityIndex.findMany({ where: {} });
+    const match = rows.find((row: { mdmId?: string; tags?: string[] }) => {
+      const tags = Array.isArray(row.tags) ? row.tags : [];
+      return tags.includes('actor') && tags.includes(actorId) && (!moduleName || tags.includes(moduleName));
+    });
+    return typeof match?.mdmId === 'string' ? match.mdmId : '';
+  } catch {
+    // The identity lookup must never break a run: without it the cases simply run unauthenticated.
+    return '';
+  }
+}
+
 export async function runPageTests(input: { moduleId?: string; page?: string; skipMutating?: boolean } = {}): Promise<TestRunSummary> {
   const env = readAppEnv();
   if (!env.testsEnabled) {
@@ -403,38 +432,75 @@ export async function runPageTests(input: { moduleId?: string; page?: string; sk
   // Sandbox: a runtime built for this run only (tables + mdm seeded from the definitions on first
   // access) — never the process singleton, so nobody else's data is in reach and the mutating cases
   // need no transaction/rollback because the whole store is discarded with the run.
-  const baseCtx = createRequestContext(createMemoryDataRuntime(), { sandbox: true });
+  // ONE runtime for the whole run; every context below shares it, so the store (and the harvested ids)
+  // are the same no matter which actor a page runs as.
+  const dataRuntime = createMemoryDataRuntime();
+  const baseCtx = createRequestContext(dataRuntime, { sandbox: true });
   const cases: TestCaseResult[] = [];
 
+  // A context per page ACTOR (cached by actorId): the page's routes see a real seeded identity in the
+  // session. Falls back to the anonymous baseCtx when the page declares no actor or the module seeded no
+  // identity for it — same behaviour as before this change.
+  const ctxByActor = new Map<string, RequestContext>();
+  const contextFor = async (file: DiscoveredTestFile): Promise<RequestContext> => {
+    const actorId = typeof file.tests?.actor === 'string' ? file.tests.actor.trim() : '';
+    if (!actorId) return baseCtx;
+    const cached = ctxByActor.get(actorId);
+    if (cached) return cached;
+    const mdmId = await resolveSeededActorMdmId(baseCtx, file.tests?.moduleName ?? '', actorId);
+    // actorId ONLY — deliberately no actorScope. The generated controllers gate on scope with
+    // `enforceActors`, which treats an EMPTY scope as permissive by design ("bff.actor.no-scope") but
+    // rejects a non-empty scope that does not intersect its ALLOWED list, whose entries are
+    // `<module>:<actorId>` role scopes. Sending the bare actorId as a scope 403'd every route
+    // (FORBIDDEN_ACTOR on all 14 cases). Providing an identity is B's job; exercising authorization is not.
+    const ctx = mdmId
+      ? createRequestContext(dataRuntime, { sandbox: true, sessionContext: { actorId: mdmId } })
+      : baseCtx;
+    ctxByActor.set(actorId, ctx);
+    return ctx;
+  };
+
+  // ONE pool per RUN, not per page: the sandbox store is created once above, so an id harvested by any
+  // page's read is valid for every other page. With a per-page pool the ids were thrown away and a page
+  // whose own reads all require an id could never arm itself (102045 run06: projectId/workTaskId/
+  // assignedWorkerId were harvested by dashboardWorkspace and then discarded, leaving 7 cases
+  // inconclusive). harvestRecord does not overwrite an existing key, so the FIRST value harvested for a
+  // given field name wins — deterministic given the phase order below.
+  const pool: Record<string, unknown> = {};
+
+  // Every successful response feeds the pool, whatever the case's own verdict was — a read that
+  // fails its shape assertion still carries the ids the later cases need.
+  const runOne = async (file: DiscoveredTestFile, testCase: PageTestCase): Promise<TestCaseResult> => {
+    const tests = file.tests!;
+    const { params, unresolved } = resolveParams(testCase.params, pool);
+    const request: BffRequest = { routine: testCase.routine, params, meta: { source: 'test', traceId, requestId: createUuidV7() } };
+    const startedMs = Date.now();
+    const exec = await execBff(request, await contextFor(file));
+    if (exec.response.ok) harvestRows(pool, exec.response.data);
+    return evaluate(testCase, file.moduleId, tests.page, exec, Math.max(0, Date.now() - startedMs), unresolved);
+  };
+
+  // Both phases are GLOBAL (all files, then all files) — not per file. Hoisting the pool alone would
+  // leave the outcome dependent on file order: in run06 changeOrderWorkspace ran BEFORE
+  // dashboardWorkspace, so its commands would still have seen an empty pool.
+  // Phase A: every read query of every page — they build the seed pool for everything else.
+  for (const file of files) {
+    for (const testCase of file.tests!.cases) {
+      if (!isReadCase(testCase)) continue;
+      cases.push(await runOne(file, testCase));
+    }
+  }
+
+  // Phase B: negative cases and commands — <seedRef> now resolves from the whole run's pool.
   for (const file of files) {
     const tests = file.tests!;
-    const pool: Record<string, unknown> = {};
-
-    // Every successful response feeds the pool, whatever the case's own verdict was — a read that
-    // fails its shape assertion still carries the ids the later cases need.
-    const runOne = async (testCase: PageTestCase): Promise<TestCaseResult> => {
-      const { params, unresolved } = resolveParams(testCase.params, pool);
-      const request: BffRequest = { routine: testCase.routine, params, meta: { source: 'test', traceId, requestId: createUuidV7() } };
-      const startedMs = Date.now();
-      const exec = await execBff(request, baseCtx);
-      if (exec.response.ok) harvestRows(pool, exec.response.data);
-      return evaluate(testCase, file.moduleId, tests.page, exec, Math.max(0, Date.now() - startedMs), unresolved);
-    };
-
-    // Phase A: the read queries — they build the seed pool for everything else.
-    for (const testCase of tests.cases) {
-      if (!isReadCase(testCase)) continue;
-      cases.push(await runOne(testCase));
-    }
-
-    // Phase B: negative cases and commands — <seedRef> now resolves from the pool.
     for (const testCase of tests.cases) {
       if (isReadCase(testCase)) continue;
       if (testCase.mutating && input.skipMutating) {
         cases.push({ module: file.moduleId, page: tests.page, id: testCase.id, routine: testCase.routine, status: 'skipped', ok: false, statusCode: 0, durationMs: 0, errorCode: null, errorMessage: null, reason: 'mutating case skipped (skipMutating)' });
         continue;
       }
-      cases.push(await runOne(testCase));
+      cases.push(await runOne(file, testCase));
     }
   }
 

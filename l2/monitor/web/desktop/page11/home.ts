@@ -360,6 +360,7 @@ export class MonitorWebDesktopHomePage extends LitElement {
     traceSearchInput: { state: true },
     testsData: { state: true },
     testsRunning: { state: true },
+    copiedTestsRun: { state: true },
   };
 
   currentSection: MonitorSection = 'overview';
@@ -387,6 +388,7 @@ export class MonitorWebDesktopHomePage extends LitElement {
   traceSearchInput = '';
   declare testsData?: MonitorTestsListResponse;
   testsRunning = false;
+  declare copiedTestsRun?: boolean;
 
   private overviewPollTimer: number | null = null;
 
@@ -2543,6 +2545,34 @@ export class MonitorWebDesktopHomePage extends LitElement {
     return html`<span class="${cls}">${status}</span>`;
   }
 
+  private truncateTestText(value: string | number | null | undefined, maxBytes = 50): string {
+    const text = value == null ? '' : String(value);
+    if (new TextEncoder().encode(text).length <= maxBytes) {
+      return text;
+    }
+    let out = '';
+    let bytes = 0;
+    for (const char of text) {
+      const nextBytes = new TextEncoder().encode(char).length;
+      if (bytes + nextBytes > maxBytes) break;
+      out += char;
+      bytes += nextBytes;
+    }
+    return `${out.trimEnd()}...`;
+  }
+
+  private async copyLastTestRun(run: MonitorTestsListResponse['recentRuns'][number]) {
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(run, null, 2));
+      this.copiedTestsRun = true;
+      window.setTimeout(() => {
+        this.copiedTestsRun = false;
+      }, 2000);
+    } catch (err) {
+      console.error('[monitor] clipboard copy failed:', err);
+    }
+  }
+
   private renderTests() {
     const data = this.testsData;
     if (!data) return null;
@@ -2611,35 +2641,53 @@ export class MonitorWebDesktopHomePage extends LitElement {
             <article class="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
               <div class="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 px-6 py-4">
                 <h3 class="text-base font-semibold text-slate-900">Last run</h3>
-                <span class="text-sm text-slate-500">
-                  ${lastRun.passed} passed · ${lastRun.failed} failed · ${lastRun.inconclusive} inconclusive · ${lastRun.skipped} skipped · ${formatDateTime(lastRun.finishedAt)}
-                </span>
+                <div class="flex flex-wrap items-center justify-end gap-3">
+                  <span class="text-sm text-slate-500">
+                    ${lastRun.passed} passed · ${lastRun.failed} failed · ${lastRun.inconclusive} inconclusive · ${lastRun.skipped} skipped · ${formatDateTime(lastRun.finishedAt)}
+                  </span>
+                  <button
+                    class="rounded-full border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:border-aura-blue hover:text-aura-blue"
+                    @click=${() => this.copyLastTestRun(lastRun)}
+                  >${this.copiedTestsRun ? 'copied' : 'copy'}</button>
+                </div>
               </div>
               <div class="overflow-x-auto">
                 <table class="min-w-full text-left text-sm">
                   <thead class="bg-slate-50 text-slate-600">
                     <tr>
-                      <th class="px-6 py-3 font-medium">Case</th>
-                      <th class="px-6 py-3 font-medium">Routine</th>
                       <th class="px-6 py-3 font-medium">Status</th>
                       <th class="px-6 py-3 font-medium">Duration</th>
                       <th class="px-6 py-3 font-medium">Error</th>
+                      <th class="px-6 py-3 font-medium">Case / Routine</th>
                     </tr>
                   </thead>
                   <tbody>
                     ${lastRun.cases.map((testCase) => html`
                       <tr class="border-t border-slate-100 align-top">
-                        <td class="px-6 py-4">
-                          <div class="font-medium text-slate-900">${testCase.id}</div>
-                          <div class="text-xs text-slate-400">${testCase.module} · ${testCase.page}</div>
-                        </td>
-                        <td class="px-6 py-4 text-slate-600">${testCase.routine}</td>
                         <td class="px-6 py-4">${this.renderTestStatusBadge(testCase.status)}</td>
                         <td class="px-6 py-4 text-slate-500">${testCase.status === 'skipped' ? '—' : `${formatInteger(testCase.durationMs)} ms`}</td>
                         <td class="px-6 py-4 text-xs ${testCase.status === 'inconclusive' ? 'text-amber-700' : 'text-rose-600'}">
                           ${testCase.status === 'fail' || testCase.status === 'inconclusive'
-                            ? html`<div>${testCase.reason || testCase.errorCode || testCase.status}</div>${testCase.errorMessage ? html`<div class="mt-1 opacity-80">${testCase.errorMessage}</div>` : null}`
+                            ? html`
+                                <div title=${testCase.reason || testCase.errorCode || testCase.status}>
+                                  ${this.truncateTestText(testCase.reason || testCase.errorCode || testCase.status)}
+                                </div>
+                                ${testCase.errorMessage
+                                  ? html`
+                                      <div class="mt-1 opacity-80" title=${testCase.errorMessage}>
+                                        ${this.truncateTestText(testCase.errorMessage)}
+                                      </div>
+                                    `
+                                  : null}
+                              `
                             : testCase.errorCode ?? ''}
+                        </td>
+                        <td class="px-6 py-4">
+                          <div class="font-medium text-slate-900" title=${testCase.id}>${this.truncateTestText(testCase.id)}</div>
+                          <div class="text-xs text-slate-400" title=${`${testCase.module} · ${testCase.page}`}>
+                            ${this.truncateTestText(`${testCase.module} · ${testCase.page}`)}
+                          </div>
+                          <div class="mt-1 text-xs text-slate-600" title=${testCase.routine}>${this.truncateTestText(testCase.routine)}</div>
                         </td>
                       </tr>
                     `)}
