@@ -72,6 +72,8 @@ function buildBootConfigScript(app: FrontendAppRegistration) {
     basePath: app.basePath,
     shellMode: app.shellMode,
     device: app.device ?? 'desktop',
+    languages: app.languages ?? [],
+    designSystems: app.designSystems ?? [],
     routes: app.routes,
     headerEntrypoint: app.headerRenderer?.entrypoint,
     headerTag: app.headerRenderer?.tag,

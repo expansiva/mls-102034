@@ -221,6 +221,8 @@ export interface FrontendAppRegistration {
   assetRoots: string[];
   routePatterns: string[];
   shellMode: ShellMode;
+  languages?: string[];
+  designSystems?: string[];
   routes: FrontendRouteRegistration[];
   headerRenderer?: FrontendRegionRendererRegistration;
   asideRenderer?: FrontendRegionRendererRegistration;

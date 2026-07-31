@@ -2680,7 +2680,11 @@ export class MonitorWebDesktopHomePage extends LitElement {
                                     `
                                   : null}
                               `
-                            : testCase.errorCode ?? ''}
+                            // A PASSING case prints nothing here. A negative case (`<field>.required`)
+                            // passes precisely BY being rejected, so its errorCode is expected evidence,
+                            // not a defect — showing it in the Error column made real failures hard to
+                            // spot. The status badge already carries the verdict.
+                            : ''}
                         </td>
                         <td class="px-6 py-4">
                           <div class="font-medium text-slate-900" title=${testCase.id}>${this.truncateTestText(testCase.id)}</div>

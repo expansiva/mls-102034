@@ -32,6 +32,7 @@ import { createRequestContext, execBff } from '/_102034_/l1/server/layer_2_contr
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { createMemoryDataRuntime } from '/_102034_/l1/mdm/layer_1_external/data/memory/MdmDataRuntimeMemory.js';
 import { readProjectsConfig, resolveProjectModuleImportUrl } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
+import { loadResolvedTableDefinitions } from '/_102034_/l1/server/layer_1_external/persistence/registry.js';
 import { createUuidV7 } from '/_102029_/l2/uuidv7.js';
 
 const SEED_REF_MARKER = '<seedRef>';
@@ -288,6 +289,50 @@ function harvestRows(pool: Record<string, unknown>, data: unknown): void {
   }
 }
 
+function columnToField(column: string): string {
+  return column.replace(/_([a-z0-9])/gu, (_all, char: string) => char.toUpperCase());
+}
+
+/**
+ * Fill the id pool from the SEEDED table rows — the last resort, run AFTER the read phase.
+ *
+ * Some entities are reachable only by someone who already knows their id: the workspace has a detail
+ * read that REQUIRES the id and no list or create route produces one (102045 changeOrderWorkspace). No
+ * sequence of BFF calls can bootstrap such an id, so those cases could only ever be inconclusive — while
+ * the rows that would satisfy them sit in the store, seeded and unused.
+ *
+ * The rows come from the backend's `seeds.ts` (TableSeedRows merged into the definitions by the
+ * persistence registry) and are read HERE, on the runtime side. The generated page tests only ever carry
+ * the literal `<seedRef>` marker, so the frontend never sees an id — same boundary as
+ * resolveSeededActorMdmId above.
+ *
+ * Two deliberate limits:
+ *  - only a SINGLE-column primary key is harvested: that is the entity's own identifier, never a foreign
+ *    key that happens to appear in several tables;
+ *  - existing pool entries are never overwritten, so an id proven REACHABLE by a real read always wins
+ *    over a seeded one. This runs between the phases for exactly that reason.
+ *
+ * Caveat worth knowing when a case then fails: the first seed row is taken, and it may not be in a state
+ * the command accepts (e.g. an already-approved record for an approval command). That is a REAL verdict,
+ * not an inconclusive one — which is the point.
+ */
+async function fillPoolFromSeedRows(pool: Record<string, unknown>): Promise<void> {
+  try {
+    const definitions = await loadResolvedTableDefinitions(readAppEnv());
+    for (const definition of definitions) {
+      if (definition.primaryKey?.length !== 1) continue;
+      const column = definition.primaryKey[0];
+      const row = (definition.seedRows ?? [])[0];
+      const value = row?.[column];
+      if (value === undefined || value === null) continue;
+      const field = columnToField(column);
+      if (pool[field] === undefined) pool[field] = value;
+    }
+  } catch {
+    // Best effort: without it the affected cases stay inconclusive, exactly as before.
+  }
+}
+
 interface ResolvedParams {
   params: Record<string, unknown>;
   unresolved: string[];
@@ -490,6 +535,9 @@ export async function runPageTests(input: { moduleId?: string; page?: string; sk
       cases.push(await runOne(file, testCase));
     }
   }
+
+  // Between the phases: fill the gaps the reads could not cover, from the SEEDED rows.
+  await fillPoolFromSeedRows(pool);
 
   // Phase B: negative cases and commands — <seedRef> now resolves from the whole run's pool.
   for (const file of files) {

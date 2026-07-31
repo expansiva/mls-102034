@@ -302,6 +302,8 @@ async function getConfiguredFrontendApps(): Promise<FrontendAppRegistration[]> {
         assetRoots: sharedAssetRoots,
         routePatterns: collectRoutePatterns(routes),
         shellMode: moduleConfig.shellMode,
+        languages: moduleConfig.languages ?? [],
+        designSystems: moduleConfig.designSystems ?? [],
         routes,
         headerRenderer: getActiveRegionRenderer(clientShell, 'header') ?? moduleDefinition?.headerRenderer,
         asideRenderer: getActiveRegionRenderer(clientShell, 'aside') ?? moduleDefinition?.asideRenderer,
