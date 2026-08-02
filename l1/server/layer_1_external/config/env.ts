@@ -157,7 +157,7 @@ export function readAppEnv(): AppEnv {
     // Opt-in gate for /monitor/tests execution. Outside development the runner uses a
     // disposable in-memory sandbox, so enabling it never touches the production data.
     testsEnabled: parseBoolean(readEnvValue('TESTS_ENABLED', appEnv), appEnv === 'development'),
-    projectId: readEnvValue('PROJECT_ID', appEnv) || undefined,
+    projectId: readEnvValue('PROJECT_ID', appEnv) || readEnvValue('COLLAB_PROJECT_ID', appEnv) || undefined,
     projectDomain: readEnvValue('PROJECT_DOMAIN', appEnv) || readEnvValue('DOMAIN', appEnv) || undefined,
     studioEnabled: parseBoolean(readEnvValue('STUDIO_ENABLED', appEnv), false),
     activeCompanyId: readEnvValue('ACTIVE_COMPANY_ID', appEnv) || undefined,

@@ -1,6 +1,7 @@
 /// <mls fileReference="_102034_/l2/monitor/web/desktop/page11/home.ts" enhancement="_blank" />
 import { loadMonitorArchitecture } from '/_102034_/l2/monitor/web/shared/architecture.js';
-import { LitElement, html } from 'lit';
+import { LitElement, html, type PropertyValues } from 'lit';
+import type { ECharts, EChartsCoreOption } from '/_102033_/l2/shared/chartRuntime.js';
 import type { MasterFrontendInteractionMode, MasterFrontendNormalizedError } from '/_102029_/l2/contracts/bootstrap.js';
 import {
   beginExpectedNavigationLoad,
@@ -21,7 +22,15 @@ import {
 import { loadMonitorHome } from '/_102034_/l2/monitor/web/shared/home.js';
 import { loadMonitorOperationsSummary } from '/_102034_/l2/monitor/web/shared/operations.js';
 import { loadMonitorPostgres } from '/_102034_/l2/monitor/web/shared/postgres.js';
-import { loadMonitorProcess } from '/_102034_/l2/monitor/web/shared/process.js';
+import {
+  averageRuntimeMetric,
+  buildRuntimeMetricChart,
+  latestRuntimeMetricSamples,
+  loadMonitorProcess,
+  loadMonitorRuntimeMetrics,
+  RUNTIME_METRIC_OPTIONS,
+  type RuntimeMetricKey,
+} from '/_102034_/l2/monitor/web/shared/process.js';
 import { loadMonitorSeries } from '/_102034_/l2/monitor/web/shared/series.js';
 import { loadMonitorAbend, loadMonitorClientErrors } from '/_102034_/l2/monitor/web/shared/abend.js';
 import { loadMonitorTrace } from '/_102034_/l2/monitor/web/shared/trace.js';
@@ -43,6 +52,7 @@ import type {
 } from '/_102034_/l2/monitor/shared/contracts/operations.js';
 import type { MonitorPostgresResponse } from '/_102034_/l2/monitor/shared/contracts/postgres.js';
 import type { MonitorProcessResponse } from '/_102034_/l2/monitor/shared/contracts/process.js';
+import type { RuntimeMetricsResponse } from '/_102034_/l2/monitor/shared/contracts/runtimeMetrics.js';
 import type { MonitorAbendResponse, MonitorClientErrorsResponse } from '/_102034_/l2/monitor/shared/contracts/abend.js';
 import type { MonitorTraceResponse } from '/_102034_/l2/monitor/shared/contracts/trace.js';
 import type { MonitorTestCaseStatus, MonitorTestsListResponse } from '/_102034_/l2/monitor/shared/contracts/tests.js';
@@ -356,6 +366,8 @@ export class MonitorWebDesktopHomePage extends LitElement {
     clientErrorsData: { state: true },
     copiedAbendId: { state: true },
     processData: { state: true },
+    runtimeMetricsData: { state: true },
+    selectedRuntimeMetric: { state: true },
     traceData: { state: true },
     traceSearchInput: { state: true },
     testsData: { state: true },
@@ -384,6 +396,8 @@ export class MonitorWebDesktopHomePage extends LitElement {
   declare clientErrorsData?: MonitorClientErrorsResponse;
   declare copiedAbendId?: string;
   declare processData?: MonitorProcessResponse;
+  declare runtimeMetricsData?: RuntimeMetricsResponse;
+  selectedRuntimeMetric: RuntimeMetricKey = 'rssBytes';
   declare traceData?: MonitorTraceResponse;
   traceSearchInput = '';
   declare testsData?: MonitorTestsListResponse;
@@ -391,6 +405,10 @@ export class MonitorWebDesktopHomePage extends LitElement {
   declare copiedTestsRun?: boolean;
 
   private overviewPollTimer: number | null = null;
+  private runtimeMetricsChart?: ECharts;
+  private runtimeMetricsChartHost?: HTMLDivElement;
+  private runtimeMetricsChartResizeObserver?: ResizeObserver;
+  private runtimeMetricsChartGeneration = 0;
 
   createRenderRoot() {
     return this;
@@ -417,7 +435,19 @@ export class MonitorWebDesktopHomePage extends LitElement {
     window.removeEventListener('popstate', this.handleLocationChange);
     document.removeEventListener('visibilitychange', this.handleVisibilityChange);
     this.stopOverviewPolling();
+    this.disposeRuntimeMetricsChart();
     super.disconnectedCallback();
+  }
+
+  protected updated(changedProperties: PropertyValues<this>) {
+    super.updated(changedProperties);
+    if (
+      changedProperties.has('currentSection')
+      || changedProperties.has('runtimeMetricsData')
+      || changedProperties.has('selectedRuntimeMetric')
+    ) {
+      void this.syncRuntimeMetricsChart();
+    }
   }
 
   private readonly handleLocationChange = () => {
@@ -798,20 +828,31 @@ export class MonitorWebDesktopHomePage extends LitElement {
 
     if (this.currentRoute.section === 'process' && this.currentRoute.kind === 'section') {
       this.routeError = undefined;
-      this.status = 'Loading process health...';
-      const response = await loadMonitorProcess({
-        mode: options.mode,
-        signal: options.signal,
-      });
-      if (!response.ok || !response.data) {
+      this.status = 'Loading process metrics...';
+      const [processResponse, metricsResponse] = await Promise.all([
+        loadMonitorProcess({ mode: options.mode, signal: options.signal }),
+        loadMonitorRuntimeMetrics({ minutes: 60, limit: 2000 }, { mode: options.mode, signal: options.signal }),
+      ]);
+      if (processResponse.ok && processResponse.data) {
+        this.processData = processResponse.data;
+      }
+      if (metricsResponse.ok && metricsResponse.data) {
+        this.runtimeMetricsData = metricsResponse.data;
+      } else {
+        this.runtimeMetricsData = undefined;
+      }
+      if (!this.processData && !this.runtimeMetricsData) {
         if (options.mode === 'blocking') {
-          throw this.toBlockingError('Could not load process health.', response.error);
+          throw this.toBlockingError('Could not load process metrics.', processResponse.error);
         }
-        this.status = response.error?.message ?? 'Could not load process health.';
+        this.status = processResponse.error?.message ?? metricsResponse.error?.message ?? 'Could not load process metrics.';
         return;
       }
-      this.processData = response.data;
-      this.status = `Updated ${new Date(response.data.generatedAt).toLocaleTimeString('pt-BR')}`;
+      const sampleCount = this.runtimeMetricsData?.samples.length ?? 0;
+      const generatedAt = this.runtimeMetricsData?.samples.at(-1)?.sampledAt ?? this.processData?.generatedAt;
+      this.status = sampleCount > 0
+        ? `${formatInteger(sampleCount)} coletas carregadas · ${generatedAt ? new Date(generatedAt).toLocaleTimeString('pt-BR') : 'agora'}`
+        : `Snapshot atualizado ${generatedAt ? new Date(generatedAt).toLocaleTimeString('pt-BR') : 'agora'}`;
       return;
     }
 
@@ -2138,34 +2179,271 @@ export class MonitorWebDesktopHomePage extends LitElement {
     void this.navigate({ section: 'trace', kind: 'section', requestId, traceId });
   }
 
+  private handleRuntimeMetricSelection(event: Event) {
+    const value = (event.currentTarget as HTMLSelectElement).value as RuntimeMetricKey;
+    if (RUNTIME_METRIC_OPTIONS.some((option) => option.key === value)) {
+      this.selectedRuntimeMetric = value;
+    }
+  }
+
+  private releaseRuntimeMetricsChart() {
+    this.runtimeMetricsChartResizeObserver?.disconnect();
+    this.runtimeMetricsChartResizeObserver = undefined;
+    this.runtimeMetricsChart?.dispose();
+    this.runtimeMetricsChart = undefined;
+    this.runtimeMetricsChartHost = undefined;
+  }
+
+  private disposeRuntimeMetricsChart() {
+    this.runtimeMetricsChartGeneration += 1;
+    this.releaseRuntimeMetricsChart();
+  }
+
+  private async syncRuntimeMetricsChart() {
+    const host = this.querySelector<HTMLDivElement>('[data-runtime-metrics-chart]');
+    const samples = this.runtimeMetricsData?.samples ?? [];
+    const option = RUNTIME_METRIC_OPTIONS.find((candidate) => candidate.key === this.selectedRuntimeMetric)
+      ?? RUNTIME_METRIC_OPTIONS[0];
+    const chart = buildRuntimeMetricChart(samples, option.key);
+    if (this.currentSection !== 'process' || !host || chart.series.length === 0) {
+      this.disposeRuntimeMetricsChart();
+      return;
+    }
+
+    const generation = ++this.runtimeMetricsChartGeneration;
+    try {
+      const { echarts } = await import('/_102033_/l2/shared/chartRuntime.js');
+      if (generation !== this.runtimeMetricsChartGeneration || !host.isConnected) return;
+
+      if (this.runtimeMetricsChartHost !== host) {
+        this.releaseRuntimeMetricsChart();
+        host.textContent = '';
+        this.runtimeMetricsChart = echarts.init(host, undefined, {
+          renderer: 'canvas',
+          useDirtyRect: true,
+        });
+        this.runtimeMetricsChartHost = host;
+        this.runtimeMetricsChartResizeObserver = new ResizeObserver(() => this.runtimeMetricsChart?.resize());
+        this.runtimeMetricsChartResizeObserver.observe(host);
+      }
+
+      const formatValue = (value: number) => `${value.toLocaleString('pt-BR', {
+        maximumFractionDigits: 2,
+      })}${option.unit ? ` ${option.unit}` : ''}`;
+      const chartOption: EChartsCoreOption = {
+        animation: false,
+        aria: {
+          enabled: true,
+          label: {
+            description: `Histórico de ${option.label}, com uma série para cada worker.`,
+          },
+        },
+        color: ['#2563eb', '#0f766e', '#9333ea', '#ea580c', '#dc2626', '#0891b2'],
+        grid: {
+          left: 18,
+          right: 24,
+          top: 48,
+          bottom: 72,
+          containLabel: true,
+        },
+        legend: {
+          top: 0,
+          textStyle: { color: '#475569' },
+        },
+        toolbox: {
+          right: 0,
+          feature: {
+            dataZoom: { yAxisIndex: 'none' },
+            restore: {},
+            saveAsImage: { name: `runtime-${option.key}` },
+          },
+        },
+        tooltip: {
+          trigger: 'axis',
+          renderMode: 'richText',
+          axisPointer: { type: 'cross' },
+          formatter: (rawParams: unknown) => {
+            const params = (Array.isArray(rawParams) ? rawParams : [rawParams]) as Array<{
+              seriesName?: string;
+              value?: [number, number];
+            }>;
+            const timestamp = Number(params[0]?.value?.[0]);
+            const time = Number.isFinite(timestamp)
+              ? new Date(timestamp).toLocaleString('pt-BR')
+              : 'Horário indisponível';
+            const values = params.map((entry) => {
+              const value = Number(entry.value?.[1]);
+              return `${entry.seriesName ?? 'Worker'}: ${Number.isFinite(value) ? formatValue(value) : 'n/a'}`;
+            });
+            return [time, ...values].join('\n');
+          },
+        },
+        xAxis: {
+          type: 'time',
+          axisLabel: {
+            color: '#64748b',
+            formatter: (value: number) => new Date(value).toLocaleTimeString('pt-BR', {
+              hour: '2-digit',
+              minute: '2-digit',
+            }),
+          },
+          axisLine: { lineStyle: { color: '#cbd5e1' } },
+          splitLine: { show: false },
+        },
+        yAxis: {
+          type: 'value',
+          name: option.unit,
+          min: chart.minValue,
+          max: chart.maxValue,
+          nameTextStyle: { color: '#64748b' },
+          axisLabel: {
+            color: '#64748b',
+            formatter: (value: number) => value.toLocaleString('pt-BR', { maximumFractionDigits: 1 }),
+          },
+          splitLine: { lineStyle: { color: '#e2e8f0' } },
+        },
+        dataZoom: [
+          { type: 'inside', xAxisIndex: 0 },
+          {
+            type: 'slider',
+            xAxisIndex: 0,
+            height: 22,
+            bottom: 12,
+            borderColor: '#cbd5e1',
+            fillerColor: 'rgba(37, 99, 235, 0.12)',
+          },
+        ],
+        series: chart.series.map((series) => ({
+          name: `Worker ${series.processInstance}`,
+          type: 'line',
+          data: series.points.map((point) => [point.timestamp, point.value]),
+          showSymbol: false,
+          smooth: 0.15,
+          sampling: 'lttb',
+          emphasis: { focus: 'series' },
+          lineStyle: { width: 2 },
+        })),
+      };
+      this.runtimeMetricsChart?.setOption(chartOption, { notMerge: true, lazyUpdate: true });
+      this.runtimeMetricsChart?.resize();
+    } catch (error) {
+      if (generation !== this.runtimeMetricsChartGeneration || !host.isConnected) return;
+      this.releaseRuntimeMetricsChart();
+      host.textContent = error instanceof Error
+        ? `Não foi possível carregar o gráfico: ${error.message}`
+        : 'Não foi possível carregar o gráfico.';
+    }
+  }
+
+  private renderRuntimeMetricsChart() {
+    const samples = this.runtimeMetricsData?.samples ?? [];
+    const option = RUNTIME_METRIC_OPTIONS.find((candidate) => candidate.key === this.selectedRuntimeMetric)
+      ?? RUNTIME_METRIC_OPTIONS[0];
+    const chart = buildRuntimeMetricChart(samples, option.key);
+    const latestValues = chart.series.map((series) => ({
+      worker: series.processInstance,
+      value: series.points.at(-1)?.value,
+    }));
+    const formatValue = (value: number | undefined) => value === undefined
+      ? 'n/a'
+      : `${value.toLocaleString('pt-BR', { maximumFractionDigits: 2 })}${option.unit ? ` ${option.unit}` : ''}`;
+
+    return html`
+      <article class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div class="mb-5 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+          <div>
+            <h2 class="text-lg font-semibold text-slate-900">Histórico do runtime</h2>
+            <p class="mt-1 text-sm text-slate-500">
+              Últimos 60 minutos · uma linha por worker · sem atualização automática.
+            </p>
+          </div>
+          <label class="flex min-w-64 flex-col gap-2 text-sm font-medium text-slate-700">
+            <span>Métrica exibida</span>
+            <select
+              class="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-aura-blue focus:ring-2 focus:ring-blue-100"
+              .value=${this.selectedRuntimeMetric}
+              @change=${(event: Event) => this.handleRuntimeMetricSelection(event)}
+            >
+              ${RUNTIME_METRIC_OPTIONS.map((candidate) => html`
+                <option value=${candidate.key}>${candidate.label}</option>
+              `)}
+            </select>
+          </label>
+        </div>
+
+        ${chart.series.length > 0
+          ? html`
+            <div class="rounded-3xl border border-slate-100 bg-slate-50 p-4">
+              <div class="mb-3 flex flex-wrap items-center justify-between gap-4 text-sm">
+                <span class="font-medium text-slate-700">${option.label}</span>
+                <span class="text-slate-500">
+                  ${latestValues.map((entry) => `Worker ${entry.worker}: ${formatValue(entry.value)}`).join(' · ')}
+                </span>
+              </div>
+              <div
+                data-runtime-metrics-chart
+                class="h-80 w-full text-sm text-slate-500"
+                role="img"
+                aria-label="Histórico de ${option.label}"
+              ></div>
+            </div>
+          `
+          : html`
+            <div class="rounded-3xl border border-dashed border-slate-300 bg-slate-50 px-6 py-12 text-center text-sm text-slate-500">
+              Ainda não existem coletas históricas. Os cartões acima continuam usando o snapshot atual do processo.
+            </div>
+          `}
+      </article>
+    `;
+  }
+
   private renderProcess() {
     const data = this.processData;
-    const uptime = data ? `${Math.floor(data.process.uptimeSeconds / 3600)}h ${Math.floor((data.process.uptimeSeconds % 3600) / 60)}m ${data.process.uptimeSeconds % 60}s` : 'n/a';
+    const samples = this.runtimeMetricsData?.samples ?? [];
+    const latestWorkers = latestRuntimeMetricSamples(samples);
+    const hasMetrics = latestWorkers.length > 0;
+    const average = (value: (sample: typeof latestWorkers[number]) => number) => averageRuntimeMetric(latestWorkers, value);
+    const averageBytes = (value: (sample: typeof latestWorkers[number]) => number) => {
+      const bytes = average(value);
+      return bytes === null ? 'n/a' : formatBytes(bytes);
+    };
+    const heapUsed = average((sample) => sample.heapUsedBytes);
+    const heapTotal = average((sample) => sample.heapTotalBytes);
+    const heapUsedPercent = heapUsed !== null && heapTotal !== null && heapTotal > 0 ? (heapUsed / heapTotal) * 100 : undefined;
+    const cpuPercent = average((sample) => sample.cpuPercent);
+    const eventLoopP95 = average((sample) => sample.eventLoopDelayP95Ms);
+    const eventLoopUtilization = average((sample) => sample.eventLoopUtilization * 100);
+    const uptimeSeconds = hasMetrics
+      ? Math.min(...latestWorkers.map((sample) => sample.uptimeSeconds))
+      : data?.process.uptimeSeconds;
+    const uptime = uptimeSeconds === undefined
+      ? 'n/a'
+      : `${Math.floor(uptimeSeconds / 3600)}h ${Math.floor((uptimeSeconds % 3600) / 60)}m ${Math.floor(uptimeSeconds % 60)}s`;
+    const pids = hasMetrics ? latestWorkers.map((sample) => sample.pid).join(', ') : String(data?.process.pid ?? 'n/a');
+    const latest = latestWorkers.at(-1);
+    const nodeVersion = latest?.nodeVersion ?? data?.process.nodeVersion ?? 'n/a';
+    const heapUsedValue = hasMetrics ? averageBytes((sample) => sample.heapUsedBytes) : (data ? `${data.memory.heapUsedMb} MB` : 'n/a');
+    const heapTotalValue = hasMetrics ? averageBytes((sample) => sample.heapTotalBytes) : (data ? `${data.memory.heapTotalMb} MB` : 'n/a');
+    const rssValue = hasMetrics ? averageBytes((sample) => sample.rssBytes) : (data ? `${data.memory.rssMb} MB` : 'n/a');
+    const systemFreeValue = hasMetrics ? averageBytes((sample) => sample.systemFreeMemBytes) : (data ? `${data.system.freememMb} MB` : 'n/a');
 
     return html`
       <section class="space-y-6">
         <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          ${this.renderMetricCard('Heap used', data ? `${data.memory.heapUsedMb} MB` : 'n/a', `${formatPercent(data?.memory.heapUsedPercent)} of heap total`)}
-          ${this.renderMetricCard('Heap total', data ? `${data.memory.heapTotalMb} MB` : 'n/a', `RSS ${data ? `${data.memory.rssMb} MB` : 'n/a'}`)}
-          ${this.renderMetricCard('System free', data ? `${data.system.freememMb} MB` : 'n/a', `${formatPercent(data?.system.freeMemPercent)} of ${data ? `${data.system.totalMemMb} MB` : 'n/a'}`)}
-          ${this.renderMetricCard('Uptime', uptime, `PID ${data?.process.pid ?? 'n/a'}`)}
+          ${this.renderMetricCard('Heap usado', heapUsedValue, `${formatPercent(hasMetrics ? heapUsedPercent : data?.memory.heapUsedPercent)} do heap total`)}
+          ${this.renderMetricCard('Heap total', heapTotalValue, `RSS ${rssValue}`)}
+          ${this.renderMetricCard('Memória livre', systemFreeValue, hasMetrics ? 'Servidor · última coleta' : `${formatPercent(data?.system.freeMemPercent)} do total`)}
+          ${this.renderMetricCard('CPU do processo', cpuPercent === null ? 'n/a' : `${cpuPercent.toFixed(2)}%`, hasMetrics ? `Média de ${latestWorkers.length} worker(s)` : 'Disponível após a primeira coleta')}
         </div>
 
-        <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          ${this.renderMetricCard('CPU count', formatInteger(data?.system.cpuCount), 'Logical processors')}
-          ${this.renderMetricCard('Load avg 1m', data ? String(data.system.loadAvg1m) : 'n/a', `5m ${data?.system.loadAvg5m ?? 'n/a'} · 15m ${data?.system.loadAvg15m ?? 'n/a'}`)}
-          ${this.renderMetricCard('Node version', data?.process.nodeVersion ?? 'n/a', 'Runtime version')}
+        <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          ${this.renderMetricCard('Workers', hasMetrics ? formatInteger(latestWorkers.length) : '1', `PIDs ${pids}`)}
+          ${this.renderMetricCard('Event loop p95', eventLoopP95 === null ? 'n/a' : `${eventLoopP95.toFixed(2)} ms`, eventLoopUtilization === null ? 'Sem histórico' : `${eventLoopUtilization.toFixed(2)}% de utilização`)}
+          ${this.renderMetricCard('Uptime', uptime, latest ? `Coleta ${formatTime(latest.sampledAt)}` : `PID ${data?.process.pid ?? 'n/a'}`)}
+          ${this.renderMetricCard('Node', nodeVersion, latest ? `${latest.allocator} · release ${latest.releaseId ?? 'n/a'}` : `${formatInteger(data?.system.cpuCount)} processadores lógicos`)}
         </div>
 
-        <article class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h2 class="text-lg font-semibold text-slate-900">Memory breakdown</h2>
-          <div class="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            ${this.renderMetricCard('Heap used', data ? `${data.memory.heapUsedMb} MB` : 'n/a', `${formatPercent(data?.memory.heapUsedPercent)} utilization`)}
-            ${this.renderMetricCard('Heap total', data ? `${data.memory.heapTotalMb} MB` : 'n/a', 'V8 heap allocation')}
-            ${this.renderMetricCard('RSS', data ? `${data.memory.rssMb} MB` : 'n/a', 'Resident set size')}
-            ${this.renderMetricCard('External', data ? `${data.memory.externalMb} MB` : 'n/a', 'C++ objects bound to JS')}
-          </div>
-        </article>
+        ${this.renderRuntimeMetricsChart()}
       </section>
     `;
   }

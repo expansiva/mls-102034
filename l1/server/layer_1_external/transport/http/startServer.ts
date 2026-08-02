@@ -8,6 +8,11 @@ import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { execBff } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
 import { registerCbeRoutes } from '/_102034_/l1/server/layer_1_external/cbe/cbeRoutes.js';
 import { WriteBehindWorker } from '/_102034_/l1/mdm/layer_1_external/queue/WriteBehindWorker.js';
+import {
+  createRuntimeMetricsCollector,
+  loadRuntimeMetricSamples,
+  parseRuntimeMetricsQuery,
+} from '/_102034_/l1/monitor/layer_3_usecases/runtimeMetricsUsecases.js';
 import type { BffRequest, FrontendAppRegistration, RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 
 const WRITE_BEHIND_INTERVAL_MS = 5000;
@@ -229,6 +234,37 @@ export async function handleHttpRequest(
     };
   }
 
+  if (method === 'GET' && new URL(url, 'http://runtime.local').pathname === '/monitor/runtime-metrics') {
+    try {
+      const config = readProjectsConfig();
+      const query = parseRuntimeMetricsQuery(url);
+      return {
+        statusCode: 200,
+        body: {
+          ok: true,
+          data: await loadRuntimeMetricSamples({
+            ...query,
+            defaultProjectId: config.defaultProjectId,
+          }),
+          error: null,
+        },
+      };
+    } catch (error) {
+      console.error('[runtimeMetrics] endpoint failed:', error);
+      return {
+        statusCode: 503,
+        body: {
+          ok: false,
+          data: null,
+          error: {
+            code: 'RUNTIME_METRICS_UNAVAILABLE',
+            message: 'Runtime metrics are temporarily unavailable',
+          },
+        },
+      };
+    }
+  }
+
   if (method === 'GET') {
     const staticAsset = tryReadProjectAsset(url) ?? await tryReadAppFile(url);
     if (staticAsset) {
@@ -294,10 +330,21 @@ console.log(`Starting server with isMainModule=${isMainModule}, argv[1]=${proces
 if (isMainModule) {
   const env = readAppEnv();
   const server = buildHttpServer();
+  const runtimeMetricsCollector = env.runtimeMode === 'postgres'
+    ? createRuntimeMetricsCollector(env, readProjectsConfig().defaultProjectId)
+    : null;
+  server.addHook('onClose', async () => {
+    runtimeMetricsCollector?.stop();
+  });
   void getFrontendAppRegistrations().then((apps) => {
     server.listen({ port: env.port, host: '0.0.0.0' }).then(() => {
     console.info(`MDM BFF listening on port ${env.port}`);
     console.info(`Registered frontend apps: ${apps.map((app) => `${app.appId}:${app.basePath}`).join(', ')}`);
+    if (runtimeMetricsCollector) {
+      void runtimeMetricsCollector.start()
+        .then(() => console.info('Runtime metrics collection enabled every 5000ms'))
+        .catch((error) => console.error('[runtimeMetrics] startup failed:', error));
+    }
     if (env.runtimeMode === 'postgres' && env.writeBehindEnabled) {
       const worker = new WriteBehindWorker(env);
       const runWorker = async () => {
