@@ -31,6 +31,11 @@ export interface CbeStaticFileResult {
 // at the base, never inside a release.
 const DEFAULT_STATIC_DIR = '/data/mls-base/static';
 
+/** Shared with cbeLatestJson (latest.json lives beside the /libs/* cache). */
+export function getCbeStaticDir(): string {
+  return getStaticDir();
+}
+
 function getStaticDir(): string {
   // Explicit override wins (CBE_STATIC_DIR in the .env / pm2 env).
   const fromEnv = process.env.CBE_STATIC_DIR;
@@ -91,6 +96,34 @@ function computeETag(content: Buffer): string {
   return `${createHash('sha1').update(content).digest('base64')}a`;
 }
 
+// ── Runtime patch of the studio service worker ──────────────────────────────
+// The studio SW answers a synthetic 404 on cache miss — correct on
+// on.collab.codes (the cache IS the only source: login fills it before any
+// widget import), wrong on the runtime VM, where the server itself serves
+// every /_<id>_/l2/* from dist + compiled.zip. A registered SW with a cleared
+// cache (user wipes site data) would 404 every module until the next login
+// completes. Patch at SERVE time (the disk/remote copy stays pristine, so
+// upstream refreshes keep working): on miss, try the network before 404ing.
+const SW_MISS_ORIGINAL = `    totalNotFound += 1;
+    return new Response(null, {
+      status: 404,`;
+const SW_MISS_PATCHED = `    totalNotFound += 1;
+    try {
+      const networkResponse = await fetch(event.request);
+      if (networkResponse && networkResponse.ok) return networkResponse;
+    } catch { /* offline — fall through to the 404 below */ }
+    return new Response(null, {
+      status: 404,`;
+
+function patchServiceWorkerForRuntime(content: Buffer): Buffer {
+  const source = content.toString('utf8');
+  if (!source.includes(SW_MISS_ORIGINAL)) {
+    console.warn('[cbe] mlsServiceWorker.js: miss-404 block not found — serving UNPATCHED (cold-cache module loads may 404; check upstream SW changes)');
+    return content;
+  }
+  return Buffer.from(source.replace(SW_MISS_ORIGINAL, SW_MISS_PATCHED), 'utf8');
+}
+
 /** Logs the resolved locations once at startup so deploys are easy to debug. */
 export function logCbeStaticConfig(): void {
   console.info(`[cbe] static dir: ${getStaticDir()} | remote origin: ${getRemoteOrigin()}`);
@@ -128,6 +161,10 @@ export async function getCbeStaticFile(rawUrlPath: string, clientETag: string): 
 
   if (!content) {
     return { statusCode: CBE_HTTP_NOT_FOUND, msg: `file not found ${urlPath}` };
+  }
+
+  if (urlPath === '/mlsServiceWorker.js') {
+    content = patchServiceWorkerForRuntime(content);
   }
 
   const eTag = computeETag(content);

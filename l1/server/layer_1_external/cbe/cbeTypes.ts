@@ -7,6 +7,7 @@
 
 export const CBE_HTTP_OK = 200;
 export const CBE_HTTP_BAD_REQUEST = 400;
+export const CBE_HTTP_UNAUTHORIZED = 401;
 export const CBE_HTTP_NOT_FOUND = 404;
 export const CBE_HTTP_NOT_MODIFIED = 304;
 export const CBE_HTTP_SERVER_ERROR = 500;
@@ -26,6 +27,15 @@ export interface CbeRequestLogin extends CbeRequestBase {
   baseProject?: number;
   actualProject?: number;
   projectsLastModified?: CbeProjectsLastModified[];
+}
+
+// Sent by the cfe's collab-auth callback handler (handleCollabAuthCallback):
+// the tokens arrive in the URL fragment and are handed to the server, which
+// verifies and stores them as httpOnly cookies — JS never keeps them.
+export interface CbeRequestAuthSession extends CbeRequestBase {
+  action: 'authSession';
+  access_token?: string;
+  refresh_token?: string;
 }
 
 export interface CbePrjSourcesFile {

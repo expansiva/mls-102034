@@ -7,6 +7,9 @@ import { getPublicationTarget, readProjectsConfig, resolveActivePublicationDistP
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { execBff } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
 import { registerCbeRoutes } from '/_102034_/l1/server/layer_1_external/cbe/cbeRoutes.js';
+import { getLatestJson, initCbeLatestJson } from '/_102034_/l1/server/layer_1_external/cbe/cbeLatestJson.js';
+import { registerMsgProxy } from '/_102034_/l1/server/layer_1_external/transport/http/msgProxy.js';
+import { getCompiledStaticFile } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledStatic.js';
 import { WriteBehindWorker } from '/_102034_/l1/mdm/layer_1_external/queue/WriteBehindWorker.js';
 import {
   createRuntimeMetricsCollector,
@@ -91,7 +94,11 @@ function buildBootConfigScript(app: FrontendAppRegistration) {
     clientShell: app.clientShell,
   }).replace(/</gu, '\\u003c');
 
-  return `<script>window.collabBoot=${payload};</script>`;
+  // window.latest mirrors the studio index.html (versions from the central
+  // latest.json — see cbeLatestJson): the client loads versioned libs with it.
+  const latestJson = getLatestJson();
+  const latestScript = latestJson ? `window.latest=${latestJson.replace(/</gu, '\\u003c')};` : '';
+  return `<script>window.collabBoot=${payload};${latestScript}</script>`;
 }
 
 function injectBootConfig(html: string, app: FrontendAppRegistration) {
@@ -186,7 +193,10 @@ export function buildHttpServer() {
   app.get('/health', async () => ({ ok: true }));
   // cbe-compatible endpoints (login + mls lib assets) for the runtime VM.
   // Registered before the catch-all GET /* so /libs/* wins the route match.
+  initCbeLatestJson();
   registerCbeRoutes(app);
+  // Same-origin proxy to the collab-messages backend (pm2 "msg" app).
+  registerMsgProxy(app);
   app.get('/', async (_request, reply) => {
     reply.redirect(await resolveDefaultFrontendLocation());
   });
@@ -200,6 +210,27 @@ export function buildHttpServer() {
   });
   app.get('/*', async (request, reply) => {
     const result = await handleHttpRequest('GET', request.url);
+    if (result.statusCode === 404) {
+      // Module not in the dist (only config.json projects compile there):
+      // fall back to the project's obj/compiled.zip, the same source the cbe
+      // login delivers to the browser. Covers /_<id>_/l2/* imports (studio
+      // components and lib deep-imports) when the service worker is not
+      // controlling the page yet.
+      const compiled = getCompiledStaticFile(request.raw.url ?? '');
+      if (compiled) {
+        const clientETag = ((request.headers['if-none-match'] as string | undefined) ?? '').replace(/^W\//u, '').replaceAll('"', '');
+        if (clientETag && clientETag === compiled.eTag) {
+          reply.status(304);
+          return null;
+        }
+        reply
+          .status(200)
+          .header('Content-Type', compiled.contentType)
+          .header('Cache-Control', 'no-cache')
+          .header('ETag', `"${compiled.eTag}"`);
+        return compiled.content;
+      }
+    }
     reply.status(result.statusCode);
     if (result.headers) {
       reply.headers(result.headers);

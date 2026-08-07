@@ -9,9 +9,9 @@
 // session (cauth cookie + JWKS validation) plugs in here later without changing
 // the response shape.
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { readProjectsConfig } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
-import { getFilesIfNewer, hasCompiledZip, resolveProjectSourcePath } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
+import { getFilesIfNewer, getProjectsBaseDir, hasCompiledZip, resolveProjectSourcePath } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
 import {
   CBE_HTTP_OK,
   type CbeOrgInfo,
@@ -79,13 +79,34 @@ function buildProjectSettings(
   };
 }
 
-export function executeCbeLogin(args: CbeRequestLogin): CbeResponseLogin {
-  const projectsLastModified = Array.isArray(args.projectsLastModified) ? args.projectsLastModified : [];
+// All projects the VM can serve: the runtime config set PLUS every mls-<id>
+// folder present at the projects base with an obj/compiled.zip. This is what
+// makes the studio projects (mls-100554 etc.) — synced by the publish and
+// compiled ON the VM (scripts/runtime/buildProjectsObj.mjs) — reach the
+// browser, instead of only the runtime workspace of config.json.
+function listServableProjectIds(): number[] {
+  const ids = new Set<number>();
   const config = readProjectsConfig();
+  for (const id of Object.keys(config.projects)) {
+    const numeric = Number(id);
+    if (Number.isFinite(numeric)) ids.add(numeric);
+  }
+  try {
+    for (const entry of readdirSync(getProjectsBaseDir(), { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const match = /^mls-(\d+)$/u.exec(entry.name);
+      if (match) ids.add(Number(match[1]));
+    }
+  } catch (err) {
+    console.warn(`[cbe] projects base scan failed: ${(err as Error).message}`);
+  }
+  return [...ids].sort((a, b) => a - b);
+}
 
-  const projectIds = Object.keys(config.projects)
-    .map((id) => Number(id))
-    .filter((id) => Number.isFinite(id) && hasCompiledZip(id));
+export function executeCbeLogin(args: CbeRequestLogin, loginUser?: string): CbeResponseLogin {
+  const projectsLastModified = Array.isArray(args.projectsLastModified) ? args.projectsLastModified : [];
+
+  const projectIds = listServableProjectIds().filter((id) => hasCompiledZip(id));
 
   const projects: CbePrjSettings[] = [];
   for (const projectId of projectIds) {
@@ -101,14 +122,14 @@ export function executeCbeLogin(args: CbeRequestLogin): CbeResponseLogin {
       created_at: '',
       description: 'workspace projects served by the local runtime (cbe module)',
       projects,
-      users: [LOCAL_OWNER],
+      users: [loginUser || LOCAL_OWNER],
       teams: [{ name: 'admin', auth: 'admin', usrIndex: [0] }],
     },
     VersionNumber: 1,
   };
 
   const sentFiles = projects.filter((p) => p.files).map((p) => p.id);
-  console.info(`[cbe] login: ${projects.length} project(s), files sent for [${sentFiles.join(', ')}]`);
+  console.info(`[cbe] login (${loginUser || 'anonymous'}): ${projects.length} project(s), files sent for [${sentFiles.join(', ')}]`);
 
   return {
     statusCode: CBE_HTTP_OK,
