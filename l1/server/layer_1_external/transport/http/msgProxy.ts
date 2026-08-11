@@ -62,5 +62,9 @@ export function registerMsgProxy(app: FastifyInstance): void {
   }
   app.all('/msg', forward);
   app.all('/msg/*', forward);
-  console.info(`[msgProxy] /msg -> ${getTarget()} (MSG_PROXY_TARGET to override, MSG_PROXY_ENABLED=false to disable)`);
+  // Identity/diagnostic endpoint of collab-messages: open /whoami in the
+  // browser to see exactly what the current cauth/loginMsg cookies resolve to
+  // (missing token / invalid or expired / bound identity).
+  app.all('/whoami', forward);
+  console.info(`[msgProxy] /msg + /whoami -> ${getTarget()} (MSG_PROXY_TARGET to override, MSG_PROXY_ENABLED=false to disable)`);
 }

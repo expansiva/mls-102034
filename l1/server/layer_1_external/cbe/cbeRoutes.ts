@@ -75,7 +75,12 @@ function requiresLogin(request: FastifyRequest): boolean {
 
 // Cookies for the login response. The cfe frontend gates its UI on the
 // JS-readable `loginUser`; cauth/crefresh stay httpOnly (set by authSession).
-function buildLoginCookies(session: JwtSession & { testUser?: string }): string[] {
+// `requestCookies` guards the test conveniences: CBE_TEST_CAUTH /
+// CBE_TEST_LOGIN_MSG only fill a cookie the browser DOESN'T have yet —
+// otherwise every login (each page load) would overwrite a JWT placed
+// manually via devtools, making localhost tests against a real collab-messages
+// authority impossible.
+function buildLoginCookies(session: JwtSession & { testUser?: string }, requestCookies: Record<string, string>): string[] {
   if (session.email) {
     const cookies = [sessionCookie('loginUser', session.email)];
     if (session.newAccessToken) {
@@ -88,9 +93,9 @@ function buildLoginCookies(session: JwtSession & { testUser?: string }): string[
     console.warn(`[cbe] TEST session active (CBE_TEST_LOGIN_USER=${session.testUser}) — do not use in production`);
     const cookies = [sessionCookie('loginUser', session.testUser)];
     const cauth = process.env.CBE_TEST_CAUTH;
-    if (cauth) cookies.push(sessionCookie('cauth', cauth, { httpOnly: true }));
+    if (cauth && !requestCookies.cauth) cookies.push(sessionCookie('cauth', cauth, { httpOnly: true }));
     const loginMsg = process.env.CBE_TEST_LOGIN_MSG;
-    if (loginMsg) cookies.push(sessionCookie('loginMsg', loginMsg, { httpOnly: true }));
+    if (loginMsg && !requestCookies.loginMsg) cookies.push(sessionCookie('loginMsg', loginMsg, { httpOnly: true }));
     return cookies;
   }
 
@@ -182,7 +187,7 @@ async function handleExec(request: FastifyRequest, reply: FastifyReply): Promise
         }
         const rc = executeCbeLogin(body as CbeRequestLogin, session.email ?? session.testUser);
         console.info(`[cbe] /exec action:login (${session.email ?? session.testUser ?? 'anonymous'}) -> ${rc.statusCode} in ${Date.now() - start}ms`);
-        reply.header('set-cookie', buildLoginCookies(session));
+        reply.header('set-cookie', buildLoginCookies(session, parseCookies(request.headers.cookie as string | undefined)));
         reply
           .code(rc.statusCode)
           .header('Content-Type', 'text/json; charset=utf-8')
