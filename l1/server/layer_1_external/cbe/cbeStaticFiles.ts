@@ -1,6 +1,6 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/cbe/cbeStaticFiles.ts" enhancement="_blank" />
-// Static delivery of the mls lib files (/libs/*, /mlsServiceWorker.js), same
-// strategy as the central cbe: local disk cache first, remote origin on miss
+// Static delivery of the mls lib files (/libs/*, /monaco/*, /mlsServiceWorker.js),
+// same strategy as the central cbe: local disk cache first, remote origin on miss
 // (the origin is backed by the S3 bucket the cbe publishes to). The runtime VM
 // never holds AWS credentials — it reaches the assets over HTTPS and caches
 // them on disk, so repeated requests never leave the machine.
@@ -53,7 +53,7 @@ function getRemoteOrigin(): string {
 }
 
 function isAllowedPath(urlPath: string): boolean {
-  return urlPath.startsWith('/libs/') || urlPath === '/mlsServiceWorker.js';
+  return urlPath.startsWith('/libs/') || urlPath.startsWith('/monaco/') || urlPath === '/mlsServiceWorker.js';
 }
 
 function getContentTypeByExtension(urlPath: string): string {
