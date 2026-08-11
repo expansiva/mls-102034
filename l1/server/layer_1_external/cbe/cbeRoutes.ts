@@ -2,6 +2,7 @@
 // Fastify wiring for the cbe-compatible endpoints on the runtime VM:
 //   POST /exec               -> action dispatcher (login/authSession/authLogout; admin actions stay central)
 //   GET  /libs/*             -> mls lib assets (disk cache + remote origin)
+//   GET  /monaco/*           -> monaco editor assets (disk cache + remote origin)
 //   GET  /mlsServiceWorker.js
 // Kept apart from the app/BFF routes on purpose — everything cbe-related lives
 // in this folder so it can later move to a release-packaged module untouched.
@@ -236,8 +237,9 @@ async function handleStatic(request: FastifyRequest, reply: FastifyReply): Promi
 export function registerCbeRoutes(app: FastifyInstance): void {
   app.post('/exec', handleExec);
   app.get('/libs/*', handleStatic);
+  app.get('/monaco/*', handleStatic);
   app.get('/mlsServiceWorker.js', handleStatic);
-  console.info(`[cbe] v${CBE_MODULE_VERSION} routes registered: POST /exec (login/authSession/authLogout), GET /libs/*, GET /mlsServiceWorker.js`);
+  console.info(`[cbe] v${CBE_MODULE_VERSION} routes registered: POST /exec (login/authSession/authLogout), GET /libs/*, GET /monaco/*, GET /mlsServiceWorker.js`);
   logCbeStaticConfig();
   console.info(`[cbe] projects base: ${getProjectsBaseDir()} | jwtAuth: ${isJwtAuthEnabled() ? 'enabled' : 'DISABLED'}${process.env.CBE_TEST_LOGIN_USER ? ` | TEST user: ${process.env.CBE_TEST_LOGIN_USER}` : ''}`);
 }
