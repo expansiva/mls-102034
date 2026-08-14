@@ -38,6 +38,36 @@ export interface CbeRequestAuthSession extends CbeRequestBase {
   refresh_token?: string;
 }
 
+// ── Source I/O (VM storage driver, mls-102033 l2/cbe/driverVm.ts) ───────────
+// The login only delivers compiled js; these actions serve the .ts SOURCES the
+// studio editor and the agents read and write.
+
+export interface CbeSourceFile {
+  /** `l<level>/<folder>/<shortName><extension>` — same key the login's filesInfo uses. */
+  shortPath: string;
+  content: string;
+  /** utf8 for text, base64 for binary (l3 assets). */
+  encoding: 'utf8' | 'base64';
+}
+
+export interface CbeRequestGetContents extends CbeRequestBase {
+  action: 'getContents';
+  project?: number;
+  shortPaths?: string[];
+}
+
+export interface CbeRequestSetContents extends CbeRequestBase {
+  action: 'setContents';
+  project?: number;
+  files?: CbeSourceFile[];
+  deletes?: string[];
+}
+
+export interface CbeRequestLoadFilesInfo extends CbeRequestBase {
+  action: 'loadFilesInfo';
+  project?: number;
+}
+
 export interface CbePrjSourcesFile {
   shortPath: string;
   versionRef?: string;

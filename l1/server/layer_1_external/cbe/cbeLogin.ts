@@ -23,17 +23,24 @@ import {
 
 const LOCAL_ORG_NAME = 'local';
 const LOCAL_OWNER = 'local';
+/** Lowest id the platform assigns — anything below it is not a project (same floor cbeMiniCfe uses). */
+const MIN_PROJECT_ID = 100000;
 
 function readProjectDependencies(projectId: number): number[] {
-  const configPath = resolveProjectSourcePath(projectId, 'config.json');
+  const configPath = resolveProjectSourcePath(projectId, 'l5/config.json');
   if (!existsSync(configPath)) return [];
   try {
     const parsed = JSON.parse(readFileSync(configPath, 'utf8')) as {
-      workspaceDependencies?: Record<string, unknown>;
+      workspaceDependencies?: string[] | Record<string, unknown>;
     };
-    return Object.keys(parsed.workspaceDependencies ?? {})
+    const declared = parsed.workspaceDependencies ?? [];
+    // Today it is an ARRAY of ids (["102029","102033",...]). Object.keys on an array
+    // yields its INDEXES, which silently produced project ids 1..8 — hence the map
+    // over the array itself, with the object form kept for older configs.
+    const ids = Array.isArray(declared) ? declared : Object.keys(declared);
+    return ids
       .map((id) => Number(id))
-      .filter((id) => Number.isFinite(id) && id > 0);
+      .filter((id) => Number.isFinite(id) && id >= MIN_PROJECT_ID && id !== projectId);
   } catch {
     return [];
   }

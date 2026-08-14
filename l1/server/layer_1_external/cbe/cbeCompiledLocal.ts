@@ -36,6 +36,8 @@ interface CompiledProjectCacheEntry {
   lastModified: string;
   /** gzip+base64 of CbePrjSourcesInfo, ready to send to the frontend. */
   filesPayload: string;
+  /** Same list, plain — served to the VM driver's loadFilesInfo. */
+  filesInfo: CbePrjSourcesFile[];
   /** true when the zip has no usable fileinfos — the project must not be sent. */
   isEmpty: boolean;
 }
@@ -113,8 +115,17 @@ function readCompiledZip(projectId: number, zipPath: string, zipMtimeMs: number)
     zipMtimeMs,
     lastModified: lastModified || new Date(zipMtimeMs).toISOString(),
     filesPayload: compressAndEncodeBase64(prjInfo),
+    filesInfo: prjInfo.filesInfo,
     isEmpty: prjInfo.filesInfo.length === 0,
   };
+}
+
+/**
+ * The project's file list in plain form — the same index the login ships gzipped,
+ * used by the VM storage driver's loadFilesInfo so both answer with one truth.
+ */
+export function getProjectFilesInfo(projectId: number): CbePrjSourcesFile[] {
+  return getCompiledProject(projectId)?.filesInfo ?? [];
 }
 
 /**

@@ -18,6 +18,7 @@ import {
   verifyAccessToken,
   type JwtSession,
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeAuthJwt.js';
+import { listSources, readSources, writeSources } from '/_102034_/l1/server/layer_1_external/cbe/cbeSources.js';
 import {
   CBE_HTTP_BAD_REQUEST,
   CBE_HTTP_NOT_MODIFIED,
@@ -26,13 +27,16 @@ import {
   CBE_HTTP_UNAUTHORIZED,
   type CbeRequestAuthSession,
   type CbeRequestBase,
+  type CbeRequestGetContents,
+  type CbeRequestLoadFilesInfo,
   type CbeRequestLogin,
+  type CbeRequestSetContents,
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeTypes.js';
 
 // Bump on every change to the cbe module. Exposed via the x-cbe-version
 // response header and the {action:'ping'} probe so a deploy can be verified:
 //   curl -s localhost:3000/exec -H 'Content-Type: application/json' -d '{"action":"ping"}'
-export const CBE_MODULE_VERSION = '1.1.0';
+export const CBE_MODULE_VERSION = '1.2.0';
 
 // no-cache = always revalidate with the ETag (304 when unchanged). The server
 // is local to the VM, so revalidation is cheap — and a publish always lands
@@ -76,12 +80,7 @@ function requiresLogin(request: FastifyRequest): boolean {
 
 // Cookies for the login response. The cfe frontend gates its UI on the
 // JS-readable `loginUser`; cauth/crefresh stay httpOnly (set by authSession).
-// `requestCookies` guards the test conveniences: CBE_TEST_CAUTH /
-// CBE_TEST_LOGIN_MSG only fill a cookie the browser DOESN'T have yet —
-// otherwise every login (each page load) would overwrite a JWT placed
-// manually via devtools, making localhost tests against a real collab-messages
-// authority impossible.
-function buildLoginCookies(session: JwtSession & { testUser?: string }, requestCookies: Record<string, string>): string[] {
+function buildLoginCookies(session: JwtSession & { testUser?: string }): string[] {
   if (session.email) {
     const cookies = [sessionCookie('loginUser', session.email)];
     if (session.newAccessToken) {
@@ -94,9 +93,9 @@ function buildLoginCookies(session: JwtSession & { testUser?: string }, requestC
     console.warn(`[cbe] TEST session active (CBE_TEST_LOGIN_USER=${session.testUser}) — do not use in production`);
     const cookies = [sessionCookie('loginUser', session.testUser)];
     const cauth = process.env.CBE_TEST_CAUTH;
-    if (cauth && !requestCookies.cauth) cookies.push(sessionCookie('cauth', cauth, { httpOnly: true }));
+    if (cauth) cookies.push(sessionCookie('cauth', cauth, { httpOnly: true }));
     const loginMsg = process.env.CBE_TEST_LOGIN_MSG;
-    if (loginMsg && !requestCookies.loginMsg) cookies.push(sessionCookie('loginMsg', loginMsg, { httpOnly: true }));
+    if (loginMsg) cookies.push(sessionCookie('loginMsg', loginMsg, { httpOnly: true }));
     return cookies;
   }
 
@@ -144,6 +143,66 @@ function handleAuthLogout(reply: FastifyReply): void {
   reply.code(CBE_HTTP_OK).header('set-cookie', cookies).send({ statusCode: CBE_HTTP_OK, msg: 'ok' });
 }
 
+// ── Source I/O (VM storage driver) ──────────────────────────────────────────
+// Same gate as the login's sources delivery: on a real domain a JWT session is
+// required. Writing is stricter — it changes files on the VM's disk, so an
+// unauthenticated caller is refused even where reading would be allowed.
+async function isSourceRequestAllowed(request: FastifyRequest): Promise<boolean> {
+  if (!requiresLogin(request)) return true;
+  const session = await resolveSession(request);
+  return Boolean(session.email);
+}
+
+function readProjectId(body: { project?: number }): number | null {
+  const project = Number(body.project);
+  return Number.isInteger(project) && project > 0 ? project : null;
+}
+
+async function handleGetContents(request: FastifyRequest, body: CbeRequestGetContents, reply: FastifyReply): Promise<void> {
+  if (!await isSourceRequestAllowed(request)) {
+    reply.code(CBE_HTTP_UNAUTHORIZED).send({ statusCode: CBE_HTTP_UNAUTHORIZED, msg: 'login required' });
+    return;
+  }
+  const project = readProjectId(body);
+  if (!project || !Array.isArray(body.shortPaths)) {
+    reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, msg: 'invalid project or shortPaths' });
+    return;
+  }
+  const files = readSources(project, body.shortPaths);
+  reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, msg: 'ok', files });
+}
+
+async function handleSetContents(request: FastifyRequest, body: CbeRequestSetContents, reply: FastifyReply): Promise<void> {
+  if (!await isSourceRequestAllowed(request)) {
+    reply.code(CBE_HTTP_UNAUTHORIZED).send({ statusCode: CBE_HTTP_UNAUTHORIZED, msg: 'login required' });
+    return;
+  }
+  const project = readProjectId(body);
+  if (!project) {
+    reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, msg: 'invalid project' });
+    return;
+  }
+  const rc = writeSources(project, body.files ?? [], body.deletes ?? []);
+  if (!rc.ok) {
+    reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, msg: rc.msg ?? 'invalid request' });
+    return;
+  }
+  reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, msg: 'ok' });
+}
+
+async function handleLoadFilesInfo(request: FastifyRequest, body: CbeRequestLoadFilesInfo, reply: FastifyReply): Promise<void> {
+  if (!await isSourceRequestAllowed(request)) {
+    reply.code(CBE_HTTP_UNAUTHORIZED).send({ statusCode: CBE_HTTP_UNAUTHORIZED, msg: 'login required' });
+    return;
+  }
+  const project = readProjectId(body);
+  if (!project) {
+    reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, msg: 'invalid project' });
+    return;
+  }
+  reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, msg: 'ok', filesInfo: listSources(project) });
+}
+
 async function handleExec(request: FastifyRequest, reply: FastifyReply): Promise<void> {
   const body = request.body as CbeRequestBase | undefined;
   if (!body || typeof body !== 'object' || Array.isArray(body) || !body.action) {
@@ -162,6 +221,15 @@ async function handleExec(request: FastifyRequest, reply: FastifyReply): Promise
         return;
       case 'authLogout':
         handleAuthLogout(reply);
+        return;
+      case 'getContents':
+        await handleGetContents(request, body as CbeRequestGetContents, reply);
+        return;
+      case 'setContents':
+        await handleSetContents(request, body as CbeRequestSetContents, reply);
+        return;
+      case 'loadFilesInfo':
+        await handleLoadFilesInfo(request, body as CbeRequestLoadFilesInfo, reply);
         return;
       case 'login': {
         const start = Date.now();
@@ -188,7 +256,7 @@ async function handleExec(request: FastifyRequest, reply: FastifyReply): Promise
         }
         const rc = executeCbeLogin(body as CbeRequestLogin, session.email ?? session.testUser);
         console.info(`[cbe] /exec action:login (${session.email ?? session.testUser ?? 'anonymous'}) -> ${rc.statusCode} in ${Date.now() - start}ms`);
-        reply.header('set-cookie', buildLoginCookies(session, parseCookies(request.headers.cookie as string | undefined)));
+        reply.header('set-cookie', buildLoginCookies(session));
         reply
           .code(rc.statusCode)
           .header('Content-Type', 'text/json; charset=utf-8')
@@ -200,7 +268,7 @@ async function handleExec(request: FastifyRequest, reply: FastifyReply): Promise
         console.info(`[cbe] /exec unsupported action: ${body.action}`);
         reply.code(CBE_HTTP_BAD_REQUEST).send({
           statusCode: CBE_HTTP_BAD_REQUEST,
-          msg: `action "${body.action}" is not handled by the runtime cbe module (only login/authSession/authLogout run on the VM)`,
+          msg: `action "${body.action}" is not handled by the runtime cbe module (only login/authSession/authLogout and the source I/O actions run on the VM)`,
         });
         return;
     }
@@ -239,7 +307,7 @@ export function registerCbeRoutes(app: FastifyInstance): void {
   app.get('/libs/*', handleStatic);
   app.get('/monaco/*', handleStatic);
   app.get('/mlsServiceWorker.js', handleStatic);
-  console.info(`[cbe] v${CBE_MODULE_VERSION} routes registered: POST /exec (login/authSession/authLogout), GET /libs/*, GET /monaco/*, GET /mlsServiceWorker.js`);
+  console.info(`[cbe] v${CBE_MODULE_VERSION} routes registered: POST /exec (login/authSession/authLogout/getContents/setContents/loadFilesInfo), GET /libs/*, GET /monaco/*, GET /mlsServiceWorker.js`);
   logCbeStaticConfig();
   console.info(`[cbe] projects base: ${getProjectsBaseDir()} | jwtAuth: ${isJwtAuthEnabled() ? 'enabled' : 'DISABLED'}${process.env.CBE_TEST_LOGIN_USER ? ` | TEST user: ${process.env.CBE_TEST_LOGIN_USER}` : ''}`);
 }
