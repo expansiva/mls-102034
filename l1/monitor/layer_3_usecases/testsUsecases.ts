@@ -52,6 +52,13 @@ interface PageTestCase {
   params: Record<string, unknown>;
   expect: { ok: boolean; errorCode?: string; minItems?: number; shape?: TestShape; itemsKey?: string };
   mutating: boolean;
+  /**
+   * A failure that is already understood and owned by a named wave of work (e.g. 'mdm-rebuild'). The case
+   * still RUNS and still reports what happened: it is counted apart from `failed`, so a suite can be green
+   * with knowns instead of red with noise, and the day it passes the run says so — which is how the wave
+   * gets proved in production instead of on someone's word.
+   */
+  expectedFail?: string;
 }
 
 interface PageTestsFile {
@@ -77,7 +84,7 @@ interface DiscoveredTestFile {
 // 'inconclusive' = the case could not verify what it claims (a <seedRef> param never resolved, or a
 // `<command>.<field>.required` case was rejected on a different field). It is NOT an app defect —
 // keeping it out of `failed` is what makes the failed count mean "the backend misbehaved".
-export type TestCaseStatus = 'pass' | 'fail' | 'inconclusive' | 'skipped';
+export type TestCaseStatus = 'pass' | 'fail' | 'inconclusive' | 'skipped' | 'knownFail';
 
 export interface TestCaseResult {
   module: string;
@@ -103,6 +110,8 @@ export interface TestRunSummary {
   total: number;
   passed: number;
   failed: number;
+  /** Failures a case declared as already-owned work (`expectedFail`): known, not new. */
+  knownFail: number;
   inconclusive: number;
   skipped: number;
   cases: TestCaseResult[];
@@ -173,6 +182,7 @@ export function coercePageTestsFile(raw: unknown): PageTestsFile | null {
         itemsKey: typeof expectRaw.itemsKey === 'string' && expectRaw.itemsKey.trim() ? expectRaw.itemsKey.trim() : undefined,
       },
       mutating: item.mutating === true,
+      ...(typeof item.expectedFail === 'string' && item.expectedFail.trim() ? { expectedFail: item.expectedFail.trim() } : {}),
     });
   }
   // Optional: the page's l4 actor. Absent in files generated before actor-scoped runs existed.
@@ -427,6 +437,17 @@ function evaluate(
       reason = unresolvedReason;
     }
   }
+  // A KNOWN failure is not the backend misbehaving: it is work already owned elsewhere. It never becomes
+  // 'fail' (that count has to mean "something new broke"), and when it PASSES the mark is reported as
+  // stale — the signal that the wave landed and the mark can be dropped from the generator.
+  if (testCase.expectedFail) {
+    if (status === 'fail') {
+      status = 'knownFail';
+      reason = `known issue (${testCase.expectedFail}): ${reason}`;
+    } else if (status === 'pass') {
+      reason = `expectedFail '${testCase.expectedFail}' no longer reproduces — drop the mark`;
+    }
+  }
   return {
     module,
     page,
@@ -570,6 +591,7 @@ export async function runPageTests(input: { moduleId?: string; page?: string; sk
     total: cases.length,
     passed: cases.filter(c => c.status === 'pass').length,
     failed: cases.filter(c => c.status === 'fail').length,
+    knownFail: cases.filter(c => c.status === 'knownFail').length,
     inconclusive: cases.filter(c => c.status === 'inconclusive').length,
     skipped: cases.filter(c => c.status === 'skipped').length,
     cases,

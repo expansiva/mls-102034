@@ -4,7 +4,9 @@
 
 // 'inconclusive' = the case could not verify what it claims (unresolved <seedRef>, or a
 // `<field>.required` case rejected on another field) — not an app defect.
-export type MonitorTestCaseStatus = 'pass' | 'fail' | 'inconclusive' | 'skipped';
+// 'knownFail' = the case declared `expectedFail: '<wave>'` and failed as expected: work already owned
+// elsewhere, kept out of `failed` so that count keeps meaning "something new broke".
+export type MonitorTestCaseStatus = 'pass' | 'fail' | 'inconclusive' | 'skipped' | 'knownFail';
 
 export interface MonitorTestCaseResult {
   module: string;
@@ -30,6 +32,7 @@ export interface MonitorTestRunSummary {
   total: number;
   passed: number;
   failed: number;
+  knownFail: number;
   inconclusive: number;
   skipped: number;
   cases: MonitorTestCaseResult[];

@@ -2840,7 +2840,7 @@ export class MonitorWebDesktopHomePage extends LitElement {
             throw this.toBlockingError('Could not run tests.', response.error);
           }
           const run = response.data;
-          this.status = `Run finished: ${run.passed} passed, ${run.failed} failed, ${run.inconclusive} inconclusive, ${run.skipped} skipped`;
+          this.status = `Run finished: ${run.passed} passed, ${run.failed} failed, ${run.knownFail} known, ${run.inconclusive} inconclusive, ${run.skipped} skipped`;
           // Refresh the list so recentRuns reflects the new run.
           const list = await loadMonitorTestsList({ signal });
           if (list.ok && list.data) {
@@ -2870,7 +2870,7 @@ export class MonitorWebDesktopHomePage extends LitElement {
       ? 'rounded-full bg-emerald-100 px-2 py-1 text-xs font-medium text-emerald-800'
       : status === 'fail'
         ? 'rounded-full bg-rose-100 px-2 py-1 text-xs font-medium text-rose-800'
-        : status === 'inconclusive'
+        : status === 'inconclusive' || status === 'knownFail'
           ? 'rounded-full bg-amber-100 px-2 py-1 text-xs font-medium text-amber-800'
           : 'rounded-full bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600';
     return html`<span class="${cls}">${status}</span>`;
@@ -3000,7 +3000,7 @@ export class MonitorWebDesktopHomePage extends LitElement {
                 <h3 class="text-base font-semibold text-slate-900">Last run</h3>
                 <div class="flex flex-wrap items-center justify-end gap-3">
                   <span class="text-sm text-slate-500">
-                    ${lastRun.passed} passed · ${lastRun.failed} failed · ${lastRun.inconclusive} inconclusive · ${lastRun.skipped} skipped · ${formatDateTime(lastRun.finishedAt)}
+                    ${lastRun.passed} passed · ${lastRun.failed} failed · ${lastRun.knownFail} known · ${lastRun.inconclusive} inconclusive · ${lastRun.skipped} skipped · ${formatDateTime(lastRun.finishedAt)}
                   </span>
                   <button
                     class="rounded-full border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:border-aura-blue hover:text-aura-blue"
@@ -3023,8 +3023,8 @@ export class MonitorWebDesktopHomePage extends LitElement {
                       <tr class="border-t border-slate-100 align-top">
                         <td class="px-6 py-4">${this.renderTestStatusBadge(testCase.status)}</td>
                         <td class="px-6 py-4 text-slate-500">${testCase.status === 'skipped' ? '—' : `${formatInteger(testCase.durationMs)} ms`}</td>
-                        <td class="px-6 py-4 text-xs ${testCase.status === 'inconclusive' ? 'text-amber-700' : 'text-rose-600'}">
-                          ${testCase.status === 'fail' || testCase.status === 'inconclusive'
+                        <td class="px-6 py-4 text-xs ${testCase.status === 'inconclusive' || testCase.status === 'knownFail' ? 'text-amber-700' : 'text-rose-600'}">
+                          ${testCase.status === 'fail' || testCase.status === 'inconclusive' || testCase.status === 'knownFail'
                             ? html`
                                 <div title=${testCase.reason || testCase.errorCode || testCase.status}>
                                   ${this.truncateTestText(testCase.reason || testCase.errorCode || testCase.status)}
