@@ -76,7 +76,13 @@ function buildProjectSettings(
     // IndexedDB cache miss — which the login always fills first. 'GitHub' here
     // never reaches the network on the VM; a dedicated 'vm' driver in the cfe
     // can replace this marker later.
-    value: JSON.stringify({ projectDriver: 'GitHub', projectURL: 'local' }),
+    // projectURL needs >=3 '/'-separated segments (parsed as .../branch/owner/repo
+    // by getMyKeysBranch in mls-102029/l2/libCommom.ts, and mirrored in
+    // driverGithub.ts/driverGitlab.ts/driverLib.ts/projects.ts) — a bare 'local'
+    // has 1, throwing "Insufficient information to progress" the moment
+    // serviceSave.ts's initInfoProject() runs. Three segments keep the same
+    // 'local' placeholder convention already used elsewhere on the VM.
+    value: JSON.stringify({ projectDriver: 'GitHub', projectURL: `${LOCAL_OWNER}/${LOCAL_OWNER}/${LOCAL_OWNER}` }),
     created_at: '',
     archived_at: '',
     repository_lastModified: filesInfo.lastModified,

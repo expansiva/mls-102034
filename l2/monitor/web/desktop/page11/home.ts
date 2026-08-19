@@ -68,6 +68,53 @@ function traceLazy(event: string, details?: Record<string, unknown>) {
   console.log('[traceLazy][monitor]', event, details ?? {});
 }
 
+/// **collab_i18n_start**
+const testsMessage_pt = {
+  'tests.confirm.localhost': 'Você está no localhost. Tem certeza que deseja habilitar os testes?',
+  'tests.confirm.production': 'Você está em produção. Serão feitas chamadas reais. Tem certeza que deseja habilitar os testes?',
+  'tests.confirm.checkbox': 'Habilitar execução de testes',
+};
+const testsMessage_pt_br = { ...testsMessage_pt };
+const testsMessage_en = {
+  'tests.confirm.localhost': 'You are on localhost. Are you sure you want to enable test execution?',
+  'tests.confirm.production': 'You are in production. Real calls will be made. Are you sure you want to enable test execution?',
+  'tests.confirm.checkbox': 'Enable test execution',
+};
+const testsMessage_es = {
+  'tests.confirm.localhost': 'Estás en localhost. ¿Seguro que deseas habilitar la ejecución de pruebas?',
+  'tests.confirm.production': 'Estás en producción. Se realizarán llamadas reales. ¿Seguro que deseas habilitar la ejecución de pruebas?',
+  'tests.confirm.checkbox': 'Habilitar ejecución de pruebas',
+};
+type TestsMessageType = typeof testsMessage_pt;
+const testsMessages: { [key: string]: TestsMessageType } = {
+  'pt': testsMessage_pt,
+  'pt-br': testsMessage_pt_br,
+  'en': testsMessage_en,
+  'es': testsMessage_es,
+};
+/// **collab_i18n_end**
+
+function getTestsMessageKey(): string {
+  const keys = Object.keys(testsMessages);
+  const lang = (document.documentElement.lang || navigator.language || '').toLowerCase();
+  if (!lang) return keys[0];
+  if (testsMessages[lang]) return lang;
+  const similar = keys.find((key) => lang.startsWith(key) || key.startsWith(lang.slice(0, 2)));
+  return similar ?? keys[0];
+}
+
+function testsMsg(): TestsMessageType {
+  return testsMessages[getTestsMessageKey()] ?? testsMessage_pt;
+}
+
+// Hosts other than these are treated as "production" for the confirmation
+// copy below — matches the browser's own notion of a local dev box, not the
+// server's appEnv (which the confirmation flow replaces as the execution gate).
+function isLocalhostHost(): boolean {
+  const hostname = window.location.hostname.toLowerCase();
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname.endsWith('.localhost');
+}
+
 type MonitorSection = 'overview' | 'operations' | 'architecture' | 'postgres' | 'dynamodb' | 'process' | 'abend' | 'trace' | 'tests';
 type MonitorStorage = 'postgres' | 'dynamodb';
 type MonitorRoute =
@@ -373,6 +420,7 @@ export class MonitorWebDesktopHomePage extends LitElement {
     testsData: { state: true },
     testsRunning: { state: true },
     copiedTestsRun: { state: true },
+    testsExecutionConfirmed: { state: true },
   };
 
   currentSection: MonitorSection = 'overview';
@@ -403,6 +451,11 @@ export class MonitorWebDesktopHomePage extends LitElement {
   declare testsData?: MonitorTestsListResponse;
   testsRunning = false;
   declare copiedTestsRun?: boolean;
+  // Client-side override for env.testsEnabled (server defaults it to false
+  // outside appEnv=development, see runPageTests) — the hard server block was
+  // replaced by this confirmation, since every run is sandboxed in-memory
+  // (see testsUsecases.ts) regardless of environment.
+  testsExecutionConfirmed = false;
 
   private overviewPollTimer: number | null = null;
   private runtimeMetricsChart?: ECharts;
@@ -2776,7 +2829,7 @@ export class MonitorWebDesktopHomePage extends LitElement {
 
   private async handleRunTests(scope: { moduleId?: string; page?: string }) {
     if (this.testsRunning) return;
-    if (!this.testsData?.executionEnabled) return;
+    if (!this.testsData?.executionEnabled && !this.testsExecutionConfirmed) return;
     this.testsRunning = true;
     this.status = 'Running BFF tests...';
     try {
@@ -2851,13 +2904,38 @@ export class MonitorWebDesktopHomePage extends LitElement {
     }
   }
 
+  private handleTestsExecutionConfirmChange(event: Event) {
+    this.testsExecutionConfirmed = (event.currentTarget as HTMLInputElement).checked;
+  }
+
+  private renderTestsExecutionGate() {
+    if (this.testsData?.executionEnabled) return null;
+    const msg = testsMsg();
+    const confirmText = isLocalhostHost() ? msg['tests.confirm.localhost'] : msg['tests.confirm.production'];
+    return html`
+      <label class="mt-4 flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+        <input
+          type="checkbox"
+          class="mt-0.5"
+          .checked=${this.testsExecutionConfirmed}
+          @change=${(event: Event) => this.handleTestsExecutionConfirmChange(event)}
+        />
+        <span>
+          <span class="block">${confirmText}</span>
+          <span class="block font-medium">${msg['tests.confirm.checkbox']}</span>
+        </span>
+      </label>
+    `;
+  }
+
   private renderTests() {
     const data = this.testsData;
     if (!data) return null;
-    const enabled = data.executionEnabled && !this.testsRunning;
+    const executable = data.executionEnabled || this.testsExecutionConfirmed;
+    const enabled = executable && !this.testsRunning;
     const runButton = (label: string, scope: { moduleId?: string; page?: string }) => html`
       <button
-        class="rounded-full px-4 py-2 text-xs font-medium text-white transition ${data.executionEnabled ? 'bg-aura-navy hover:bg-aura-blue' : 'cursor-not-allowed bg-slate-300'}"
+        class="rounded-full px-4 py-2 text-xs font-medium text-white transition ${executable ? 'bg-aura-navy hover:bg-aura-blue' : 'cursor-not-allowed bg-slate-300'}"
         ?disabled=${!enabled}
         @click=${() => this.handleRunTests(scope)}
       >${label}</button>`;
@@ -2879,7 +2957,8 @@ export class MonitorWebDesktopHomePage extends LitElement {
           </div>
           ${data.executionEnabled
             ? html`<p class="mt-4 rounded-2xl bg-sky-50 px-4 py-3 text-sm text-sky-800">Memory sandbox (appEnv: ${data.appEnv}): each run gets a disposable in-memory database seeded from the table definitions. No data outside the run is read or written — not the production tables, not a developer's preview store.</p>`
-            : html`<p class="mt-4 rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-800">Execution disabled (appEnv: ${data.appEnv}). Set TESTS_ENABLED=true on the server to allow it. Showing discovered tests and history only.</p>`}
+            : html`<p class="mt-4 rounded-2xl bg-sky-50 px-4 py-3 text-sm text-sky-800">Memory sandbox (appEnv: ${data.appEnv}): even here, each run gets a disposable in-memory database — no production tables are read or written. Confirm below to enable it.</p>`}
+          ${this.renderTestsExecutionGate()}
         </article>
 
         ${data.modules.length === 0

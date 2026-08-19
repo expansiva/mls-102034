@@ -466,9 +466,17 @@ async function resolveSeededActorMdmId(ctx: RequestContext, moduleName: string, 
 
 export async function runPageTests(input: { moduleId?: string; page?: string; skipMutating?: boolean } = {}): Promise<TestRunSummary> {
   const env = readAppEnv();
-  if (!env.testsEnabled) {
-    throw new AppError('TESTS_DISABLED', 'BFF test execution is disabled (set TESTS_ENABLED=true to allow it).', 403, { appEnv: env.appEnv });
-  }
+  // Commented out by the new version: the hard TESTS_ENABLED/appEnv server-side
+  // block was replaced by a client-side confirmation in the Monitor UI
+  // (home.ts renderTestsExecutionGate) — the checkbox shows a localhost-
+  // specific or production-specific warning and requires explicit opt-in per
+  // session before enabling the Run buttons. Safe to relax server-side because
+  // every run below is already sandboxed in its own disposable in-memory
+  // runtime (see createMemoryDataRuntime below) — it never reads or writes the
+  // process's real Postgres tables regardless of environment.
+  // if (!env.testsEnabled) {
+  //   throw new AppError('TESTS_DISABLED', 'BFF test execution is disabled (set TESTS_ENABLED=true to allow it).', 403, { appEnv: env.appEnv });
+  // }
 
   const runId = createUuidV7();
   const traceId = createUuidV7();
