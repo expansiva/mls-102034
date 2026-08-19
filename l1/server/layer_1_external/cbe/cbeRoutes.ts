@@ -19,6 +19,7 @@ import {
   type JwtSession,
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeAuthJwt.js';
 import { listSources, readSources, writeSources } from '/_102034_/l1/server/layer_1_external/cbe/cbeSources.js';
+import { scheduleRebuildOnSave } from '/_102034_/l1/server/layer_1_external/cbe/cbeRebuildOnSave.js';
 import {
   CBE_HTTP_BAD_REQUEST,
   CBE_HTTP_NOT_MODIFIED,
@@ -36,7 +37,7 @@ import {
 // Bump on every change to the cbe module. Exposed via the x-cbe-version
 // response header and the {action:'ping'} probe so a deploy can be verified:
 //   curl -s localhost:3000/exec -H 'Content-Type: application/json' -d '{"action":"ping"}'
-export const CBE_MODULE_VERSION = '1.2.0';
+export const CBE_MODULE_VERSION = '1.3.0';
 
 // no-cache = always revalidate with the ETag (304 when unchanged). The server
 // is local to the VM, so revalidation is cheap — and a publish always lands
@@ -187,6 +188,9 @@ async function handleSetContents(request: FastifyRequest, body: CbeRequestSetCon
     reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, msg: rc.msg ?? 'invalid request' });
     return;
   }
+  // Fire-and-forget: debounced, cross-worker-safe rebuild+redeploy (see
+  // cbeRebuildOnSave.ts). Never blocks this response.
+  scheduleRebuildOnSave();
   reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, msg: 'ok' });
 }
 
