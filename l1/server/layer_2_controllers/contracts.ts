@@ -15,8 +15,19 @@ export interface BffRequest {
   params: unknown;
   meta?: {
     requestId?: string;
+    /** What the CLIENT says the user's email is. Telemetry; never an identity the server acts on. */
     userId?: string;
     authToken?: string;
+    /**
+     * Identity the TRANSPORT verified (collab-auth claims: `sub` and `email`). A client cannot set these
+     * usefully — the http transport overwrites them from the JWKS-verified token, and every other
+     * identity field of this meta is discarded on that transport. This is the only channel through which
+     * a request may tell execBff who it is.
+     */
+    verifiedUserId?: string;
+    verifiedEmail?: string;
+    /** The module's authorities (`<moduleId>:<actorId>`) from the verified claims — becomes actorScope. */
+    verifiedAuthorities?: string[];
     traceId?: string;
     source?: 'http' | 'message' | 'test';
     actorId?: string;
@@ -185,6 +196,10 @@ export interface RequestContext {
   sandbox?: boolean;
   requestMeta?: {
     requestId?: string;
+    /**
+     * The EMAIL of the user executing the request — unique, unlike a display name (standard set on
+     * 2026-08-18). TELEMETRY ONLY: it comes from the client and the session/authorization never reads it.
+     */
     userId?: string;
     traceId?: string;
     source?: 'http' | 'message' | 'test';

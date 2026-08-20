@@ -13,6 +13,9 @@ import {
 } from '/_102034_/l1/mdm/layer_3_usecases/internal/entityPersistence.js';
 import { createRelationship, updateRelationship } from '/_102034_/l1/mdm/layer_3_usecases/internal/relationshipPersistence.js';
 import {
+  attachFile, detachFile, findAttachmentsByEntity,
+} from '/_102034_/l1/mdm/layer_3_usecases/attachmentUsecases.js';
+import {
   AuditLogService,
   runMonitoredWrite,
 } from '/_102034_/l1/mdm/layer_3_usecases/core/DataRecordService.js';
@@ -21,6 +24,10 @@ import {
   refreshRelationshipRefs,
 } from '/_102034_/l1/mdm/layer_3_usecases/mdmSupport.js';
 import type {
+  AttachFileParams,
+  DetachFileParams,
+  FindAttachmentsByEntityParams,
+  MdmAttachmentRecord,
   CompactRelationshipRefKey,
   CreateableMdmDetailInput,
   MdmDetailRecord,
@@ -207,6 +214,7 @@ export interface MdmFacade {
   entity: MdmEntity;
   prospect: MdmProspect;
   collection: MdmCollection;
+  attachment: MdmAttachment;
 }
 
 function buildReadResult(
@@ -707,10 +715,54 @@ export class MdmCollection {
   }
 }
 
+/**
+ * Attachments of any record, through the facade.
+ *
+ * The usecases already existed (`attachFile`/`detachFile`/`findAttachmentsByEntity`, with write-behind and
+ * audit) but nothing in a generated module could reach them: `ctx.mdm` exposed only entity/prospect/
+ * collection. This is the wiring, nothing more — no new rule, no new storage.
+ *
+ * An attachment is ORTHOGONAL to the record it belongs to (`entityType` + `entityId` + `category`), which
+ * is why a photo never becomes a field of the ontology. AUTHORIZATION v1 is the owner's: whoever may read
+ * or edit the record may list and attach — the caller has already been through the route's own gate, and a
+ * finer rule needs the party/dataScope work that is not here yet.
+ *
+ * The BYTES are not this API's business: it registers metadata plus a `storageKey`. Uploading through
+ * `/execBff` (JSON) is never right; that is what the presigned-URL entry point is for.
+ */
+export class MdmAttachment {
+  public constructor(private readonly ctx: RequestContext) {}
+
+  public async attach(input: AttachFileParams): Promise<MdmAttachmentRecord> {
+    return attachFile(this.ctx, input);
+  }
+
+  public async detach(input: DetachFileParams): Promise<{ id: string; deleted: true }> {
+    await detachFile(this.ctx, input);
+    return { id: input.id, deleted: true };
+  }
+
+  /**
+   * LIVE attachments of a record (optionally one category).
+   *
+   * `detach` is a SOFT delete — it stamps `deletedAt` — and the underlying query does not filter it, so a
+   * gallery built straight on it would keep showing a photo the user removed. Filtering here keeps the
+   * usecase (and the existing `mdm.attachment.*` route, which returns the full history) untouched, and
+   * `includeDetached` is there for whoever wants the history on purpose.
+   */
+  public async listByEntity(
+    input: FindAttachmentsByEntityParams & { includeDetached?: boolean },
+  ): Promise<MdmAttachmentRecord[]> {
+    const records = await findAttachmentsByEntity(this.ctx, input);
+    return input.includeDetached ? records : records.filter(record => !record.deletedAt);
+  }
+}
+
 export function createMdmFacade(ctx: RequestContext): MdmFacade {
   return {
     entity: new MdmEntity(ctx),
     prospect: new MdmProspect(ctx),
     collection: new MdmCollection(ctx),
+    attachment: new MdmAttachment(ctx),
   };
 }

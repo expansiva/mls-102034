@@ -6,7 +6,10 @@ import { getFrontendAppRegistrations } from '/_102034_/l1/server/layer_1_externa
 import { resolveActivePublicationDistPath } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import { handleHttpRequest } from '/_102034_/l1/server/layer_1_external/transport/http/startServer.js';
 import { execMessage } from '/_102034_/l1/server/layer_1_external/transport/message/execMessage.js';
-import { createRequestContext, execBff } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
+import { createRequestContext, createSessionContext, execBff, trustedIdentityClaims } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
+import {
+  isActorEnforcementOn, moduleAuthorities, resolveBffSession, tokenFromRequest,
+} from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
 import { getModuleBffRegistrations, loadModuleRouter, resetModuleRouterCache } from '/_102034_/l1/server/layer_2_controllers/moduleRegistry.js';
 import { resetSharedBffExecutionSeriesStore } from '/_102034_/l1/monitor/layer_1_external/cache/BffExecutionSeriesStore.js';
 
@@ -534,4 +537,114 @@ test('monitor snapshot and series BFFs return monitor data', async () => {
   assert.equal(seriesData.totals.success >= 1, true);
   assert.equal(seriesData.totals.notFound >= 1, true);
   assert.equal(Array.isArray(seriesData.series), true);
+});
+
+// SECURITY. The handler session used to be built from
+// `request.meta` for every source, and the generated controllers authorize from it (`enforceActors`
+// reads `ctx.sessionContext.actorScope`) — so an HTTP caller could POST its own actor and scope and
+// grant itself permission. The claim is dropped for the untrusted transport; the server-side ones keep it.
+test('an HTTP request cannot claim an identity; server-side transports still can', () => {
+  const claim = { source: 'http' as const, userId: 'attacker', actorId: 'projectManager', actorScope: ['buildFlowFsm:projectManager'], activeCompanyId: 'other-company' };
+  assert.equal(trustedIdentityClaims(claim), undefined, 'nothing an http body says about WHO it is may be trusted');
+  // …not even alongside verified claims: what the transport proved REPLACES the claim, never merges with it.
+  const verified = trustedIdentityClaims({ ...claim, verifiedUserId: 'auth-sub-1', verifiedEmail: 'wagner@collab.codes' });
+  assert.deepEqual(verified, { source: 'http', actorId: 'auth-sub-1', userId: 'wagner@collab.codes' });
+  assert.equal((verified as Record<string, unknown>).actorScope, undefined, 'a claimed scope never survives');
+  assert.deepEqual(trustedIdentityClaims({ ...claim, source: 'message' }), { ...claim, source: 'message' });
+  assert.deepEqual(trustedIdentityClaims({ ...claim, source: 'test' }), { ...claim, source: 'test' });
+  assert.equal(trustedIdentityClaims(undefined), undefined);
+
+  // What the composed session does with it: the env-resolved actor survives, the claimed one does not.
+  process.env.ACTOR_ID = 'server-actor';
+  process.env.ACTOR_SCOPE = 'buildFlowFsm:fieldWorker';
+  const server = createSessionContext();
+  const claimed = trustedIdentityClaims(claim);
+  const session = createSessionContext({
+    ...server,
+    actorId: claimed?.actorId ?? claimed?.userId ?? server.actorId,
+    actorScope: claimed?.actorScope ?? server.actorScope,
+    activeCompanyId: claimed?.activeCompanyId ?? server.activeCompanyId,
+  });
+  assert.equal(session.actorSession.actorId, 'server-actor');
+  assert.deepEqual(session.actorSession.scope, ['buildFlowFsm:fieldWorker']);
+  assert.equal(session.businessContext.activeCompanyId, undefined);
+});
+
+// The transport is what proves the identity, so these are its unit tests: where the token comes from and
+// what happens when it is absent. The cookie comes FIRST because the runtime keeps the access token in
+// the httpOnly `cauth` — JS cannot read it, so the browser sends no header and needs none.
+test('the token is read from the cauth cookie first, then from Authorization', () => {
+  assert.equal(tokenFromRequest({ cookie: 'x=1; cauth=cookie-token; loginUser=a%40b.c' }), 'cookie-token');
+  assert.equal(tokenFromRequest({ authorization: 'Bearer header-token' }), 'header-token');
+  assert.equal(tokenFromRequest({ cookie: 'cauth=cookie-token', authorization: 'Bearer header-token' }), 'cookie-token');
+  assert.equal(tokenFromRequest({ cookie: 'other=1' }), '');
+  assert.equal(tokenFromRequest(undefined), '');
+});
+
+test('with enforcement off a call without a token is served; with it on it is refused', async () => {
+  delete process.env.BFF_JWT_ENABLED;
+  const lenient = await resolveBffSession({});
+  assert.deepEqual({ reject: lenient.reject, reason: lenient.reason }, { reject: false, reason: 'missing-token' });
+  assert.equal(lenient.claims, undefined);
+
+  process.env.BFF_JWT_ENABLED = 'true';
+  const strict = await resolveBffSession({});
+  assert.deepEqual({ reject: strict.reject, reason: strict.reason }, { reject: true, reason: 'missing-token' });
+
+  // A token that is not verifiable is 'invalid-token', and it never becomes claims.
+  const invalid = await resolveBffSession({ cookie: 'cauth=not-a-jwt' });
+  assert.equal(invalid.reason, 'invalid-token');
+  assert.equal(invalid.claims, undefined);
+  assert.equal(invalid.reject, true);
+  delete process.env.BFF_JWT_ENABLED;
+});
+
+test('POST /execBff answers 401 with UNAUTHENTICATED once enforcement is on', async () => {
+  process.env.BFF_JWT_ENABLED = 'true';
+  try {
+    const result = await handleHttpRequest('POST', '/execBff', { routine: 'mdm.entity.create', params: {} }, undefined, {});
+    assert.equal(result.statusCode, 401);
+    assert.equal((result.body as { error?: { code?: string } }).error?.code, 'UNAUTHENTICATED');
+  } finally {
+    delete process.env.BFF_JWT_ENABLED;
+  }
+});
+
+// Phase 2 of the authority work: the authorities of the VERIFIED claims, filtered by the module of the
+// routine. `<moduleId>:<actorId>` is the platform's own role shape and exactly what the generated
+// controllers already gate on — an authority of another module says nothing about this one.
+test('module authorities come from the claims and are filtered by module', () => {
+  const claims = { sub: 'u1', email: 'a@b.c', authorities: ['buildFlowFsm:projectManager', 'petShop:admin'], roles: ['buildFlowFsm:fieldWorker'] };
+  assert.deepEqual(moduleAuthorities(claims, 'buildFlowFsm').sort(), ['buildFlowFsm:fieldWorker', 'buildFlowFsm:projectManager']);
+  assert.deepEqual(moduleAuthorities(claims, 'petShop'), ['petShop:admin']);
+  assert.deepEqual(moduleAuthorities(claims, 'other'), []);
+  // No claims (the issuer does not emit them yet) reads as "no authority" — today's behaviour.
+  assert.deepEqual(moduleAuthorities(undefined, 'buildFlowFsm'), []);
+  assert.deepEqual(moduleAuthorities({ sub: 'u1', email: 'a@b.c' }, 'buildFlowFsm'), []);
+});
+
+test('deny-by-default stays OFF until the issuer emits authorities', () => {
+  delete process.env.BFF_ACTORS_ENFORCED;
+  assert.equal(isActorEnforcementOn(), false, 'flipping this before the claims exist would lock everyone out');
+  process.env.BFF_ACTORS_ENFORCED = 'true';
+  assert.equal(isActorEnforcementOn(), true);
+  process.env.BFF_ACTORS_ENFORCED = 'false';
+  assert.equal(isActorEnforcementOn(), false);
+  delete process.env.BFF_ACTORS_ENFORCED;
+});
+
+test('with enforcement on, a call carrying no authority of the module is refused 403', async () => {
+  process.env.BFF_ACTORS_ENFORCED = 'true';
+  try {
+    const result = await execBff({
+      routine: 'mdm.entity.create',
+      params: {},
+      meta: { source: 'http', verifiedUserId: 'auth-sub', verifiedEmail: 'a@b.c' },
+    });
+    assert.equal(result.statusCode, 403);
+    assert.equal(result.response.error?.code, 'FORBIDDEN_ACTOR');
+    assert.match(result.response.error?.message ?? '', /ask an administrator/u);
+  } finally {
+    delete process.env.BFF_ACTORS_ENFORCED;
+  }
 });

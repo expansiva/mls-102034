@@ -115,6 +115,22 @@ function isLocalhostHost(): boolean {
   return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname.endsWith('.localhost');
 }
 
+/** The shape `/session/info` answers with (see the runtime's startServer). */
+interface MonitorSessionInfo {
+  authenticated: boolean;
+  email: string | null;
+  userId: string | null;
+  allAuthorities: string[];
+  realAuthorities: string[];
+  overridden: boolean;
+  canOverride: boolean;
+  appEnv: string;
+  expiresAt: string | null;
+  enforcement: { authentication: boolean; actors: boolean };
+  /** From the publish manifest, when the builder starts writing one. */
+  deploy?: { commit?: string; builtAt?: string; builtBy?: string } | null;
+}
+
 type MonitorSection = 'overview' | 'operations' | 'architecture' | 'postgres' | 'dynamodb' | 'process' | 'abend' | 'trace' | 'tests';
 type MonitorStorage = 'postgres' | 'dynamodb';
 type MonitorRoute =
@@ -370,26 +386,6 @@ function getSeriesErrorCount(point: MonitorHomeSeriesPoint) {
   return point.serverError + point.clientError + point.notFound;
 }
 
-function buildLinePath(values: number[], width: number, height: number) {
-  if (values.length === 0) {
-    return '';
-  }
-
-  const paddingLeft = 18;
-  const paddingRight = 18;
-  const paddingTop = 12;
-  const paddingBottom = 24;
-  const usableWidth = width - paddingLeft - paddingRight;
-  const usableHeight = height - paddingTop - paddingBottom;
-  const maxValue = Math.max(...values, 1);
-
-  return values.map((value, index) => {
-    const x = paddingLeft + ((usableWidth * index) / Math.max(values.length - 1, 1));
-    const y = paddingTop + usableHeight - ((value / maxValue) * usableHeight);
-    return `${index === 0 ? 'M' : 'L'}${x.toFixed(2)} ${y.toFixed(2)}`;
-  }).join(' ');
-}
-
 export class MonitorWebDesktopHomePage extends LitElement {
   static properties = {
     currentSection: { state: true },
@@ -421,8 +417,13 @@ export class MonitorWebDesktopHomePage extends LitElement {
     testsRunning: { state: true },
     copiedTestsRun: { state: true },
     testsExecutionConfirmed: { state: true },
+    sessionInfo: { state: true },
+    overrideDraft: { state: true },
   };
 
+  /** `/session/info`: who is logged in, the project mode, and which authorities the session acts with. */
+  sessionInfo: MonitorSessionInfo | null = null;
+  overrideDraft = '';
   currentSection: MonitorSection = 'overview';
   currentRoute: MonitorRoute = { section: 'overview', kind: 'section' };
   status = 'Preparing monitor module...';
@@ -481,6 +482,8 @@ export class MonitorWebDesktopHomePage extends LitElement {
     this.currentSection = this.currentRoute.section;
     window.addEventListener('popstate', this.handleLocationChange);
     document.addEventListener('visibilitychange', this.handleVisibilityChange);
+    // The claims are in an httpOnly cookie: the page asks the server who it is talking to.
+    void this.loadSessionInfo();
     void this.loadRouteFromLocation(true);
   }
 
@@ -1149,73 +1152,6 @@ export class MonitorWebDesktopHomePage extends LitElement {
     }
   }
 
-  private renderOverviewChart(series: MonitorHomeSeriesPoint[]) {
-    const valuesTotal = series.map((point) => point.total);
-    const valuesSuccess = series.map((point) => point.success);
-    const valuesErrors = series.map((point) => getSeriesErrorCount(point));
-    const maxValue = Math.max(
-      ...valuesTotal,
-      ...valuesSuccess,
-      ...valuesErrors,
-      1,
-    );
-    const totalPath = buildLinePath(valuesTotal, 900, 240);
-    const successPath = buildLinePath(valuesSuccess, 900, 240);
-    const errorPath = buildLinePath(valuesErrors, 900, 240);
-
-    return html`
-      <article class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-        <div class="mb-4 flex items-center justify-between gap-4">
-          <div>
-            <h2 class="text-lg font-semibold text-slate-900">Recent execution series</h2>
-            <p class="mt-1 text-sm text-slate-500">Live window of ${formatInteger(series.length)} points with background refresh every 5 seconds.</p>
-          </div>
-          <div class="flex flex-wrap gap-3 text-xs text-slate-500">
-            <span class="inline-flex items-center gap-2"><span class="h-2.5 w-2.5 rounded-full bg-slate-900"></span>Total</span>
-            <span class="inline-flex items-center gap-2"><span class="h-2.5 w-2.5 rounded-full bg-emerald-500"></span>Success</span>
-            <span class="inline-flex items-center gap-2"><span class="h-2.5 w-2.5 rounded-full bg-rose-500"></span>Errors</span>
-          </div>
-        </div>
-
-        <div class="rounded-3xl border border-slate-100 bg-slate-50 p-4">
-          <svg viewBox="0 0 900 240" class="h-64 w-full" preserveAspectRatio="none" aria-label="Recent execution series">
-            <line x1="18" y1="216" x2="882" y2="216" stroke="#cbd5e1" stroke-width="1"></line>
-            <line x1="18" y1="12" x2="18" y2="216" stroke="#cbd5e1" stroke-width="1"></line>
-            <path d="${totalPath}" fill="none" stroke="#0f172a" stroke-width="3" stroke-linecap="round"></path>
-            <path d="${successPath}" fill="none" stroke="#22c55e" stroke-width="3" stroke-linecap="round"></path>
-            <path d="${errorPath}" fill="none" stroke="#f43f5e" stroke-width="3" stroke-linecap="round"></path>
-          </svg>
-          <div class="mt-3 flex items-center justify-between text-xs text-slate-500">
-            <span>${formatTime(series[0]?.timestamp)}</span>
-            <span>peak ${formatInteger(maxValue)}</span>
-            <span>${formatTime(series.at(-1)?.timestamp)}</span>
-          </div>
-        </div>
-
-        <div class="mt-4 grid gap-3 md:grid-cols-3">
-          <div class="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
-            <div class="text-xs uppercase tracking-wide text-slate-500">Latest total</div>
-            <div class="mt-2 text-2xl font-semibold text-slate-900">${formatInteger(series.at(-1)?.total)}</div>
-          </div>
-          <div class="rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3">
-            <div class="text-xs uppercase tracking-wide text-emerald-700">Latest success</div>
-            <div class="mt-2 text-2xl font-semibold text-emerald-900">${formatInteger(series.at(-1)?.success)}</div>
-          </div>
-          <div class="rounded-2xl border border-rose-100 bg-rose-50 px-4 py-3">
-            <div class="text-xs uppercase tracking-wide text-rose-700">Latest errors</div>
-            <div class="mt-2 text-2xl font-semibold text-rose-900">${formatInteger(getSeriesErrorCount(series.at(-1) ?? {
-              timestamp: '',
-              total: 0,
-              success: 0,
-              clientError: 0,
-              serverError: 0,
-              notFound: 0,
-            }))}</div>
-          </div>
-        </div>
-      </article>
-    `;
-  }
 
   private severityClass(severity: MonitorOperationsSummaryResponse['severity']) {
     if (severity === 'red') return 'bg-rose-100 text-rose-800 border-rose-200';
@@ -1443,21 +1379,136 @@ export class MonitorWebDesktopHomePage extends LitElement {
     `;
   }
 
+  /**
+   * Who am I, where am I, and what am I acting as — the first thing to know before reading any number
+   * below it. The data comes from `/session/info` (the claims live in an httpOnly cookie, so the page
+   * cannot read them itself), and the authority selector only appears where the server allows it:
+   * `development`/`presentation`. The REAL authorities stay visible next to the override, so a
+   * presentation demo is never mistaken for the real user's access.
+   */
+  private renderSessionCard() {
+    const info = this.sessionInfo;
+    const badge = (text: string, tone: string) => html`<span class="rounded-full ${tone} px-3 py-1 text-xs font-semibold">${text}</span>`;
+    return html`
+      <article class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div class="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <h2 class="text-lg font-semibold text-slate-900">Session</h2>
+            <p class="mt-1 text-sm text-slate-500">
+              ${info?.authenticated ? (info.email ?? 'authenticated') : 'not authenticated'}
+              ${info?.expiresAt ? html` · token until ${formatDateTime(info.expiresAt)}` : ''}
+            </p>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            ${info?.appEnv ? badge(info.appEnv, info.appEnv === 'production' ? 'bg-slate-200 text-slate-700' : 'bg-amber-100 text-amber-800') : ''}
+            ${info?.overridden ? badge('acting as override', 'bg-violet-100 text-violet-800') : ''}
+            ${info?.enforcement?.authentication === false ? badge('auth not enforced', 'bg-slate-100 text-slate-600') : ''}
+          </div>
+        </div>
+        <div class="mt-4 grid gap-4 md:grid-cols-3">
+          <div class="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+            <div class="text-xs uppercase tracking-wide text-slate-500">Acting authorities</div>
+            <div class="mt-2 text-sm text-slate-900">${(info?.allAuthorities ?? []).join(', ') || 'none'}</div>
+          </div>
+          <div class="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+            <div class="text-xs uppercase tracking-wide text-slate-500">Real authorities</div>
+            <div class="mt-2 text-sm text-slate-900">${(info?.realAuthorities ?? []).join(', ') || 'none'}</div>
+          </div>
+          <div class="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+            <div class="text-xs uppercase tracking-wide text-slate-500">Deploy identity</div>
+            <div class="mt-2 text-sm text-slate-900">${info?.deploy?.commit ?? 'unavailable'}</div>
+          </div>
+        </div>
+        ${info?.canOverride ? html`
+          <div class="mt-4 flex flex-wrap items-center gap-2">
+            <input
+              class="w-72 rounded-md border border-slate-200 px-3 py-1.5 text-sm"
+              placeholder="module:actor, module:other"
+              .value=${(info.allAuthorities ?? []).join(', ')}
+              @change=${(event: Event) => { this.overrideDraft = (event.target as HTMLInputElement).value; }}
+            />
+            <button
+              class="rounded-full border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:border-aura-blue hover:text-aura-blue"
+              @click=${() => this.applyAuthorityOverride()}
+            >act as</button>
+            <button
+              class="rounded-full border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:border-aura-blue hover:text-aura-blue"
+              @click=${() => this.applyAuthorityOverride('')}
+            >clear</button>
+            <span class="text-xs text-slate-500">only in development/presentation; the audit always keeps your real identity</span>
+          </div>
+        ` : ''}
+      </article>
+    `;
+  }
+
+  /** The last test run, in one line: it is the fastest read on whether the module still works. */
+  private renderLastTestRun() {
+    const run = this.testsData?.recentRuns?.[0];
+    if (!run) return html``;
+    const tone = run.failed > 0 ? 'text-rose-700' : 'text-emerald-700';
+    return html`
+      <article class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div class="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <h2 class="text-lg font-semibold text-slate-900">Last test run</h2>
+            <p class="mt-1 text-sm text-slate-500">${formatDateTime(run.finishedAt)} · ${run.appEnv}</p>
+          </div>
+          <div class="text-sm ${tone}">
+            ${run.passed} passed · ${run.failed} failed · ${run.knownFail} known · ${run.inconclusive} inconclusive · ${run.skipped} skipped
+          </div>
+        </div>
+      </article>
+    `;
+  }
+
+  private async loadSessionInfo(): Promise<void> {
+    try {
+      const response = await fetch('/session/info', { credentials: 'same-origin' });
+      if (!response.ok) return;
+      this.sessionInfo = await response.json() as MonitorSessionInfo;
+    } catch {
+      // the card degrades to "not authenticated"; nothing else on the page depends on it
+    }
+  }
+
+  private async applyAuthorityOverride(raw?: string): Promise<void> {
+    const source = raw === undefined ? this.overrideDraft : raw;
+    const authorities = source.split(',').map((item) => item.trim()).filter(Boolean);
+    try {
+      const response = await fetch('/session/authority-override', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ authorities }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null) as { error?: { message?: string } } | null;
+        this.status = body?.error?.message ?? 'Could not switch authority.';
+        return;
+      }
+      await this.loadSessionInfo();
+      this.status = authorities.length ? `Acting as ${authorities.join(', ')}` : 'Override cleared';
+    } catch (error) {
+      this.status = error instanceof Error ? error.message : 'Could not switch authority.';
+    }
+  }
+
+  /**
+   * PRUNED on 2026-08-19 to what is acted upon: the session (who/where/deploy), the last test run, the
+   * state of the stores, what ran and what failed. The four top counters were zero-or-noise next to the
+   * routine list, the "Postgres runtime target" block was infrastructure trivia, and the live series chart
+   * was decorative — the numbers that matter are in the sections that own them.
+   */
   private renderOverview() {
     const data = this.homeData;
-    const overview = data?.bff.overview;
     const byRoutine = data?.bff.byRoutine ?? [];
     const recentFailures = data?.bff.recentFailures ?? [];
-    const series = this.homeSeries ?? data?.recentSeries ?? [];
 
     return html`
       <section class="space-y-6">
-        <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          ${this.renderMetricCard('Total calls', formatInteger(overview?.totalExecutions), 'All BFF executions recorded')}
-          ${this.renderMetricCard('Success', formatInteger(overview?.successCount), 'Healthy routine calls')}
-          ${this.renderMetricCard('Server errors', formatInteger(overview?.serverErrorCount), '5xx responses observed')}
-          ${this.renderMetricCard('Not found', formatInteger(overview?.notFoundCount), '404 routine responses')}
-        </div>
+        ${this.renderSessionCard()}
+        ${this.renderLastTestRun()}
 
         <div class="grid gap-4 xl:grid-cols-3">
           ${this.renderMetricCard('Postgres tables', formatInteger(data?.postgres.tableCount), `${formatInteger(data?.postgres.missingTableCount)} missing in ${data?.postgres.currentDatabase ?? 'db'}`)}
@@ -1465,28 +1516,6 @@ export class MonitorWebDesktopHomePage extends LitElement {
           ${this.renderMetricCard('Dynamo tables', formatInteger(data?.dynamodb.availableTables), `${formatInteger(data?.dynamodb.missingTables)} missing`)}
         </div>
 
-        <article class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <div class="mb-3 flex items-center justify-between gap-4">
-            <h2 class="text-lg font-semibold text-slate-900">Postgres runtime target</h2>
-            <span class="text-sm text-slate-500">${data?.postgres.host ?? 'host'}:${data?.postgres.port ?? 0}</span>
-          </div>
-          <div class="grid gap-4 md:grid-cols-[0.8fr_1.2fr]">
-            <div class="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-4">
-              <div class="text-sm uppercase tracking-wide text-slate-500">Current database</div>
-              <div class="mt-2 text-2xl font-semibold text-slate-950">${data?.postgres.currentDatabase ?? 'n/a'}</div>
-            </div>
-            <div class="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-4">
-              <div class="text-sm uppercase tracking-wide text-slate-500">Available databases</div>
-              <div class="mt-3 flex flex-wrap gap-2">
-                ${(data?.postgres.availableDatabases ?? []).map((databaseName) => html`
-                  <span class="${databaseName === data?.postgres.currentDatabase ? 'rounded-full bg-aura-blue px-3 py-1 text-sm font-medium text-white' : 'rounded-full bg-slate-200 px-3 py-1 text-sm font-medium text-slate-700'}">
-                    ${databaseName}
-                  </span>
-                `)}
-              </div>
-            </div>
-          </div>
-        </article>
 
         <div class="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
           <article class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -1528,7 +1557,7 @@ export class MonitorWebDesktopHomePage extends LitElement {
           </article>
         </div>
 
-        ${this.renderOverviewChart(series)}
+
       </section>
     `;
   }

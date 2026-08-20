@@ -182,3 +182,10 @@ Please include:
 `102034` is intended to be the shared backend platform layer of the Collab Forge
 model. It should stay focused on reusable backend capabilities, while
 client-specific business behavior belongs in client projects.
+
+## Environment modes and authentication
+
+`docs/appEnvAndAuth.md` is the canonical definition of the `appEnv` modes
+(`production | homologation | development | presentation`), of how `/execBff` authenticates (collab-auth
+JWT carried by the httpOnly `cauth` cookie, staged by `BFF_JWT_ENABLED`), and of the `<moduleId>:<actorId>`
+authority format. Other projects point at it instead of restating it.

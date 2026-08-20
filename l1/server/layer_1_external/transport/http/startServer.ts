@@ -5,7 +5,15 @@ import { extname, join, normalize, resolve } from 'node:path';
 import { getFrontendAppByBasePath, getFrontendAppRegistrations, getAppPublicRootDir, getAppAssetRootDirs } from '/_102034_/l1/server/layer_1_external/frontend/appRegistry.js';
 import { getPublicationTarget, readProjectsConfig, resolveActivePublicationDistPath } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
-import { execBff } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
+import { createDefaultRequestContext, execBff } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
+import { AppError } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
+import {
+  isActorEnforcementOn, isBffAuthEnforced, moduleAuthorities, resolveBffSession,
+} from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
+import { readProjectMode } from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
+import {
+  effectiveAuthorities, readAuthorityOverride, refuseOverride, writeAuthorityOverride,
+} from '/_102034_/l1/server/layer_1_external/auth/authorityOverride.js';
 import { registerCbeRoutes } from '/_102034_/l1/server/layer_1_external/cbe/cbeRoutes.js';
 import { getLatestJson, initCbeLatestJson } from '/_102034_/l1/server/layer_1_external/cbe/cbeLatestJson.js';
 import { registerMsgProxy } from '/_102034_/l1/server/layer_1_external/transport/http/msgProxy.js';
@@ -92,6 +100,9 @@ function buildBootConfigScript(app: FrontendAppRegistration) {
     moduleLinks: app.moduleLinks ?? [],
     layout: app.layout,
     clientShell: app.clientShell,
+    // The mode the SERVER resolved. The client only shows the badge with it — it never decides the mode
+    // (that is deployment config, read from the project's l5/project.json at boot).
+    appEnv: readProjectMode(app.projectId),
   }).replace(/</gu, '\\u003c');
 
   // window.latest mirrors the studio index.html (versions from the central
@@ -200,13 +211,94 @@ export function buildHttpServer() {
   app.get('/', async (_request, reply) => {
     reply.redirect(await resolveDefaultFrontendLocation());
   });
+  // The single door of a generated app: every action of every screen posts here, so authenticating THIS
+  // route authenticates the whole app. The headers travel into the handler because the identity rides in
+  // the **httpOnly `cauth` cookie** the runtime login writes — JS never sees that token, so the page
+  // cannot send a header and does not need to: a same-origin request carries the cookie by itself
+  // (bffAuth.resolveBffSession). Enforcement is off by default (`BFF_JWT_ENABLED`), stage 1: verify and
+  // report, never lock out an app that is already published.
   app.post('/execBff', async (request, reply) => {
-    const result = await handleHttpRequest('POST', '/execBff', request.body);
+    const result = await handleHttpRequest('POST', '/execBff', request.body, undefined, request.headers);
     reply.status(result.statusCode);
     if (result.headers?.['content-type']) {
       reply.type(result.headers['content-type']);
     }
     return result.body;
+  });
+  /**
+   * Who am I, and where am I? One authenticated answer for both consumers that need it: the shell (to
+   * filter the menu by authority and show the environment badge) and the monitor's Session card.
+   *
+   * A GET, not a routine of `/execBff`: it belongs to no module, and the shell needs it before any module
+   * is loaded. It NEVER echoes the token — only the identity, the mode, and the user's own authorities.
+   */
+  app.get('/session/info', async (request, reply) => {
+    const session = await resolveBffSession(request.headers);
+    reply.header('cache-control', 'no-store');
+    const mode = readProjectMode(readAppEnv().projectId);
+    const real = [
+      ...(Array.isArray(session.claims?.authorities) ? session.claims.authorities : []),
+      ...(Array.isArray(session.claims?.roles) ? session.claims.roles : []),
+    ].filter((value): value is string => typeof value === 'string');
+    const override = session.claims && !refuseOverride(mode)
+      ? await readAuthorityOverride(createDefaultRequestContext(), session.claims.sub)
+      : null;
+    const effective = effectiveAuthorities(real, override);
+    return {
+      authenticated: !!session.claims,
+      email: session.claims?.email ?? null,
+      userId: session.claims?.sub ?? null,
+      authorities: moduleAuthorities(session.claims, ''),
+      // What the session ACTS with, and — always — what the user really has. The audit and the card show
+      // both, so a presentation-mode action can never be read as the real user's own.
+      allAuthorities: effective.authorities,
+      realAuthorities: effective.real,
+      overridden: effective.overridden,
+      canOverride: !refuseOverride(mode),
+      appEnv: mode,
+      expiresAt: typeof session.claims?.exp === 'number' ? new Date(session.claims.exp * 1000).toISOString() : null,
+      enforcement: { authentication: isBffAuthEnforced(), actors: isActorEnforcementOn() },
+      reason: session.reason,
+    };
+  });
+  /**
+   * Act as another authority ("presentation mode"), or clear it with an empty list.
+   *
+   * Refused outside `development`/`presentation` — and refused HERE as well as inside
+   * `writeAuthorityOverride`, because this is the one endpoint that can make a user look like someone
+   * else. The choice is per authenticated user and lives server-side; the audit keeps the real identity.
+   */
+  app.post('/session/authority-override', async (request, reply) => {
+    const session = await resolveBffSession(request.headers);
+    const mode = readProjectMode(readAppEnv().projectId);
+    const refusal = refuseOverride(mode);
+    if (refusal) {
+      reply.status(403);
+      return { ok: false, data: null, error: { code: 'OVERRIDE_NOT_ALLOWED', message: refusal } };
+    }
+    if (!session.claims) {
+      reply.status(401);
+      return { ok: false, data: null, error: { code: 'UNAUTHENTICATED', message: 'Sign in before switching authority.' } };
+    }
+    const body = (request.body ?? {}) as { authorities?: unknown };
+    const requested = Array.isArray(body.authorities)
+      ? body.authorities.filter((value): value is string => typeof value === 'string')
+      : [];
+    try {
+      const override = await writeAuthorityOverride(createDefaultRequestContext(), mode, session.claims.sub, requested);
+      return { ok: true, data: { override }, error: null };
+    } catch (error) {
+      const status = error instanceof AppError ? error.statusCode : 500;
+      reply.status(status);
+      return {
+        ok: false,
+        data: null,
+        error: {
+          code: error instanceof AppError ? error.code : 'INTERNAL_ERROR',
+          message: error instanceof Error ? error.message : 'override failed',
+        },
+      };
+    }
   });
   app.get('/*', async (request, reply) => {
     const result = await handleHttpRequest('GET', request.url);
@@ -246,6 +338,7 @@ export async function handleHttpRequest(
   url: string,
   body?: unknown,
   ctx?: RequestContext,
+  headers?: Record<string, string | string[] | undefined>,
 ) {
   if (method === 'GET' && url === '/') {
     const defaultFrontendLocation = await resolveDefaultFrontendLocation();
@@ -325,6 +418,38 @@ export async function handleHttpRequest(
     };
   }
 
+  // The module a routine belongs to: `<module>.<page>.<command>`. Read here, before dispatch, because the
+  // authorities are filtered by it.
+  const routineModuleId = (payload: unknown): string => {
+    const routine = (payload as { routine?: unknown } | null | undefined)?.routine;
+    return typeof routine === 'string' ? routine.split('.')[0] ?? '' : '';
+  };
+
+  // AUTHENTICATION of the single door. Resolved here (not in execBff) because the token lives in a
+  // TRANSPORT artifact — a cookie — and execBff is transport-agnostic: the message transport and the
+  // sandbox runner reach it without any of this.
+  const session = await resolveBffSession(headers);
+  if (session.reject) {
+    return {
+      statusCode: 401,
+      body: {
+        ok: false,
+        data: null,
+        error: {
+          code: 'UNAUTHENTICATED',
+          message: session.reason === 'missing-token'
+            ? 'No collab-auth session: sign in again.'
+            : 'The collab-auth session is invalid or expired: sign in again.',
+        },
+      },
+    };
+  }
+  // Stage 1 (enforcement off): say who WOULD have been refused, so the flip is a measured decision
+  // instead of a guess. One line per unauthenticated call, with no token or claim value in it.
+  if (!session.claims) {
+    console.info(`[execBff] unauthenticated call (${session.reason}); BFF_JWT_ENABLED is off, serving anyway`);
+  }
+
   try {
     const request = body as BffRequest;
     const result = await execBff({
@@ -332,6 +457,15 @@ export async function handleHttpRequest(
       meta: {
         ...request.meta,
         source: 'http',
+        // The VERIFIED identity, when there is one. execBff trusts this field only because the transport
+        // just proved it against the JWKS — everything else the client claims about who it is is dropped.
+        ...(session.claims ? {
+          verifiedUserId: session.claims.sub,
+          verifiedEmail: session.claims.email,
+          // The module's authorities, filtered from the claims by the transport that verified them. They
+          // become `sessionContext.actorScope`, which is what every generated controller gates on.
+          verifiedAuthorities: moduleAuthorities(session.claims, routineModuleId(body)),
+        } : {}),
       },
     }, ctx);
     return {

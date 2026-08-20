@@ -1,5 +1,7 @@
 /// <mls fileReference="_102034_/l1/server/layer_2_controllers/execBff.ts" enhancement="_blank" />
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
+import { readProjectMode, refuseTestWrite } from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
+import { isActorEnforcementOn } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
 import { readProjectsConfig } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import { createUuidV7 } from '/_102029_/l2/uuidv7.js';
 import { ConsoleLogger } from '/_102034_/l1/server/layer_1_external/observability/ConsoleLogger.js';
@@ -65,6 +67,34 @@ export function createDefaultRequestContext(): RequestContext {
   return createRequestContext(getSharedDataRuntime());
 }
 
+/**
+ * Who the session belongs to, from the only sources that may decide it.
+ *
+ * `http` carries whatever the browser typed, so nothing it CLAIMS about identity is read: the transport
+ * has already verified the collab-auth token (cookie `cauth`) and put the claims in `verifiedUserId` /
+ * `verifiedEmail`, and those are the only identity fields of an http meta that mean anything. Before
+ * this, `meta.actorId ?? meta.userId` became `sessionContext.actorId` and the generated controllers
+ * authorize from there (`enforceActors`) — a request body granting itself permissions.
+ *
+ * `message` (collab-messages) and `test` (the monitor runner) are server-side callers and keep declaring
+ * directly. Exported because it is the one line standing between a request body and the authorization
+ * gate of every generated controller.
+ */
+export function trustedIdentityClaims(meta: BffRequest['meta']): BffRequest['meta'] | undefined {
+  if (meta?.source !== 'http') return meta;
+  // Verified claims only — never a fallback to what the client said (that is the hole with new clothes).
+  return meta.verifiedUserId || meta.verifiedEmail
+    ? {
+      source: 'http',
+      actorId: meta.verifiedUserId,
+      userId: meta.verifiedEmail,
+      // The authorities the transport filtered for THIS module. Absent while the issuer does not emit
+      // them, which reads as "no authority" — today's behaviour.
+      ...(meta.verifiedAuthorities?.length ? { actorScope: meta.verifiedAuthorities } : {}),
+    }
+    : undefined;
+}
+
 function normalizeRequest(request: BffRequest): BffRequest {
   if (!request || typeof request !== 'object') {
     throw new AppError('INVALID_REQUEST', 'Request must be an object', 400);
@@ -81,6 +111,9 @@ function normalizeRequest(request: BffRequest): BffRequest {
       requestId: request.meta?.requestId ?? createUuidV7(),
       userId: request.meta?.userId,
       authToken: request.meta?.authToken,
+      verifiedUserId: request.meta?.verifiedUserId,
+      verifiedEmail: request.meta?.verifiedEmail,
+      verifiedAuthorities: request.meta?.verifiedAuthorities,
       traceId: request.meta?.traceId ?? request.meta?.requestId ?? createUuidV7(),
       source: request.meta?.source ?? (readAppEnv().runtimeMode === 'memory' ? 'test' : 'http'),
       actorId: request.meta?.actorId,
@@ -107,6 +140,31 @@ export async function execBff(
   try {
     normalizedRequest = normalizeRequest(request);
     const resolution = resolveRoutineResolution(normalizedRequest.routine);
+    // The SERVER half of the two defences on destructive test runs. The runner is supposed to keep its
+    // create/update/delete suite for test modes; "supposed to" is what let one production run write junk,
+    // so the target refuses it as well. A sandbox run never touches real data and is exempt.
+    if (!ctx.sandbox) {
+      const refusal = refuseTestWrite(readProjectMode(resolution.registration.projectId), {
+        source: normalizedRequest.meta?.source,
+        command: parseRoutineParts(normalizedRequest.routine).command,
+      });
+      if (refusal) throw new AppError('TEST_WRITE_REFUSED', refusal, 403, { routine: normalizedRequest.routine });
+    }
+    // DENY-BY-DEFAULT, behind its own flag. `enforceActors` in the generated controllers treats an empty
+    // scope as permissive, which is why the actor gate is inert for real traffic. Flipping it centrally —
+    // here, once — spares regenerating every module, and it stays off until the issuer actually emits
+    // authorities: turning it on before that would lock every user out of every module.
+    if (!ctx.sandbox && isActorEnforcementOn() && normalizedRequest.meta?.source === 'http') {
+      const authorities = normalizedRequest.meta?.verifiedAuthorities ?? [];
+      if (authorities.length === 0) {
+        throw new AppError(
+          'FORBIDDEN_ACTOR',
+          `You have no authority in the module '${resolution.moduleId}': ask an administrator for access.`,
+          403,
+          { moduleId: resolution.moduleId, routine: normalizedRequest.routine },
+        );
+      }
+    }
     const router = await loadModuleRouter(resolution.registration);
     const handler = router.get(normalizedRequest.routine);
     if (!handler) {
@@ -117,19 +175,43 @@ export async function execBff(
       });
     }
 
+    // IDENTITY IS NEVER TAKEN FROM AN UNTRUSTED CALLER.
+    //
+    // These fields used to be promoted from `request.meta` for every source, and the generated
+    // controllers decide authorization from one of them: `enforceActors` reads
+    // `ctx.sessionContext.actorScope`. Over HTTP that meant any caller could POST
+    // `meta: {actorId, actorScope: [...]}` and grant itself an actor — the request body deciding its own
+    // permissions — the audit that found it is what this guard answers to.
+    //
+    // `http` is the untrusted transport: whatever it claims about WHO it is, is discarded, and the
+    // session stays whatever the server itself resolved (ctx). `message`/`test` are server-side callers
+    // (the collab-messages transport, the monitor test runner) and keep the promotion — the test runner
+    // does not even use it, it injects the identity through `createRequestContext({sessionContext})`,
+    // which is the only channel this change trusts. `source` itself is not forgeable here: the HTTP
+    // transport stamps it AFTER spreading the client meta (startServer.ts).
+    //
+    // This does NOT make the route authenticated — nothing on it validates a token today. It stops the
+    // caller from ESCALATING; choosing how the runtime authenticates is a platform decision.
+    const claimedIdentity = trustedIdentityClaims(normalizedRequest.meta);
     const handlerCtx: RequestContext = {
       ...ctx,
       sessionContext: createSessionContext({
         ...ctx.sessionContext,
-        actorId: normalizedRequest.meta?.actorId ?? normalizedRequest.meta?.userId ?? ctx.sessionContext.actorId,
-        actorScope: normalizedRequest.meta?.actorScope ?? ctx.sessionContext.actorScope,
-        activeCompanyId: normalizedRequest.meta?.activeCompanyId ?? ctx.sessionContext.activeCompanyId,
-        activeUnitId: normalizedRequest.meta?.activeUnitId ?? ctx.sessionContext.activeUnitId,
+        actorId: claimedIdentity?.actorId ?? claimedIdentity?.userId ?? ctx.sessionContext.actorId,
+        actorScope: claimedIdentity?.actorScope ?? ctx.sessionContext.actorScope,
+        activeCompanyId: claimedIdentity?.activeCompanyId ?? ctx.sessionContext.activeCompanyId,
+        activeUnitId: claimedIdentity?.activeUnitId ?? ctx.sessionContext.activeUnitId,
+        // `workspaceId` stays client-supplied on purpose: it is not WHO the caller is, it is WHICH screen
+        // it is on — navigation context only the page knows, and nothing authorizes by it.
         workspaceId: normalizedRequest.meta?.workspaceId ?? ctx.sessionContext.workspaceId,
       }),
       requestMeta: {
         requestId: normalizedRequest.meta?.requestId,
-        userId: normalizedRequest.meta?.userId,
+        // TELEMETRY ONLY — never an authorization input. The SERVER wins when the transport verified a
+        // token: the trail then shows the email of the real user even from a stale client. With no token
+        // (enforcement off, stage 1) it keeps what the client sent, which is the email of the session
+        // cookie in practice.
+        userId: normalizedRequest.meta?.verifiedEmail || normalizedRequest.meta?.userId,
         traceId: normalizedRequest.meta?.traceId,
         source: normalizedRequest.meta?.source,
       },

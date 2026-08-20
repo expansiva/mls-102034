@@ -355,7 +355,7 @@ export function getAppPublicRootDir(app: FrontendAppRegistration) {
  * `/cafeFlow/assets/seed/MenuItem/x.webp` resolve to `_<project>_/l3/cafeFlow/assets/seed/...` — the
  * exact path the seed generator writes into `imageUrl` — and keeps it module-scoped, so two modules can
  * hold same-named assets without colliding. Before this, no root was consulted at all and a seed image
- * answered 200 with the SPA shell instead of its bytes (todo/runtime/bugimage.md).
+ * answered 200 with the SPA shell instead of its bytes.
  *
  * Deliberately NOT including `app.assetRoots` (every project's published l2): those files are already
  * reachable at `/_<project>_/l2/...` via tryReadProjectAsset, and mirroring them under every app's

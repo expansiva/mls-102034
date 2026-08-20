@@ -8,7 +8,10 @@ export async function execMessage(request: BffRequest, ctx?: RequestContext) {
       ...request,
       meta: {
         ...request.meta,
-        source: request.meta?.source ?? 'message',
+        // The TRANSPORT stamps the source, never the caller — same rule the HTTP transport already
+        // followed by spreading the client meta first. `source` decides which identity claims execBff
+        // trusts, so a caller able to choose it could call itself `test` and get the trusted branch.
+        source: 'message',
       },
     },
     ctx ?? createDefaultRequestContext(),

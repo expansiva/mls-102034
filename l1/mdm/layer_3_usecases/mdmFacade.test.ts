@@ -364,3 +364,53 @@ test('MdmEntity.delete removes standalone entity and blocks active relationships
   assert.equal(inactivated.details.status, 'Inactive');
   assert.equal(inactivated.index.status, 'Inactive');
 });
+
+// Elo 2 of the attachments wave: the usecases existed (attach/detach/list, with write-behind and audit)
+// but nothing in a generated module could reach them — `ctx.mdm` exposed only entity/prospect/collection.
+// An attachment is orthogonal to the record: entityType + entityId + category, never a field of the
+// ontology. The BYTES are not this API's business; it registers metadata plus a storageKey.
+test('MdmAttachment attaches, lists by entity and category, and detaches through the facade', async () => {
+  const ctx = createRequestContext();
+  const pet = await ctx.mdm.entity.create({
+    details: { subtype: 'Animal', name: 'Rex', tags: ['petShop'], moduleTypes: ['petShop.Pet'] },
+  });
+
+  const before = await ctx.mdm.attachment.attach({
+    entityType: 'MdmEntity',
+    entityId: pet.mdmId,
+    fileName: 'before.jpg',
+    mimeType: 'image/jpeg',
+    sizeBytes: 2048,
+    storageKey: `petShop/${pet.mdmId}/before.jpg`,
+    storageProvider: 'local',
+    category: 'before',
+  });
+  assert.equal(before.entityId, pet.mdmId);
+  assert.equal(before.category, 'before');
+  // The record holds the KEY, never the bytes.
+  assert.equal(before.storageKey, `petShop/${pet.mdmId}/before.jpg`);
+
+  await ctx.mdm.attachment.attach({
+    entityType: 'MdmEntity',
+    entityId: pet.mdmId,
+    fileName: 'after.jpg',
+    mimeType: 'image/jpeg',
+    sizeBytes: 4096,
+    storageKey: `petShop/${pet.mdmId}/after.jpg`,
+    storageProvider: 'local',
+    category: 'after',
+  });
+
+  const all = await ctx.mdm.attachment.listByEntity({ entityType: 'MdmEntity', entityId: pet.mdmId });
+  assert.deepEqual(all.map(item => item.category).sort(), ['after', 'before']);
+  const onlyBefore = await ctx.mdm.attachment.listByEntity({ entityType: 'MdmEntity', entityId: pet.mdmId, category: 'before' });
+  assert.deepEqual(onlyBefore.map(item => item.fileName), ['before.jpg']);
+
+  assert.deepEqual(await ctx.mdm.attachment.detach({ id: before.id }), { id: before.id, deleted: true });
+  // Detach is a SOFT delete: the facade lists what is LIVE, so a gallery never shows a removed photo…
+  const afterDetach = await ctx.mdm.attachment.listByEntity({ entityType: 'MdmEntity', entityId: pet.mdmId });
+  assert.deepEqual(afterDetach.map(item => item.fileName), ['after.jpg']);
+  // …and the history is still reachable on purpose.
+  const withHistory = await ctx.mdm.attachment.listByEntity({ entityType: 'MdmEntity', entityId: pet.mdmId, includeDetached: true });
+  assert.deepEqual(withHistory.map(item => item.fileName).sort(), ['after.jpg', 'before.jpg']);
+});
