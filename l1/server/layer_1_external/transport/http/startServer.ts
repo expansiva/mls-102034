@@ -247,6 +247,10 @@ export function buildHttpServer() {
     return {
       authenticated: !!session.claims,
       email: session.claims?.email ?? null,
+      // Standard OIDC profile claims, forwarded as-is so the client chrome (the header avatar) can
+      // show who is logged in. Null when the IdP does not send them — the caller falls back to initials.
+      name: (session.claims as { name?: unknown } | undefined)?.name ?? null,
+      picture: (session.claims as { picture?: unknown } | undefined)?.picture ?? null,
       userId: session.claims?.sub ?? null,
       authorities: moduleAuthorities(session.claims, ''),
       // What the session ACTS with, and — always — what the user really has. The audit and the card show
