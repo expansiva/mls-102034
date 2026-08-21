@@ -258,7 +258,7 @@ async function handleExec(request: FastifyRequest, reply: FastifyReply): Promise
           });
           return;
         }
-        const rc = executeCbeLogin(body as CbeRequestLogin, session.email ?? session.testUser);
+        const rc = executeCbeLogin(body as CbeRequestLogin, session.email ?? session.testUser, session.picture);
         console.info(`[cbe] /exec action:login (${session.email ?? session.testUser ?? 'anonymous'}) -> ${rc.statusCode} in ${Date.now() - start}ms`);
         reply.header('set-cookie', buildLoginCookies(session));
         reply

@@ -116,7 +116,7 @@ function listServableProjectIds(): number[] {
   return [...ids].sort((a, b) => a - b);
 }
 
-export function executeCbeLogin(args: CbeRequestLogin, loginUser?: string): CbeResponseLogin {
+export function executeCbeLogin(args: CbeRequestLogin, loginUser?: string, avatarUrl?: string): CbeResponseLogin {
   const projectsLastModified = Array.isArray(args.projectsLastModified) ? args.projectsLastModified : [];
 
   const projectIds = listServableProjectIds().filter((id) => hasCompiledZip(id));
@@ -151,7 +151,8 @@ export function executeCbeLogin(args: CbeRequestLogin, loginUser?: string): CbeR
     orgs: { [LOCAL_ORG_NAME]: org },
     inits: {},
     providers: [],
-    avatar_url: '',
+    // OIDC picture claim from the JWT session ('' for the test user/anonymous).
+    avatar_url: avatarUrl ?? '',
     baseProject: args.baseProject ?? 0,
     alertMessage: '',
     errorMessage: '',

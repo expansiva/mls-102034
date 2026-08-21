@@ -14,6 +14,8 @@ export interface CollabAuthClaims extends JWTPayload {
   sub: string;
   email: string;
   name?: string;
+  /** Standard OIDC profile claim — avatar URL (tokens issued before the claim existed lack it). */
+  picture?: string;
 }
 
 const AUTH_BASE_URL = (process.env.COLLAB_AUTH_BASE_URL ?? 'https://auth.collab.codes').replace(/\/$/u, '');
@@ -77,6 +79,8 @@ export async function refreshAccessToken(refreshToken: string): Promise<string |
 
 export interface JwtSession {
   email?: string;
+  /** OIDC picture claim — the login response's avatar_url. */
+  picture?: string;
   /** Set when a refresh produced a new access token that should replace the cauth cookie. */
   newAccessToken?: string;
 }
@@ -89,14 +93,14 @@ export async function resolveJwtSession(cauth: string, crefresh: string): Promis
   if (!isJwtAuthEnabled() || !cauth) return {};
   try {
     const claims = await verifyAccessToken(cauth);
-    return { email: claims.email };
+    return { email: claims.email, picture: claims.picture };
   } catch {
     if (!crefresh) return {};
     const newAccessToken = await refreshAccessToken(crefresh);
     if (!newAccessToken) return {};
     try {
       const claims = await verifyAccessToken(newAccessToken);
-      return { email: claims.email, newAccessToken };
+      return { email: claims.email, picture: claims.picture, newAccessToken };
     } catch {
       return {};
     }
