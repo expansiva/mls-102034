@@ -415,6 +415,15 @@ export async function loadResolvedTableDefinitions(
           tableName: applyProjectTableNamespace(logicalTableName, registration.projectId, registration.projectType),
           projectId: registration.projectId,
           repositoryName: resolveRepositoryName(definition),
+          // Index names live in ONE flat namespace per Postgres schema (unlike columns, which are
+          // per-table) — without this, two client projects sharing a database whose tables both
+          // declare an index with the same literal name (e.g. "idx_<table>_status", a common
+          // generated pattern) collide with 42P07 "relation already exists" the moment the second
+          // one's CREATE INDEX runs. Namespacing it the same way tableName already is fixes that.
+          indexes: definition.indexes?.map((index) => ({
+            ...index,
+            name: applyProjectTableNamespace(index.name, registration.projectId, registration.projectType),
+          })),
           dynamoResolvedTableName: dynamoBaseName
             ? applyProjectTableNamespace(dynamoBaseName, registration.projectId, registration.projectType)
             : null,
