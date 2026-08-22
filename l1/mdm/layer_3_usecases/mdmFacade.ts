@@ -79,6 +79,13 @@ export interface MdmEntityInactivateInput {
   reason?: string | null;
 }
 
+/** Mirror of MdmEntityInactivateInput: the cadastral cycle is symmetric, so its input is too. */
+export interface MdmEntityReactivateInput {
+  mdmId: string;
+  expectedVersion: number;
+  reason?: string | null;
+}
+
 export interface MdmEntityDeleteInput {
   mdmId: string;
   allowActiveRelationships?: boolean;
@@ -381,6 +388,26 @@ export class MdmEntity {
       expectedVersion: input.expectedVersion,
       patch: {
         status: 'Inactive',
+      },
+    });
+    return this.get({ mdmId: input.mdmId });
+  }
+
+  /**
+   * The other half of the cadastral cycle. An MDM entity is NEVER deleted by a generated module: the
+   * tier-1 catalogue emits `inactivate`/`reactivate` for `storage.target: 'mdm'` instead of `delete`,
+   * so a generated `cmdReactivate*` had no target here at all until this method existed.
+   *
+   * Deliberately the exact mirror of `inactivate` — same optimistic version, same single-field patch —
+   * because any asymmetry between the two halves shows up as a record that can be hidden and not
+   * brought back.
+   */
+  public async reactivate(input: MdmEntityReactivateInput): Promise<MdmEntityWriteResult> {
+    await updateEntity(this.ctx, {
+      mdmId: input.mdmId,
+      expectedVersion: input.expectedVersion,
+      patch: {
+        status: 'Active',
       },
     });
     return this.get({ mdmId: input.mdmId });

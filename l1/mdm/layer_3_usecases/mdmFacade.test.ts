@@ -365,6 +365,39 @@ test('MdmEntity.delete removes standalone entity and blocks active relationships
   assert.equal(inactivated.index.status, 'Inactive');
 });
 
+// F2 of the MDM write path: the tier-1 catalogue emits inactivate/reactivate instead of delete for
+// `storage.target: 'mdm'`, so a generated `cmdReactivate*` needs a target on the facade. Before this,
+// only half the cycle existed: a record could be hidden and never brought back.
+test('MdmEntity inactivate hides the record from the active listing and reactivate brings it back', async () => {
+  const ctx = createRequestContext();
+  const customer = await ctx.mdm.entity.create({
+    details: { subtype: 'Person', name: 'Ana', tags: ['petShop'], moduleTypes: ['petShop.Customer'] },
+  });
+
+  const activeIds = async (): Promise<string[]> => {
+    const listed = await ctx.mdm.collection.listByType({ type: 'petShop.Customer', status: 'Active' });
+    return listed.items.map((item) => item.mdmId);
+  };
+  assert.deepEqual(await activeIds(), [customer.mdmId]);
+
+  const inactivated = await ctx.mdm.entity.inactivate({
+    mdmId: customer.mdmId,
+    expectedVersion: (await ctx.mdm.entity.get({ mdmId: customer.mdmId })).version,
+  });
+  assert.equal(inactivated.index.status, 'Inactive');
+  // The point of the pair: gone from the ACTIVE listing, still there as a record (history preserved).
+  assert.deepEqual(await activeIds(), []);
+  assert.equal((await ctx.mdm.entity.get({ mdmId: customer.mdmId })).index.status, 'Inactive');
+
+  const reactivated = await ctx.mdm.entity.reactivate({
+    mdmId: customer.mdmId,
+    expectedVersion: inactivated.version,
+  });
+  assert.equal(reactivated.details.status, 'Active');
+  assert.equal(reactivated.index.status, 'Active');
+  assert.deepEqual(await activeIds(), [customer.mdmId]);
+});
+
 // Elo 2 of the attachments wave: the usecases existed (attach/detach/list, with write-behind and audit)
 // but nothing in a generated module could reach them — `ctx.mdm` exposed only entity/prospect/collection.
 // An attachment is orthogonal to the record: entityType + entityId + category, never a field of the
