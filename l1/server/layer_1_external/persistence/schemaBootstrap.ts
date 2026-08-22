@@ -5,6 +5,7 @@ import type { AppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js'
 import type {
   ResolvedTableDefinition,
   TableIndexColumnDefinition,
+  TableIndexDefinition,
 } from '/_102034_/l1/server/layer_1_external/persistence/contracts.js';
 import { projectTableNamespacePrefix, usesPostgres } from '/_102034_/l1/server/layer_1_external/persistence/contracts.js';
 import {
@@ -42,8 +43,59 @@ function buildCreateTableSql(definition: ResolvedTableDefinition): string {
   return `CREATE ${unloggedSql}TABLE ${quoteIdentifier(definition.tableName)} (${columnsSql.join(', ')}${primaryKeySql})`;
 }
 
+function indexColumnName(column: TableIndexColumnDefinition): string {
+  return typeof column === 'string' ? column : column.name;
+}
+
+function isReservedPrimaryKeyIndexName(
+  indexName: string,
+  tableName: string,
+  logicalTableName?: string,
+): boolean {
+  if (indexName === `${tableName}_pkey`) return true;
+  return !!logicalTableName && indexName === `${logicalTableName}_pkey`;
+}
+
+function columnsMatchPrimaryKey(indexColumns: string[], primaryKey: string[]): boolean {
+  return primaryKey.length > 0
+    && indexColumns.length === primaryKey.length
+    && indexColumns.every((column, i) => column === primaryKey[i]);
+}
+
+/**
+ * Drop indexes that collide with the implicit Postgres PRIMARY KEY index (`<table>_pkey`)
+ * or that repeat the same columns. Generated client defs have emitted both; discarding
+ * is decide-log-continue so publish does not die with 42P07.
+ */
+export function sanitizeDefinitionIndexes<T extends {
+  tableName: string;
+  primaryKey: string[];
+  indexes?: TableIndexDefinition[];
+  logicalTableName?: string;
+}>(definition: T): T {
+  const indexes = definition.indexes;
+  if (!indexes?.length) return definition;
+  const kept: TableIndexDefinition[] = [];
+  for (const index of indexes) {
+    const indexColumns = index.columns.map(indexColumnName);
+    const reservedName = isReservedPrimaryKeyIndexName(
+      index.name,
+      definition.tableName,
+      definition.logicalTableName,
+    );
+    const redundantColumns = columnsMatchPrimaryKey(indexColumns, definition.primaryKey);
+    if (reservedName || redundantColumns) {
+      console.info(`[bootstrapSchema] discarding redundant PK index "${index.name}" on "${definition.tableName}"`);
+      continue;
+    }
+    kept.push(index);
+  }
+  if (kept.length === indexes.length) return definition;
+  return { ...definition, indexes: kept };
+}
+
 function buildCreateIndexSql(definition: ResolvedTableDefinition): string[] {
-  return (definition.indexes ?? []).map((index) =>
+  return (sanitizeDefinitionIndexes(definition).indexes ?? []).map((index) =>
     `CREATE ${index.unique ? 'UNIQUE ' : ''}INDEX ${quoteIdentifier(index.name)}
      ON ${quoteIdentifier(definition.tableName)} (${index.columns.map((column) => renderIndexColumn(column)).join(', ')})`,
   );
