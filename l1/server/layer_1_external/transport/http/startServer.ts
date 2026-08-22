@@ -17,6 +17,9 @@ import {
 import { registerCbeRoutes } from '/_102034_/l1/server/layer_1_external/cbe/cbeRoutes.js';
 import { getLatestJson, initCbeLatestJson } from '/_102034_/l1/server/layer_1_external/cbe/cbeLatestJson.js';
 import { registerMsgProxy } from '/_102034_/l1/server/layer_1_external/transport/http/msgProxy.js';
+import {
+  handleAttachmentHttp, isAttachmentHttpPath,
+} from '/_102034_/l1/server/layer_1_external/storage/attachmentHttp.js';
 import { getCompiledStaticFile } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledStatic.js';
 import { WriteBehindWorker } from '/_102034_/l1/mdm/layer_1_external/queue/WriteBehindWorker.js';
 import {
@@ -217,6 +220,26 @@ export function buildHttpServer() {
   // cannot send a header and does not need to: a same-origin request carries the cookie by itself
   // (bffAuth.resolveBffSession). Enforcement is off by default (`BFF_JWT_ENABLED`), stage 1: verify and
   // report, never lock out an app that is already published.
+  // Binary attachments: dedicated routes, never `/execBff`. Body limit is the base64 of ATTACHMENT_MAX_BYTES.
+  const attachmentBodyLimit = Math.max(12 * 1024 * 1024, Math.ceil(readAppEnv().attachmentMaxBytes * 1.4) + 4096);
+  app.post('/attachments', { bodyLimit: attachmentBodyLimit }, async (request, reply) => {
+    const result = await handleAttachmentHttp('POST', '/attachments', request.body, undefined, request.headers);
+    reply.status(result.statusCode);
+    if (result.headers) reply.headers(result.headers);
+    return result.body;
+  });
+  app.get('/attachments/:id/url', async (request, reply) => {
+    const result = await handleAttachmentHttp('GET', request.url, undefined, undefined, request.headers);
+    reply.status(result.statusCode);
+    if (result.headers) reply.headers(result.headers);
+    return result.body;
+  });
+  app.get('/attachments/:id/file', async (request, reply) => {
+    const result = await handleAttachmentHttp('GET', request.url, undefined, undefined, request.headers);
+    reply.status(result.statusCode);
+    if (result.headers) reply.headers(result.headers);
+    return result.body;
+  });
   app.post('/execBff', async (request, reply) => {
     const result = await handleHttpRequest('POST', '/execBff', request.body, undefined, request.headers);
     reply.status(result.statusCode);
@@ -360,6 +383,10 @@ export async function handleHttpRequest(
       statusCode: 200,
       body: { ok: true },
     };
+  }
+
+  if (isAttachmentHttpPath(method, url)) {
+    return handleAttachmentHttp(method, url, body, ctx, headers);
   }
 
   if (method === 'GET' && new URL(url, 'http://runtime.local').pathname === '/monitor/runtime-metrics') {

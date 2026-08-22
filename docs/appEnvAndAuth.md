@@ -12,6 +12,12 @@ collab-auth for the roles), so there is one definition to change when the policy
 It lives in `l5/project.json` (`appEnv`) and the **server** reads it at boot. The client never decides the
 mode; it only shows the badge. A freshly generated module is born `presentation`.
 
+The same file carries **`projectType`**: `lib | master frontend | master backend | client`. That is the
+kind of the project for the workspace `config.json` `projects` block (root + type the VM build
+consumes). E10 reads it from each dependency's `l5/project.json` when assembling `projects`; it never
+guesses `master frontend`/`master backend`. A generated module is born `client`. A missing field is a
+finding, not a silent default that would put the wrong root in the publish.
+
 | appEnv | software | database | authority override (monitor) | seeds / reset | test suite | badge |
 |---|---|---|---|---|---|---|
 | production | released | production (`DATABASE_URL`) | does not exist (not even the route) | provisioning only | read-only smoke | — |
@@ -39,6 +45,34 @@ environment. And in code this per-project mode is `ProjectMode`, not `appEnv`: `
 means the deployment environment of the SERVER (`development | staging | production`, from `APP_ENV`), and
 one server hosts many projects, each with its own mode. The key in `l5/project.json` and in the boot
 config stays `appEnv`; only the code-level name differs, and none of the three is merged into another.
+
+## 1b. Object storage — one bucket per project
+
+Business attachments (`mdm_attachment`) are files of a **client project**. Isolation is a bucket
+named with that project's id, not a folder in a shared bucket:
+
+| env | default | meaning |
+|---|---|---|
+| `S3_BUCKET` | `collab-{projectId}` | **Permanent** bucket. `{projectId}` is substituted. Empty string forces local disk. |
+| `S3_BUCKET_TMP` | `collab-{projectId}-tmp` | Optional **tmp** bucket for ephemeral artifacts (LLM images that may expire). Empty disables it. **MDM attachments never use it.** |
+| `ATTACHMENT_MAX_BYTES` | `8388608` (8 MiB) | Rejected at the dedicated upload route, before S3. |
+| `ATTACHMENT_ALLOWED_MIME` | `image/jpeg,image/png,image/webp,image/gif,application/pdf` | Same: rejected before S3. |
+
+AWS credentials are the ones already on the runtime (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
+`AWS_REGION`, `AWS_SESSION_TOKEN`). Missing credentials, a missing `PROJECT_ID` when the pattern
+needs it, or an empty `S3_BUCKET` → `storageProvider: 'local'` (disk of the VM) and the reason is
+named, never a generic S3 crash.
+
+The object **key** of a business attachment is
+`attachments/{projectId}/{entityType}/{entityId}/{id}-{fileName}` — the permanent prefix. The
+collab-messages convention `images/tmp/…` + `30d` is for artifacts that a lifecycle rule may
+delete; a pet photo is not that. The only thing stored in `mdm_attachment.storageKey` is this key.
+A presigned GET URL is derived at read time (`GET /attachments/:id/url`, default 3600s) and is
+**never written to the database**.
+
+Bytes do not travel through `/execBff` (JSON, traced, already truncated). They go
+`POST /attachments` as base64 on that dedicated route, then `ctx.mdm.attachment.attach`.
+`l3/assets` is unchanged: static app images stay static app images.
 
 **Runner rule** (the lesson of a test run that wrote junk into production): the full suite
 (create/update/delete) runs ONLY in `development` and `presentation`. Two independent defences — the runner

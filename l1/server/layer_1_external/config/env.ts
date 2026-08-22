@@ -2,6 +2,12 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { getStorageConfig } from '/_102034_/l1/server/layer_1_external/config/storageConfig.js';
+import {
+  DEFAULT_ATTACHMENT_MAX_BYTES, parseAllowedMime,
+} from '/_102034_/l1/server/layer_1_external/storage/attachmentLimits.js';
+import {
+  DEFAULT_PERMANENT_BUCKET_PATTERN, DEFAULT_TMP_BUCKET_PATTERN,
+} from '/_102034_/l1/server/layer_1_external/storage/objectBuckets.js';
 
 export interface AppEnv {
   appEnv: 'development' | 'staging' | 'production';
@@ -35,6 +41,16 @@ export interface AppEnv {
   currentWorkspaceId?: string;
   actorId?: string;
   actorScope: string[];
+  /**
+   * Permanent object-storage bucket pattern. `{projectId}` is replaced with the client project
+   * (default `collab-{projectId}`). Empty string forces local disk.
+   */
+  s3BucketPattern: string;
+  /** Optional tmp bucket pattern (default `collab-{projectId}-tmp`). Empty disables it. MDM never uses it. */
+  s3BucketTmpPattern: string;
+  attachmentMaxBytes: number;
+  attachmentAllowedMime: string[];
+  attachmentLocalDir?: string;
 }
 
 function parseBoolean(value: string | undefined, defaultValue: boolean): boolean {
@@ -165,5 +181,10 @@ export function readAppEnv(): AppEnv {
     currentWorkspaceId: readEnvValue('CURRENT_WORKSPACE_ID', appEnv) || readEnvValue('WORKSPACE_ID', appEnv) || undefined,
     actorId: readEnvValue('ACTOR_ID', appEnv) || undefined,
     actorScope: parseStringList(readEnvValue('ACTOR_SCOPE', appEnv)),
+    s3BucketPattern: readEnvValue('S3_BUCKET', appEnv) ?? DEFAULT_PERMANENT_BUCKET_PATTERN,
+    s3BucketTmpPattern: readEnvValue('S3_BUCKET_TMP', appEnv) ?? DEFAULT_TMP_BUCKET_PATTERN,
+    attachmentMaxBytes: Number(readEnvValue('ATTACHMENT_MAX_BYTES', appEnv) ?? DEFAULT_ATTACHMENT_MAX_BYTES),
+    attachmentAllowedMime: parseAllowedMime(readEnvValue('ATTACHMENT_ALLOWED_MIME', appEnv)),
+    attachmentLocalDir: readEnvValue('ATTACHMENT_LOCAL_DIR', appEnv) || undefined,
   };
 }
