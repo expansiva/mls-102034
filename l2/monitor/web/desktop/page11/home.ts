@@ -976,9 +976,12 @@ export class MonitorWebDesktopHomePage extends LitElement {
       }
       this.testsData = response.data;
       const pageCount = response.data.modules.reduce((sum, module) => sum + module.pages.length, 0);
+      const envLabel = response.data.appEnvSource
+        ? `${response.data.appEnv} from ${response.data.appEnvSource}${response.data.serverAppEnv ? ` · server ${response.data.serverAppEnv}` : ''}`
+        : response.data.appEnv;
       this.status = response.data.executionEnabled
-        ? `${pageCount} page(s) with tests · execution enabled (${response.data.appEnv} · memory sandbox)`
-        : `${pageCount} page(s) with tests · execution disabled (${response.data.appEnv})`;
+        ? `${pageCount} page(s) with tests · execution enabled (${envLabel} · memory sandbox)`
+        : `${pageCount} page(s) with tests · execution disabled (${envLabel})`;
       return;
     }
 
@@ -1452,7 +1455,7 @@ export class MonitorWebDesktopHomePage extends LitElement {
         <div class="flex flex-wrap items-center justify-between gap-4">
           <div>
             <h2 class="text-lg font-semibold text-slate-900">Last test run</h2>
-            <p class="mt-1 text-sm text-slate-500">${formatDateTime(run.finishedAt)} · ${run.appEnv}</p>
+            <p class="mt-1 text-sm text-slate-500">${formatDateTime(run.finishedAt)} · ${run.appEnv}${run.appEnvSource ? ` (${run.appEnvSource})` : ''}${run.serverAppEnv ? ` · server ${run.serverAppEnv}` : ''}</p>
           </div>
           <div class="text-sm ${tone}">
             ${run.passed} passed · ${run.failed} failed · ${run.knownFail} known · ${run.inconclusive} inconclusive · ${run.skipped} skipped

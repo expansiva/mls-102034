@@ -46,6 +46,15 @@ means the deployment environment of the SERVER (`development | staging | product
 one server hosts many projects, each with its own mode. The key in `l5/project.json` and in the boot
 config stays `appEnv`; only the code-level name differs, and none of the three is merged into another.
 
+### Precedence (project.json vs APP_ENV vs `/monitor/tests`)
+
+| source | name in code | values | wins for |
+|---|---|---|---|
+| `l5/project.json` `appEnv` | `ProjectMode` (`readProjectMode`) | production \| homologation \| development \| presentation | database (`DATABASE_URL` vs `_TEST`), `refuseTestWrite`, shell badge, authority override, **the `appEnv` field of `/monitor/tests`** |
+| process `APP_ENV` | `AppEnv.appEnv` (`readAppEnv`) | development \| staging \| production | server storage/engine, not the project |
+
+`APP_ENV` **never** overrides `project.json`. A VM whose server is `APP_ENV=production` can still host a module whose `project.json` says `presentation` (curated test DB, full suite). The first petShop test run reported `"appEnv": "production"` because the runner printed the server value; it now prints `appEnv` from `readProjectMode` (`appEnvSource: "l5/project.json"` when the file declared a valid mode, else `"default"`) and `serverAppEnv` from `APP_ENV`.
+
 ## 1b. Object storage — one bucket per project
 
 Business attachments (`mdm_attachment`) are files of a **client project**. Isolation is a bucket

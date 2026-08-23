@@ -5,9 +5,32 @@
 // falling back to `items`.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { checkShape, coercePageTestsFile, countItems } from '/_102034_/l1/monitor/layer_3_usecases/testsUsecases.js';
+import { checkShape, coercePageTestsFile, countItems, reportAppEnv, PAGE11_VARIANT_POLICY, untestedPageEntries } from '/_102034_/l1/monitor/layer_3_usecases/testsUsecases.js';
 
 const menuEnvelope = { menuItems: [{ menuItemId: 'a' }, { menuItemId: 'b' }], total: 2 };
+
+test('list coverage: variants share page11; untested pages are named with a reason', () => {
+  assert.match(PAGE11_VARIANT_POLICY, /page11/);
+  const missing = untestedPageEntries(
+    ['consultInstitutionalHome', 'petCatalogue', 'petServiceOverviewView'],
+    ['petCatalogue'],
+  );
+  assert.deepEqual(missing.map(item => item.page), ['consultInstitutionalHome', 'petServiceOverviewView']);
+  assert.match(missing[0].reason, /seedRef|seed/);
+});
+
+test('the test report appEnv is ProjectMode from project.json, not APP_ENV', () => {
+  const prior = process.env.APP_ENV;
+  try {
+    process.env.APP_ENV = 'production';
+    const reported = reportAppEnv();
+    assert.equal(reported.appEnvSource, 'default', 'without a declared project.json appEnv the source is default, not a file that was not read');
+    assert.equal(reported.appEnv, 'presentation', 'absent project.json falls back to presentation, never to APP_ENV');
+    assert.equal(reported.serverAppEnv, 'production');
+  } finally {
+    if (prior === undefined) delete process.env.APP_ENV; else process.env.APP_ENV = prior;
+  }
+});
 
 test('paginated accepts the declared collection key', () => {
   assert.equal(checkShape(menuEnvelope, 'paginated', 'menuItems'), '');

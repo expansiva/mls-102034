@@ -30,6 +30,7 @@
 import { AppError, type BffRequest, type BffResponse, type RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import { createRequestContext, execBff } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
+import { hasDeclaredProjectMode, readProjectMode } from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
 import { createMemoryDataRuntime } from '/_102034_/l1/mdm/layer_1_external/data/memory/MdmDataRuntimeMemory.js';
 import { readProjectsConfig, resolveProjectModuleImportUrl } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import { loadResolvedTableDefinitions } from '/_102034_/l1/server/layer_1_external/persistence/registry.js';
@@ -105,7 +106,12 @@ export interface TestRunSummary {
   traceId: string;
   startedAt: string;
   finishedAt: string;
+  /** ProjectMode from l5/project.json — not the server APP_ENV. */
   appEnv: string;
+  /** Where `appEnv` was read from, so a VM with APP_ENV=production is not mistaken for the project mode. */
+  appEnvSource: string;
+  /** Server deployment (`APP_ENV`): development | staging | production. */
+  serverAppEnv: string;
   scope: { moduleId?: string; page?: string };
   total: number;
   passed: number;
@@ -119,10 +125,15 @@ export interface TestRunSummary {
 
 export interface TestListResult {
   appEnv: string;
+  appEnvSource: string;
+  serverAppEnv: string;
   executionEnabled: boolean;
   modules: Array<{
     moduleId: string;
     projectId: string;
+    /** page21/page31 share page11's BFF contract; cases are generated once. */
+    variantPolicy: string;
+    untestedPages: Array<{ page: string; reason: string }>;
     pages: Array<{
       page: string;
       variant: string;
@@ -132,6 +143,16 @@ export interface TestListResult {
     }>;
   }>;
   recentRuns: TestRunSummary[];
+}
+
+export const PAGE11_VARIANT_POLICY = 'page21/page31 share page11\'s contract; cases are generated once for page11.';
+
+export function untestedPageEntries(configuredPageIds: string[], testedPageIds: Iterable<string>): Array<{ page: string; reason: string }> {
+  const tested = new Set(testedPageIds);
+  return configuredPageIds.filter(page => page && !tested.has(page)).sort().map(page => ({
+    page,
+    reason: 'no generated .test.ts — inspect pages should emit a <seedRef> case; skip only when the owning entity has no seed',
+  }));
 }
 
 // ---- In-memory history (net-new state; everything else reuses existing runtime infra). ----
@@ -214,6 +235,16 @@ async function discoverTestFiles(filter: { moduleId?: string; page?: string } = 
   return files;
 }
 
+/** ProjectMode from l5/project.json wins over APP_ENV. The test report prints both so they cannot be confused. */
+export function reportAppEnv(projectId?: string): { appEnv: string; appEnvSource: string; serverAppEnv: string } {
+  const appEnv = readProjectMode(projectId);
+  return {
+    appEnv,
+    appEnvSource: hasDeclaredProjectMode(projectId) ? 'l5/project.json' : 'default',
+    serverAppEnv: readAppEnv().appEnv,
+  };
+}
+
 // ---- list ----
 
 export async function listPageTests(): Promise<TestListResult> {
@@ -223,7 +254,7 @@ export async function listPageTests(): Promise<TestListResult> {
   for (const file of files) {
     let entry = byModule.get(file.moduleId);
     if (!entry) {
-      entry = { moduleId: file.moduleId, projectId: file.projectId, pages: [] };
+      entry = { moduleId: file.moduleId, projectId: file.projectId, variantPolicy: PAGE11_VARIANT_POLICY, untestedPages: [], pages: [] };
       byModule.set(file.moduleId, entry);
     }
     entry.pages.push({
@@ -234,8 +265,27 @@ export async function listPageTests(): Promise<TestListResult> {
       cases: (file.tests?.cases ?? []).map(c => ({ id: c.id, routine: c.routine, mutating: c.mutating, expect: c.expect })),
     });
   }
+  const reported = reportAppEnv(files[0]?.projectId ?? env.projectId);
+  const config = readProjectsConfig();
+  for (const [projectId, project] of Object.entries(config.projects)) {
+    for (const moduleConfig of project.modules ?? []) {
+      const moduleId = moduleConfig.moduleId;
+      if (!moduleId) continue;
+      let entry = byModule.get(moduleId);
+      if (!entry) {
+        entry = { moduleId, projectId, variantPolicy: PAGE11_VARIANT_POLICY, untestedPages: [], pages: [] };
+        byModule.set(moduleId, entry);
+      }
+      const frontendPages = (moduleConfig.frontend as { pages?: Array<{ pageId?: string; id?: string }> } | undefined)?.pages ?? [];
+      const configured = frontendPages.map(page => page.pageId || page.id || '').filter(Boolean);
+      const tested = entry.pages.map(page => page.page);
+      entry.untestedPages = untestedPageEntries(configured, tested);
+    }
+  }
   return {
-    appEnv: env.appEnv,
+    appEnv: reported.appEnv,
+    appEnvSource: reported.appEnvSource,
+    serverAppEnv: reported.serverAppEnv,
     executionEnabled: env.testsEnabled,
     modules: [...byModule.values()],
     recentRuns: getRecentRuns({}, 10),
@@ -581,12 +631,15 @@ export async function runPageTests(input: { moduleId?: string; page?: string; sk
     }
   }
 
+  const reported = reportAppEnv(files[0]?.projectId ?? env.projectId);
   const summary: TestRunSummary = {
     runId,
     traceId,
     startedAt,
     finishedAt: new Date().toISOString(),
-    appEnv: env.appEnv,
+    appEnv: reported.appEnv,
+    appEnvSource: reported.appEnvSource,
+    serverAppEnv: reported.serverAppEnv,
     scope:{ moduleId: input.moduleId, page: input.page },
     total: cases.length,
     passed: cases.filter(c => c.status === 'pass').length,

@@ -27,7 +27,10 @@ export interface MonitorTestRunSummary {
   traceId: string;
   startedAt: string;
   finishedAt: string;
+  /** ProjectMode from l5/project.json. */
   appEnv: string;
+  appEnvSource?: string;
+  serverAppEnv?: string;
   scope: { moduleId?: string; page?: string };
   total: number;
   passed: number;
@@ -49,6 +52,8 @@ export interface MonitorTestPageCase {
 export interface MonitorTestModule {
   moduleId: string;
   projectId: string;
+  variantPolicy?: string;
+  untestedPages?: Array<{ page: string; reason: string }>;
   pages: Array<{
     page: string;
     variant: string;
@@ -60,6 +65,8 @@ export interface MonitorTestModule {
 
 export interface MonitorTestsListResponse {
   appEnv: string;
+  appEnvSource?: string;
+  serverAppEnv?: string;
   executionEnabled: boolean;
   modules: MonitorTestModule[];
   recentRuns: MonitorTestRunSummary[];
