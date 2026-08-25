@@ -16,7 +16,8 @@
 //   reports them as 'skipped' when the caller does not want them executed at all.
 // - `<seedRef>` params are resolved from a pool harvested by first running the page's read queries
 //   (phase A) — every scalar of every response, including the rows of any array it carries — so a
-//   validation case's only wrong input is the omitted required field.
+//   validation case's only wrong input is the omitted required field. Lookup is fieldRef
+//   (`Task.taskId`), then fieldId (`taskId`), then the input's wire name (`taskTaskId`).
 // - A case that could not verify what it claims is reported 'inconclusive', never 'pass': a
 //   <seedRef> that never resolved, or a `<command>.<field>.required` case rejected on another
 //   field. `failed` is reserved for the backend actually misbehaving.
@@ -51,6 +52,13 @@ interface PageTestCase {
   id: string;
   routine: string;
   params: Record<string, unknown>;
+  /**
+   * Ontology fieldRef of each `<seedRef>` param (`Task.taskId`), keyed by the input's wire name.
+   * The harvest pool is filled from response field names (usually the fieldId); matching by
+   * inputId alone misses `taskTaskId` vs `taskId`. Optional: files generated before this existed
+   * keep resolving by name only.
+   */
+  paramFieldRefs?: Record<string, string>;
   expect: { ok: boolean; errorCode?: string; minItems?: number; shape?: TestShape; itemsKey?: string };
   mutating: boolean;
   /**
@@ -191,6 +199,7 @@ export function coercePageTestsFile(raw: unknown): PageTestsFile | null {
     const routine = typeof item.routine === 'string' ? item.routine : '';
     if (!id || !routine) continue;
     const expectRaw = isRecord(item.expect) ? item.expect : {};
+    const paramFieldRefs = coerceParamFieldRefs(item.paramFieldRefs);
     cases.push({
       id,
       routine,
@@ -204,6 +213,7 @@ export function coercePageTestsFile(raw: unknown): PageTestsFile | null {
       },
       mutating: item.mutating === true,
       ...(typeof item.expectedFail === 'string' && item.expectedFail.trim() ? { expectedFail: item.expectedFail.trim() } : {}),
+      ...(paramFieldRefs ? { paramFieldRefs } : {}),
     });
   }
   // Optional: the page's l4 actor. Absent in files generated before actor-scoped runs existed.
@@ -323,6 +333,21 @@ export function countItems(data: unknown, itemsKey = DEFAULT_ITEMS_KEY): number 
 }
 
 // Only scalars are usable as a <seedRef> value; nested arrays/objects are containers to descend into.
+function coerceParamFieldRefs(value: unknown): Record<string, string> | undefined {
+  if (!isRecord(value)) return undefined;
+  const refs: Record<string, string> = {};
+  for (const [key, fieldRef] of Object.entries(value)) {
+    if (typeof fieldRef === 'string' && fieldRef.trim()) refs[key] = fieldRef.trim();
+  }
+  return Object.keys(refs).length ? refs : undefined;
+}
+
+function fieldIdOfFieldRef(fieldRef: string | undefined): string {
+  if (!fieldRef) return '';
+  const dot = fieldRef.lastIndexOf('.');
+  return (dot < 0 ? fieldRef : fieldRef.slice(dot + 1)).trim();
+}
+
 function harvestRecord(pool: Record<string, unknown>, row: unknown): void {
   if (!isRecord(row)) return;
   for (const [key, value] of Object.entries(row)) {
@@ -398,15 +423,30 @@ interface ResolvedParams {
   unresolved: string[];
 }
 
-function resolveParams(params: Record<string, unknown>, pool: Record<string, unknown>): ResolvedParams {
+/**
+ * Look up a `<seedRef>` in the harvest pool. Index order is the l4 invariant first:
+ * the fieldRef (`Task.taskId`), then its fieldId (`taskId`), then the input's wire name
+ * (`taskTaskId`). Name last so a qualified inputId still resolves from a list that
+ * emitted the fieldId. Missing stays unresolved — never invent an id.
+ */
+export function resolveParams(
+  params: Record<string, unknown>,
+  pool: Record<string, unknown>,
+  paramFieldRefs?: Record<string, string>,
+): ResolvedParams {
   const resolved: Record<string, unknown> = {};
   const unresolved: string[] = [];
   for (const [key, value] of Object.entries(params)) {
     if (value === SEED_REF_MARKER) {
+      const fieldRef = paramFieldRefs?.[key];
+      const fieldId = fieldIdOfFieldRef(fieldRef);
+      const found = (fieldRef !== undefined ? pool[fieldRef] : undefined)
+        ?? (fieldId ? pool[fieldId] : undefined)
+        ?? pool[key];
       // unresolved seedRef -> omit the key (the runner cannot invent a valid id) and remember it:
       // the request no longer matches the case, so the verdict cannot be trusted.
-      if (pool[key] === undefined) unresolved.push(key);
-      else resolved[key] = pool[key];
+      if (found === undefined) unresolved.push(key);
+      else resolved[key] = found;
     } else {
       resolved[key] = value;
     }
@@ -596,7 +636,7 @@ export async function runPageTests(input: { moduleId?: string; page?: string; sk
   // fails its shape assertion still carries the ids the later cases need.
   const runOne = async (file: DiscoveredTestFile, testCase: PageTestCase): Promise<TestCaseResult> => {
     const tests = file.tests!;
-    const { params, unresolved } = resolveParams(testCase.params, pool);
+    const { params, unresolved } = resolveParams(testCase.params, pool, testCase.paramFieldRefs);
     const request: BffRequest = { routine: testCase.routine, params, meta: { source: 'test', traceId, requestId: createUuidV7() } };
     const startedMs = Date.now();
     const exec = await execBff(request, await contextFor(file));

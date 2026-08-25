@@ -18,6 +18,8 @@ type PgExecutor = Pool | PoolClient;
 
 export interface IFindManyInput<TWhere> {
   where?: Partial<TWhere>;
+  /** Case-insensitive substring per column (`ILIKE` in Postgres). Empty/absent values are ignored. */
+  ilike?: Partial<TWhere>;
   orderBy?: {
     field: keyof TWhere;
     direction: 'asc' | 'desc';
@@ -102,6 +104,36 @@ function matchesWhere<TRecord>(record: TRecord, where?: Partial<TRecord>): boole
   });
 }
 
+function ilikeEntries<TRecord>(ilike?: Partial<TRecord>): Array<[string, string]> {
+  return Object.entries(ilike ?? {})
+    .filter(([, value]) => value !== undefined && value !== null && String(value).trim() !== '')
+    .map(([key, value]) => [key, String(value).trim()]);
+}
+
+function escapeIlikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, (char) => `\\${char}`);
+}
+
+function matchesIlike<TRecord>(record: TRecord, ilike?: Partial<TRecord>): boolean {
+  return ilikeEntries(ilike).every(([key, needle]) =>
+    String((record as Record<string, unknown>)[key] ?? '').toLowerCase().includes(needle.toLowerCase()),
+  );
+}
+
+function buildFilterClause<TRecord>(where?: Partial<TRecord>, ilike?: Partial<TRecord>) {
+  const equality = buildWhereClause(where);
+  const like = ilikeEntries(ilike);
+  if (like.length === 0) return equality;
+  const params = [...equality.params];
+  const likeSql = like.map(([key, value]) => {
+    params.push(`%${escapeIlikePattern(value)}%`);
+    return `${quoteIdentifier(key)} ILIKE $${params.length} ESCAPE '\\'`;
+  });
+  const equalitySql = equality.sql.replace(/^WHERE\s+/u, '');
+  const parts = [equalitySql, ...likeSql].filter(Boolean);
+  return { sql: `WHERE ${parts.join(' AND ')}`, params };
+}
+
 function compareValues(left: unknown, right: unknown): number {
   if (typeof left === 'number' && typeof right === 'number') {
     return left - right;
@@ -159,7 +191,7 @@ class MemoryTableRepository<TRecord extends object> implements ITableRepository<
   }
 
   public async findMany(input?: IFindManyInput<TRecord>): Promise<TRecord[]> {
-    const rows = this.records.filter((entry) => matchesWhere(entry, input?.where));
+    const rows = this.records.filter((entry) => matchesWhere(entry, input?.where) && matchesIlike(entry, input?.ilike));
     if (input?.orderBy) {
       const { field, direction } = input.orderBy;
       rows.sort((left, right) => {
@@ -235,7 +267,7 @@ class PostgresTableRepository<TRecord extends object> implements ITableRepositor
   }
 
   public async findMany(input?: IFindManyInput<TRecord>): Promise<TRecord[]> {
-    const where = buildWhereClause(input?.where);
+    const where = buildFilterClause(input?.where, input?.ilike);
     const orderSql = input?.orderBy
       ? `ORDER BY ${quoteIdentifier(String(input.orderBy.field))} ${input.orderBy.direction.toUpperCase()}`
       : '';

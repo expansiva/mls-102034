@@ -5,7 +5,7 @@
 // falling back to `items`.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { checkShape, coercePageTestsFile, countItems, reportAppEnv, PAGE11_VARIANT_POLICY, untestedPageEntries } from '/_102034_/l1/monitor/layer_3_usecases/testsUsecases.js';
+import { checkShape, coercePageTestsFile, countItems, reportAppEnv, PAGE11_VARIANT_POLICY, resolveParams, untestedPageEntries } from '/_102034_/l1/monitor/layer_3_usecases/testsUsecases.js';
 
 const menuEnvelope = { menuItems: [{ menuItemId: 'a' }, { menuItemId: 'b' }], total: 2 };
 
@@ -74,6 +74,32 @@ test('itemsKey survives the coercion of the generated file, and junk is dropped'
 
 // countItems counting a plain object as 1 is what makes `minItems` vacuous on `shape: 'object'` —
 // pinned here so the behaviour is a decision, not an accident.
+test('paramFieldRefs survives coercion; junk is dropped', () => {
+  const file = coercePageTestsFile({
+    moduleName: 'todo',
+    page: 'changeTaskStatus',
+    cases: [
+      { id: 'inspect.ok', routine: 'todo.x.inspect', params: { taskTaskId: '<seedRef>' }, paramFieldRefs: { taskTaskId: ' Task.taskId ' }, expect: { ok: true } },
+      { id: 'b.ok', routine: 'r.b', paramFieldRefs: { a: 1, b: '   ' }, expect: { ok: true } },
+    ],
+  });
+  assert.ok(file);
+  assert.equal(file.cases[0].paramFieldRefs?.taskTaskId, 'Task.taskId');
+  assert.equal(file.cases[1].paramFieldRefs, undefined);
+});
+
+test('<seedRef> resolves by fieldRef then fieldId, not only by the input name', () => {
+  const pool = { taskId: 'row-1' };
+  const hit = resolveParams({ taskTaskId: '<seedRef>' }, pool, { taskTaskId: 'Task.taskId' });
+  assert.deepEqual(hit.params, { taskTaskId: 'row-1' });
+  assert.deepEqual(hit.unresolved, []);
+  const byName = resolveParams({ taskId: '<seedRef>' }, pool);
+  assert.deepEqual(byName.params, { taskId: 'row-1' });
+  const miss = resolveParams({ missingId: '<seedRef>' }, pool, { missingId: 'Task.missingId' });
+  assert.deepEqual(miss.params, {});
+  assert.deepEqual(miss.unresolved, ['missingId']);
+});
+
 test('countItems falls back to 1 for a non-collection payload', () => {
   assert.equal(countItems({ menuItemId: 'a' }, 'menuItems'), 1);
   assert.equal(countItems(null, 'menuItems'), 0);
