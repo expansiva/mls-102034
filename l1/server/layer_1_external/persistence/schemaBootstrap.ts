@@ -2,6 +2,11 @@
 import type { Pool } from 'pg';
 import { getSharedPgPool } from '/_102034_/l1/server/layer_1_external/data/postgres/pg.js';
 import type { AppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
+import {
+  isTestMode,
+  readProjectMode,
+  type ProjectMode,
+} from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
 import type {
   ResolvedTableDefinition,
   TableIndexColumnDefinition,
@@ -17,6 +22,54 @@ import {
   ensureRegisteredDynamoTables,
   writeSchemaSnapshotLog,
 } from '/_102034_/l1/server/layer_1_external/persistence/dynamoAdmin.js';
+
+/** Unprefixed physical name ⇒ platform/shared table (mdm_*, monitor_*, _schema_migrations). */
+export function isPlatformOwnedTable(
+  definition: Pick<ResolvedTableDefinition, 'tableName' | 'logicalTableName'>,
+): boolean {
+  return definition.tableName === definition.logicalTableName;
+}
+
+/**
+ * Seeds follow the owning project's mode. Platform tables follow the server's hosted project
+ * (`env.projectId`), not APP_ENV — that is a different vocabulary.
+ */
+export function shouldApplySeedRows(input: {
+  tableName: string;
+  logicalTableName: string;
+  projectMode: ProjectMode;
+  serverMode: ProjectMode;
+}): { apply: boolean; mode: ProjectMode; reason: string } {
+  const platform = isPlatformOwnedTable(input);
+  const mode = platform ? input.serverMode : input.projectMode;
+  if (isTestMode(mode)) {
+    return {
+      apply: true,
+      mode,
+      reason: platform
+        ? `seeding platform table "${input.tableName}" (server appEnv='${mode}')`
+        : `seeding "${input.tableName}" (project appEnv='${mode}')`,
+    };
+  }
+  return {
+    apply: false,
+    mode,
+    reason: platform
+      ? `skipped seed for platform table "${input.tableName}": server appEnv='${mode}' is not a test mode`
+      : `skipped seed for "${input.tableName}": project appEnv='${mode}' is not a test mode`,
+  };
+}
+
+async function readLastAppliedSnapshotId(pool: Pool): Promise<string | null> {
+  try {
+    const result = await pool.query<{ id: string }>(
+      'SELECT id FROM "_schema_migrations" ORDER BY applied_at DESC, id DESC LIMIT 1',
+    );
+    return result.rows[0]?.id ?? null;
+  } catch {
+    return null;
+  }
+}
 
 function quoteIdentifier(identifier: string): string {
   return `"${identifier.replaceAll('"', '""')}"`;
@@ -243,9 +296,21 @@ async function rebuildPostgresSchema(
     }
   }
 
-  // Mechanical seed: the schema was just rebuilt (DROP SCHEMA above), so every table is
-  // empty — apply the definitions' seedRows. Non-fatal: bad seed data must not block a release.
+  // Mechanical seed: the schema was just rebuilt, so every table is empty. Seed only in a
+  // test mode (presentation/development). Production/homologation rebuilds stay empty.
+  // Non-fatal: bad seed data must not block a release.
+  const serverMode = readProjectMode(env.projectId);
   for (const definition of orderedDefinitions.filter((d) => d.seedRows?.length)) {
+    const decision = shouldApplySeedRows({
+      tableName: definition.tableName,
+      logicalTableName: definition.logicalTableName,
+      projectMode: readProjectMode(definition.projectId),
+      serverMode,
+    });
+    if (!decision.apply) {
+      console.info(`[bootstrapSchema] ${decision.reason}`);
+      continue;
+    }
     try {
       for (const row of definition.seedRows!) {
         const columns = definition.columns.filter((column) => row[column.name] !== undefined);
@@ -261,7 +326,7 @@ async function rebuildPostgresSchema(
           values,
         );
       }
-      console.info(`[bootstrapSchema] seeded ${definition.seedRows!.length} row(s) into "${definition.tableName}"`);
+      console.info(`[bootstrapSchema] ${decision.reason}: ${definition.seedRows!.length} row(s)`);
     } catch (error) {
       console.warn(`[bootstrapSchema] seed failed for "${definition.tableName}":`, error instanceof Error ? error.message : error);
     }
@@ -305,10 +370,19 @@ export async function bootstrapSchema(
 
   const definitions = await loadResolvedTableDefinitions(env);
   const snapshot = await buildSchemaSnapshot(env);
-  const timescaleAvailable = await rebuildPostgresSchema(env, definitions, snapshot.id);
-
   const pool = getSharedPgPool(env);
-  await applyViewDefinitions(pool, { timescaleAvailable });
+  const lastSnapshotId = await readLastAppliedSnapshotId(pool);
+  if (lastSnapshotId === snapshot.id) {
+    console.info(`[bootstrapSchema] schema unchanged (${snapshot.id}); skipping rebuild`);
+  } else {
+    if (lastSnapshotId) {
+      console.info(`[bootstrapSchema] schema changed (${lastSnapshotId} → ${snapshot.id}); rebuilding`);
+    } else {
+      console.info(`[bootstrapSchema] no applied snapshot; rebuilding (${snapshot.id})`);
+    }
+    const timescaleAvailable = await rebuildPostgresSchema(env, definitions, snapshot.id);
+    await applyViewDefinitions(pool, { timescaleAvailable });
+  }
 
   let dynamoTableCount = 0;
   if (input?.ensureDynamo !== false) {

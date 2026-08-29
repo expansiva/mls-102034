@@ -467,11 +467,9 @@ export async function loadResolvedDynamoTableDefinitions(
   return definitions.filter((definition) => usesDynamo(definition));
 }
 
-export async function buildSchemaSnapshot(
-  env: Pick<AppEnv, 'appEnv'>,
-): Promise<SchemaSnapshot> {
-  const definitions = await loadResolvedTableDefinitions(env);
-  const tables = definitions.map((definition) => ({
+/** Snapshot row used for the schema hash. Columns in; seedRows out — a seed-only edit must not rebuild. */
+export function toSchemaSnapshotTable(definition: ResolvedTableDefinition): SchemaSnapshot['tables'][number] {
+  return {
     projectId: definition.projectId,
     moduleId: definition.moduleId,
     repositoryName: definition.repositoryName,
@@ -480,7 +478,20 @@ export async function buildSchemaSnapshot(
     backupHot: definition.backupHot,
     dynamoTableName: definition.dynamoResolvedTableName,
     version: definition.version,
-  }));
+    columns: definition.columns.map((column) => ({
+      name: column.name,
+      postgresType: column.postgresType,
+      nullable: column.nullable === true,
+      defaultSql: column.defaultSql ?? null,
+    })),
+  };
+}
+
+export async function buildSchemaSnapshot(
+  env: Pick<AppEnv, 'appEnv'>,
+): Promise<SchemaSnapshot> {
+  const definitions = await loadResolvedTableDefinitions(env);
+  const tables = definitions.map(toSchemaSnapshotTable);
   const hash = await sha256Hex(JSON.stringify(tables));
   const appliedAt = new Date().toISOString();
 

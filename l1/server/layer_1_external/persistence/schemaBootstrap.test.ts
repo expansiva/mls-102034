@@ -1,7 +1,11 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/persistence/schemaBootstrap.test.ts" enhancement="_blank" />
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sanitizeDefinitionIndexes } from '/_102034_/l1/server/layer_1_external/persistence/schemaBootstrap.js';
+import {
+  isPlatformOwnedTable,
+  sanitizeDefinitionIndexes,
+  shouldApplySeedRows,
+} from '/_102034_/l1/server/layer_1_external/persistence/schemaBootstrap.js';
 import type { TableIndexDefinition } from '/_102034_/l1/server/layer_1_external/persistence/contracts.js';
 
 function def(input: {
@@ -77,4 +81,63 @@ test('sanitizeDefinitionIndexes keeps legitimate secondary indexes (service_exec
     'service_execution_service_appointment_id_idx',
     'service_execution_status_idx',
   ]);
+});
+
+test('platform tables are the unprefixed ones; client tables carry the project namespace', () => {
+  assert.equal(isPlatformOwnedTable({ tableName: 'monitor_bff_execution_log', logicalTableName: 'monitor_bff_execution_log' }), true);
+  assert.equal(isPlatformOwnedTable({ tableName: 'mls900001_task', logicalTableName: 'task' }), false);
+});
+
+test('seeds follow the owning project mode; platform tables follow the server mode', () => {
+  const projectPresentation = shouldApplySeedRows({
+    tableName: 'mls900001_task',
+    logicalTableName: 'task',
+    projectMode: 'presentation',
+    serverMode: 'production',
+  });
+  assert.equal(projectPresentation.apply, true);
+  assert.match(projectPresentation.reason, /project appEnv='presentation'/u);
+
+  const projectProduction = shouldApplySeedRows({
+    tableName: 'mls900001_task',
+    logicalTableName: 'task',
+    projectMode: 'production',
+    serverMode: 'presentation',
+  });
+  assert.equal(projectProduction.apply, false);
+  assert.match(projectProduction.reason, /project appEnv='production' is not a test mode/u);
+
+  const platformFromServer = shouldApplySeedRows({
+    tableName: 'mdm_documents',
+    logicalTableName: 'mdm_documents',
+    projectMode: 'production',
+    serverMode: 'presentation',
+  });
+  assert.equal(platformFromServer.apply, true);
+  assert.match(platformFromServer.reason, /server appEnv='presentation'/u);
+
+  const platformProduction = shouldApplySeedRows({
+    tableName: 'mdm_documents',
+    logicalTableName: 'mdm_documents',
+    projectMode: 'presentation',
+    serverMode: 'production',
+  });
+  assert.equal(platformProduction.apply, false);
+  assert.match(platformProduction.reason, /server appEnv='production' is not a test mode/u);
+
+  const homologation = shouldApplySeedRows({
+    tableName: 'mls900001_task',
+    logicalTableName: 'task',
+    projectMode: 'homologation',
+    serverMode: 'homologation',
+  });
+  assert.equal(homologation.apply, false);
+
+  const development = shouldApplySeedRows({
+    tableName: 'mls900001_task',
+    logicalTableName: 'task',
+    projectMode: 'development',
+    serverMode: 'production',
+  });
+  assert.equal(development.apply, true);
 });

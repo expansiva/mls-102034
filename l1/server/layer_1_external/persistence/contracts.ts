@@ -103,6 +103,14 @@ export interface ResolvedTableDefinition extends TableDefinition {
   dynamoResolvedTableName: string | null;
 }
 
+/** Column fields the Postgres rebuild materializes. Seed rows are not part of the snapshot. */
+export interface SchemaSnapshotColumn {
+  name: string;
+  postgresType: string;
+  nullable: boolean;
+  defaultSql: string | null;
+}
+
 export interface SchemaSnapshot {
   id: string;
   hash: string;
@@ -116,6 +124,7 @@ export interface SchemaSnapshot {
     backupHot: boolean;
     dynamoTableName: string | null;
     version: number;
+    columns: SchemaSnapshotColumn[];
   }>;
 }
 
