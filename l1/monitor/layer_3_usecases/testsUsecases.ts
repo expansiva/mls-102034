@@ -14,10 +14,11 @@
 //   store behind a developer's live preview in devenv. That is also why the mutating cases need no
 //   transaction/rollback (the memory runtime has no real rollback anyway). `skipMutating` still
 //   reports them as 'skipped' when the caller does not want them executed at all.
-// - `<seedRef>` params are resolved from a pool harvested by first running the page's read queries
-//   (phase A) — every scalar of every response, including the rows of any array it carries — so a
-//   validation case's only wrong input is the omitted required field. Lookup is fieldRef
-//   (`Task.taskId`), then fieldId (`taskId`), then the input's wire name (`taskTaskId`).
+// - `<seedRef>` params with a known fieldRef (`Petition.petitionId`) resolve only from that entity:
+//   seed-row anchors first (and named `seedIds` when the seeds module exports them), then values
+//   harvested from a read of that entity. An unqualified `petitionId` harvested from another
+//   entity is not "the petition". Files generated without paramFieldRefs still resolve by fieldId
+//   then wire name. Missing stays unresolved — never invent an id.
 // - A case that could not verify what it claims is reported 'inconclusive', never 'pass': a
 //   <seedRef> that never resolved, or a `<command>.<field>.required` case rejected on another
 //   field. `failed` is reserved for the backend actually misbehaving.
@@ -348,12 +349,47 @@ function fieldIdOfFieldRef(fieldRef: string | undefined): string {
   return (dot < 0 ? fieldRef : fieldRef.slice(dot + 1)).trim();
 }
 
-function harvestRecord(pool: Record<string, unknown>, row: unknown): void {
-  if (!isRecord(row)) return;
+function entityOfFieldRef(fieldRef: string | undefined): string {
+  if (!fieldRef) return '';
+  const dot = fieldRef.indexOf('.');
+  return (dot < 0 ? '' : fieldRef.slice(0, dot)).trim();
+}
+
+function entityOfIdField(fieldId: string): string {
+  if (!fieldId.endsWith('Id') || fieldId.length <= 2) return '';
+  const base = fieldId.slice(0, -2);
+  return base.charAt(0).toUpperCase() + base.slice(1);
+}
+
+// The row's own identifier is the longest scalar `*Id` key. A signature row carries both
+// `petitionSignatureId` (own) and `petitionId` (FK); the longer key is the entity we harvested.
+function ownIdFieldOf(row: Record<string, unknown>): string {
+  let best = '';
   for (const [key, value] of Object.entries(row)) {
-    if (pool[key] !== undefined || value === null || value === undefined) continue;
-    if (Array.isArray(value) || isRecord(value)) continue;
-    pool[key] = value;
+    if (!key.endsWith('Id') || key.length < 3) continue;
+    if (value === null || value === undefined || Array.isArray(value) || isRecord(value)) continue;
+    if (key.length > best.length) best = key;
+  }
+  return best;
+}
+
+function putPool(pool: Record<string, unknown>, key: string, value: unknown): void {
+  if (!key || pool[key] !== undefined || value === null || value === undefined) return;
+  if (Array.isArray(value) || isRecord(value)) return;
+  pool[key] = value;
+}
+
+function harvestRecord(pool: Record<string, unknown>, row: unknown, moduleId?: string): void {
+  if (!isRecord(row)) return;
+  const ownId = ownIdFieldOf(row);
+  const entity = ownId ? entityOfIdField(ownId) : '';
+  for (const [key, value] of Object.entries(row)) {
+    if (value === null || value === undefined || Array.isArray(value) || isRecord(value)) continue;
+    if (entity) {
+      putPool(pool, `${entity}.${key}`, value);
+      if (moduleId) putPool(pool, `${moduleId}.${entity}.${key}`, value);
+    }
+    putPool(pool, key, value);
   }
 }
 
@@ -361,16 +397,16 @@ function harvestRecord(pool: Record<string, unknown>, row: unknown): void {
 // carries. Collections are named after the entity on this wire (`{ menuItems: [...] }`,
 // `{ orders: [...] }`), not `items`, so descending only into `data.items` harvested the envelope
 // counters and never the ids the <seedRef> params need.
-function harvestRows(pool: Record<string, unknown>, data: unknown): void {
+function harvestRows(pool: Record<string, unknown>, data: unknown, moduleId?: string): void {
   if (Array.isArray(data)) {
-    for (const row of data) harvestRecord(pool, row);
+    for (const row of data) harvestRecord(pool, row, moduleId);
     return;
   }
   if (!isRecord(data)) return;
-  harvestRecord(pool, data);
+  harvestRecord(pool, data, moduleId);
   for (const value of Object.values(data)) {
     if (!Array.isArray(value)) continue;
-    for (const row of value) harvestRecord(pool, row);
+    for (const row of value) harvestRecord(pool, row, moduleId);
   }
 }
 
@@ -378,8 +414,93 @@ function columnToField(column: string): string {
   return column.replace(/_([a-z0-9])/gu, (_all, char: string) => char.toUpperCase());
 }
 
+function snakeToPascal(name: string): string {
+  return name.split(/[._-]/gu).filter(Boolean).map(part => part.charAt(0).toUpperCase() + part.slice(1)).join('');
+}
+
+function ontologyEntityName(definition: { moduleId?: string; repositoryName?: string; tableName: string; logicalTableName?: string }): string {
+  const moduleId = definition.moduleId ?? '';
+  const repo = definition.repositoryName ?? '';
+  if (moduleId && repo.startsWith(moduleId) && repo.length > moduleId.length) {
+    const rest = repo.slice(moduleId.length);
+    if (/^[A-Z]/u.test(rest)) return rest;
+  }
+  return snakeToPascal(definition.logicalTableName || definition.tableName);
+}
+
 /**
- * Fill the id pool from the SEEDED table rows — the last resort, run AFTER the read phase.
+ * Put a seeded PK into the pool under the entity-qualified key (`Petition.petitionId`).
+ * Named `seedIds` win when their value is actually a row of this table — they pick the intended
+ * line (e.g. a published petition) instead of "whatever was first in the file". Existing keys
+ * are never overwritten.
+ */
+export function applySeedAnchors(
+  pool: Record<string, unknown>,
+  input: {
+    entity: string;
+    fieldId: string;
+    seedRowIds: unknown[];
+    namedIds?: Record<string, unknown>;
+    moduleId?: string;
+    seedRows?: Array<Record<string, unknown>>;
+    pkColumn?: string;
+  },
+): void {
+  const entity = input.entity.trim();
+  const fieldId = input.fieldId.trim();
+  if (!entity || !fieldId) return;
+  const seeded = input.seedRowIds.filter(value => value !== undefined && value !== null);
+  if (seeded.length === 0) return;
+  const named = Object.values(input.namedIds ?? {}).filter(value => value !== undefined && value !== null);
+  const preferred = named.find(value => seeded.some(rowId => rowId === value)) ?? seeded[0];
+  const pkColumn = input.pkColumn;
+  const chosenRow = pkColumn
+    ? (input.seedRows ?? []).find(row => row?.[pkColumn] === preferred)
+    : undefined;
+  if (chosenRow) {
+    for (const [column, value] of Object.entries(chosenRow)) {
+      if (value === null || value === undefined || Array.isArray(value) || isRecord(value)) continue;
+      const columnField = columnToField(column);
+      putPool(pool, `${entity}.${columnField}`, value);
+      if (input.moduleId) putPool(pool, `${input.moduleId}.${entity}.${columnField}`, value);
+    }
+  } else {
+    putPool(pool, `${entity}.${fieldId}`, preferred);
+    if (input.moduleId) putPool(pool, `${input.moduleId}.${entity}.${fieldId}`, preferred);
+  }
+  putPool(pool, fieldId, preferred);
+}
+
+async function loadNamedSeedIds(): Promise<Record<string, unknown>> {
+  const named: Record<string, unknown> = {};
+  try {
+    const config = readProjectsConfig();
+    for (const project of Object.values(config.projects)) {
+      for (const moduleConfig of project.persistenceModules ?? []) {
+        const dir = moduleConfig.tableDefsDir;
+        if (!dir) continue;
+        try {
+          const imported = await import(resolveProjectModuleImportUrl(`${dir.replace(/\/$/u, '')}/seeds.js`)) as { seedIds?: unknown };
+          if (!isRecord(imported.seedIds)) continue;
+          for (const [key, value] of Object.entries(imported.seedIds)) {
+            if (value === null || value === undefined || Array.isArray(value) || isRecord(value)) continue;
+            named[key] = value;
+          }
+        } catch {
+          // T3 has not landed on this module, or there is no seeds.ts. Seed rows still apply.
+        }
+      }
+    }
+  } catch {
+    // Best effort: named anchors are optional.
+  }
+  return named;
+}
+
+/**
+ * Fill the id pool from the SEEDED table rows. Seeded ids are the most reliable source for a
+ * `<seedRef>` — they do not depend on a prior read having passed, and they are the lines that
+ * were actually planted.
  *
  * Some entities are reachable only by someone who already knows their id: the workspace has a detail
  * read that REQUIRES the id and no list or create route produces one (102045 changeOrderWorkspace). No
@@ -391,27 +512,36 @@ function columnToField(column: string): string {
  * the literal `<seedRef>` marker, so the frontend never sees an id — same boundary as
  * resolveSeededActorMdmId above.
  *
- * Two deliberate limits:
+ * Limits:
  *  - only a SINGLE-column primary key is harvested: that is the entity's own identifier, never a foreign
  *    key that happens to appear in several tables;
- *  - existing pool entries are never overwritten, so an id proven REACHABLE by a real read always wins
- *    over a seeded one. This runs between the phases for exactly that reason.
+ *  - existing pool entries are never overwritten;
+ *  - the value is stored as `Entity.fieldId` so a later `<seedRef>` with that fieldRef cannot pick an
+ *    id harvested from a different entity.
  *
- * Caveat worth knowing when a case then fails: the first seed row is taken, and it may not be in a state
- * the command accepts (e.g. an already-approved record for an approval command). That is a REAL verdict,
- * not an inconclusive one — which is the point.
+ * Caveat worth knowing when a case then fails: the first seed row is taken (unless a named seedId
+ * points at another row of the same table), and it may not be in a state the command accepts
+ * (e.g. an already-approved record for an approval command). That is a REAL verdict, not an
+ * inconclusive one — which is the point.
  */
 async function fillPoolFromSeedRows(pool: Record<string, unknown>): Promise<void> {
   try {
+    const namedIds = await loadNamedSeedIds();
     const definitions = await loadResolvedTableDefinitions(readAppEnv());
     for (const definition of definitions) {
       if (definition.primaryKey?.length !== 1) continue;
       const column = definition.primaryKey[0];
-      const row = (definition.seedRows ?? [])[0];
-      const value = row?.[column];
-      if (value === undefined || value === null) continue;
-      const field = columnToField(column);
-      if (pool[field] === undefined) pool[field] = value;
+      const fieldId = columnToField(column);
+      const seedRowIds = (definition.seedRows ?? []).map(row => row?.[column]);
+      applySeedAnchors(pool, {
+        entity: ontologyEntityName(definition),
+        fieldId,
+        seedRowIds,
+        namedIds,
+        moduleId: definition.moduleId,
+        seedRows: definition.seedRows,
+        pkColumn: column,
+      });
     }
   } catch {
     // Best effort: without it the affected cases stay inconclusive, exactly as before.
@@ -424,25 +554,28 @@ interface ResolvedParams {
 }
 
 /**
- * Look up a `<seedRef>` in the harvest pool. Index order is the l4 invariant first:
- * the fieldRef (`Task.taskId`), then its fieldId (`taskId`), then the input's wire name
- * (`taskTaskId`). Name last so a qualified inputId still resolves from a list that
- * emitted the fieldId. Missing stays unresolved — never invent an id.
+ * Look up a `<seedRef>` in the harvest pool.
+ *
+ * When the case declares a fieldRef (`Petition.petitionId`), only a value stored under that
+ * entity-qualified key is accepted — never an unqualified `petitionId` that another entity's
+ * read happened to expose. Files generated before paramFieldRefs existed still resolve by
+ * fieldId then wire name. Missing stays unresolved — never invent an id.
  */
 export function resolveParams(
   params: Record<string, unknown>,
   pool: Record<string, unknown>,
   paramFieldRefs?: Record<string, string>,
+  moduleId?: string,
 ): ResolvedParams {
   const resolved: Record<string, unknown> = {};
   const unresolved: string[] = [];
   for (const [key, value] of Object.entries(params)) {
     if (value === SEED_REF_MARKER) {
       const fieldRef = paramFieldRefs?.[key];
-      const fieldId = fieldIdOfFieldRef(fieldRef);
-      const found = (fieldRef !== undefined ? pool[fieldRef] : undefined)
-        ?? (fieldId ? pool[fieldId] : undefined)
-        ?? pool[key];
+      const entity = entityOfFieldRef(fieldRef);
+      const found = entity
+        ? (moduleId ? pool[`${moduleId}.${fieldRef}`] : undefined) ?? pool[fieldRef!]
+        : (fieldIdOfFieldRef(fieldRef) ? pool[fieldIdOfFieldRef(fieldRef)] : undefined) ?? pool[key];
       // unresolved seedRef -> omit the key (the runner cannot invent a valid id) and remember it:
       // the request no longer matches the case, so the verdict cannot be trusted.
       if (found === undefined) unresolved.push(key);
@@ -474,7 +607,7 @@ function rejectedField(response: BffResponse): string | null {
   return match ? match[1] : null;
 }
 
-function evaluate(
+export function evaluate(
   testCase: PageTestCase,
   module: string,
   page: string,
@@ -630,17 +763,21 @@ export async function runPageTests(input: { moduleId?: string; page?: string; sk
   // assignedWorkerId were harvested by dashboardWorkspace and then discarded, leaving 7 cases
   // inconclusive). harvestRecord does not overwrite an existing key, so the FIRST value harvested for a
   // given field name wins — deterministic given the phase order below.
+  // Seed anchors go in FIRST: a `<seedRef>` with fieldRef `Petition.petitionId` must resolve to a
+  // planted Petition row even when no prior read of Petition succeeded (or when another entity's
+  // read exposed a different `petitionId` first).
   const pool: Record<string, unknown> = {};
+  await fillPoolFromSeedRows(pool);
 
   // Every successful response feeds the pool, whatever the case's own verdict was — a read that
   // fails its shape assertion still carries the ids the later cases need.
   const runOne = async (file: DiscoveredTestFile, testCase: PageTestCase): Promise<TestCaseResult> => {
     const tests = file.tests!;
-    const { params, unresolved } = resolveParams(testCase.params, pool, testCase.paramFieldRefs);
+    const { params, unresolved } = resolveParams(testCase.params, pool, testCase.paramFieldRefs, file.moduleId);
     const request: BffRequest = { routine: testCase.routine, params, meta: { source: 'test', traceId, requestId: createUuidV7() } };
     const startedMs = Date.now();
     const exec = await execBff(request, await contextFor(file));
-    if (exec.response.ok) harvestRows(pool, exec.response.data);
+    if (exec.response.ok) harvestRows(pool, exec.response.data, file.moduleId);
     return evaluate(testCase, file.moduleId, tests.page, exec, Math.max(0, Date.now() - startedMs), unresolved);
   };
 

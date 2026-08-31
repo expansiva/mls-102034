@@ -5,7 +5,7 @@
 // falling back to `items`.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { checkShape, coercePageTestsFile, countItems, reportAppEnv, PAGE11_VARIANT_POLICY, resolveParams, untestedPageEntries } from '/_102034_/l1/monitor/layer_3_usecases/testsUsecases.js';
+import { applySeedAnchors, checkShape, coercePageTestsFile, countItems, evaluate, reportAppEnv, PAGE11_VARIANT_POLICY, resolveParams, untestedPageEntries } from '/_102034_/l1/monitor/layer_3_usecases/testsUsecases.js';
 
 const menuEnvelope = { menuItems: [{ menuItemId: 'a' }, { menuItemId: 'b' }], total: 2 };
 
@@ -88,16 +88,93 @@ test('paramFieldRefs survives coercion; junk is dropped', () => {
   assert.equal(file.cases[1].paramFieldRefs, undefined);
 });
 
-test('<seedRef> resolves by fieldRef then fieldId, not only by the input name', () => {
-  const pool = { taskId: 'row-1' };
+test('<seedRef> with a fieldRef only accepts a value stored under that entity', () => {
+  const pool = { 'Task.taskId': 'row-1' };
   const hit = resolveParams({ taskTaskId: '<seedRef>' }, pool, { taskTaskId: 'Task.taskId' });
   assert.deepEqual(hit.params, { taskTaskId: 'row-1' });
   assert.deepEqual(hit.unresolved, []);
-  const byName = resolveParams({ taskId: '<seedRef>' }, pool);
+  const byName = resolveParams({ taskId: '<seedRef>' }, { taskId: 'row-1' });
   assert.deepEqual(byName.params, { taskId: 'row-1' });
   const miss = resolveParams({ missingId: '<seedRef>' }, pool, { missingId: 'Task.missingId' });
   assert.deepEqual(miss.params, {});
   assert.deepEqual(miss.unresolved, ['missingId']);
+});
+
+test('<seedRef> with a Petition fieldRef does not resolve a petitionId harvested from another entity', () => {
+  const pool = { petitionId: 'from-signature-row' };
+  const result = resolveParams(
+    { petitionId: '<seedRef>' },
+    pool,
+    { petitionId: 'Petition.petitionId' },
+  );
+  assert.deepEqual(result.params, {});
+  assert.deepEqual(result.unresolved, ['petitionId']);
+});
+
+test('seed anchors preferred over first row when the named id is a seeded line of that entity', () => {
+  const pool: Record<string, unknown> = {};
+  applySeedAnchors(pool, {
+    entity: 'Petition',
+    fieldId: 'petitionId',
+    seedRowIds: ['first-row', 'published-row'],
+    namedIds: { petitionPublished: 'published-row' },
+  });
+  assert.equal(pool['Petition.petitionId'], 'published-row');
+  const hit = resolveParams({ petitionId: '<seedRef>' }, pool, { petitionId: 'Petition.petitionId' });
+  assert.deepEqual(hit.params, { petitionId: 'published-row' });
+  assert.deepEqual(hit.unresolved, []);
+});
+
+test('FK fieldRef resolves from the owning entity row, not a bare petitionId', () => {
+  const pool: Record<string, unknown> = { petitionId: 'stray' };
+  applySeedAnchors(pool, {
+    entity: 'PetitionSignature',
+    fieldId: 'petitionSignatureId',
+    seedRowIds: ['sig-1'],
+    seedRows: [{ petition_signature_id: 'sig-1', petition_id: 'pet-from-sig' }],
+    pkColumn: 'petition_signature_id',
+    moduleId: 'listaAssinatura2',
+  });
+  const hit = resolveParams(
+    { petitionId: '<seedRef>' },
+    pool,
+    { petitionId: 'PetitionSignature.petitionId' },
+    'listaAssinatura2',
+  );
+  assert.deepEqual(hit.params, { petitionId: 'pet-from-sig' });
+  assert.deepEqual(hit.unresolved, []);
+});
+
+test('a module-qualified seed wins over another module\'s same entity', () => {
+  const pool: Record<string, unknown> = {};
+  applySeedAnchors(pool, {
+    entity: 'Petition',
+    fieldId: 'petitionId',
+    seedRowIds: ['mod-a'],
+    moduleId: 'listaAssinatura',
+  });
+  applySeedAnchors(pool, {
+    entity: 'Petition',
+    fieldId: 'petitionId',
+    seedRowIds: ['mod-b'],
+    moduleId: 'listaAssinatura2',
+  });
+  const hit = resolveParams({ petitionId: '<seedRef>' }, pool, { petitionId: 'Petition.petitionId' }, 'listaAssinatura2');
+  assert.deepEqual(hit.params, { petitionId: 'mod-b' });
+});
+
+test('unresolved <seedRef> makes the case inconclusive and names the param', () => {
+  const result = evaluate(
+    { id: 'qryInspectPetition.ok', routine: 'listaAssinatura2.petitionLanding.qryInspectPetition', params: { petitionId: '<seedRef>' }, expect: { ok: true }, mutating: false },
+    'listaAssinatura2',
+    'petitionLanding',
+    { response: { ok: false, data: null, error: { code: 'NOT_FOUND', message: 'Petition not found' } }, statusCode: 404 },
+    1,
+    ['petitionId'],
+  );
+  assert.equal(result.status, 'inconclusive');
+  assert.match(result.reason, /petitionId/);
+  assert.match(result.reason, /seedRef/);
 });
 
 test('countItems falls back to 1 for a non-collection payload', () => {
