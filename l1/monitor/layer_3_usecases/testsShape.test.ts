@@ -5,7 +5,7 @@
 // falling back to `items`.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applySeedAnchors, checkShape, coercePageTestsFile, countItems, evaluate, reportAppEnv, PAGE11_VARIANT_POLICY, resolveParams, untestedPageEntries } from '/_102034_/l1/monitor/layer_3_usecases/testsUsecases.js';
+import { applySeedAnchors, applySeedSpares, checkShape, coercePageTestsFile, countItems, evaluate, reportAppEnv, PAGE11_VARIANT_POLICY, resolveParams, untestedPageEntries } from '/_102034_/l1/monitor/layer_3_usecases/testsUsecases.js';
 
 const menuEnvelope = { menuItems: [{ menuItemId: 'a' }, { menuItemId: 'b' }], total: 2 };
 
@@ -174,7 +174,54 @@ test('unresolved <seedRef> makes the case inconclusive and names the param', () 
   );
   assert.equal(result.status, 'inconclusive');
   assert.match(result.reason, /petitionId/);
-  assert.match(result.reason, /seedRef/);
+  assert.match(result.reason, /seed marker/);
+});
+
+test('<seedValue> with a fieldRef only accepts a value stored under that entity', () => {
+  const pool = { 'Widget.codigoInterno': 'INT001', codigoInterno: 'from-other-entity' };
+  const hit = resolveParams({ codigoInterno: '<seedValue>' }, pool, { codigoInterno: 'Widget.codigoInterno' });
+  assert.deepEqual(hit.params, { codigoInterno: 'INT001' });
+  assert.deepEqual(hit.unresolved, []);
+  const miss = resolveParams({ codigoInterno: '<seedValue>' }, { codigoInterno: 'from-other-entity' }, { codigoInterno: 'Widget.codigoInterno' });
+  assert.deepEqual(miss.params, {});
+  assert.deepEqual(miss.unresolved, ['codigoInterno']);
+});
+
+test('<seedValue> of a details field resolves from the chosen seed row', () => {
+  const pool: Record<string, unknown> = {};
+  applySeedAnchors(pool, {
+    entity: 'Widget',
+    fieldId: 'widgetId',
+    seedRowIds: ['w-1'],
+    seedRows: [{ widget_id: 'w-1', details: { codigoInterno: 'INT001', label: 'alpha' } }],
+    pkColumn: 'widget_id',
+  });
+  const hit = resolveParams({ codigoInterno: '<seedValue>' }, pool, { codigoInterno: 'Widget.codigoInterno' });
+  assert.deepEqual(hit.params, { codigoInterno: 'INT001' });
+  assert.deepEqual(hit.unresolved, []);
+});
+
+test('<seedSpare> resolves a leftover, not the seeded row value', () => {
+  const pool: Record<string, unknown> = { 'Widget.codigoInterno': 'INT001' };
+  applySeedSpares(pool, { Widget: { codigoInterno: ['INT004', 'INT005'] } });
+  const hit = resolveParams({ codigoInterno: '<seedSpare>' }, pool, { codigoInterno: 'Widget.codigoInterno' });
+  assert.deepEqual(hit.params, { codigoInterno: 'INT004' });
+  assert.notEqual(hit.params.codigoInterno, pool['Widget.codigoInterno']);
+  assert.deepEqual(hit.unresolved, []);
+});
+
+test('unresolved <seedSpare> makes the case inconclusive, never a fail', () => {
+  const result = evaluate(
+    { id: 'cmdCreateWidget.ok', routine: 'any.page.cmdCreateWidget', params: { codigoInterno: '<seedSpare>' }, expect: { ok: true }, mutating: true },
+    'any',
+    'page',
+    { response: { ok: false, data: null, error: { code: 'VALIDATION_ERROR', message: 'codigoInterno is invalid' } }, statusCode: 400 },
+    1,
+    ['codigoInterno'],
+  );
+  assert.equal(result.status, 'inconclusive');
+  assert.match(result.reason, /codigoInterno/);
+  assert.match(result.reason, /seed marker/);
 });
 
 test('countItems falls back to 1 for a non-collection payload', () => {

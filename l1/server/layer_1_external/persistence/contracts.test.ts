@@ -4,6 +4,9 @@ import assert from 'node:assert/strict';
 import {
   applyProjectTableNamespace,
   isClientProjectType,
+  logicalTableNameFromEmitted,
+  matchesTableLookup,
+  moduleTableNamespacePrefix,
   projectTableNamespacePrefix,
   resolvePostgresTableName,
   resolveRepositoryName,
@@ -15,20 +18,18 @@ import {
 // transitive imports need a built dist). Keeps the resolution contract under a deterministic test.
 function resolve(definition: TableDefinition, projectId: string, projectType: string): ResolvedTableDefinition {
   const env = { appEnv: 'production' as const };
-  const logicalTableName = resolvePostgresTableName(definition, env);
+  const emittedName = resolvePostgresTableName(definition, env);
+  const logicalTableName = isClientProjectType(projectType)
+    ? logicalTableNameFromEmitted(emittedName, definition.moduleId)
+    : emittedName;
   return {
     ...definition,
     logicalTableName,
-    tableName: applyProjectTableNamespace(logicalTableName, projectId, projectType),
+    tableName: applyProjectTableNamespace(emittedName, projectId, projectType),
     projectId,
     repositoryName: resolveRepositoryName(definition),
     dynamoResolvedTableName: null,
   };
-}
-
-// Mirror of findResolvedTableDefinition / applySeedRows matching.
-function matches(def: ResolvedTableDefinition, key: string): boolean {
-  return def.repositoryName === key || def.logicalTableName === key || def.tableName === key;
 }
 
 const orderDef: TableDefinition = {
@@ -78,11 +79,11 @@ test('resolving a client table namespaces the physical name but keeps a logical 
   assert.equal(resolved.logicalTableName, 'order');       // base name modules refer to
   assert.equal(resolved.repositoryName, 'cafeFlowOrder'); // logical repo name — unchanged
   // getTable('order') / getTable('cafeFlowOrder') / a lookup by physical name all still resolve.
-  assert.ok(matches(resolved, 'order'), 'bare physical name (getTable(\'order\')) must resolve');
-  assert.ok(matches(resolved, 'cafeFlowOrder'), 'repositoryName must resolve');
-  assert.ok(matches(resolved, 'mls102051_order'), 'namespaced physical name must resolve');
+  assert.ok(matchesTableLookup(resolved, 'order'), 'bare physical name (getTable(\'order\')) must resolve');
+  assert.ok(matchesTableLookup(resolved, 'cafeFlowOrder'), 'repositoryName must resolve');
+  assert.ok(matchesTableLookup(resolved, 'mls102051_order'), 'namespaced physical name must resolve');
   // seedFor targeting either the logical repo name or the base table name still hits this table.
-  assert.ok(matches(resolved, 'cafeFlowOrder') && matches(resolved, 'order'));
+  assert.ok(matchesTableLookup(resolved, 'cafeFlowOrder') && matchesTableLookup(resolved, 'order'));
 });
 
 test('resolving a platform table leaves its shared canonical name intact', () => {
@@ -90,7 +91,7 @@ test('resolving a platform table leaves its shared canonical name intact', () =>
   assert.equal(resolved.tableName, 'mdm_documents');
   assert.equal(resolved.logicalTableName, 'mdm_documents');
   assert.equal(resolved.repositoryName, 'mdmDocumentCache');
-  assert.ok(matches(resolved, 'mdm_documents') && matches(resolved, 'mdmDocumentCache'));
+  assert.ok(matchesTableLookup(resolved, 'mdm_documents') && matchesTableLookup(resolved, 'mdmDocumentCache'));
 });
 
 test('two client projects declaring the same logical table do not collide physically', () => {
@@ -99,4 +100,44 @@ test('two client projects declaring the same logical table do not collide physic
   assert.notEqual(a.tableName, b.tableName);
   assert.equal(a.tableName, 'mls102051_order');
   assert.equal(b.tableName, 'mls102060_order');
+});
+
+test('a module-prefixed client table keeps the unprefixed logical lookup key', () => {
+  const def: TableDefinition = {
+    ...orderDef,
+    moduleId: 'listaAssinatura3',
+    repositoryName: 'listaAssinatura3PetitionSignature',
+    tableName: 'listaassinatura3_petition_signature',
+  };
+  const resolved = resolve(def, '102047', 'client');
+  assert.equal(resolved.tableName, 'mls102047_listaassinatura3_petition_signature');
+  assert.equal(resolved.logicalTableName, 'petition_signature');
+  assert.equal(resolved.repositoryName, 'listaAssinatura3PetitionSignature');
+  assert.equal(moduleTableNamespacePrefix('listaAssinatura3'), 'listaassinatura3_');
+  assert.ok(matchesTableLookup(resolved, 'petition_signature'));
+  assert.ok(matchesTableLookup(resolved, 'listaassinatura3_petition_signature'));
+  assert.ok(matchesTableLookup(resolved, 'mls102047_listaassinatura3_petition_signature'));
+  assert.ok(matchesTableLookup(resolved, 'listaAssinatura3PetitionSignature'));
+});
+
+test('two modules with the same entity do not collide physically; repositoryName is unchanged', () => {
+  const a = resolve({
+    ...orderDef,
+    moduleId: 'listaAssinatura3',
+    repositoryName: 'listaAssinatura3PetitionSignature',
+    tableName: 'listaassinatura3_petition_signature',
+  }, '102047', 'client');
+  const b = resolve({
+    ...orderDef,
+    moduleId: 'listaAssinatura2',
+    repositoryName: 'listaAssinatura2PetitionSignature',
+    tableName: 'listaassinatura2_petition_signature',
+  }, '102047', 'client');
+  assert.notEqual(a.tableName, b.tableName);
+  assert.equal(a.tableName, 'mls102047_listaassinatura3_petition_signature');
+  assert.equal(b.tableName, 'mls102047_listaassinatura2_petition_signature');
+  assert.equal(a.logicalTableName, 'petition_signature');
+  assert.equal(b.logicalTableName, 'petition_signature');
+  assert.equal(a.repositoryName, 'listaAssinatura3PetitionSignature');
+  assert.equal(b.repositoryName, 'listaAssinatura2PetitionSignature');
 });

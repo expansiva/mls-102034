@@ -19,8 +19,11 @@
 //   harvested from a read of that entity. An unqualified `petitionId` harvested from another
 //   entity is not "the petition". Files generated without paramFieldRefs still resolve by fieldId
 //   then wire name. Missing stays unresolved — never invent an id.
+// - `<seedValue>` is the field on that entity's seeded row; `<seedSpare>` is a leftover from the
+//   module's `seedSpares` export (create commands). Same entity discipline. Missing stays
+//   unresolved — never invent a value.
 // - A case that could not verify what it claims is reported 'inconclusive', never 'pass': a
-//   <seedRef> that never resolved, or a `<command>.<field>.required` case rejected on another
+//   seed marker that never resolved, or a `<command>.<field>.required` case rejected on another
 //   field. `failed` is reserved for the backend actually misbehaving.
 // - `expect.shape: 'paginated'` checks the collection the case declares in `expect.itemsKey`
 //   (`{ menuItems: [...] }`); absent, it falls back to `items` so files generated before the key
@@ -39,6 +42,8 @@ import { loadResolvedTableDefinitions } from '/_102034_/l1/server/layer_1_extern
 import { createUuidV7 } from '/_102029_/l2/uuidv7.js';
 
 const SEED_REF_MARKER = '<seedRef>';
+const SEED_VALUE_MARKER = '<seedValue>';
+const SEED_SPARE_MARKER = '<seedSpare>';
 const MAX_STORED_RUNS = 50;
 
 // ---- Shapes read from the (untrusted) generated client file — validated at runtime, never imported. ----
@@ -54,7 +59,7 @@ interface PageTestCase {
   routine: string;
   params: Record<string, unknown>;
   /**
-   * Ontology fieldRef of each `<seedRef>` param (`Task.taskId`), keyed by the input's wire name.
+   * Ontology fieldRef of each seed-marker param (`Task.taskId`), keyed by the input's wire name.
    * The harvest pool is filled from response field names (usually the fieldId); matching by
    * inputId alone misses `taskTaskId` vs `taskId`. Optional: files generated before this existed
    * keep resolving by name only.
@@ -414,6 +419,23 @@ function columnToField(column: string): string {
   return column.replace(/_([a-z0-9])/gu, (_all, char: string) => char.toUpperCase());
 }
 
+/** Scalars of a seed row, including one level of a details envelope (keys there are fieldIds). */
+function scalarEntriesOfSeedRow(row: Record<string, unknown>): Array<[string, unknown]> {
+  const out: Array<[string, unknown]> = [];
+  for (const [column, value] of Object.entries(row)) {
+    if (value === null || value === undefined || Array.isArray(value)) continue;
+    if (isRecord(value)) {
+      for (const [innerKey, innerVal] of Object.entries(value)) {
+        if (innerVal === null || innerVal === undefined || Array.isArray(innerVal) || isRecord(innerVal)) continue;
+        out.push([innerKey, innerVal]);
+      }
+      continue;
+    }
+    out.push([columnToField(column), value]);
+  }
+  return out;
+}
+
 function snakeToPascal(name: string): string {
   return name.split(/[._-]/gu).filter(Boolean).map(part => part.charAt(0).toUpperCase() + part.slice(1)).join('');
 }
@@ -458,11 +480,9 @@ export function applySeedAnchors(
     ? (input.seedRows ?? []).find(row => row?.[pkColumn] === preferred)
     : undefined;
   if (chosenRow) {
-    for (const [column, value] of Object.entries(chosenRow)) {
-      if (value === null || value === undefined || Array.isArray(value) || isRecord(value)) continue;
-      const columnField = columnToField(column);
-      putPool(pool, `${entity}.${columnField}`, value);
-      if (input.moduleId) putPool(pool, `${input.moduleId}.${entity}.${columnField}`, value);
+    for (const [fieldId, value] of scalarEntriesOfSeedRow(chosenRow)) {
+      putPool(pool, `${entity}.${fieldId}`, value);
+      if (input.moduleId) putPool(pool, `${input.moduleId}.${entity}.${fieldId}`, value);
     }
   } else {
     putPool(pool, `${entity}.${fieldId}`, preferred);
@@ -498,6 +518,53 @@ async function loadNamedSeedIds(): Promise<Record<string, unknown>> {
 }
 
 /**
+ * First leftover per `Entity.fieldId` from the module's `seedSpares` export. Stored under
+ * `spare:Entity.fieldId` so a create case cannot pick a value that is already on a seeded row.
+ */
+export function applySeedSpares(
+  pool: Record<string, unknown>,
+  seedSpares: unknown,
+  moduleId?: string,
+): void {
+  if (!isRecord(seedSpares)) return;
+  for (const [entity, fields] of Object.entries(seedSpares)) {
+    if (!isRecord(fields)) continue;
+    const entityName = entity.trim();
+    if (!entityName) continue;
+    for (const [fieldId, values] of Object.entries(fields)) {
+      const name = fieldId.trim();
+      if (!name) continue;
+      const first = Array.isArray(values)
+        ? values.find(value => value !== null && value !== undefined && !Array.isArray(value) && !isRecord(value))
+        : undefined;
+      if (first === undefined) continue;
+      putPool(pool, `spare:${entityName}.${name}`, first);
+      if (moduleId) putPool(pool, `spare:${moduleId}.${entityName}.${name}`, first);
+    }
+  }
+}
+
+async function loadSeedSparesInto(pool: Record<string, unknown>): Promise<void> {
+  try {
+    const config = readProjectsConfig();
+    for (const project of Object.values(config.projects)) {
+      for (const moduleConfig of project.persistenceModules ?? []) {
+        const dir = moduleConfig.tableDefsDir;
+        if (!dir) continue;
+        try {
+          const imported = await import(resolveProjectModuleImportUrl(`${dir.replace(/\/$/u, '')}/seeds.js`)) as { seedSpares?: unknown };
+          applySeedSpares(pool, imported.seedSpares, moduleConfig.moduleId);
+        } catch {
+          // seedSpares is optional: modules generated before T11 simply leave create cases inconclusive.
+        }
+      }
+    }
+  } catch {
+    // Best effort: without spares the affected cases stay inconclusive.
+  }
+}
+
+/**
  * Fill the id pool from the SEEDED table rows. Seeded ids are the most reliable source for a
  * `<seedRef>` — they do not depend on a prior read having passed, and they are the lines that
  * were actually planted.
@@ -509,8 +576,8 @@ async function loadNamedSeedIds(): Promise<Record<string, unknown>> {
  *
  * The rows come from the backend's `seeds.ts` (TableSeedRows merged into the definitions by the
  * persistence registry) and are read HERE, on the runtime side. The generated page tests only ever carry
- * the literal `<seedRef>` marker, so the frontend never sees an id — same boundary as
- * resolveSeededActorMdmId above.
+ * seed markers (`<seedRef>`, `<seedValue>`, `<seedSpare>`), so the frontend never sees a row value —
+ * same boundary as resolveSeededActorMdmId above.
  *
  * Limits:
  *  - only a SINGLE-column primary key is harvested: that is the entity's own identifier, never a foreign
@@ -543,6 +610,7 @@ async function fillPoolFromSeedRows(pool: Record<string, unknown>): Promise<void
         pkColumn: column,
       });
     }
+    await loadSeedSparesInto(pool);
   } catch {
     // Best effort: without it the affected cases stay inconclusive, exactly as before.
   }
@@ -561,6 +629,26 @@ interface ResolvedParams {
  * read happened to expose. Files generated before paramFieldRefs existed still resolve by
  * fieldId then wire name. Missing stays unresolved — never invent an id.
  */
+function lookupEntityField(
+  pool: Record<string, unknown>,
+  fieldRef: string | undefined,
+  moduleId?: string,
+): unknown {
+  const entity = entityOfFieldRef(fieldRef);
+  if (!entity || !fieldRef) return undefined;
+  return (moduleId ? pool[`${moduleId}.${fieldRef}`] : undefined) ?? pool[fieldRef];
+}
+
+function lookupSpareField(
+  pool: Record<string, unknown>,
+  fieldRef: string | undefined,
+  moduleId?: string,
+): unknown {
+  const entity = entityOfFieldRef(fieldRef);
+  if (!entity || !fieldRef) return undefined;
+  return (moduleId ? pool[`spare:${moduleId}.${fieldRef}`] : undefined) ?? pool[`spare:${fieldRef}`];
+}
+
 export function resolveParams(
   params: Record<string, unknown>,
   pool: Record<string, unknown>,
@@ -574,10 +662,18 @@ export function resolveParams(
       const fieldRef = paramFieldRefs?.[key];
       const entity = entityOfFieldRef(fieldRef);
       const found = entity
-        ? (moduleId ? pool[`${moduleId}.${fieldRef}`] : undefined) ?? pool[fieldRef!]
+        ? lookupEntityField(pool, fieldRef, moduleId)
         : (fieldIdOfFieldRef(fieldRef) ? pool[fieldIdOfFieldRef(fieldRef)] : undefined) ?? pool[key];
       // unresolved seedRef -> omit the key (the runner cannot invent a valid id) and remember it:
       // the request no longer matches the case, so the verdict cannot be trusted.
+      if (found === undefined) unresolved.push(key);
+      else resolved[key] = found;
+    } else if (value === SEED_VALUE_MARKER) {
+      const found = lookupEntityField(pool, paramFieldRefs?.[key], moduleId);
+      if (found === undefined) unresolved.push(key);
+      else resolved[key] = found;
+    } else if (value === SEED_SPARE_MARKER) {
+      const found = lookupSpareField(pool, paramFieldRefs?.[key], moduleId);
       if (found === undefined) unresolved.push(key);
       else resolved[key] = found;
     } else {
@@ -618,7 +714,7 @@ export function evaluate(
   const { response, statusCode } = exec;
   let status: TestCaseStatus = 'pass';
   let reason = '';
-  const unresolvedReason = `unverifiable: <seedRef> not resolved for ${unresolved.join(', ')} (param omitted from the request)`;
+  const unresolvedReason = `unverifiable: seed marker not resolved for ${unresolved.join(', ')} (param omitted from the request)`;
   if (testCase.expect.ok) {
     if (!response.ok) {
       // The omitted params are the likely cause of the rejection — the case never ran as written.

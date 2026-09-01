@@ -96,9 +96,10 @@ export interface TableSeedRows {
 export interface ResolvedTableDefinition extends TableDefinition {
   projectId: string;
   repositoryName: string;
-  // Physical table name (`tableName`) namespaced per client project. `logicalTableName` is the
-  // pre-namespace base name, kept as a lookup key so `getTable('order')` / a `seedFor: 'order'` still
-  // resolve after the physical name becomes `mls<projectId>_order`.
+  // Physical table name (`tableName`) namespaced per client project (and, since 31/08/2026, per
+  // module). `logicalTableName` is the unprefixed entity name, kept as a lookup key so
+  // `getTable('order')` / a `seedFor: 'order'` still resolve after the physical name becomes
+  // `mls<projectId>_<module>_order`.
   logicalTableName: string;
   dynamoResolvedTableName: string | null;
 }
@@ -164,6 +165,34 @@ export function isClientProjectType(projectType: string | undefined): boolean {
  *  (a bare `102051_order` would require quoting everywhere), and readable. */
 export function projectTableNamespacePrefix(projectId: string): string {
   return `mls${projectId}_`;
+}
+
+/** Lowercased module token used as the physical-name prefix. `listaAssinatura3` → `listaassinatura3_`.
+ *  Keep in sync with `moduleTableNamespacePrefix` in mls-102021 (l2 cannot import this file). */
+export function moduleTableNamespacePrefix(moduleId: string): string {
+  const token = moduleId.replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '').toLowerCase();
+  return token ? `${token}_` : '';
+}
+
+/** Strip the module prefix CB now emits on `tableName`, so lookup stays `petition_signature`.
+ *  Idempotent on older tables that were generated without the prefix. */
+export function logicalTableNameFromEmitted(emittedName: string, moduleId: string): string {
+  const prefix = moduleTableNamespacePrefix(moduleId);
+  const name = emittedName.toLowerCase();
+  return prefix && name.startsWith(prefix) ? name.slice(prefix.length) : emittedName;
+}
+
+/** Lookup keys: repositoryName, unprefixed logical name, physical name, and the CB-emitted
+ *  (module-prefixed, pre-project) name adapters copy from TableDefinition.tableName. */
+export function matchesTableLookup(
+  definition: Pick<ResolvedTableDefinition, 'repositoryName' | 'logicalTableName' | 'tableName' | 'projectId'>,
+  key: string,
+): boolean {
+  if (definition.repositoryName === key || definition.logicalTableName === key || definition.tableName === key) {
+    return true;
+  }
+  const prefix = projectTableNamespacePrefix(definition.projectId);
+  return prefix.length > 0 && definition.tableName.startsWith(prefix) && definition.tableName.slice(prefix.length) === key;
 }
 
 /**

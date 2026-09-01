@@ -16,6 +16,9 @@ import type {
 } from '/_102034_/l1/server/layer_1_external/persistence/contracts.js';
 import {
   applyProjectTableNamespace,
+  isClientProjectType,
+  logicalTableNameFromEmitted,
+  matchesTableLookup,
   resolveDynamoTableName,
   resolvePostgresTableName,
   resolveRepositoryName,
@@ -283,8 +286,7 @@ function applySeedRows(
   for (const { seed, source } of seeds) {
     // Seeds target the logical name (repositoryName like 'cafeFlowOrder', or the base table name
     // 'order'); the physical tableName is namespaced, so match logicalTableName too.
-    const def = definitions.find((d) =>
-      d.repositoryName === seed.seedFor || d.logicalTableName === seed.seedFor || d.tableName === seed.seedFor);
+    const def = definitions.find((d) => matchesTableLookup(d, seed.seedFor));
     if (def) {
       def.seedRows = [...(def.seedRows ?? []), ...seed.rows];
     } else {
@@ -407,12 +409,15 @@ export async function loadResolvedTableDefinitions(
       const loaded = await importTableDefinitions(registration);
       const definitions = loaded.definitions.map((definition): ResolvedTableDefinition => {
         validateDefinition(definition, registration, env);
-        const logicalTableName = resolvePostgresTableName(definition, env);
+        const emittedName = resolvePostgresTableName(definition, env);
+        const logicalTableName = isClientProjectType(registration.projectType)
+          ? logicalTableNameFromEmitted(emittedName, definition.moduleId)
+          : emittedName;
         const dynamoBaseName = resolveDynamoTableName(definition, env);
         return {
           ...definition,
           logicalTableName,
-          tableName: applyProjectTableNamespace(logicalTableName, registration.projectId, registration.projectType),
+          tableName: applyProjectTableNamespace(emittedName, registration.projectId, registration.projectType),
           projectId: registration.projectId,
           repositoryName: resolveRepositoryName(definition),
           // Index names live in ONE flat namespace per Postgres schema (unlike columns, which are
@@ -525,11 +530,7 @@ export async function findResolvedTableDefinition(
   env: Pick<AppEnv, 'appEnv'>,
 ): Promise<ResolvedTableDefinition> {
   const definitions = await loadResolvedTableDefinitions(env);
-  const definition = definitions.find((entry) =>
-    entry.repositoryName === repositoryNameOrTableName ||
-    entry.logicalTableName === repositoryNameOrTableName ||
-    entry.tableName === repositoryNameOrTableName,
-  );
+  const definition = definitions.find((entry) => matchesTableLookup(entry, repositoryNameOrTableName));
   if (!definition) {
     throw new AppError(
       'PERSISTENCE_TABLE_NOT_FOUND',
