@@ -1,8 +1,12 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/transport/http/gitHttp.test.ts" enhancement="_blank" />
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync, mkdirSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
-  actorOf, gitBackendEnv, parseGitPath, projectGitDir, splitCgiHeaders, tokenFromGitRequest,
+  actorOf, findProjectRoot, gitBackendEnv, parseGitPath, projectGitDir, splitCgiHeaders,
+  tokenFromGitRequest,
 } from '/_102034_/l1/server/layer_1_external/transport/http/gitHttp.js';
 
 test('parseGitPath aceita os três endpoints smart, com e sem .git', () => {
@@ -98,4 +102,21 @@ test('actorOf: pessoa é o e-mail; automação é service:<prefixo da chave> (gb
   );
   assert.equal(actorOf({ service: true }), 'service:unknown');
   assert.equal(actorOf({}), '');
+});
+
+test('findProjectRoot acha a raiz do mls-base a partir de uma release (o alias é symlink)', () => {
+  // O defeito que uma VM de verdade mostrou: o pm2 sobe o app com cwd `<root>/current-<id>`, mas o
+  // SO resolve o symlink e o cwd real é `<root>/releases/<id>`. Derivar `dirname(cwd)` dava
+  // `<root>/releases`, e a rota respondia "não hospedado nesta VM" para um projeto que estava lá.
+  const root = mkdtempSync(join(tmpdir(), 'mls-base-'));
+  mkdirSync(join(root, 'releases', '20260903125859'), { recursive: true });
+  mkdirSync(join(root, 'mls-102043', '.git'), { recursive: true });
+
+  assert.equal(findProjectRoot(join(root, 'releases', '20260903125859')), root);
+  // E também funciona a partir da própria raiz, e de um subdiretório fundo de uma release.
+  assert.equal(findProjectRoot(root), root);
+  mkdirSync(join(root, 'releases', '20260903125859', 'dist', 'local', '_102034_'), { recursive: true });
+  assert.equal(findProjectRoot(join(root, 'releases', '20260903125859', 'dist', 'local', '_102034_')), root);
+  // A raiz achada é a que contém o repo do projeto — o que a rota precisa.
+  assert.ok(existsSync(projectGitDir(root, '102043')));
 });

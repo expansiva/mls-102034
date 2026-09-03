@@ -153,11 +153,33 @@ export function splitCgiHeaders(buffer: Buffer): CgiResponse | null {
 }
 
 /**
- * Where the repositories live. The pm2 app runs with `cwd = <mls-base>/current-<id>` (an alias of a
- * release), so the parent of the cwd is the mls-base root — the same root the `post-receive` hook uses.
+ * Where the repositories live: the mls-base root.
+ *
+ * NOT `dirname(process.cwd())`, which is what this was and what a live VM proved wrong. The pm2 app
+ * is started with `cwd = <mls-base>/current-<id>`, but that alias is a SYMLINK: the OS resolves it,
+ * so the real cwd is `<mls-base>/releases/<id>` and its parent is `releases/`. The route then looked
+ * for `releases/mls-<id>/.git` and answered "not hosted on this VM" for a project that is right
+ * there — a 404 that looks exactly like a configuration mistake.
+ *
+ * What identifies the root without depending on how deep the cwd sits: it is the nearest ancestor
+ * that CONTAINS a `releases` directory. True from a release dir, from an alias, and from the root
+ * itself. `COLLAB_GIT_PROJECT_ROOT` still wins, for a layout nobody predicted.
  */
+export function findProjectRoot(startDir: string): string {
+  let current = resolve(startDir);
+  for (let level = 0; level < 8; level += 1) {
+    if (existsSync(join(current, 'releases'))) return current;
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  // Nothing found (a dev checkout with no releases yet): the old guess is still the best guess.
+  return dirname(resolve(startDir));
+}
+
 export function gitProjectRoot(): string {
-  return resolve(process.env.COLLAB_GIT_PROJECT_ROOT ?? dirname(process.cwd()));
+  const configured = process.env.COLLAB_GIT_PROJECT_ROOT;
+  return configured ? resolve(configured) : findProjectRoot(process.cwd());
 }
 
 /** The git DIRECTORY of a project. The repos are working repos (`updateInstead`), so it is `.git`. */
