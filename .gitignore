@@ -24,3 +24,4 @@ Temporary Items
 package-lock.json
 *.js
 *.mjs
+/obj/
