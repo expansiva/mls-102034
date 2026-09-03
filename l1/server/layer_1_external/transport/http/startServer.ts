@@ -8,7 +8,7 @@ import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { createDefaultRequestContext, execBff } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
 import { AppError } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import {
-  isActorEnforcementOn, isBffAuthEnforced, moduleAuthorities, resolveBffSession,
+  isActorEnforcementOn, isBffAuthEnforced, moduleAuthorities, resolveBffSession, verifyAccessToken,
 } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
 import { readProjectMode } from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
 import {
@@ -17,6 +17,7 @@ import {
 import { registerCbeRoutes } from '/_102034_/l1/server/layer_1_external/cbe/cbeRoutes.js';
 import { getLatestJson, initCbeLatestJson } from '/_102034_/l1/server/layer_1_external/cbe/cbeLatestJson.js';
 import { registerMsgProxy } from '/_102034_/l1/server/layer_1_external/transport/http/msgProxy.js';
+import { registerGitRoutes } from '/_102034_/l1/server/layer_1_external/transport/http/gitHttp.js';
 import {
   handleAttachmentHttp, isAttachmentHttpPath,
 } from '/_102034_/l1/server/layer_1_external/storage/attachmentHttp.js';
@@ -139,18 +140,24 @@ function readAppHtml(filePath: string, app: FrontendAppRegistration) {
   };
 }
 
+const BUILD_ROOT_DIRS = ['/_chunks/', '/_libs/'];
+
 function tryReadProjectAsset(urlPath: string) {
   const publicationTarget = getPublicationTarget();
   if (!publicationTarget.serveStaticFromServer) {
     return null;
   }
 
-  if (urlPath.startsWith('/_chunks/')) {
-    const chunkPath = resolveActivePublicationDistPath(`.${urlPath}`);
-    if (!existsSync(chunkPath)) {
+  // Diretórios que o build emite na raiz do dist: `_chunks/` (code splitting do
+  // app) e `_libs/` (o Lit, emitido uma vez para os dois mundos — ver
+  // mls-base/scripts/litRuntime.mjs). Não são de projeto nenhum, por isso não
+  // casam com o padrão `_<id>_/l2/...` abaixo.
+  if (BUILD_ROOT_DIRS.some((dir) => urlPath.startsWith(dir))) {
+    const filePath = resolveActivePublicationDistPath(`.${urlPath}`);
+    if (!existsSync(filePath)) {
       return null;
     }
-    return readStaticFile(chunkPath);
+    return readStaticFile(filePath);
   }
 
   const match = /^\/(_\d+_)\/(l2)\/(.+)$/u.exec(urlPath);
@@ -211,6 +218,10 @@ export function buildHttpServer() {
   registerCbeRoutes(app);
   // Same-origin proxy to the collab-messages backend (pm2 "msg" app).
   registerMsgProxy(app);
+  // The git door (gb50): `git push https://<vm>/git/mls-<id>.git` with a collab-auth JWT. Also before
+  // the catch-all GET /*, so a clone is never answered with the SPA shell. Additive: no existing route
+  // changes behaviour, and `COLLAB_GIT_HTTP_ENABLED=false` removes it entirely.
+  registerGitRoutes(app, verifyAccessToken);
   app.get('/', async (_request, reply) => {
     reply.redirect(await resolveDefaultFrontendLocation());
   });

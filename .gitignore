@@ -25,3 +25,5 @@ package-lock.json
 *.js
 *.mjs
 /obj/
+.collab-fs.json
+.collab-fs-trash/
