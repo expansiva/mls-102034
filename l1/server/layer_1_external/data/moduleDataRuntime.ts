@@ -25,11 +25,59 @@ export interface IFindManyInput<TWhere> {
     direction: 'asc' | 'desc';
   };
   limit?: number;
+  /** Rows to skip after filtering/ordering. Absent = 0. `findMany` without limit/offset is unchanged. */
+  offset?: number;
+}
+
+/** Default page size when a list asks to paginate without saying how many. */
+export const DEFAULT_PAGE_SIZE = 20;
+/** Hard cap: a requested pageSize above this is cut, and the envelope declares the effective size. */
+export const MAX_PAGE_SIZE = 200;
+
+export interface ResolvedListPage {
+  page: number;
+  pageSize: number;
+  limit: number;
+  offset: number;
+}
+
+/**
+ * Convert optional page/pageSize into LIMIT/OFFSET. Default 20, cap 200 — the cut is declared
+ * (returned pageSize is the effective one), never silent and never a rejection.
+ */
+export function resolveListPage(input?: { page?: number; pageSize?: number }): ResolvedListPage {
+  const page = normalizePage(input?.page);
+  const pageSize = normalizePageSize(input?.pageSize);
+  return { page, pageSize, limit: pageSize, offset: (page - 1) * pageSize };
+}
+
+function normalizePage(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value) || value < 1) return 1;
+  return Math.floor(value);
+}
+
+function normalizePageSize(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value) || value < 1) return DEFAULT_PAGE_SIZE;
+  return Math.min(MAX_PAGE_SIZE, Math.floor(value));
+}
+
+function sqlNonNegInt(value: number | undefined): number | undefined {
+  if (value === undefined || !Number.isFinite(value)) return undefined;
+  return Math.max(0, Math.floor(value));
+}
+
+export function applyFindManyWindow<TRecord>(rows: TRecord[], input?: Pick<IFindManyInput<TRecord>, 'limit' | 'offset'>): TRecord[] {
+  const start = sqlNonNegInt(input?.offset) ?? 0;
+  const limit = sqlNonNegInt(input?.limit);
+  if (limit) return rows.slice(start, start + limit);
+  return start ? rows.slice(start) : rows;
 }
 
 export interface ITableRepository<TRecord> {
   findOne(input: { where: Partial<TRecord> }): Promise<TRecord | null>;
   findMany(input?: IFindManyInput<TRecord>): Promise<TRecord[]>;
+  /** Rows matching the filter, ignoring limit/offset. Same WHERE as findMany. */
+  count(input?: IFindManyInput<TRecord>): Promise<number>;
   findManyByValues<TKey extends keyof TRecord>(input: {
     field: TKey;
     values: Array<NonNullable<TRecord[TKey]>>;
@@ -134,6 +182,29 @@ function buildFilterClause<TRecord>(where?: Partial<TRecord>, ilike?: Partial<TR
   return { sql: `WHERE ${parts.join(' AND ')}`, params };
 }
 
+export function buildFindManySql<TRecord>(tableName: string, input?: IFindManyInput<TRecord>): { sql: string; params: unknown[] } {
+  const where = buildFilterClause(input?.where, input?.ilike);
+  const orderSql = input?.orderBy
+    ? `ORDER BY ${quoteIdentifier(String(input.orderBy.field))} ${input.orderBy.direction.toUpperCase()}`
+    : '';
+  const limit = sqlNonNegInt(input?.limit);
+  const offset = sqlNonNegInt(input?.offset);
+  const limitSql = limit ? `LIMIT ${limit}` : '';
+  const offsetSql = offset ? `OFFSET ${offset}` : '';
+  return {
+    sql: `SELECT * FROM ${quoteIdentifier(tableName)} ${where.sql} ${orderSql} ${limitSql} ${offsetSql}`.trim(),
+    params: where.params,
+  };
+}
+
+export function buildCountSql<TRecord>(tableName: string, input?: IFindManyInput<TRecord>): { sql: string; params: unknown[] } {
+  const where = buildFilterClause(input?.where, input?.ilike);
+  return {
+    sql: `SELECT COUNT(*)::int AS count FROM ${quoteIdentifier(tableName)} ${where.sql}`.trim(),
+    params: where.params,
+  };
+}
+
 function compareValues(left: unknown, right: unknown): number {
   if (typeof left === 'number' && typeof right === 'number') {
     return left - right;
@@ -203,8 +274,11 @@ class MemoryTableRepository<TRecord extends object> implements ITableRepository<
       });
     }
 
-    const limited = input?.limit ? rows.slice(0, input.limit) : rows;
-    return limited.map((entry) => ({ ...entry }));
+    return applyFindManyWindow(rows, input).map((entry) => ({ ...entry }));
+  }
+
+  public async count(input?: IFindManyInput<TRecord>): Promise<number> {
+    return this.records.filter((entry) => matchesWhere(entry, input?.where) && matchesIlike(entry, input?.ilike)).length;
   }
 
   public async findManyByValues<TKey extends keyof TRecord>(input: {
@@ -267,16 +341,14 @@ class PostgresTableRepository<TRecord extends object> implements ITableRepositor
   }
 
   public async findMany(input?: IFindManyInput<TRecord>): Promise<TRecord[]> {
-    const where = buildFilterClause(input?.where, input?.ilike);
-    const orderSql = input?.orderBy
-      ? `ORDER BY ${quoteIdentifier(String(input.orderBy.field))} ${input.orderBy.direction.toUpperCase()}`
-      : '';
-    const limitSql = input?.limit ? `LIMIT ${input.limit}` : '';
-    return queryRows<TRecord>(
-      this.executor,
-      `SELECT * FROM ${quoteIdentifier(this.definition.tableName)} ${where.sql} ${orderSql} ${limitSql}`.trim(),
-      where.params,
-    );
+    const query = buildFindManySql(this.definition.tableName, input);
+    return queryRows<TRecord>(this.executor, query.sql, query.params);
+  }
+
+  public async count(input?: IFindManyInput<TRecord>): Promise<number> {
+    const query = buildCountSql(this.definition.tableName, input);
+    const rows = await queryRows<{ count: number }>(this.executor, query.sql, query.params);
+    return Number(rows[0]?.count ?? 0);
   }
 
   public async findManyByValues<TKey extends keyof TRecord>(input: {
@@ -522,4 +594,26 @@ export function createPostgresModuleDataRuntime(
   executor: PgExecutor = getSharedPgPool(env),
 ): IModuleDataRuntime {
   return new PostgresModuleDataRuntime(env, executor);
+}
+
+const MEMORY_TABLE_STUB: ResolvedTableDefinition = {
+  moduleId: 'test',
+  tableName: 'test_rows',
+  purpose: 'cadastro',
+  description: 'in-memory table for tests',
+  backupHot: false,
+  storageProfile: 'postgres',
+  writeMode: 'sync',
+  columns: [{ name: 'id', postgresType: 'text' }],
+  primaryKey: ['id'],
+  version: 1,
+  projectId: '0',
+  repositoryName: 'test_rows',
+  logicalTableName: 'test_rows',
+  dynamoResolvedTableName: null,
+};
+
+/** In-memory ITableRepository without the persistence registry — fixture for tests, not a generated app. */
+export function createMemoryTableRepository<TRecord extends object>(records: TRecord[]): ITableRepository<TRecord> {
+  return new MemoryTableRepository(MEMORY_TABLE_STUB, records.map((row) => ({ ...row })));
 }

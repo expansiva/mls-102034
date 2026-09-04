@@ -272,6 +272,22 @@ function collectRoutePatterns(routes: FrontendRouteRegistration[]) {
   return [...new Set(routes.flatMap((route) => [route.path, ...(route.aliases ?? [])]))];
 }
 
+/** Resolve the HTML shell for a module. Names the missing key instead of throwing
+ *  `Cannot read properties of undefined (reading 'spa')` — that silent shape is what
+ *  left pm2 green with nothing listening. */
+export function requireShellTemplate(
+  shellTemplates: { spa?: string; pwa?: string } | undefined,
+  shellMode: string,
+): string {
+  const templatePath = shellTemplates?.[shellMode as 'spa' | 'pwa'];
+  if (typeof templatePath !== 'string' || templatePath.length === 0) {
+    throw new Error(
+      `config.shellTemplates.${shellMode} is required (missing from client config.json); frontend registry cannot mount`,
+    );
+  }
+  return templatePath;
+}
+
 async function getConfiguredFrontendApps(): Promise<FrontendAppRegistration[]> {
   const config = readProjectsConfig();
   const publicationTarget = getPublicationTarget();
@@ -298,7 +314,7 @@ async function getConfiguredFrontendApps(): Promise<FrontendAppRegistration[]> {
         projectId,
         appId: moduleConfig.moduleId,
         basePath: moduleConfig.basePath,
-        indexHtmlPath: resolveActivePublicationDistPath(config.shellTemplates[moduleConfig.shellMode]),
+        indexHtmlPath: resolveActivePublicationDistPath(requireShellTemplate(config.shellTemplates, moduleConfig.shellMode)),
         assetRoots: sharedAssetRoots,
         routePatterns: collectRoutePatterns(routes),
         shellMode: moduleConfig.shellMode,

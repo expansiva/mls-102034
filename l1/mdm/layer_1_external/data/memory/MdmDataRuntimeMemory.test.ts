@@ -35,6 +35,10 @@ function buildIndexRecord(input: {
 
 test('memory index runtime supports querying indexed columns across 10 records', async () => {
   const runtime = createMemoryDataRuntime();
+  // Memory runtime loads project MDM seeds when config.json exists. This test counts the 10 rows it inserts.
+  for (const row of await runtime.mdmEntityIndex.findMany()) {
+    await runtime.mdmEntityIndex.delete({ where: { mdmId: row.mdmId } });
+  }
 
   const records: MdmEntityIndexRecord[] = [
     buildIndexRecord({ mdmId: 'id-001', subtype: 'Person', name: 'Alice Johnson', status: 'Active', docType: 'SSN', docId: '111111111', countryCode: 'US', tags: ['vip', 'north'], createdAt: '2026-03-18T10:00:01.000Z', updatedAt: '2026-03-18T10:10:01.000Z' }),

@@ -544,7 +544,10 @@ if (isMainModule) {
     runtimeMetricsCollector?.stop();
   });
   void getFrontendAppRegistrations().then((apps) => {
-    server.listen({ port: env.port, host: '0.0.0.0' }).then(() => {
+    // `return`: sem ele a promessa do listen fica ORFA e o `.catch` la embaixo nao a ve. Um
+    // EADDRINUSE produziria exatamente o zumbi que esta correcao existe para matar (processo vivo,
+    // pm2 verde, ninguem escutando) — so que uma camada mais fundo.
+    return server.listen({ port: env.port, host: '0.0.0.0' }).then(() => {
     console.info(`MDM BFF listening on port ${env.port}`);
     console.info(`Registered frontend apps: ${apps.map((app) => `${app.appId}:${app.basePath}`).join(', ')}`);
     if (runtimeMetricsCollector) {
@@ -572,5 +575,19 @@ if (isMainModule) {
       console.info(`Write-behind loop enabled every ${WRITE_BEHIND_INTERVAL_MS}ms`);
     }
   });
+  }).catch((error) => {
+    failFrontendRegistryBoot(error);
   });
+}
+
+/** Registry failure used to be an unhandledRejection: pm2 stayed green, listen never ran.
+ *  Exit nonzero so pm2 marks error and the release probe fails with the missing key. */
+export function failFrontendRegistryBoot(error: unknown): never {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`[boot] frontend registry failed; refusing to listen so pm2 marks error: ${message}`);
+  if (error instanceof Error && error.stack) {
+    console.error(error.stack);
+  }
+  process.exit(1);
+  throw new Error(`[boot] process.exit(1) was ignored after: ${message}`);
 }
