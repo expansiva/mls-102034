@@ -224,6 +224,9 @@ export function gitBackendEnv(input: GitBackendEnvInput): Record<string, string>
     GIT_CONFIG_KEY_0: 'http.receivepack',
     GIT_CONFIG_VALUE_0: 'true',
     COLLAB_PUSH_ACTOR_EMAIL: input.email,
+    // The hook reads this: on https, pm2 reload would kill this process (we ARE
+    // the /git/ door), so it restores the worktree and finishes the response first.
+    COLLAB_GIT_HTTP: '1',
   };
   if (input.contentType) env.CONTENT_TYPE = input.contentType;
   if (input.contentLength) env.CONTENT_LENGTH = input.contentLength;

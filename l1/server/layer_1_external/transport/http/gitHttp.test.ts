@@ -83,6 +83,8 @@ test('gitBackendEnv aponta o PATH_INFO para o .git do projeto e habilita o push 
   // O http-backend deriva GIT_COMMITTER_* do REMOTE_USER: a atribuição é do git, não nossa.
   assert.equal(env.REMOTE_USER, 'wagner@collab.codes');
   assert.equal(env.COLLAB_PUSH_ACTOR_EMAIL, 'wagner@collab.codes');
+  // The hook defers pm2 reload when this is set — we ARE the process that would die.
+  assert.equal(env.COLLAB_GIT_HTTP, '1');
   assert.equal(env.HTTP_CONTENT_ENCODING, 'gzip');
   // Sem content-length declarado, o http-backend lê stdin até o EOF — que é o caso do push chunked.
   assert.equal(env.CONTENT_LENGTH, undefined);
