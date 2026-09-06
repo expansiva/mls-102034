@@ -18,9 +18,8 @@ import type {
 } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import {
   readProjectsConfig,
-  resolveActivePublicationDistPath,
   resolveProjectModuleImportUrl,
-  toPublishedAssetUrl,
+  resolveWebDistPath,
 } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 
 interface LoadedModuleUiDefinition {
@@ -36,8 +35,7 @@ const moduleDefinitionCache = new Map<string, Promise<LoadedModuleUiDefinition |
 let cachedAppsPromise: Promise<FrontendAppRegistration[]> | null = null;
 
 function toPublicImportPath(importPath: string) {
-  const normalized = importPath.startsWith('./') ? `/${importPath.slice(2)}` : importPath;
-  return toPublishedAssetUrl(normalized);
+  return importPath.startsWith('./') ? `/${importPath.slice(2)}` : importPath;
 }
 
 function createDefaultLayout(): FrontendAppLayout {
@@ -289,7 +287,7 @@ export function requireShellTemplate(
 async function getConfiguredFrontendApps(): Promise<FrontendAppRegistration[]> {
   const config = readProjectsConfig();
   const sharedAssetRoots = Object.keys(config.projects).map((projectId) =>
-    resolveActivePublicationDistPath(`./_${projectId}_/l2`),
+    resolveWebDistPath(`./_${projectId}_/l2`),
   );
 
   const configuredProjects = Object.entries(config.projects) as Array<[string, ProjectConfigRecord]>;
@@ -311,7 +309,7 @@ async function getConfiguredFrontendApps(): Promise<FrontendAppRegistration[]> {
         projectId,
         appId: moduleConfig.moduleId,
         basePath: moduleConfig.basePath,
-        indexHtmlPath: resolveActivePublicationDistPath(requireShellTemplate(config.shellTemplates, moduleConfig.shellMode)),
+        indexHtmlPath: resolveWebDistPath(requireShellTemplate(config.shellTemplates, moduleConfig.shellMode)),
         assetRoots: sharedAssetRoots,
         routePatterns: collectRoutePatterns(routes),
         shellMode: moduleConfig.shellMode,
@@ -375,5 +373,5 @@ export function getAppPublicRootDir(app: FrontendAppRegistration) {
  * basePath would add a second path to the same bytes for no benefit.
  */
 export function getAppAssetRootDirs(app: FrontendAppRegistration): string[] {
-  return [resolveActivePublicationDistPath(`./_${app.projectId}_/l3/${app.appId}`)];
+  return [resolveWebDistPath(`./_${app.projectId}_/l3/${app.appId}`)];
 }

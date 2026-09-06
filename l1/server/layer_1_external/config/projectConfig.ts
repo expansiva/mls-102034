@@ -6,7 +6,6 @@ import type {
   ProjectConfigRecord,
   ProjectType,
   ProjectsConfig,
-  PublicationConfig,
 } from '/_102029_/l2/runtimeConfigTypes.js';
 
 // Config types are shared, master-agnostic contracts hosted by 102029 (they are also
@@ -25,8 +24,6 @@ export type {
   ProjectShellRegionProfiles,
   ProjectType,
   ProjectsConfig,
-  PublicationConfig,
-  PublicationTargetConfig,
 } from '/_102029_/l2/runtimeConfigTypes.js';
 
 let cachedConfig: ProjectsConfig | null = null;
@@ -69,44 +66,6 @@ function validateProjectsConfig(config: ProjectsConfig) {
   if (!config.projects[config.defaultProjectId]) {
     throw new Error(`defaultProjectId "${config.defaultProjectId}" is not declared in projects/config.json.`);
   }
-
-  if (!config.publication?.targets || Object.keys(config.publication.targets).length === 0) {
-    throw new Error('projects/config.json must declare at least one publication target.');
-  }
-
-  if (!config.publication.targets[config.publication.defaultTarget]) {
-    throw new Error(
-      `publication.defaultTarget "${config.publication.defaultTarget}" is not declared in projects/config.json.`,
-    );
-  }
-}
-
-function normalizeAssetBaseUrl(assetBaseUrl: string | undefined) {
-  if (!assetBaseUrl) {
-    return '';
-  }
-
-  return assetBaseUrl.replace(/\/+$/u, '');
-}
-
-function getDefaultPublicationConfig(): PublicationConfig {
-  return {
-    defaultTarget: 'local',
-    targets: {
-      local: {
-        assetBaseUrl: '',
-        serveStaticFromServer: true,
-        minify: false,
-        sourcemap: true,
-      },
-      cdncloudflare: {
-        assetBaseUrl: 'https://cdn.example.com',
-        serveStaticFromServer: false,
-        minify: true,
-        sourcemap: false,
-      },
-    },
-  };
 }
 
 function normalizeProjectsConfig(config: ProjectsConfig): ProjectsConfig {
@@ -123,23 +82,9 @@ function normalizeProjectsConfig(config: ProjectsConfig): ProjectsConfig {
   const normalizedConfig: ProjectsConfig = {
     ...config,
     projects: normalizedProjects,
-    publication: {
-      ...getDefaultPublicationConfig(),
-      ...config.publication,
-      targets: Object.fromEntries(
-        Object.entries({
-          ...getDefaultPublicationConfig().targets,
-          ...(config.publication?.targets ?? {}),
-        }).map(([targetName, targetConfig]) => [
-          targetName,
-          {
-            ...targetConfig,
-            assetBaseUrl: normalizeAssetBaseUrl(targetConfig.assetBaseUrl),
-          },
-        ]),
-      ),
-    },
   };
+  // Old config.json may still carry `publication`; drop it in memory, no warning.
+  delete (normalizedConfig as { publication?: unknown }).publication;
 
   validateProjectsConfig(normalizedConfig);
   return normalizedConfig;
@@ -258,42 +203,15 @@ export function resolveProjectDistPath(relativePath: string) {
   );
 }
 
-export function getPublicationTarget(targetName?: string) {
-  const config = readProjectsConfig();
-  const resolvedTargetName = targetName ?? config.publication.defaultTarget;
-  const target = config.publication.targets[resolvedTargetName];
+/** Browser statics (Lit, shells, css, l3). One name — not a publication target. */
+const WEB_DIST_DIR = 'web';
 
-  if (!target) {
-    throw new Error(`Unknown publication target "${resolvedTargetName}".`);
-  }
-
-  return {
-    name: resolvedTargetName,
-    ...target,
-    assetBaseUrl: normalizeAssetBaseUrl(target.assetBaseUrl),
-  };
-}
-
-export function resolvePublicationDistPath(targetName: string, relativePath = '.') {
+export function resolveWebDistPath(relativePath = '.') {
   const normalized = normalizeVirtualPath(relativePath);
   if (!normalized || normalized === '.') {
-    return resolve(getProjectsDir(), 'dist', targetName);
+    return resolve(getProjectsDir(), 'dist', WEB_DIST_DIR);
   }
-  const distPath = resolve(getProjectsDir(), 'dist', targetName, normalized);
-  if (targetName !== 'local') {
-    return distPath;
-  }
-  return withSourceFallback(distPath, normalized);
-}
-
-export function resolveActivePublicationDistPath(relativePath = '.') {
-  return resolvePublicationDistPath(getPublicationTarget().name, relativePath);
-}
-
-export function toPublishedAssetUrl(relativePath: string, targetName?: string) {
-  const normalizedPath = relativePath.startsWith('/') ? relativePath : `/${relativePath.replace(/^\.\//u, '')}`;
-  const target = getPublicationTarget(targetName);
-  return target.assetBaseUrl ? `${target.assetBaseUrl}${normalizedPath}` : normalizedPath;
+  return resolve(getProjectsDir(), 'dist', WEB_DIST_DIR, normalized);
 }
 
 export function resolveProjectModuleImportUrl(relativePath: string) {

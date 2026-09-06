@@ -3,7 +3,7 @@ import Fastify from 'fastify';
 import { existsSync, readFileSync } from 'node:fs';
 import { extname, join, normalize, resolve } from 'node:path';
 import { getFrontendAppByBasePath, getFrontendAppRegistrations, getAppPublicRootDir, getAppAssetRootDirs } from '/_102034_/l1/server/layer_1_external/frontend/appRegistry.js';
-import { readProjectsConfig, resolveActivePublicationDistPath } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
+import { readProjectsConfig, resolveWebDistPath } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import { classifyProjectAssetUrl } from '/_102034_/l1/server/layer_1_external/transport/http/classifyProjectAssetUrl.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { createDefaultRequestContext, execBff } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
@@ -149,7 +149,7 @@ function tryReadProjectAsset(urlPath: string) {
 
   const path = urlPath.replace(/\?.*$/u, '');
   if (kind === 'libs') {
-    const filePath = resolveActivePublicationDistPath(`.${path}`);
+    const filePath = resolveWebDistPath(`.${path}`);
     if (!existsSync(filePath)) {
       return null;
     }
@@ -162,7 +162,7 @@ function tryReadProjectAsset(urlPath: string) {
   }
 
   const [, projectSegment, layer, remainder] = match;
-  const assetPath = resolveActivePublicationDistPath(`./${projectSegment}/${layer}/${remainder}`);
+  const assetPath = resolveWebDistPath(`./${projectSegment}/${layer}/${remainder}`);
   if (!existsSync(assetPath)) {
     return null;
   }
