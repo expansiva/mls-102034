@@ -13,6 +13,9 @@ function readMonitorSection(pathname: string) {
   if (pathname.startsWith('/monitor/dynamodb')) {
     return 'DynamoDB';
   }
+  if (pathname.startsWith('/monitor/messages')) {
+    return 'Collab Messages';
+  }
   return 'Overview';
 }
 

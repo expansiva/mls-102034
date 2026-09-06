@@ -11,14 +11,34 @@ const BASE_DIR = process.env.COLLAB_RUNTIME_DIR ?? resolve(process.cwd(), '..', 
 const RELEASES_DIR = join(BASE_DIR, 'releases');
 const CURRENT_LINK = join(BASE_DIR, 'current');
 const LOGS_DIR = join(BASE_DIR, 'logs');
+const MSG_LOGS_DIR = process.env.COLLAB_MSG_LOGS_DIR ?? '/data/msg.collab.codes/node/logs';
 const PM2_CONFIG = join(BASE_DIR, 'pm2.config.js');
 const RELEASE_ID_RE = /^\d{14}$/u;
 const LOG_APP_RE = /^app\d*$/u;
+const MSG_APP_RE = /^(?:msg|msg-worker)$/u;
+const MSG_LOG_APPS = [
+  { app: 'msg', prefix: 'pm2-api' },
+  { app: 'msg-worker', prefix: 'pm2-worker' },
+] as const;
 
-interface LogTarget {
+export interface LogTarget {
   app: string;
   file: string;
   updatedAt: string | null;
+}
+
+export interface LogTargetOptions {
+  logsDir?: string;
+  msgLogsDir?: string;
+}
+
+function isKnownLogApp(app: string): boolean {
+  return LOG_APP_RE.test(app) || MSG_APP_RE.test(app);
+}
+
+function msgLogFile(app: string, stream: 'out' | 'error', msgLogsDir: string): string {
+  const prefix = app === 'msg-worker' ? 'pm2-worker' : 'pm2-api';
+  return join(msgLogsDir, `${prefix}-${stream}.log`);
 }
 
 function activeReleaseId(): string | null {
@@ -72,14 +92,25 @@ export const monitorReleasesActivateHandler: BffHandler = async ({ request }) =>
   return ok({ active: releaseId, reload: 'scheduled' });
 };
 
-function listLogTargets(stream: 'out' | 'error'): LogTarget[] {
-  if (!existsSync(LOGS_DIR)) {
+export function listLogTargets(
+  stream: 'out' | 'error',
+  options: LogTargetOptions = {},
+): LogTarget[] {
+  const logsDir = options.logsDir ?? LOGS_DIR;
+  const msgLogsDir = options.msgLogsDir ?? MSG_LOGS_DIR;
+  return [...listRuntimeLogTargets(logsDir, stream), ...listMsgLogTargets(msgLogsDir, stream)]
+    .sort((a, b) => b.mtimeMs - a.mtimeMs || a.app.localeCompare(b.app))
+    .map(({ mtimeMs: _mtimeMs, ...target }) => target);
+}
+
+function listRuntimeLogTargets(logsDir: string, stream: 'out' | 'error'): Array<LogTarget & { mtimeMs: number }> {
+  if (!existsSync(logsDir)) {
     return [];
   }
-  return readdirSync(LOGS_DIR)
+  return readdirSync(logsDir)
     .filter((name) => name.endsWith(`-${stream}.log`))
     .map((name) => {
-      const file = join(LOGS_DIR, name);
+      const file = join(logsDir, name);
       const stats = statSync(file);
       return {
         app: name.slice(0, -`-${stream}.log`.length),
@@ -88,27 +119,57 @@ function listLogTargets(stream: 'out' | 'error'): LogTarget[] {
         mtimeMs: stats.mtimeMs,
       };
     })
-    .filter((target) => LOG_APP_RE.test(target.app))
-    .sort((a, b) => b.mtimeMs - a.mtimeMs || a.app.localeCompare(b.app))
-    .map(({ mtimeMs: _mtimeMs, ...target }) => target);
+    .filter((target) => LOG_APP_RE.test(target.app));
 }
 
-function selectLogTarget(stream: 'out' | 'error', requestedApp: unknown): { target: LogTarget; available: LogTarget[] } {
-  const available = listLogTargets(stream);
-  const app = typeof requestedApp === 'string' && LOG_APP_RE.test(requestedApp) ? requestedApp : '';
+function listMsgLogTargets(msgLogsDir: string, stream: 'out' | 'error'): Array<LogTarget & { mtimeMs: number }> {
+  if (!existsSync(msgLogsDir)) {
+    return [];
+  }
+  const targets: Array<LogTarget & { mtimeMs: number }> = [];
+  for (const { app, prefix } of MSG_LOG_APPS) {
+    const file = join(msgLogsDir, `${prefix}-${stream}.log`);
+    if (!existsSync(file)) continue;
+    const stats = statSync(file);
+    targets.push({
+      app,
+      file,
+      updatedAt: stats.mtime.toISOString(),
+      mtimeMs: stats.mtimeMs,
+    });
+  }
+  return targets;
+}
+
+export function selectLogTarget(
+  stream: 'out' | 'error',
+  requestedApp: unknown,
+  options: LogTargetOptions = {},
+): { target: LogTarget; available: LogTarget[] } {
+  const logsDir = options.logsDir ?? LOGS_DIR;
+  const msgLogsDir = options.msgLogsDir ?? MSG_LOGS_DIR;
+  const available = listLogTargets(stream, { logsDir, msgLogsDir });
+  const app = typeof requestedApp === 'string' && isKnownLogApp(requestedApp) ? requestedApp : '';
   const requested = app ? available.find((target) => target.app === app) : null;
   if (requested) {
     return { target: requested, available };
   }
   if (app) {
-    const target = { app, file: join(LOGS_DIR, `${app}-${stream}.log`), updatedAt: null };
+    const file = MSG_APP_RE.test(app)
+      ? msgLogFile(app, stream, msgLogsDir)
+      : join(logsDir, `${app}-${stream}.log`);
+    const target = { app, file, updatedAt: null };
     return {
       target,
       available: [target, ...available],
     };
   }
   const newestProjectLog = available.find((target) => /^app\d+$/u.test(target.app));
-  const fallback = newestProjectLog ?? available[0] ?? { app: 'app', file: join(LOGS_DIR, `app-${stream}.log`), updatedAt: null };
+  const legacyApp = available.find((target) => target.app === 'app');
+  const fallback = newestProjectLog
+    ?? legacyApp
+    ?? available.find((target) => LOG_APP_RE.test(target.app))
+    ?? { app: 'app', file: join(logsDir, `app-${stream}.log`), updatedAt: null };
   return { target: fallback, available };
 }
 

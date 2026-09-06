@@ -33,6 +33,7 @@ export const moduleFrontendDefinition: MasterFrontendModuleFrontendDefinition = 
     { id: 'overview', label: 'Overview', href: '/monitor', description: 'System status and endpoint activity' },
     { id: 'operations', label: 'Operacao', href: '/monitor/operacao', description: '24h operational summary for support' },
     { id: 'process', label: 'Process', href: '/monitor/process', description: 'Node.js runtime health — memory, uptime, load' },
+    { id: 'messages', label: 'Collab Messages', href: '/monitor/messages', description: 'collab-messages instance: health, storage account, pm2 and logs' },
     { id: 'architecture', label: 'Architecture', href: '/monitor/architecture', description: 'Module topology and storage design' },
     { id: 'postgres', label: 'Postgres', href: '/monitor/postgres', description: 'Tables, cache and queue status' },
     { id: 'dynamodb', label: 'DynamoDB', href: '/monitor/dynamodb', description: 'Tables and storage status' },
@@ -102,6 +103,12 @@ export const moduleFrontendDefinition: MasterFrontendModuleFrontendDefinition = 
       entrypoint: '/_102034_/l2/monitor/web/routes/process.js',
       tag: 'monitor-web-desktop-home-page',
       title: 'Process',
+    },
+    {
+      path: '/monitor/messages',
+      entrypoint: '/_102034_/l2/monitor/web/routes/messages.js',
+      tag: 'monitor-web-desktop-messages-page',
+      title: 'Collab Messages',
     },
     {
       path: '/monitor/abend',
