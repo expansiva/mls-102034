@@ -1,4 +1,4 @@
-/// <mls fileReference="_102034_/l1/mdm/layer_3_usecases/postgresDynamo.integration.test.ts" enhancement="_blank" />
+/// <mls fileReference="_102034_/l1/mdm/layer_3_usecases/postgresDynamoIntegration.test.ts" enhancement="_blank" />
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequestContext, execBff } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
