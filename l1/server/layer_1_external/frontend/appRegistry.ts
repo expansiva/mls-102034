@@ -17,10 +17,8 @@ import type {
   ProjectModuleConfig,
 } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import {
-  getPublicationTarget,
   readProjectsConfig,
   resolveActivePublicationDistPath,
-  resolveProjectDistPath,
   resolveProjectModuleImportUrl,
   toPublishedAssetUrl,
 } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
@@ -290,10 +288,9 @@ export function requireShellTemplate(
 
 async function getConfiguredFrontendApps(): Promise<FrontendAppRegistration[]> {
   const config = readProjectsConfig();
-  const publicationTarget = getPublicationTarget();
-  const sharedAssetRoots = publicationTarget.serveStaticFromServer
-    ? Object.keys(config.projects).map((projectId) => resolveActivePublicationDistPath(`./_${projectId}_/l2`))
-    : Object.keys(config.projects).map((projectId) => resolveProjectDistPath(`./_${projectId}_/l2`));
+  const sharedAssetRoots = Object.keys(config.projects).map((projectId) =>
+    resolveActivePublicationDistPath(`./_${projectId}_/l2`),
+  );
 
   const configuredProjects = Object.entries(config.projects) as Array<[string, ProjectConfigRecord]>;
   const maybeApps: Array<FrontendAppRegistration | null> = await Promise.all(configuredProjects.flatMap(([projectId, project]) =>
@@ -378,8 +375,5 @@ export function getAppPublicRootDir(app: FrontendAppRegistration) {
  * basePath would add a second path to the same bytes for no benefit.
  */
 export function getAppAssetRootDirs(app: FrontendAppRegistration): string[] {
-  const publicationTarget = getPublicationTarget();
-  return [publicationTarget.serveStaticFromServer
-    ? resolveActivePublicationDistPath(`./_${app.projectId}_/l3/${app.appId}`)
-    : resolveProjectDistPath(`./_${app.projectId}_/l3/${app.appId}`)];
+  return [resolveActivePublicationDistPath(`./_${app.projectId}_/l3/${app.appId}`)];
 }

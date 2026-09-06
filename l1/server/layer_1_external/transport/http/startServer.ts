@@ -3,7 +3,8 @@ import Fastify from 'fastify';
 import { existsSync, readFileSync } from 'node:fs';
 import { extname, join, normalize, resolve } from 'node:path';
 import { getFrontendAppByBasePath, getFrontendAppRegistrations, getAppPublicRootDir, getAppAssetRootDirs } from '/_102034_/l1/server/layer_1_external/frontend/appRegistry.js';
-import { getPublicationTarget, readProjectsConfig, resolveActivePublicationDistPath } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
+import { readProjectsConfig, resolveActivePublicationDistPath } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
+import { classifyProjectAssetUrl } from '/_102034_/l1/server/layer_1_external/transport/http/classifyProjectAssetUrl.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { createDefaultRequestContext, execBff } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
 import { AppError } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
@@ -140,27 +141,22 @@ function readAppHtml(filePath: string, app: FrontendAppRegistration) {
   };
 }
 
-const BUILD_ROOT_DIRS = ['/_chunks/', '/_libs/'];
-
 function tryReadProjectAsset(urlPath: string) {
-  const publicationTarget = getPublicationTarget();
-  if (!publicationTarget.serveStaticFromServer) {
+  const kind = classifyProjectAssetUrl(urlPath);
+  if (kind !== 'static' && kind !== 'libs') {
     return null;
   }
 
-  // Diretórios que o build emite na raiz do dist: `_chunks/` (code splitting do
-  // app) e `_libs/` (o Lit, emitido uma vez para os dois mundos — ver
-  // mls-base/scripts/litRuntime.mjs). Não são de projeto nenhum, por isso não
-  // casam com o padrão `_<id>_/l2/...` abaixo.
-  if (BUILD_ROOT_DIRS.some((dir) => urlPath.startsWith(dir))) {
-    const filePath = resolveActivePublicationDistPath(`.${urlPath}`);
+  const path = urlPath.replace(/\?.*$/u, '');
+  if (kind === 'libs') {
+    const filePath = resolveActivePublicationDistPath(`.${path}`);
     if (!existsSync(filePath)) {
       return null;
     }
     return readStaticFile(filePath);
   }
 
-  const match = /^\/(_\d+_)\/(l2)\/(.+)$/u.exec(urlPath);
+  const match = /^\/(_\d+_)\/(l2)\/(.+)$/u.exec(path);
   if (!match) {
     return null;
   }
@@ -340,25 +336,13 @@ export function buildHttpServer() {
   });
   app.get('/*', async (request, reply) => {
     const result = await handleHttpRequest('GET', request.url);
-    if (result.statusCode === 404) {
-      // Module not in the dist (only config.json projects compile there):
-      // fall back to the project's obj/compiled.zip, the same source the cbe
-      // login delivers to the browser. Covers /_<id>_/l2/* imports (studio
-      // components and lib deep-imports) when the service worker is not
-      // controlling the page yet.
-      const compiled = getCompiledStaticFile(request.raw.url ?? '');
-      if (compiled) {
-        const clientETag = ((request.headers['if-none-match'] as string | undefined) ?? '').replace(/^W\//u, '').replaceAll('"', '');
-        if (clientETag && clientETag === compiled.eTag) {
-          reply.status(304);
-          return null;
-        }
-        reply
-          .status(200)
-          .header('Content-Type', compiled.contentType)
-          .header('Cache-Control', 'no-cache')
-          .header('ETag', `"${compiled.eTag}"`);
-        return compiled.content;
+    const etag = result.headers?.etag;
+    if (result.statusCode === 200 && typeof etag === 'string') {
+      const clientETag = ((request.headers['if-none-match'] as string | undefined) ?? '').replace(/^W\//u, '').replaceAll('"', '');
+      const serverETag = etag.replaceAll('"', '');
+      if (clientETag && clientETag === serverETag) {
+        reply.status(304);
+        return null;
       }
     }
     reply.status(result.statusCode);
@@ -432,17 +416,59 @@ export async function handleHttpRequest(
   }
 
   if (method === 'GET') {
-    const staticAsset = tryReadProjectAsset(url) ?? await tryReadAppFile(url);
+    const kind = classifyProjectAssetUrl(url);
+    if (kind === 'module') {
+      const compiled = getCompiledStaticFile(url);
+      if (!compiled) {
+        return {
+          statusCode: 404,
+          body: {
+            ok: false,
+            data: null,
+            error: { code: 'NOT_FOUND', message: 'Route not found' },
+          },
+        };
+      }
+      return {
+        statusCode: 200,
+        body: compiled.content,
+        headers: {
+          'content-type': compiled.contentType,
+          'cache-control': 'no-cache',
+          etag: `"${compiled.eTag}"`,
+        },
+      };
+    }
+
+    const staticAsset = tryReadProjectAsset(url);
     if (staticAsset) {
       return {
         statusCode: 200,
         body: staticAsset.body,
         headers: {
           'content-type': staticAsset.contentType,
-          // Force revalidation: without this the browser heuristically caches
-          // app files (incl. /_chunks/*) and, after a new release, stale files
-          // reference chunk hashes that no longer exist — dynamic imports then
-          // fail. The server is local to the VM, so revalidation is cheap.
+          'cache-control': 'no-cache',
+        },
+      };
+    }
+    if (kind === 'static' || kind === 'libs') {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          data: null,
+          error: { code: 'NOT_FOUND', message: 'Route not found' },
+        },
+      };
+    }
+
+    const appFile = await tryReadAppFile(url);
+    if (appFile) {
+      return {
+        statusCode: 200,
+        body: appFile.body,
+        headers: {
+          'content-type': appFile.contentType,
           'cache-control': 'no-cache',
         },
       };

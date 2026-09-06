@@ -1,9 +1,8 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/transport/http/execBff.test.ts" enhancement="_blank" />
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readdirSync } from 'node:fs';
 import { getFrontendAppRegistrations } from '/_102034_/l1/server/layer_1_external/frontend/appRegistry.js';
-import { resolveActivePublicationDistPath } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
+import { hasCompiledZip } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
 import { handleHttpRequest } from '/_102034_/l1/server/layer_1_external/transport/http/startServer.js';
 import { execMessage } from '/_102034_/l1/server/layer_1_external/transport/message/execMessage.js';
 import { createRequestContext, createSessionContext, execBff, trustedIdentityClaims } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
@@ -112,28 +111,20 @@ test('GET nested path of a configured SPA app falls back to the entry html', asy
   assert.equal(response.headers?.['content-type'], 'text/html; charset=utf-8');
 });
 
-test('GET project asset path serves compiled l2 modules', async () => {
+test('GET project asset path serves compiled l2 modules', async (t) => {
+  if (!hasCompiledZip(102034)) {
+    t.skip('obj/compiled.zip of mls-102034 is not present on this machine');
+    return;
+  }
+
   const response = await handleHttpRequest('GET', '/_102034_/l2/monitor/web/desktop/page11/home.js');
 
   assert.equal(response.statusCode, 200);
   assert.equal(response.headers?.['content-type'], 'text/javascript; charset=utf-8');
-});
-
-test('GET chunk asset path serves esbuild shared chunks', async () => {
-  const chunksDir = resolveActivePublicationDistPath('./_chunks');
-  if (!existsSync(chunksDir)) {
-    return;
-  }
-
-  const chunkName = readdirSync(chunksDir).find((fileName) => fileName.endsWith('.js'));
-  if (!chunkName) {
-    return;
-  }
-
-  const response = await handleHttpRequest('GET', `/_chunks/${chunkName}`);
-
-  assert.equal(response.statusCode, 200);
-  assert.equal(response.headers?.['content-type'], 'text/javascript; charset=utf-8');
+  assert.equal(response.headers?.['cache-control'], 'no-cache');
+  const etag = response.headers?.etag;
+  assert.equal(typeof etag, 'string', 'absence of ETag on an l2 .js is a defect');
+  assert.match(etag ?? '', /c"$/u);
 });
 
 test('message transport uses the same unified protocol', async () => {
