@@ -42,6 +42,13 @@ export interface AppEnv {
   actorId?: string;
   actorScope: string[];
   /**
+   * Organization country (ISO 3166-1 alpha-2). Installation default `US` (MDM ontology).
+   * Not derived from UI language. Platform org config is a pending source.
+   */
+  organizationCountryCode: string;
+  organizationCurrency?: string;
+  organizationTimezone?: string;
+  /**
    * Permanent object-storage bucket pattern. `{projectId}` is replaced with the client project
    * (default `collab-{projectId}`). Empty string forces local disk.
    */
@@ -181,6 +188,12 @@ export function readAppEnv(): AppEnv {
     currentWorkspaceId: readEnvValue('CURRENT_WORKSPACE_ID', appEnv) || readEnvValue('WORKSPACE_ID', appEnv) || undefined,
     actorId: readEnvValue('ACTOR_ID', appEnv) || undefined,
     actorScope: parseStringList(readEnvValue('ACTOR_SCOPE', appEnv)),
+    organizationCountryCode:
+      readEnvValue('ORGANIZATION_COUNTRY_CODE', appEnv)
+      || readEnvValue('COUNTRY_CODE', appEnv)
+      || 'US',
+    organizationCurrency: readEnvValue('ORGANIZATION_CURRENCY', appEnv) || undefined,
+    organizationTimezone: readEnvValue('ORGANIZATION_TIMEZONE', appEnv) || undefined,
     s3BucketPattern: readEnvValue('S3_BUCKET', appEnv) ?? DEFAULT_PERMANENT_BUCKET_PATTERN,
     s3BucketTmpPattern: readEnvValue('S3_BUCKET_TMP', appEnv) ?? DEFAULT_TMP_BUCKET_PATTERN,
     attachmentMaxBytes: Number(readEnvValue('ATTACHMENT_MAX_BYTES', appEnv) ?? DEFAULT_ATTACHMENT_MAX_BYTES),

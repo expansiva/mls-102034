@@ -172,6 +172,12 @@ export interface RequestProjectContext {
   studioEnabled?: boolean;
 }
 
+export interface RequestOrganizationContext {
+  countryCode: string;
+  currency?: string;
+  timezone?: string;
+}
+
 export interface RequestSessionContext {
   activeCompanyId?: string;
   activeUnitId?: string;
@@ -191,6 +197,13 @@ export interface RequestContext {
   clock: IClock;
   idGenerator: IIdGenerator;
   sessionContext: RequestSessionContext;
+  /**
+   * Caller module of this BFF (`ordenServicio2`). Absent on platform/test callers.
+   * `organization` is the super module: unfiltered MDM reads and writes.
+   */
+  moduleId?: string;
+  /** Installation/org locale — never derived from UI language. */
+  organization: RequestOrganizationContext;
   // Disposable runtime (test sandbox): the execution is not real traffic, so execBff
   // keeps it out of the monitor execution log and telemetry.
   sandbox?: boolean;

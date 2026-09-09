@@ -63,6 +63,16 @@ export type ServiceKind =
 
 export type MdmModuleNamespaceValue = Record<string, unknown>;
 
+/**
+ * Organization-level registration namespace (the third MDM layer: base · general · module).
+ * Schema lives in the project's solution registry (l4); the engine only reserves the key
+ * and does not filter it on read.
+ */
+export type MdmGeneralNamespace = Record<string, unknown>;
+
+export const MDM_GENERAL_NAMESPACE = 'general';
+export const MDM_ORGANIZATION_MODULE_ID = 'organization';
+
 export type CompactRelationshipRefKey =
   | 'ownedAssets'
   | 'owners'
@@ -132,6 +142,9 @@ export interface BaseMdmDetailRecord {
   mergedInto?: string | null;
   createdAt: string;
   updatedAt: string;
+  general?: MdmGeneralNamespace;
+  /** Computed on facade reads: other modules' namespace keys (no content). Not persisted. */
+  namespaces?: string[];
   [moduleNamespace: string]: unknown;
 }
 

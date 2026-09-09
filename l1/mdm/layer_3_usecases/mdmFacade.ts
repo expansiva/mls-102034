@@ -1,6 +1,7 @@
 /// <mls fileReference="_102034_/l1/mdm/layer_3_usecases/mdmFacade.ts" enhancement="_blank" />
 import { AppError, type RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import { MdmDocumentEntity } from '/_102034_/l1/mdm/layer_3_usecases/internal/MdmDocumentStore.js';
+import { MdmRecordEntity } from '/_102034_/l1/mdm/layer_3_usecases/internal/MdmRecordStore.js';
 import { MdmRelationshipEntity } from '/_102034_/l1/mdm/layer_3_usecases/internal/MdmRelationshipStore.js';
 import {
   createEntity,
@@ -23,6 +24,10 @@ import {
   getMdmModuleTypes,
   refreshRelationshipRefs,
 } from '/_102034_/l1/mdm/layer_3_usecases/mdmSupport.js';
+import {
+  MDM_GENERAL_NAMESPACE,
+  MDM_ORGANIZATION_MODULE_ID,
+} from '/_102034_/l1/mdm/module.js';
 import type {
   AttachFileParams,
   DetachFileParams,
@@ -33,6 +38,7 @@ import type {
   MdmDetailRecord,
   MdmDocumentRecord,
   MdmEntityIndexRecord,
+  MdmModuleNamespaceValue,
   MdmProspectIndexRecord,
   MdmRelationshipRecord,
   RelationshipStatus,
@@ -184,8 +190,10 @@ export interface MdmProspectReadResult {
 
 export interface MdmProspectWriteResult extends MdmProspectReadResult {}
 
+export type MdmProspectListByTypeItem = MdmProspectIndexRecord & { details: MdmDetailRecord };
+
 export interface MdmProspectListByTypeResult {
-  items: MdmProspectIndexRecord[];
+  items: MdmProspectListByTypeItem[];
   page: number;
   pageSize: number;
   total: number;
@@ -204,8 +212,10 @@ export interface MdmDeleteResult {
   deleted: true;
 }
 
+export type MdmListByTypeItem = MdmEntityIndexRecord & { details: MdmDetailRecord };
+
 export interface MdmListByTypeResult {
-  items: MdmEntityIndexRecord[];
+  items: MdmListByTypeItem[];
   page: number;
   pageSize: number;
   total: number;
@@ -224,15 +234,126 @@ export interface MdmFacade {
   attachment: MdmAttachment;
 }
 
+/**
+ * Typed platform keys of BaseMdmDetailRecord and the *DetailRecord variants.
+ * Anything else in `details` is a module namespace (or the reserved `general`).
+ */
+const MDM_PLATFORM_DETAIL_KEYS = new Set<string>([
+  'mdmId', 'subtype', 'name', 'status', 'moduleTypes', 'docType', 'docId',
+  'countryCode', 'tags', 'aliases', 'contacts', 'relationshipRefs', 'addresses',
+  'mergedInto', 'createdAt', 'updatedAt',
+  'privacyConsent', 'birthDate', 'gender', 'nationality', 'occupation', 'photoUrl', 'notes',
+  'companyKind', 'parentCompanyId', 'externalCode', 'legalName', 'tradeName', 'legalType',
+  'foundingDate', 'taxRegime', 'industryCode', 'website',
+  'sku', 'productType', 'category', 'brand', 'unitOfMeasure', 'isInventoried',
+  'serviceCode', 'serviceKind', 'parentServiceId', 'serviceType', 'durationMinutes', 'deliveryMode',
+  'locationType', 'locationCode', 'parentLocationId', 'capacity', 'propertyAddress',
+  'assetCategory', 'serialNumber', 'manufacturer', 'model',
+  'contactType', 'value', 'isVerified', 'verifiedAt',
+  'storageBucket', 'storagePath', 'originModule', 'docCategory', 'fileName', 'mimeType',
+  'bankRoutingNumber', 'bankName', 'accountNumber', 'accountType', 'swift', 'iban',
+  'pixKey', 'pixKeyType',
+  'promotionSource', 'promotedTo', 'ttlExpiresAt',
+]);
+
+const MDM_COMPUTED_DETAIL_KEYS = new Set<string>(['namespaces']);
+
+export function isUnrestrictedMdmCaller(moduleId?: string | null): boolean {
+  return !moduleId || moduleId === MDM_ORGANIZATION_MODULE_ID;
+}
+
+export function projectDetailsForModule(
+  details: MdmDetailRecord | Record<string, unknown>,
+  moduleId?: string | null,
+): MdmDetailRecord {
+  const source = details as Record<string, unknown>;
+  const namespaces: string[] = [];
+  const unrestricted = isUnrestrictedMdmCaller(moduleId);
+  const projected: Record<string, unknown> = {};
+
+  for (const [key, value] of Object.entries(source)) {
+    if (MDM_COMPUTED_DETAIL_KEYS.has(key)) {
+      continue;
+    }
+    if (MDM_PLATFORM_DETAIL_KEYS.has(key) || key === MDM_GENERAL_NAMESPACE) {
+      projected[key] = value;
+      continue;
+    }
+    if (unrestricted || key === moduleId) {
+      projected[key] = value;
+    }
+    if (unrestricted || key !== moduleId) {
+      namespaces.push(key);
+    }
+  }
+  namespaces.sort();
+  projected.namespaces = namespaces;
+  return projected as MdmDetailRecord;
+}
+
+function assertWritableMdmNamespaces(
+  details: Record<string, unknown>,
+  moduleId?: string | null,
+): void {
+  if (isUnrestrictedMdmCaller(moduleId)) {
+    return;
+  }
+  for (const key of Object.keys(details)) {
+    if (MDM_COMPUTED_DETAIL_KEYS.has(key)) {
+      continue;
+    }
+    if (MDM_PLATFORM_DETAIL_KEYS.has(key) || key === MDM_GENERAL_NAMESPACE || key === moduleId) {
+      continue;
+    }
+    throw new AppError(
+      'MDM_FOREIGN_NAMESPACE',
+      'MDM namespace writes are limited to the caller module and general',
+      400,
+      { moduleId, key },
+    );
+  }
+}
+
+function prepareMdmWriteDetails<T extends Record<string, unknown>>(
+  details: T,
+  moduleId?: string | null,
+): T {
+  const prepared = { ...details } as T & { namespaces?: unknown };
+  delete prepared.namespaces;
+  assertWritableMdmNamespaces(prepared as Record<string, unknown>, moduleId);
+  return prepared;
+}
+
+async function attachProjectedDetailsToIndexPage<TIndex extends { mdmId: string }>(
+  ctx: RequestContext,
+  items: TIndex[],
+): Promise<Array<TIndex & { details: MdmDetailRecord }>> {
+  if (items.length === 0) {
+    return [];
+  }
+  const documents = await ctx.data.mdmDocument.getMany({
+    mdmIds: items.map((item) => item.mdmId),
+  });
+  const documentById = new Map(documents.map((document) => [document.mdmId, document]));
+  return items.map((item) => {
+    const document = documentById.get(item.mdmId);
+    const details = document
+      ? projectDetailsForModule(MdmDocumentEntity.parseDetails(document), ctx.moduleId)
+      : projectDetailsForModule({}, ctx.moduleId);
+    return { ...item, details };
+  });
+}
+
 function buildReadResult(
+  ctx: RequestContext,
   document: MdmDocumentRecord,
   index: MdmEntityIndexRecord,
 ): MdmEntityReadResult {
-  const details = MdmDocumentEntity.parseDetails(document);
+  const details = projectDetailsForModule(MdmDocumentEntity.parseDetails(document), ctx.moduleId);
   return {
     mdmId: document.mdmId,
     version: document.version,
-    document,
+    document: { ...document, details },
     index,
     details,
     related(key) {
@@ -242,14 +363,15 @@ function buildReadResult(
 }
 
 function buildProspectReadResult(
+  ctx: RequestContext,
   document: MdmDocumentRecord,
   index: MdmProspectIndexRecord,
 ): MdmProspectReadResult {
-  const details = MdmDocumentEntity.parseDetails(document);
+  const details = projectDetailsForModule(MdmDocumentEntity.parseDetails(document), ctx.moduleId);
   return {
     mdmId: document.mdmId,
     version: document.version,
-    document,
+    document: { ...document, details },
     index,
     details,
     related(key) {
@@ -350,10 +472,14 @@ export class MdmEntity {
   public constructor(private readonly ctx: RequestContext) {}
 
   public async create(input: MdmEntityCreateInput): Promise<MdmEntityWriteResult> {
+    const details = prepareMdmWriteDetails(
+      input.details as MdmEntityCreateDetails & Record<string, unknown>,
+      this.ctx.moduleId,
+    );
     const created = await createEntity(this.ctx, {
       detail: {
-        ...input.details,
-        status: input.details.status ?? 'Active',
+        ...details,
+        status: details.status ?? 'Active',
       } as CreateableMdmDetailInput,
     });
     const entity = await this.get({ mdmId: created.mdmId });
@@ -374,12 +500,78 @@ export class MdmEntity {
   }
 
   public async update(input: MdmEntityUpdateInput): Promise<MdmEntityWriteResult> {
+    const patch = prepareMdmWriteDetails(
+      input.patch as Partial<MdmDetailRecord> & Record<string, unknown>,
+      this.ctx.moduleId,
+    );
     await updateEntity(this.ctx, {
       mdmId: input.mdmId,
       expectedVersion: input.expectedVersion,
-      patch: input.patch,
+      patch,
     });
     return this.get({ mdmId: input.mdmId });
+  }
+
+  public async findByDocument(docType: string, docId: string): Promise<MdmEntityReadResult | null> {
+    const index = await MdmRecordEntity.findEntityByDocument(this.ctx, docType, docId);
+    if (!index) {
+      return null;
+    }
+    return this.get({ mdmId: index.mdmId });
+  }
+
+  public async findByContact(contactType: string, value: string): Promise<MdmEntityReadResult | null> {
+    const index = await MdmRecordEntity.findEntityByContact(this.ctx, contactType, value);
+    if (!index) {
+      return null;
+    }
+    return this.get({ mdmId: index.mdmId });
+  }
+
+  /**
+   * Create-or-attach: add tag `<moduleId>.<role>` without duplicating, and optionally write the
+   * caller module's namespace. Role may be the entity id (`Cliente`) or the canonical tag.
+   */
+  public async attachRole(
+    mdmId: string,
+    role: string,
+    namespace?: MdmModuleNamespaceValue,
+  ): Promise<MdmEntityWriteResult> {
+    const moduleId = this.ctx.moduleId;
+    const trimmedRole = role.trim();
+    const tag = trimmedRole.includes('.')
+      ? trimmedRole
+      : (moduleId && !isUnrestrictedMdmCaller(moduleId) ? `${moduleId}.${trimmedRole}` : trimmedRole);
+    assertCanonicalModuleType(tag);
+    if (moduleId && !isUnrestrictedMdmCaller(moduleId) && !tag.startsWith(`${moduleId}.`)) {
+      throw new AppError(
+        'MDM_FOREIGN_NAMESPACE',
+        'attachRole can only add a tag for the caller module',
+        400,
+        { moduleId, role: tag },
+      );
+    }
+
+    const entity = await this.get({ mdmId });
+    const tags = [...new Set([...entity.details.tags, tag])];
+    const moduleTypes = [...new Set([...getMdmModuleTypes(entity.details), tag])];
+    const patch: Partial<MdmDetailRecord> & Record<string, unknown> = { tags, moduleTypes };
+    if (namespace !== undefined) {
+      if (!moduleId || isUnrestrictedMdmCaller(moduleId)) {
+        throw new AppError(
+          'MDM_FOREIGN_NAMESPACE',
+          'attachRole namespace writes require a caller moduleId',
+          400,
+          { mdmId },
+        );
+      }
+      patch[moduleId] = namespace;
+    }
+    return this.update({
+      mdmId,
+      expectedVersion: entity.version,
+      patch,
+    });
   }
 
   public async inactivate(input: MdmEntityInactivateInput): Promise<MdmEntityWriteResult> {
@@ -415,6 +607,8 @@ export class MdmEntity {
 
   public async delete(input: MdmEntityDeleteInput): Promise<MdmDeleteResult> {
     const entity = await this.get({ mdmId: input.mdmId });
+    const storedDocument = await MdmDocumentEntity.get(this.ctx, input.mdmId);
+    const storedDetails = MdmDocumentEntity.parseDetails(storedDocument);
     const relationships = await findEntityRelationships(this.ctx, [input.mdmId]);
     const active = activeRelationships(relationships);
     if (active.length > 0 && !input.allowActiveRelationships) {
@@ -455,7 +649,7 @@ export class MdmEntity {
           routine: 'mdm.entity.delete',
           before: {
             index: entity.index,
-            details: entity.details,
+            details: storedDetails,
           },
           after: null,
         });
@@ -510,10 +704,14 @@ export class MdmProspect {
   public constructor(private readonly ctx: RequestContext) {}
 
   public async create(input: MdmProspectCreateInput): Promise<MdmProspectWriteResult> {
+    const details = prepareMdmWriteDetails(
+      input.details as MdmProspectCreateDetails & Record<string, unknown>,
+      this.ctx.moduleId,
+    );
     const created = await createProspect(this.ctx, {
       detail: {
-        ...input.details,
-        status: input.details.status ?? 'New',
+        ...details,
+        status: details.status ?? 'New',
       } as CreateableMdmDetailInput,
     });
     return this.get({ mdmId: created.mdmId });
@@ -521,14 +719,18 @@ export class MdmProspect {
 
   public async get(input: MdmProspectGetInput): Promise<MdmProspectReadResult> {
     const result = await getProspect(this.ctx, input.mdmId);
-    return buildProspectReadResult(result.document, result.index as MdmProspectIndexRecord);
+    return buildProspectReadResult(this.ctx, result.document, result.index as MdmProspectIndexRecord);
   }
 
   public async update(input: MdmProspectUpdateInput): Promise<MdmProspectWriteResult> {
+    const patch = prepareMdmWriteDetails(
+      input.patch as Partial<MdmDetailRecord> & Record<string, unknown>,
+      this.ctx.moduleId,
+    );
     await updateProspect(this.ctx, {
       mdmId: input.mdmId,
       expectedVersion: input.expectedVersion,
-      patch: input.patch,
+      patch,
     });
     return this.get({ mdmId: input.mdmId });
   }
@@ -559,9 +761,10 @@ export class MdmProspect {
     const page = Math.max(1, input.page ?? 1);
     const pageSize = Math.max(1, input.pageSize ?? (filtered.length || 1));
     const offset = (page - 1) * pageSize;
+    const pageItems = filtered.slice(offset, offset + pageSize);
 
     return {
-      items: filtered.slice(offset, offset + pageSize),
+      items: await attachProjectedDetailsToIndexPage(this.ctx, pageItems),
       page,
       pageSize,
       total: filtered.length,
@@ -614,7 +817,7 @@ export class MdmCollection {
         throw new AppError('MDM_INDEX_MISSING', 'Document exists without entity index', 500, { mdmId });
       }
 
-      results.push(buildReadResult(document, index));
+      results.push(buildReadResult(this.ctx, document, index));
     }
 
     return results;
@@ -646,9 +849,10 @@ export class MdmCollection {
     const page = Math.max(1, input.page ?? 1);
     const pageSize = Math.max(1, input.pageSize ?? (filtered.length || 1));
     const offset = (page - 1) * pageSize;
+    const pageItems = filtered.slice(offset, offset + pageSize);
 
     return {
-      items: filtered.slice(offset, offset + pageSize),
+      items: await attachProjectedDetailsToIndexPage(this.ctx, pageItems),
       page,
       pageSize,
       total: filtered.length,
@@ -713,6 +917,7 @@ export class MdmCollection {
         status: details.status,
         moduleTypes: getMdmModuleTypes(details),
         tags: details.tags,
+        namespaces: details.namespaces ?? [],
       };
 
       if (includeRelationshipRefs) {

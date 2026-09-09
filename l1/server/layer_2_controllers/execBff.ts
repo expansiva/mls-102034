@@ -11,6 +11,7 @@ import {
   type BffRequest,
   type BffResponse,
   type RequestContext,
+  type RequestOrganizationContext,
   type RequestSessionContext,
 } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import { loadModuleRouter, resolveRoutineResolution } from '/_102034_/l1/server/layer_2_controllers/moduleRegistry.js';
@@ -41,6 +42,19 @@ type SessionContextInput = Partial<RequestSessionContext> & {
 export interface CreateRequestContextOptions {
   sessionContext?: SessionContextInput;
   sandbox?: boolean;
+  moduleId?: string;
+  organization?: Partial<RequestOrganizationContext>;
+}
+
+export function readOrganizationContext(
+  overrides: Partial<RequestOrganizationContext> = {},
+): RequestOrganizationContext {
+  const env = readAppEnv();
+  return {
+    countryCode: readString(overrides.countryCode) ?? env.organizationCountryCode,
+    currency: readString(overrides.currency) ?? env.organizationCurrency,
+    timezone: readString(overrides.timezone) ?? env.organizationTimezone,
+  };
 }
 
 export function createRequestContext(
@@ -56,6 +70,8 @@ export function createRequestContext(
       newId: () => createUuidV7(),
     },
     sessionContext: createSessionContext(options.sessionContext),
+    moduleId: readString(options.moduleId),
+    organization: readOrganizationContext(options.organization),
     sandbox: options.sandbox === true,
     requestMeta: undefined,
   };
@@ -195,6 +211,8 @@ export async function execBff(
     const claimedIdentity = trustedIdentityClaims(normalizedRequest.meta);
     const handlerCtx: RequestContext = {
       ...ctx,
+      moduleId: resolution.moduleId,
+      organization: ctx.organization,
       sessionContext: createSessionContext({
         ...ctx.sessionContext,
         actorId: claimedIdentity?.actorId ?? claimedIdentity?.userId ?? ctx.sessionContext.actorId,
