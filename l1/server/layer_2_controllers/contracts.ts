@@ -260,6 +260,8 @@ export interface FrontendAppRegistration {
   navigation?: FrontendNavigationItem[];
   moduleLinks?: FrontendNavigationItem[];
   clientShell?: FrontendClientShellConfig;
+  /** Same-origin favicon href injected into the served HTML (`<link rel="icon">`). */
+  faviconHref?: string;
 }
 
 export interface RoutineResolution {

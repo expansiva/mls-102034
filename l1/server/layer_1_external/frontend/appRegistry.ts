@@ -21,6 +21,7 @@ import {
   resolveProjectModuleImportUrl,
   resolveWebDistPath,
 } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
+import { resolveAppFaviconHref } from '/_102034_/l1/server/layer_1_external/frontend/faviconHtml.js';
 
 interface LoadedModuleUiDefinition {
   pageTitle?: string;
@@ -33,6 +34,7 @@ interface LoadedModuleUiDefinition {
 
 const moduleDefinitionCache = new Map<string, Promise<LoadedModuleUiDefinition | undefined>>();
 let cachedAppsPromise: Promise<FrontendAppRegistration[]> | null = null;
+let faviconChoiceLogged = false;
 
 function toPublicImportPath(importPath: string) {
   return importPath.startsWith('./') ? `/${importPath.slice(2)}` : importPath;
@@ -304,6 +306,11 @@ async function getConfiguredFrontendApps(): Promise<FrontendAppRegistration[]> {
       }
       const clientShell = project.type === 'client' ? normalizeClientShell(config.clientShell) : undefined;
       const layout = applyClientShellLayout(mergeLayoutPreferences(modulePreferences), clientShell);
+      const favicon = resolveAppFaviconHref(config.favicon);
+      if (!faviconChoiceLogged) {
+        console.info(`[favicon] ${favicon.href} (${favicon.source})`);
+        faviconChoiceLogged = true;
+      }
 
       const app: FrontendAppRegistration = {
         projectId,
@@ -323,6 +330,7 @@ async function getConfiguredFrontendApps(): Promise<FrontendAppRegistration[]> {
         pageTitle: moduleDefinition?.pageTitle ?? moduleConfig.moduleId,
         navigation: moduleConfig.navigation ?? moduleDefinition?.navigation ?? [],
         clientShell,
+        faviconHref: favicon.href,
       };
 
       return app;

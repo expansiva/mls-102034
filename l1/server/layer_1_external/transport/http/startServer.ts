@@ -3,6 +3,7 @@ import Fastify from 'fastify';
 import { existsSync, readFileSync } from 'node:fs';
 import { extname, join, normalize, resolve } from 'node:path';
 import { getFrontendAppByBasePath, getFrontendAppRegistrations, getAppPublicRootDir, getAppAssetRootDirs } from '/_102034_/l1/server/layer_1_external/frontend/appRegistry.js';
+import { injectFaviconLink, resolveAppFaviconHref } from '/_102034_/l1/server/layer_1_external/frontend/faviconHtml.js';
 import { readProjectsConfig, resolveWebDistPath } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import { classifyProjectAssetUrl } from '/_102034_/l1/server/layer_1_external/transport/http/classifyProjectAssetUrl.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
@@ -126,20 +127,22 @@ function buildBootConfigScript(app: FrontendAppRegistration) {
 }
 
 function injectBootConfig(html: string, app: FrontendAppRegistration) {
+  const faviconHref = app.faviconHref ?? resolveAppFaviconHref(undefined).href;
+  const withIcon = injectFaviconLink(html, faviconHref);
   const bootScript = buildBootConfigScript(app);
   if (!bootScript) {
-    return html;
+    return withIcon;
   }
 
-  if (html.includes('</head>')) {
-    return html.replace('</head>', `  ${bootScript}\n  </head>`);
+  if (withIcon.includes('</head>')) {
+    return withIcon.replace('</head>', `  ${bootScript}\n  </head>`);
   }
 
-  if (html.includes('<body>')) {
-    return html.replace('<body>', `<body>\n    ${bootScript}`);
+  if (withIcon.includes('<body>')) {
+    return withIcon.replace('<body>', `<body>\n    ${bootScript}`);
   }
 
-  return `${bootScript}\n${html}`;
+  return `${bootScript}\n${withIcon}`;
 }
 
 function readAppHtml(filePath: string, app: FrontendAppRegistration) {
