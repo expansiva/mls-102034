@@ -1,11 +1,15 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/frontend/faviconHtml.ts" enhancement="_blank" />
+import type { ProjectsConfig } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 
 /** Default tab icon: same-origin l3 asset of the master frontend (not23). */
 export const DEFAULT_APP_FAVICON_HREF = '/_102033_/l3/assets/favicon.png';
 
 export type FaviconSource = 'config' | 'default';
 
-export function resolveAppFaviconHref(favicon: string | undefined | null): { href: string; source: FaviconSource } {
+/** Indexed access on `ProjectsConfig.favicon` so a missing field is a compile error (not25 R1). */
+export function resolveAppFaviconHref(
+  favicon: ProjectsConfig['favicon'] | null,
+): { href: string; source: FaviconSource } {
   const candidate = typeof favicon === 'string' ? favicon.trim() : '';
   // Same-origin only: a leading `/` that is not protocol-relative (`//cdn...`).
   if (candidate.startsWith('/') && !candidate.startsWith('//')) {

@@ -10,7 +10,7 @@ import {
   resolveAppFaviconHref,
 } from '/_102034_/l1/server/layer_1_external/frontend/faviconHtml.js';
 import { handleHttpRequest } from '/_102034_/l1/server/layer_1_external/transport/http/startServer.js';
-import { resolveWebDistPath } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
+import { resolveWebDistPath, type ProjectsConfig } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 
 const spaHtml = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), '../../../../../mls-102033/l2/shared/spa/index.html'),
@@ -29,6 +29,23 @@ test('resolveAppFaviconHref uses config when same-origin and default otherwise',
     source: 'default',
   });
   assert.deepEqual(resolveAppFaviconHref('/me/icon.png'), { href: '/me/icon.png', source: 'config' });
+});
+
+test('not25 R2: ProjectsConfig.favicon is the typed config field (default and app)', () => {
+  const fromApp: ProjectsConfig = {
+    defaultProjectId: '1',
+    shellTemplates: { spa: './spa.html', pwa: './pwa.html' },
+    favicon: '/app/icon.png',
+    projects: { '1': { root: '.', type: 'client' } },
+  };
+  assert.deepEqual(resolveAppFaviconHref(fromApp.favicon), { href: '/app/icon.png', source: 'config' });
+
+  const fallback: ProjectsConfig = {
+    defaultProjectId: '1',
+    shellTemplates: { spa: './spa.html', pwa: './pwa.html' },
+    projects: { '1': { root: '.', type: 'client' } },
+  };
+  assert.deepEqual(resolveAppFaviconHref(fallback.favicon), { href: DEFAULT_APP_FAVICON_HREF, source: 'default' });
 });
 
 test('not25 T6: injected HTML contains same-origin rel=icon', () => {
