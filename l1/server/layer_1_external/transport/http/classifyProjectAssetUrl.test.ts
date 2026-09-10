@@ -20,3 +20,18 @@ test('classifyProjectAssetUrl covers the five kinds plus query string', () => {
   assert.equal(classifyProjectAssetUrl('/_libs/lit.js?v=1'), 'libs');
   assert.equal(classifyProjectAssetUrl('/_chunks/x.js?v=1'), null);
 });
+
+test('T1: l3 library asset is static', () => {
+  assert.equal(classifyProjectAssetUrl('/_102025_/l3/assets/x.wav'), 'static');
+  assert.equal(classifyProjectAssetUrl('/_102025_/l3/assets/collabNotification.wav?v=1'), 'static');
+});
+
+test('T2: l3 path with .. is refused', () => {
+  assert.equal(classifyProjectAssetUrl('/_102025_/l3/../../etc/passwd'), null);
+  assert.equal(classifyProjectAssetUrl('/_102025_/l3/foo/../../../etc/passwd'), null);
+});
+
+test('T3: l3 .js is static, never module', () => {
+  assert.equal(classifyProjectAssetUrl('/_102025_/l3/x.js'), 'static');
+  assert.notEqual(classifyProjectAssetUrl('/_102025_/l3/x.js'), 'module');
+});

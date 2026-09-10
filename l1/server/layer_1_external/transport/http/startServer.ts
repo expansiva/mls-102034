@@ -33,8 +33,10 @@ import type { BffRequest, FrontendAppRegistration, RequestContext } from '/_1020
 
 const WRITE_BEHIND_INTERVAL_MS = 5000;
 
-function getContentType(filePath: string) {
-  switch (extname(filePath)) {
+export function getContentType(filePath: string) {
+  // `extname('.wav')` is '' (dotfile with no extension); T4 passes the ext itself.
+  const ext = extname(filePath) || filePath;
+  switch (ext) {
     case '.html':
       return 'text/html; charset=utf-8';
     case '.js':
@@ -70,6 +72,12 @@ function getContentType(filePath: string) {
       return 'video/mp4';
     case '.pdf':
       return 'application/pdf';
+    case '.wav':
+      return 'audio/wav';
+    case '.mp3':
+      return 'audio/mpeg';
+    case '.ogg':
+      return 'audio/ogg';
     default:
       return 'text/plain; charset=utf-8';
   }
@@ -156,14 +164,16 @@ function tryReadProjectAsset(urlPath: string) {
     return readStaticFile(filePath);
   }
 
-  const match = /^\/(_\d+_)\/(l2)\/(.+)$/u.exec(path);
+  const match = /^\/(_\d+_)\/(l2|l3)\/(.+)$/u.exec(path);
   if (!match) {
     return null;
   }
 
   const [, projectSegment, layer, remainder] = match;
-  const assetPath = resolveWebDistPath(`./${projectSegment}/${layer}/${remainder}`);
-  if (!existsSync(assetPath)) {
+  const layerRoot = resolveWebDistPath(`./${projectSegment}/${layer}`);
+  const assetPath = normalize(join(layerRoot, remainder));
+  // Containment: `remainder` comes from the URL, so `..` must never escape the layer root.
+  if (!assetPath.startsWith(layerRoot) || !existsSync(assetPath)) {
     return null;
   }
 
