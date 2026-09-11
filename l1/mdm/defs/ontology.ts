@@ -76,7 +76,7 @@ export type RelationshipType =
   | 'SuppliesProduct'// company → product
   | 'PartnersWith'   // person → company (equity partnership)
   | 'Family'         // person ↔ person
-  | 'GuardianOf'     // person → animal
+  | 'GuardianOf'     // person → person | animal
   | 'CustomerOf'     // person/company → company
   | 'SupplierOf'     // company → company
   | 'MemberOf'       // person → company/group
@@ -641,7 +641,7 @@ export const RelationshipCatalog = {
     { type: 'SuppliesProduct',from: 'Company',          to: 'Product',      bidirectional: false, metadataExample: '{ leadTimeDays: 7, catalogCode: "SUP-001" }' },
     { type: 'PartnersWith',  from: 'Person',            to: 'Company',      bidirectional: false, metadataExample: '{ equityPct: 30, role: "managing-partner" }' },
     { type: 'Family',        from: 'Person',            to: 'Person',       bidirectional: true,  metadataExample: '{ degree: "spouse" | "child" | "parent" | "sibling" }' },
-    { type: 'GuardianOf',    from: 'Person',            to: 'Animal',       bidirectional: false, metadataExample: '{ since: "2020-05-10", guardianType: "owner" | "foster" }' },
+    { type: 'GuardianOf',    from: 'Person',            to: 'Person | Animal', bidirectional: false, metadataExample: '{ since: "2020-05-10", guardianType: "owner" | "foster" }' },
     { type: 'CustomerOf',    from: 'Person | Company',  to: 'Company',      bidirectional: false, metadataExample: '{ since: "2021-01-01", segment: "retail" }' },
     { type: 'SupplierOf',    from: 'Company',           to: 'Company',      bidirectional: false, metadataExample: '{ category: "raw-materials", contractMdmId: "uuid" }' },
     { type: 'MemberOf',      from: 'Person',            to: 'Company',      bidirectional: false, metadataExample: '{ role: "board-member", membershipType: "honorary" }' },
