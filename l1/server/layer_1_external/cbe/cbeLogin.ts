@@ -20,9 +20,12 @@ import {
   type CbeRequestLogin,
   type CbeResponseLogin,
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeTypes.js';
+import type { ProjectSettingsConfig, ProjectsConfig } from '/_102029_/l2/runtimeConfigTypes.js';
 
 const LOCAL_ORG_NAME = 'local';
 const LOCAL_OWNER = 'local';
+const DEFAULT_PROJECT_DRIVER = 'GitHub';
+const DEFAULT_PROJECT_URL = `${LOCAL_OWNER}/${LOCAL_OWNER}/${LOCAL_OWNER}`;
 /** Lowest id the platform assigns — anything below it is not a project (same floor cbeMiniCfe uses). */
 const MIN_PROJECT_ID = 100000;
 
@@ -59,7 +62,41 @@ function readProjectName(projectId: number): string {
   return `mls-${projectId}`;
 }
 
-function buildProjectSettings(
+function defaultProjectSettings(): ProjectSettingsConfig {
+  return { driver: DEFAULT_PROJECT_DRIVER, url: DEFAULT_PROJECT_URL };
+}
+
+function warnProjectSettingsAbsent(projectId: number): ProjectSettingsConfig {
+  console.warn(`[cbe] project ${projectId}: projectSettings absent — using default`);
+  return defaultProjectSettings();
+}
+
+/** Last-three-segment count used by getMyKeysBranch (trailing slash stripped once). */
+function projectUrlSegmentCount(url: string): number {
+  const trimmed = url.endsWith('/') ? url.substring(0, url.length - 1) : url;
+  return trimmed.split('/').length;
+}
+
+export function readProjectSettings(projectId: number): ProjectSettingsConfig {
+  const configPath = resolveProjectSourcePath(projectId, 'l5/config.json');
+  if (!existsSync(configPath)) return warnProjectSettingsAbsent(projectId);
+  try {
+    const parsed = JSON.parse(readFileSync(configPath, 'utf8')) as ProjectsConfig;
+    const block = parsed.projectSettings;
+    if (!block || typeof block.driver !== 'string' || !block.driver || typeof block.url !== 'string' || !block.url) {
+      return warnProjectSettingsAbsent(projectId);
+    }
+    if (projectUrlSegmentCount(block.url) < 3) {
+      console.warn(`[cbe] project ${projectId}: projectSettings.url rejected — getMyKeysBranch needs >= 3 '/'-separated segments — using default`);
+      return defaultProjectSettings();
+    }
+    return block;
+  } catch {
+    return warnProjectSettingsAbsent(projectId);
+  }
+}
+
+export function buildProjectSettings(
   projectId: number,
   projectsLastModified: CbeProjectsLastModified[],
 ): CbePrjSettings | null {
@@ -67,11 +104,13 @@ function buildProjectSettings(
   const filesInfo = getFilesIfNewer(projectId, frontendLastModified);
   if (!filesInfo) return null;
 
+  const settings = readProjectSettings(projectId);
   return {
     id: projectId,
-    name: readProjectName(projectId),
+    name: settings.name ? settings.name : readProjectName(projectId),
     owner: LOCAL_OWNER,
-    // projectDriver marker: the cfe rejects 'local'/'mls' in
+    // projectDriver/projectURL come from l5/config.json projectSettings when present;
+    // the default below is used otherwise. The cfe rejects 'local'/'mls' in
     // loadProjectInfoIfNeeded, and any other driver is only consulted on an
     // IndexedDB cache miss — which the login always fills first. 'GitHub' here
     // never reaches the network on the VM; a dedicated 'vm' driver in the cfe
@@ -82,11 +121,11 @@ function buildProjectSettings(
     // has 1, throwing "Insufficient information to progress" the moment
     // serviceSave.ts's initInfoProject() runs. Three segments keep the same
     // 'local' placeholder convention already used elsewhere on the VM.
-    value: JSON.stringify({ projectDriver: 'GitHub', projectURL: `${LOCAL_OWNER}/${LOCAL_OWNER}/${LOCAL_OWNER}` }),
+    value: JSON.stringify({ projectDriver: settings.driver, projectURL: settings.url }),
     created_at: '',
     archived_at: '',
     repository_lastModified: filesInfo.lastModified,
-    userAuth: 'public',
+    userAuth: settings.userAuth === 'private' ? 'private' : 'public',
     prj_dependencies: readProjectDependencies(projectId),
     files: filesInfo.files,
   };

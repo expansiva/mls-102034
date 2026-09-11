@@ -11,6 +11,8 @@ declare module 'adm-zip' {
   class AdmZip {
     constructor(input?: string | Buffer);
     getEntries(): AdmZipEntry[];
+    addFile(entryName: string, fileData: Buffer): void;
+    writeZip(targetFileName: string): void;
   }
 
   export = AdmZip;
