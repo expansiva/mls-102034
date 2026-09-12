@@ -6,6 +6,7 @@ import {
   createRequestContext,
   execBff,
 } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
+import { moduleAuthorities } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
 import { AppError } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import { CacheRuntimeMemory } from '/_102034_/l1/server/layer_1_external/cache/CacheRuntimeMemory.js';
 import { CacheRuntimeRedis } from '/_102034_/l1/server/layer_1_external/cache/CacheRuntimeRedis.js';
@@ -65,7 +66,11 @@ test('invite writes the login row, returns a token, and findByLogin matches', as
         assert.equal(input.email, 'convidado@academia.test');
         assert.equal(input.moduleId, 'mensalidadesAcademia');
         assert.equal(input.actorId, 'aluno');
-        return { token: 'a'.repeat(64), expiresAt: new Date(Date.now() + 7 * 86400000).toISOString() };
+        return {
+          token: 'a'.repeat(64),
+          expiresAt: new Date(Date.now() + 7 * 86400000).toISOString(),
+          teamIds: ['team-mensalidadesAcademia-aluno'],
+        };
       },
     },
   });
@@ -77,6 +82,7 @@ test('invite writes the login row, returns a token, and findByLogin matches', as
     actorId: 'aluno',
   });
   assert.equal(result.token.length, 64);
+  assert.deepEqual(result.teamIds, ['team-mensalidadesAcademia-aluno']);
   assert.equal(await ctx.mdm.identity.findByLogin('convidado@academia.test'), aluno.mdmId);
 });
 
@@ -112,6 +118,42 @@ test('execBff with a verified e-mail fills session.person and actorId from the M
   );
   assert.equal(cached?.mdmId, aluno.mdmId);
   assert.equal(cached?.name, 'Aluno Sessao');
+});
+
+test('JWT active_org roles become actorScope and person stays the mdmId', async () => {
+  const ctx = createRequestContext();
+  const aluno = await createPerson(ctx, 'Aluno Papel');
+  await ctx.mdm.identity.setLogin(aluno.mdmId, 'papel@academia.test');
+
+  const claims = {
+    sub: 'auth-sub-papel',
+    email: 'papel@academia.test',
+    active_org: {
+      teams: [{ id: 't1', name: 'mensalidadesAcademia:aluno', roles: ['mensalidadesAcademia:aluno'] }],
+    },
+  };
+  const actorScope = moduleAuthorities(claims, 'mensalidadesAcademia');
+  assert.deepEqual(actorScope, ['mensalidadesAcademia:aluno']);
+
+  const session = await applyVerifiedEmailToSession(
+    ctx,
+    { ...ctx.sessionContext, actorScope },
+    claims.email,
+  );
+  assert.deepEqual(session.actorScope, ['mensalidadesAcademia:aluno']);
+  assert.equal(session.person?.mdmId, aluno.mdmId);
+
+  const result = await execBff({
+    routine: 'mdm.entity.get',
+    params: { mdmId: aluno.mdmId },
+    meta: {
+      source: 'http',
+      verifiedUserId: claims.sub,
+      verifiedEmail: claims.email,
+      verifiedAuthorities: actorScope,
+    },
+  }, ctx);
+  assert.equal(result.statusCode, 200);
 });
 
 async function runCacheContract(label: string, cache: ICacheRuntime): Promise<void> {

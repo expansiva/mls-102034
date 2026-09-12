@@ -610,9 +610,38 @@ test('module authorities come from the claims and are filtered by module', () =>
   assert.deepEqual(moduleAuthorities(claims, 'buildFlowFsm').sort(), ['buildFlowFsm:fieldWorker', 'buildFlowFsm:projectManager']);
   assert.deepEqual(moduleAuthorities(claims, 'petShop'), ['petShop:admin']);
   assert.deepEqual(moduleAuthorities(claims, 'other'), []);
-  // No claims (the issuer does not emit them yet) reads as "no authority" — today's behaviour.
+  // No authorities anywhere reads as "no authority" — today's empty-scope behaviour.
   assert.deepEqual(moduleAuthorities(undefined, 'buildFlowFsm'), []);
   assert.deepEqual(moduleAuthorities({ sub: 'u1', email: 'a@b.c' }, 'buildFlowFsm'), []);
+});
+
+test('module authorities also come from active_org.teams[].roles', () => {
+  const activeOnly = {
+    sub: 'u1',
+    email: 'a@b.c',
+    active_org: {
+      teams: [
+        { id: 't1', name: 'mensalidadesAcademia:aluno', roles: ['mensalidadesAcademia:aluno'] },
+        { id: 't2', name: 'other', roles: ['petShop:admin'] },
+        { id: 't3', name: 'no-roles' },
+      ],
+    },
+  };
+  assert.deepEqual(moduleAuthorities(activeOnly, 'mensalidadesAcademia'), ['mensalidadesAcademia:aluno']);
+  assert.deepEqual(moduleAuthorities(activeOnly, 'petShop'), ['petShop:admin']);
+  assert.deepEqual(moduleAuthorities(activeOnly, 'other'), []);
+
+  const union = {
+    sub: 'u1',
+    email: 'a@b.c',
+    authorities: ['mensalidadesAcademia:aluno', 'mensalidadesAcademia:admin'],
+    roles: ['mensalidadesAcademia:aluno'],
+    active_org: { teams: [{ roles: ['mensalidadesAcademia:aluno', 'mensalidadesAcademia:responsavel'] }] },
+  };
+  assert.deepEqual(
+    moduleAuthorities(union, 'mensalidadesAcademia').sort(),
+    ['mensalidadesAcademia:admin', 'mensalidadesAcademia:aluno', 'mensalidadesAcademia:responsavel'],
+  );
 });
 
 test('deny-by-default stays OFF until the issuer emits authorities', () => {

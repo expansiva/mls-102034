@@ -115,8 +115,8 @@ export function trustedIdentityClaims(meta: BffRequest['meta']): BffRequest['met
       source: 'http',
       actorId: meta.verifiedUserId,
       userId: meta.verifiedEmail,
-      // The authorities the transport filtered for THIS module. Absent while the issuer does not emit
-      // them, which reads as "no authority" — today's behaviour.
+      // The authorities the transport filtered for THIS module (`active_org.teams[].roles`, plus
+      // top-level authorities/roles). Absent when none match — today's empty-scope behaviour.
       ...(meta.verifiedAuthorities?.length ? { actorScope: meta.verifiedAuthorities } : {}),
     }
     : undefined;

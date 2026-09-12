@@ -29,6 +29,7 @@ export interface MdmIdentityInviteInput {
 export interface MdmIdentityInviteResult {
   token: string;
   expiresAt: string;
+  teamIds?: string[];
 }
 
 function normalizeLoginEmail(email: string): string {
@@ -242,7 +243,7 @@ export async function createCollabAuthInviteHttp(input: {
     }),
   });
   const body = await response.json().catch(() => ({})) as {
-    invite?: { token?: string; expires_at?: string };
+    invite?: { token?: string; expires_at?: string; team_ids?: string[] };
     msg?: string;
   };
   if (!response.ok || !body.invite?.token) {
@@ -255,7 +256,10 @@ export async function createCollabAuthInviteHttp(input: {
   const expiresAt = body.invite.expires_at
     ? new Date(body.invite.expires_at).toISOString()
     : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-  return { token: body.invite.token, expiresAt };
+  const teamIds = Array.isArray(body.invite.team_ids)
+    ? body.invite.team_ids.filter((id): id is string => typeof id === 'string' && id.length > 0)
+    : undefined;
+  return { token: body.invite.token, expiresAt, ...(teamIds?.length ? { teamIds } : {}) };
 }
 
 function defaultInviteClient(): CollabAuthInviteClient {

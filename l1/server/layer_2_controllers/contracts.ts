@@ -193,7 +193,7 @@ export interface CollabAuthInviteClient {
     apiKey: string;
     moduleId: string;
     actorId: string;
-  }): Promise<{ token: string; expiresAt: string }>;
+  }): Promise<{ token: string; expiresAt: string; teamIds?: string[] }>;
 }
 
 export interface RequestSessionContext {

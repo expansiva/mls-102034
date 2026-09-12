@@ -20,12 +20,13 @@ export interface CollabAuthClaims extends JWTPayload {
   /**
    * Module authorities of the user, as `<moduleId>:<actorId>` (`petShop:admin`) — the platform's own role
    * shape (`sites:admin`, `collab-llm:operator`) and exactly what the generated controllers already gate
-   * on. Optional because the issuer does not emit them yet: until it does, this reads as "no authority",
-   * which is today's behaviour.
+   * on. The issuer writes them on `active_org.teams[].roles`; these top-level fields are read if present.
    */
   authorities?: string[];
   /** Same list under the name the platform uses elsewhere; whichever arrives is read. */
   roles?: string[];
+  /** Org selected at login. `teams[].roles` is `<module>:<permission>` — the platform convention. */
+  active_org?: { id?: string; teams?: Array<{ id?: string; name?: string; roles?: string[] }> };
 }
 
 /**
@@ -37,9 +38,13 @@ export interface CollabAuthClaims extends JWTPayload {
  */
 export function moduleAuthorities(claims: CollabAuthClaims | undefined, moduleId: string): string[] {
   if (!claims || !moduleId) return [];
+  const teamRoles = (claims.active_org?.teams ?? []).flatMap(team =>
+    Array.isArray(team.roles) ? team.roles : [],
+  );
   const declared = [
     ...(Array.isArray(claims.authorities) ? claims.authorities : []),
     ...(Array.isArray(claims.roles) ? claims.roles : []),
+    ...teamRoles,
   ].filter((value): value is string => typeof value === 'string' && value.length > 0);
   const prefix = `${moduleId}:`;
   return [...new Set(declared.filter(value => value.startsWith(prefix)))];
