@@ -70,6 +70,11 @@ export interface MdmPlatformService {
   pending?: readonly string[];
 }
 
+export interface MdmPlatformEvent {
+  eventId: string;
+  on: string;
+}
+
 export interface MdmPlatformCatalogArtifact {
   catalogVersion: string;
   layers: readonly {
@@ -115,4 +120,6 @@ export interface MdmPlatformCatalogArtifact {
   services: readonly MdmPlatformService[];
   lookups: readonly { lookup: string; cost: string }[];
   invariants: readonly string[];
+  /** Platform events a module may receive with `inbound.from: 'organization'`. No handler in alpha. */
+  events?: readonly MdmPlatformEvent[];
 }

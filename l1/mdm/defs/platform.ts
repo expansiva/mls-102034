@@ -101,4 +101,12 @@ export const MdmPlatformCatalog = {
     'countryCode comes from the organization (ctx.organization.countryCode), never from UI language',
     'dependency is always module → MDM; the MDM knows no module',
   ],
+
+  events: [
+    { eventId: 'mdmCreated', on: 'MdmEntity.create' },
+    { eventId: 'mdmUpdated', on: 'MdmEntity.update' },
+    { eventId: 'mdmInactivated', on: 'MdmEntity.inactivate' },
+    { eventId: 'loginGranted', on: 'login.granted' },
+    { eventId: 'inviteAccepted', on: 'invite.accepted' },
+  ],
 } as const;
