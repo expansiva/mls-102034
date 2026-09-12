@@ -58,6 +58,13 @@ export interface AppEnv {
   attachmentMaxBytes: number;
   attachmentAllowedMime: string[];
   attachmentLocalDir?: string;
+  /**
+   * Redis connection URL. Present on the VM (`install.sh` installs Redis); absent on lima.
+   * Identity cache branches on this capability, never on the host name.
+   */
+  redisUrl?: string;
+  /** TTL of `identity:login:<email>` cache entries. Default 300 s. */
+  identityCacheTtlSeconds: number;
 }
 
 function parseBoolean(value: string | undefined, defaultValue: boolean): boolean {
@@ -199,5 +206,7 @@ export function readAppEnv(): AppEnv {
     attachmentMaxBytes: Number(readEnvValue('ATTACHMENT_MAX_BYTES', appEnv) ?? DEFAULT_ATTACHMENT_MAX_BYTES),
     attachmentAllowedMime: parseAllowedMime(readEnvValue('ATTACHMENT_ALLOWED_MIME', appEnv)),
     attachmentLocalDir: readEnvValue('ATTACHMENT_LOCAL_DIR', appEnv) || undefined,
+    redisUrl: readEnvValue('REDIS_URL', appEnv) || undefined,
+    identityCacheTtlSeconds: Number(readEnvValue('IDENTITY_CACHE_TTL_SECONDS', appEnv) ?? 300),
   };
 }

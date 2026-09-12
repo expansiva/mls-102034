@@ -18,6 +18,12 @@ import { loadModuleRouter, resolveRoutineResolution } from '/_102034_/l1/server/
 import { createMemoryDataRuntime } from '/_102034_/l1/mdm/layer_1_external/data/memory/MdmDataRuntimeMemory.js';
 import { getSharedDataRuntime } from '/_102034_/l1/mdm/layer_1_external/data/runtimeFactory.js';
 import { createMdmFacade } from '/_102034_/l1/mdm/layer_3_usecases/mdmFacade.js';
+import { resolveSessionPerson } from '/_102034_/l1/mdm/layer_3_usecases/identityUsecases.js';
+import { CacheRuntimeMemory } from '/_102034_/l1/server/layer_1_external/cache/CacheRuntimeMemory.js';
+import {
+  getSharedIdentityCache,
+  identityCacheTtlSeconds,
+} from '/_102034_/l1/server/layer_1_external/cache/identityCache.js';
 import { MonitorExecutionEntity } from '/_102034_/l1/monitor/layer_4_entities/MonitorExecutionEntity.js';
 import {
   getStatusGroup,
@@ -37,6 +43,7 @@ type SessionContextInput = Partial<RequestSessionContext> & {
   actorId?: string;
   actorScope?: string[];
   workspaceId?: string;
+  person?: RequestSessionContext['person'];
 };
 
 export interface CreateRequestContextOptions {
@@ -44,6 +51,8 @@ export interface CreateRequestContextOptions {
   sandbox?: boolean;
   moduleId?: string;
   organization?: Partial<RequestOrganizationContext>;
+  cache?: RequestContext['cache'];
+  collabAuthInvite?: RequestContext['collabAuthInvite'];
 }
 
 export function readOrganizationContext(
@@ -64,6 +73,8 @@ export function createRequestContext(
   const ctx = {
     data: dataRuntime,
     mdm: undefined as unknown as RequestContext['mdm'],
+    cache: options.cache ?? new CacheRuntimeMemory(identityCacheTtlSeconds()),
+    collabAuthInvite: options.collabAuthInvite,
     log: new ConsoleLogger(),
     clock: createClock(),
     idGenerator: {
@@ -80,7 +91,7 @@ export function createRequestContext(
 }
 
 export function createDefaultRequestContext(): RequestContext {
-  return createRequestContext(getSharedDataRuntime());
+  return createRequestContext(getSharedDataRuntime(), { cache: getSharedIdentityCache() });
 }
 
 /**
@@ -235,6 +246,12 @@ export async function execBff(
       },
     };
     handlerCtx.mdm = createMdmFacade(handlerCtx);
+    handlerCtx.sessionContext = await applyVerifiedEmailToSession(
+      handlerCtx,
+      handlerCtx.sessionContext,
+      normalizedRequest.meta?.verifiedEmail,
+    );
+    handlerCtx.mdm = createMdmFacade(handlerCtx);
 
     response = await handler({
       request: normalizedRequest,
@@ -378,6 +395,22 @@ export async function execBff(
   }
 }
 
+/** Resolve the MDM person for a verified login e-mail onto the session. No row → unchanged. */
+export async function applyVerifiedEmailToSession(
+  ctx: RequestContext,
+  session: RequestSessionContext,
+  verifiedEmail: string | undefined,
+): Promise<RequestSessionContext> {
+  if (!verifiedEmail) return session;
+  const person = await resolveSessionPerson(ctx, verifiedEmail);
+  if (!person) return session;
+  return createSessionContext({
+    ...session,
+    actorId: person.mdmId,
+    person,
+  });
+}
+
 export function createSessionContext(overrides: SessionContextInput = {}): RequestSessionContext {
   const env = readAppEnv();
   const runtime = readProjectRuntimeMetadata();
@@ -386,6 +419,7 @@ export function createSessionContext(overrides: SessionContextInput = {}): Reque
   const actorId = readString(overrides.actorId) ?? readString(overrides.actorSession?.actorId) ?? env.actorId;
   const actorScope = overrides.actorScope?.length ? overrides.actorScope : (overrides.actorSession?.scope?.length ? overrides.actorSession.scope : env.actorScope);
   const workspaceId = readString(overrides.workspaceId) ?? readString(overrides.currentWorkspace?.workspaceId) ?? env.currentWorkspaceId;
+  const person = overrides.person;
   const project = {
     projectId: readString(overrides.project?.projectId) ?? env.projectId ?? runtime.projectId,
     domain: readString(overrides.project?.domain) ?? env.projectDomain ?? runtime.domain,
@@ -401,6 +435,7 @@ export function createSessionContext(overrides: SessionContextInput = {}): Reque
     actorId,
     actorScope,
     workspaceId,
+    ...(person ? { person } : {}),
     businessContext: { activeCompanyId, activeUnitId },
     actorSession: { actorId, scope: actorScope },
     currentWorkspace: { workspaceId },

@@ -71,12 +71,16 @@ export const mdmPlatformCatalog = {
         "tag": "<login e-mail>",
         "module": "organization"
       },
-      "lookup": "findTagsByTag(entityType, tag, module) — indexed columns",
+      "lookup": "ctx.mdm.identity.findByLogin(email) — indexed mdm_tag (namespace=login)",
       "invariant": "one login e-mail → one record; one record → at most one login row",
+      "services": [
+        "findByLogin(email) → mdmId | null",
+        "setLogin(mdmId, email) — uniqueness MDM_LOGIN_TAKEN; one Person → at most one login row",
+        "invite({ mdmId, email, moduleId, actorId }) → { token, expiresAt } — writes login row, asks collab-auth by API key",
+        "session.person: { mdmId, email, name } on RequestSessionContext when a login row exists"
+      ],
       "pending": [
-        "uniqueness of (namespace=login, tag) across entities",
-        "facade findByTag / setLogin",
-        "invitation writes collab-auth role + login row + attachRole"
+        "collab-auth emits <module>:<actor> as active_org.teams[].roles (auth.ts:157), not as top-level authorities/roles that bffAuth.ts:38-45 reads"
       ]
     },
     "otherIdentifiers": "one mdm_tag row per identifier, one namespace each (external system id, badge, card)",
@@ -111,7 +115,8 @@ export const mdmPlatformCatalog = {
         "(entityType, tag, module)",
         "(entityType, namespace, module)",
         "(module, tag)",
-        "unique (entityType, entityId, tag, module)"
+        "unique (entityType, entityId, tag, module)",
+        "unique (namespace, tag, module) WHERE namespace='login'"
       ],
       "operations": [
         "mdm.tag.add",

@@ -107,6 +107,13 @@ authenticating this route authenticates the whole app.
   (they reach `execBff` as `verifiedUserId`/`verifiedEmail`), `requestMeta.userId` is overwritten with
   `claims.email`, and the shell redirects to the login on a 401.
 
+**What arrives in `sessionContext.person`.** When the verified e-mail has a login row in `mdm_tag`
+(`namespace='login'`, module `organization`), `execBff` sets `sessionContext.person = { mdmId, email, name }`
+and `sessionContext.actorId = mdmId`. Type: `PlatformSessionPerson`. Without a login row, `person` is
+absent and `actorId` stays the verified `sub` / env override — modules without an external actor keep
+working. Lookup is cached (`identity:login:<email>`) by capability: Redis when `REDIS_URL` is set, memory
+otherwise.
+
 **Identity in telemetry** is the user's EMAIL (`meta.userId`), because a display name is not unique. It is
 telemetry only: nothing authorizes by it.
 

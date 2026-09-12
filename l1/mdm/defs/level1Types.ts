@@ -99,6 +99,7 @@ export interface MdmPlatformCatalogArtifact {
       };
       lookup: string;
       invariant: string;
+      services?: readonly string[];
       pending: readonly string[];
     };
     otherIdentifiers: string;

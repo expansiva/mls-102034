@@ -36,6 +36,8 @@ export interface TableIndexDefinition {
   name: string;
   columns: TableIndexColumnDefinition[];
   unique?: boolean;
+  /** Partial-index predicate, e.g. `"namespace" = 'login'`. */
+  where?: string;
 }
 
 export interface DynamoTableConfig {

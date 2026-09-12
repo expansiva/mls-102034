@@ -80,9 +80,8 @@ identifiers**: login e-mail, external system ids, badge numbers, one namespace e
 **Login (decided 11/09/2026):** a person who signs in has one row `{ entityType: 'MdmEntity', entityId: mdmId,
 namespace: 'login', tag: <login e-mail>, module: 'organization' }`. The JWT carries the login e-mail and the
 authorities `<moduleId>:<actorId>`; the MDM carries where the person exists (`moduleTypes`) and each
-module's data (`details[<moduleId>]`). Pending in the engine: uniqueness of `(namespace='login', tag)`
-**across** entities (today's unique index is per entity), and facade methods `findByTag` / `setLogin`
-(the tag table is not on `ctx.mdm` yet).
+module's data (`details[<moduleId>]`). Unique across entities: `(namespace='login', tag, module)`.
+Facade: `ctx.mdm.identity.findByLogin` / `setLogin` / `invite` — see §11.
 
 ## 6. Prospects and promotion
 
@@ -140,9 +139,25 @@ tables are audited by the platform is a pending platform decision, not something
 | emitter (Node, no LLM) and byte-for-byte drift test | `scripts/emitLevel1Defs.ts`, `scripts/emitLevel1Defs.test.ts` |
 | record types (`BaseMdmDetailRecord`, `PersonDetailRecord`, …, `MdmTagRecord`, params) | `module.ts` |
 | tables, indexes, write modes | `persistence.ts`, `tableNames.ts`, `../sql/001_init.sql` |
-| facade (`ctx.mdm`): `MdmEntity`, `MdmProspect`, `MdmCollection`, `MdmAttachment`, `createMdmFacade` | `layer_3_usecases/mdmFacade.ts` |
+| facade (`ctx.mdm`): `MdmEntity`, `MdmProspect`, `MdmCollection`, `MdmAttachment`, `MdmIdentity`, `createMdmFacade` | `layer_3_usecases/mdmFacade.ts` |
 | lookups, persistence of records and relationships | `layer_3_usecases/internal/*` |
 | tags, comments, attachments, kv, sequences, status history | `layer_3_usecases/*Usecases.ts` |
 | HTTP routes (`mdm.entity.*`, `mdm.prospect.*`, `mdm.relationship.*`, `mdm.tag.*`, …) | `layer_2_controllers/router.ts` |
 | Postgres / DynamoDB / memory runtimes, write-behind worker, restore | `layer_1_external/**` |
 | level-1 defs generated from this engine for the agents | `l4/organization/ontology/*.defs.ts` (subtypes, `index.defs.ts`, `platform.defs.ts`) |
+
+## 11. Identity facade
+
+`ctx.mdm.identity` is the platform login surface. A module never looks up a person by e-mail.
+
+| method | effect |
+|---|---|
+| `findByLogin(email)` | indexed `mdm_tag` lookup, `namespace='login'`, module `organization` → `mdmId` or `null`. Cached (`identity:login:<email>` → `{mdmId, name}`). |
+| `setLogin(mdmId, email)` | writes that login row; refuses `MDM_LOGIN_TAKEN` if the e-mail belongs to another person; replaces the previous login of the same person (one row). Invalidates the cache. |
+| `invite({ mdmId, email, moduleId, actorId })` | `setLogin` then asks collab-auth (`POST /internal/orgs/:id/invites`, API key, org role `member`) and returns `{ token, expiresAt }`. No password: accept is OAuth with the same e-mail. |
+
+`execBff` fills `sessionContext.person: { mdmId, email, name }` and `sessionContext.actorId = mdmId` when the verified e-mail has a login row. Without a row, `person` is absent and `actorId` stays as before. Telemetry `requestMeta.userId` remains the e-mail.
+
+Cache implementation is chosen by capability: Redis when `REDIS_URL` is set (VM), in-memory otherwise (lima). TTL default 300 s (`IDENTITY_CACHE_TTL_SECONDS`).
+
+Type exported for l1/l2: `PlatformSessionPerson` from `l1/server/layer_2_controllers/contracts.ts`.

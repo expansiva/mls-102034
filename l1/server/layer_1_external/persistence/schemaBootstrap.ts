@@ -148,10 +148,11 @@ export function sanitizeDefinitionIndexes<T extends {
 }
 
 function buildCreateIndexSql(definition: ResolvedTableDefinition): string[] {
-  return (sanitizeDefinitionIndexes(definition).indexes ?? []).map((index) =>
-    `CREATE ${index.unique ? 'UNIQUE ' : ''}INDEX ${quoteIdentifier(index.name)}
-     ON ${quoteIdentifier(definition.tableName)} (${index.columns.map((column) => renderIndexColumn(column)).join(', ')})`,
-  );
+  return (sanitizeDefinitionIndexes(definition).indexes ?? []).map((index) => {
+    const whereSql = index.where ? ` WHERE ${index.where}` : '';
+    return `CREATE ${index.unique ? 'UNIQUE ' : ''}INDEX ${quoteIdentifier(index.name)}
+     ON ${quoteIdentifier(definition.tableName)} (${index.columns.map((column) => renderIndexColumn(column)).join(', ')})${whereSql}`;
+  });
 }
 
 async function ensureTimescaleAvailable(pool: Pool): Promise<boolean> {

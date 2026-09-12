@@ -1,5 +1,6 @@
 /// <mls fileReference="_102034_/l1/server/layer_2_controllers/contracts.ts" enhancement="_blank" />
 import type { IDataRuntime } from '/_102034_/l1/server/layer_1_external/data/runtime.js';
+import type { ICacheRuntime } from '/_102034_/l1/server/layer_1_external/cache/CacheRuntimeMemory.js';
 import type { MdmFacade } from '/_102034_/l1/mdm/layer_3_usecases/mdmFacade.js';
 
 export interface BffRequestTelemetryEvent {
@@ -178,12 +179,31 @@ export interface RequestOrganizationContext {
   timezone?: string;
 }
 
+/** Person resolved from the login row of `mdm_tag`. Absent when the e-mail has no login. */
+export interface PlatformSessionPerson {
+  mdmId: string;
+  email: string;
+  name: string;
+}
+
+export interface CollabAuthInviteClient {
+  createInvite(input: {
+    orgId: string;
+    email: string;
+    apiKey: string;
+    moduleId: string;
+    actorId: string;
+  }): Promise<{ token: string; expiresAt: string }>;
+}
+
 export interface RequestSessionContext {
   activeCompanyId?: string;
   activeUnitId?: string;
   actorId?: string;
   actorScope?: string[];
   workspaceId?: string;
+  /** Set when `mdm.identity.findByLogin` resolves the verified e-mail. */
+  person?: PlatformSessionPerson;
   businessContext: RequestBusinessContext;
   actorSession: RequestActorSession;
   currentWorkspace: RequestCurrentWorkspace;
@@ -193,6 +213,9 @@ export interface RequestSessionContext {
 export interface RequestContext {
   data: IDataRuntime;
   mdm: MdmFacade;
+  cache: ICacheRuntime;
+  /** Test/override seam for collab-auth invites. Production uses COLLAB_AUTH_* env. */
+  collabAuthInvite?: CollabAuthInviteClient;
   log: ILogger;
   clock: IClock;
   idGenerator: IIdGenerator;

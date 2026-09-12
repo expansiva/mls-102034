@@ -44,6 +44,13 @@ import type {
   RelationshipStatus,
 } from '/_102034_/l1/mdm/module.js';
 import type { MdmProspectStatus, MdmStatus, MdmSubtype, RelationshipType } from '/_102034_/l1/mdm/defs/ontology.js';
+import {
+  findByLogin,
+  invite,
+  setLogin,
+  type MdmIdentityInviteInput,
+  type MdmIdentityInviteResult,
+} from '/_102034_/l1/mdm/layer_3_usecases/identityUsecases.js';
 
 const DEFAULT_GET_MANY_CHUNK_SIZE = 100;
 
@@ -232,6 +239,7 @@ export interface MdmFacade {
   prospect: MdmProspect;
   collection: MdmCollection;
   attachment: MdmAttachment;
+  identity: MdmIdentity;
 }
 
 /**
@@ -990,11 +998,28 @@ export class MdmAttachment {
   }
 }
 
+export class MdmIdentity {
+  public constructor(private readonly ctx: RequestContext) {}
+
+  public findByLogin(email: string): Promise<string | null> {
+    return findByLogin(this.ctx, email);
+  }
+
+  public setLogin(mdmId: string, email: string): Promise<{ mdmId: string; email: string }> {
+    return setLogin(this.ctx, mdmId, email);
+  }
+
+  public invite(input: MdmIdentityInviteInput): Promise<MdmIdentityInviteResult> {
+    return invite(this.ctx, input);
+  }
+}
+
 export function createMdmFacade(ctx: RequestContext): MdmFacade {
   return {
     entity: new MdmEntity(ctx),
     prospect: new MdmProspect(ctx),
     collection: new MdmCollection(ctx),
     attachment: new MdmAttachment(ctx),
+    identity: new MdmIdentity(ctx),
   };
 }

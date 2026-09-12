@@ -24,6 +24,7 @@ test.beforeEach(() => {
   delete process.env.PROJECT_ID;
   delete process.env.PROJECT_DOMAIN;
   delete process.env.STUDIO_ENABLED;
+  delete process.env.REDIS_URL;
   resetSharedBffExecutionSeriesStore();
   resetModuleRouterCache();
 });

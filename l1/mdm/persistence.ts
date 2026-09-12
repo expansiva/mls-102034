@@ -463,6 +463,12 @@ export const tableDefinitions: TableDefinition[] = [
       { name: 'idx_mdm_tag_namespace', columns: ['entityType', 'namespace', 'module'] },
       { name: 'idx_mdm_tag_module_tag', columns: ['module', 'tag'] },
       { name: 'idx_mdm_tag_unique', columns: ['entityType', 'entityId', 'tag', 'module'], unique: true },
+      {
+        name: 'idx_mdm_tag_login_unique',
+        columns: ['namespace', 'tag', 'module'],
+        unique: true,
+        where: `"namespace" = 'login'`,
+      },
     ],
     dynamo: {
       tableNameByEnv: {
