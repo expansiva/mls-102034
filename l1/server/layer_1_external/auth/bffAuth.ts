@@ -30,14 +30,12 @@ export interface CollabAuthClaims extends JWTPayload {
 }
 
 /**
- * The authorities of a module, from verified claims — `<moduleId>:<actorId>` filtered by this module.
- *
- * The prefix is the filter, not a convention to re-derive: an authority of another module says nothing
- * about this one. The list is what `sessionContext.actorScope` becomes, which is what `enforceActors` in
- * every generated controller reads.
+ * Every authority in the verified claims: top-level `authorities` ∪ `roles` ∪ `active_org.teams[].roles`.
+ * Non-empty strings, deduplicated, no module filter. `/session/info` returns this set to the shell menu
+ * and the monitor card; `moduleAuthorities` is the same list kept when it starts with `<moduleId>:`.
  */
-export function moduleAuthorities(claims: CollabAuthClaims | undefined, moduleId: string): string[] {
-  if (!claims || !moduleId) return [];
+export function claimAuthorities(claims: CollabAuthClaims | undefined): string[] {
+  if (!claims) return [];
   const teamRoles = (claims.active_org?.teams ?? []).flatMap(team =>
     Array.isArray(team.roles) ? team.roles : [],
   );
@@ -46,8 +44,20 @@ export function moduleAuthorities(claims: CollabAuthClaims | undefined, moduleId
     ...(Array.isArray(claims.roles) ? claims.roles : []),
     ...teamRoles,
   ].filter((value): value is string => typeof value === 'string' && value.length > 0);
+  return [...new Set(declared)];
+}
+
+/**
+ * The authorities of a module, from verified claims — `<moduleId>:<actorId>` filtered by this module.
+ *
+ * The prefix is the filter, not a convention to re-derive: an authority of another module says nothing
+ * about this one. The list is what `sessionContext.actorScope` becomes, which is what `enforceActors` in
+ * every generated controller reads.
+ */
+export function moduleAuthorities(claims: CollabAuthClaims | undefined, moduleId: string): string[] {
+  if (!claims || !moduleId) return [];
   const prefix = `${moduleId}:`;
-  return [...new Set(declared.filter(value => value.startsWith(prefix)))];
+  return claimAuthorities(claims).filter(value => value.startsWith(prefix));
 }
 
 /**

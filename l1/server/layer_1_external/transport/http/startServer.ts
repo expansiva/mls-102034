@@ -10,11 +10,13 @@ import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { createDefaultRequestContext, execBff } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
 import { AppError } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import {
-  isActorEnforcementOn, isBffAuthEnforced, moduleAuthorities, resolveBffSession, verifyAccessToken,
+  claimAuthorities, isActorEnforcementOn, isBffAuthEnforced, moduleAuthorities, resolveBffSession, verifyAccessToken,
+  type BffAuthOutcome,
 } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
-import { readProjectMode } from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
+import { readProjectMode, type ProjectMode } from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
 import {
   effectiveAuthorities, readAuthorityOverride, refuseOverride, writeAuthorityOverride,
+  type AuthorityOverride,
 } from '/_102034_/l1/server/layer_1_external/auth/authorityOverride.js';
 import { registerCbeRoutes } from '/_102034_/l1/server/layer_1_external/cbe/cbeRoutes.js';
 import { getLatestJson, initCbeLatestJson } from '/_102034_/l1/server/layer_1_external/cbe/cbeLatestJson.js';
@@ -217,6 +219,36 @@ async function resolveDefaultFrontendLocation() {
   return preferredApp ? `${preferredApp.basePath}/index.html` : '/health';
 }
 
+/**
+ * Body of `GET /session/info`. Authorities come from `claimAuthorities` (top-level ∪
+ * `active_org.teams[].roles`); the unused `authorities` field is not emitted.
+ */
+export function sessionInfoBody(
+  session: BffAuthOutcome,
+  mode: ProjectMode,
+  override: AuthorityOverride | null,
+) {
+  const real = claimAuthorities(session.claims);
+  const effective = effectiveAuthorities(real, override);
+  return {
+    authenticated: !!session.claims,
+    email: session.claims?.email ?? null,
+    // Standard OIDC profile claims, forwarded as-is so the client chrome (the header avatar) can
+    // show who is logged in. Null when the IdP does not send them — the caller falls back to initials.
+    name: (session.claims as { name?: unknown } | undefined)?.name ?? null,
+    picture: (session.claims as { picture?: unknown } | undefined)?.picture ?? null,
+    userId: session.claims?.sub ?? null,
+    allAuthorities: effective.authorities,
+    realAuthorities: effective.real,
+    overridden: effective.overridden,
+    canOverride: !refuseOverride(mode),
+    appEnv: mode,
+    expiresAt: typeof session.claims?.exp === 'number' ? new Date(session.claims.exp * 1000).toISOString() : null,
+    enforcement: { authentication: isBffAuthEnforced(), actors: isActorEnforcementOn() },
+    reason: session.reason,
+  };
+}
+
 export function buildHttpServer() {
   const app = Fastify({ logger: false });
 
@@ -274,39 +306,16 @@ export function buildHttpServer() {
    *
    * A GET, not a routine of `/execBff`: it belongs to no module, and the shell needs it before any module
    * is loaded. It NEVER echoes the token — only the identity, the mode, and the user's own authorities.
+   * Authorities come from `claimAuthorities` (top-level ∪ `active_org.teams[].roles`).
    */
   app.get('/session/info', async (request, reply) => {
     const session = await resolveBffSession(request.headers);
     reply.header('cache-control', 'no-store');
     const mode = readProjectMode(readAppEnv().projectId);
-    const real = [
-      ...(Array.isArray(session.claims?.authorities) ? session.claims.authorities : []),
-      ...(Array.isArray(session.claims?.roles) ? session.claims.roles : []),
-    ].filter((value): value is string => typeof value === 'string');
     const override = session.claims && !refuseOverride(mode)
       ? await readAuthorityOverride(createDefaultRequestContext(), session.claims.sub)
       : null;
-    const effective = effectiveAuthorities(real, override);
-    return {
-      authenticated: !!session.claims,
-      email: session.claims?.email ?? null,
-      // Standard OIDC profile claims, forwarded as-is so the client chrome (the header avatar) can
-      // show who is logged in. Null when the IdP does not send them — the caller falls back to initials.
-      name: (session.claims as { name?: unknown } | undefined)?.name ?? null,
-      picture: (session.claims as { picture?: unknown } | undefined)?.picture ?? null,
-      userId: session.claims?.sub ?? null,
-      authorities: moduleAuthorities(session.claims, ''),
-      // What the session ACTS with, and — always — what the user really has. The audit and the card show
-      // both, so a presentation-mode action can never be read as the real user's own.
-      allAuthorities: effective.authorities,
-      realAuthorities: effective.real,
-      overridden: effective.overridden,
-      canOverride: !refuseOverride(mode),
-      appEnv: mode,
-      expiresAt: typeof session.claims?.exp === 'number' ? new Date(session.claims.exp * 1000).toISOString() : null,
-      enforcement: { authentication: isBffAuthEnforced(), actors: isActorEnforcementOn() },
-      reason: session.reason,
-    };
+    return sessionInfoBody(session, mode, override);
   });
   /**
    * Act as another authority ("presentation mode"), or clear it with an empty list.

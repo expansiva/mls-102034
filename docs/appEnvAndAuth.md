@@ -123,7 +123,7 @@ telemetry only: nothing authorizes by it.
   platform's own pattern (`sites:admin`, `collab-llm:operator`) and the shape the generated code already
   expects (`enforceActors`, and the `` `${module}:${actor}` `` fallback of the backend generator; E3 emits
   `<module>:<authority>`).
-- Authorities come from `active_org.teams[].roles`.
+- Authorities come from `active_org.teams[].roles` (also what `/session/info` returns to the shell menu and the monitor card).
 - Authorities travel in the access token claims; validation is offline; a role change takes effect on the
   refresh.
 - Managed in collab-auth / collab-admin with **dynamic** module roles (arbitrary `<module>:<actor>`
