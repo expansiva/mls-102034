@@ -68,8 +68,13 @@ Declared as data in `defs/ontology.ts` and as interfaces in `module.ts` — name
 Animal, BankAccount, Document, ContactChannel. Fields per subtype: `defs/ontology.ts` `*Detail` constants (string-typed data). Emitted for the
 solution agents into `l4/organization/ontology/<Subtype>.defs.ts` by `scripts/emitLevel1Defs.ts` → `defs/level1FromEngine.ts` (regex over
 `module.ts`, `defs/ontology.ts`, `mdmSupport.ts`; identification/base come from `BaseMdmDetailRecord`, subtype fields from `*Detail.fields`).
-`readme.md` of that folder: do not edit by hand. A hierarchical rewrite of this catalog into `l4/ontology/` is planned (see the ns5_37 task
-in the solution repo); the grammar draft is `defs/ontologyTypes.ts`.
+`readme.md` of that folder: do not edit by hand. That emitted catalog is legacy: `level1Catalog.ts` in the solution repo still reads it, and it
+goes away with the ns5_43 task.
+
+The catalog itself now lives in **one file**, `l4/ontology/mdm.defs.ts` (ns5_38, commit `c584e6d`): a single JSON literal with `record`, the four
+branches of `groups`, `types`, the 13 `subtypes` as a delta, the 26 `relationships`, and `capabilities` and `rules` as one sentence each. The grammar
+is `defs/ontologyTypes.ts`; the reader is `l2/mdm/resolveMdmEntity.ts`, a pure function that assembles the per-entity view (columns, the `details`
+tree, links, capabilities and rules) for the screen and for the generator — at l2 because a hosted Studio application does not expose l1.
 
 ## 4. Relationships and compact keys
 
@@ -119,7 +124,8 @@ Validated (`mdmSupport.ts:517-546`): `name` non-empty; `legalName` for Company; 
 for ContactChannel. Everything else is `Object.assign(detail, rawInput)` (`mdmSupport.ts:410`): `addresses`, `contacts`, `privacyConsent`,
 `general`, module namespaces, `subtype`/`docType`/`status` (casts) enter **unchecked**. `name` absent becomes the string `"undefined"` (`:359`).
 Person in BR/EU without valid consent is forced `Inactive` (`normalizeStatus` `:492-514`). Validation by schema is the job of the ontology
-rewrite (ns5_37): derive a JSON Schema from `l4/ontology/` and apply it here — until then, modules must validate before calling `ctx.mdm`.
+rewrite: derive a JSON Schema from `l4/ontology/mdm.defs.ts` and apply it here — until then, modules must validate before calling `ctx.mdm`.
+The ontology already says so: rule `rule-document-shape-validated` is listed with `platform: missing`.
 
 ## 8. Prospects, promotion, merge, delete
 
@@ -135,8 +141,8 @@ rewrite (ns5_37): derive a JSON Schema from `l4/ontology/` and apply it here —
 (emitted strings) · `persistence.ts` (DDL). Known mismatches: `Address`/`AddressValue`, `PrivacyConsent`/`PrivacyConsentValue`,
 `ContactSummary`/`ContactSummaryValue`, `CompactRelationshipRefs` 22 vs 48 keys, `UNIQUE(docType, docId)` promised (`defs/ontology.ts:291-296`) but
 absent, `searchVector: tsvector` vs `TEXT`, table `mdm_relationship_documents` cited but non-existent, JSON service defs in PascalCase vs
-camelCase columns. The planned single source is `l4/ontology/` in the hierarchical grammar (`defs/ontologyTypes.ts` draft: fields tree,
-`InferRecord`), from which interfaces, index DDL, validation and the emitted defs derive.
+camelCase columns. The single source is now `l4/ontology/mdm.defs.ts` (`defs/ontologyTypes.ts` for the grammar), which lists every one of these
+divergences in `knownDivergences` instead of hiding them; interfaces, index DDL and validation are still to be derived from it.
 
 ## 10. Reading a record from a module (what a generated backend gets)
 

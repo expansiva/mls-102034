@@ -25,9 +25,10 @@ import {
   resolvePlatformEntity,
   type OntologyNode,
   type OntologyTreeView,
-} from '/_102034_/l1/mdm/defs/resolveMdmEntity.js';
+} from '/_102034_/l2/mdm/resolveMdmEntity.js';
 import { mdm } from '/_102034_/l4/ontology/mdm.defs.js';
-import type { Ns5OntologyEntityV3, Ns5OntologyIndexV3 } from '/_102035_/l2/solution/types.js';
+import type { Ns5OntologyAnyEntity, Ns5OntologyEntityV3, Ns5OntologyIndexV3 } from '/_102035_/l2/solution/types.js';
+import { resolvableFieldPaths } from '/_102035_/l2/solution/ontologyPaths.js';
 import { agendaClinicaRules } from '/_102047_/l4/agendaClinica/rules.defs.js';
 import { agendaClinicaEntityConsulta } from '/_102047_/l4/agendaClinica/ontology/Consulta.defs.js';
 import { agendaClinicaEntityPaciente } from '/_102047_/l4/agendaClinica/ontology/Paciente.defs.js';
@@ -399,7 +400,7 @@ test('(T3) a link the module index does not carry is reported, not dropped', () 
 
 test('(T3) the resolver is pure: the screen imports it in the browser', () => {
   const source = readFileSync(
-    path.join(path.dirname(fileURLToPath(import.meta.url)), 'resolveMdmEntity.ts'),
+    path.join(path.dirname(fileURLToPath(import.meta.url)), '../../../l2/mdm/resolveMdmEntity.ts'),
     'utf8',
   );
   // Type-only imports erase; a value import of any of these would reach the browser.
@@ -408,4 +409,42 @@ test('(T3) the resolver is pure: the screen imports it in the browser', () => {
   for (const forbidden of ["'node:", '"node:', '/mdm/module.js', '/mdm/mdmFacade.js', '/mdm/persistence.js', '/mdm/integration.js']) {
     assert.ok(!source.includes(forbidden), `resolveMdmEntity.ts cites ${forbidden}`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// ns5_40 T1 — the compile half of `resolvableFieldPaths`
+//
+// `ontologyPaths.ts` takes `Ns5OntologyAnyEntity`, a union discriminated by `schemaVersion`. Handing it
+// the three hand-written files here — and NOT only in the l2 test, which `tsconfig.frontend.json` skips —
+// makes `tsconfig.backend.json` prove the v3 arm accepts them and that the v2 arm is still reachable.
+// The file is pure (types only), so importing it into the backend program costs nothing at runtime.
+// ---------------------------------------------------------------------------
+
+test('(ns5_40 T1) every v3 entity of the module resolves its root and the tree of its record', () => {
+  for (const entity of [paciente, profissional, consulta] as Ns5OntologyAnyEntity[]) {
+    const paths: string[] = resolvableFieldPaths(entity);
+    assert.equal(paths[0], entity.entityId);
+    assert.equal(paths.includes(`${entity.entityId}.id`), true, `${entity.entityId} lost its identity path`);
+    assert.ok(paths.length > 1, `${entity.entityId} resolved nothing but its root`);
+  }
+  // The tree, not a flat list: a branch and one of its leaves are both addressable.
+  const tree = resolvableFieldPaths(agendaClinicaEntityPaciente);
+  assert.ok(tree.includes('Paciente.details.person'));
+  assert.ok(tree.includes('Paciente.details.person.birthDate'));
+  // The v2 arm of the union still compiles and still answers `<Entity>.<fieldId>`.
+  const v2: Ns5OntologyAnyEntity = {
+    schemaVersion: '2026-09-11-ns5-ontology-v2',
+    moduleName: 'agendaClinica',
+    entityId: 'Legado',
+    title: 'Legado',
+    description: 'v2.',
+    kind: 'core',
+    party: 'none',
+    displayField: 'nome',
+    fields: [{ fieldId: 'nome', title: 'Nome', type: 'string', required: true, description: 'Nome.' }],
+    lifecycleStates: [],
+    transitions: [],
+    storage: { target: 'moduleDatabase', scope: 'module', idField: 'legadoId' },
+  };
+  assert.deepEqual(resolvableFieldPaths(v2), ['Legado', 'Legado.legadoId', 'Legado.nome']);
 });
