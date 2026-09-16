@@ -2297,7 +2297,8 @@ export class MonitorWebDesktopHomePage extends LitElement {
 
     const generation = ++this.runtimeMetricsChartGeneration;
     try {
-      const { echarts } = await import('/_102033_/l2/shared/chartRuntime.js');
+      const { loadECharts } = await import('/_102033_/l2/shared/chartRuntime.js');
+      const echarts = await loadECharts();
       if (generation !== this.runtimeMetricsChartGeneration || !host.isConnected) return;
 
       if (this.runtimeMetricsChartHost !== host) {
