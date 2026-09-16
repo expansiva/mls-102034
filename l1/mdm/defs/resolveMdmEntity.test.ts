@@ -29,11 +29,11 @@ import {
 import { mdm } from '/_102034_/l4/ontology/mdm.defs.js';
 import type { Ns5OntologyAnyEntity, Ns5OntologyEntityV3, Ns5OntologyIndexV3 } from '/_102035_/l2/solution/types.js';
 import { resolvableFieldPaths } from '/_102035_/l2/solution/ontologyPaths.js';
-import { agendaClinicaRules } from '/_102047_/l4/agendaClinica/rules.defs.js';
-import { agendaClinicaEntityConsulta } from '/_102047_/l4/agendaClinica/ontology/Consulta.defs.js';
-import { agendaClinicaEntityPaciente } from '/_102047_/l4/agendaClinica/ontology/Paciente.defs.js';
-import { agendaClinicaEntityProfissional } from '/_102047_/l4/agendaClinica/ontology/Profissional.defs.js';
-import { agendaClinicaOntologyIndex } from '/_102047_/l4/agendaClinica/ontology/index.defs.js';
+import { agendaClinicaRules } from '/_102035_/l2/agentNewSolution5/steps/ontology30/fixtures/agendaClinica-v3/rules.defs.js';
+import { agendaClinicaEntityConsulta } from '/_102035_/l2/agentNewSolution5/steps/ontology30/fixtures/agendaClinica-v3/Consulta.defs.js';
+import { agendaClinicaEntityPaciente } from '/_102035_/l2/agentNewSolution5/steps/ontology30/fixtures/agendaClinica-v3/Paciente.defs.js';
+import { agendaClinicaEntityProfissional } from '/_102035_/l2/agentNewSolution5/steps/ontology30/fixtures/agendaClinica-v3/Profissional.defs.js';
+import { agendaClinicaOntologyIndex } from '/_102035_/l2/agentNewSolution5/steps/ontology30/fixtures/agendaClinica-v3/index.defs.js';
 
 // ---------------------------------------------------------------------------
 // T2 — the cross-references, checked by the compiler (same method as mdmOntology.test.ts)
@@ -165,9 +165,9 @@ test('(T3) the platform Person resolves to five branches and seventeen links', (
   // Without a moduleId the namespace branch keeps the placeholder the ontology itself uses.
   assert.ok(resolvePlatformEntity(mdm, 'Person').details.some(node => node.id === '<moduleId>'));
 
-  // 22 universal + the 4 Person claims; 4 universal rules + the 2 Person claims. By NAME, because the
+  // 25 universal + the 4 Person claims; 4 universal rules + the 2 Person claims. By NAME, because the
   // count 6 also happens to be Paciente's, and a swap would hide behind it.
-  assert.equal(view.capabilities.length, 26);
+  assert.equal(view.capabilities.length, 29);
   assert.deepEqual([...view.rules.map(item => item.id)].sort(), [
     'rule-delete-blocked-by-relationships',
     'rule-document-shape-validated',
@@ -198,7 +198,7 @@ test('(T3) the platform view works for a subtype that is not Person', () => {
   assert.equal(view.relationships[0].side, 'to');
   assert.equal(view.relationships[1].side, 'from');
   // No delta of its own: the universal catalogs, nothing more.
-  assert.equal(view.capabilities.length, 22);
+  assert.equal(view.capabilities.length, 25);
   assert.equal(view.rules.length, 4);
 });
 
