@@ -133,10 +133,8 @@ tables are audited by the platform is a pending platform decision, not something
 | what | where |
 |---|---|
 | catalogs (`MdmSubtype`, `DocType`, `RelationshipType`, statuses) and table shapes | `defs/ontology.ts` |
-| **platform catalog** (layers, visibility, identity/login, roles, services with use-for/not-for, lookup costs, invariants) — data, rendered into `l4/organization/ontology/platform.defs.ts` | `defs/platform.ts` |
+| **platform catalog** (layers, visibility, identity/login, roles, services with use-for/not-for, lookup costs, invariants) — data the agents read | `l4/ontology/platform.defs.ts` |
 | level-1 artifact types (`Ns4Level1EntityArtifact`, `MdmPlatformCatalogArtifact`) | `defs/level1Types.ts` |
-| parser that builds level-1 artifacts from `ontology.ts` / `module.ts` / `mdmSupport.ts` | `defs/level1FromEngine.ts` |
-| emitter (Node, no LLM) and byte-for-byte drift test | `scripts/emitLevel1Defs.ts`, `scripts/emitLevel1Defs.test.ts` |
 | record types (`BaseMdmDetailRecord`, `PersonDetailRecord`, …, `MdmTagRecord`, params) | `module.ts` |
 | tables, indexes, write modes | `persistence.ts`, `tableNames.ts`, `../sql/001_init.sql` |
 | facade (`ctx.mdm`): `MdmEntity`, `MdmProspect`, `MdmCollection`, `MdmAttachment`, `MdmIdentity`, `createMdmFacade` | `layer_3_usecases/mdmFacade.ts` |
@@ -144,7 +142,7 @@ tables are audited by the platform is a pending platform decision, not something
 | tags, comments, attachments, kv, sequences, status history | `layer_3_usecases/*Usecases.ts` |
 | HTTP routes (`mdm.entity.*`, `mdm.prospect.*`, `mdm.relationship.*`, `mdm.tag.*`, …) | `layer_2_controllers/router.ts` |
 | Postgres / DynamoDB / memory runtimes, write-behind worker, restore | `layer_1_external/**` |
-| level-1 defs generated from this engine for the agents | `l4/organization/ontology/*.defs.ts` (subtypes, `index.defs.ts`, `platform.defs.ts`) |
+| the level-1 ontology the agents read, in one file | `l4/ontology/mdm.defs.ts` (grammar in `defs/ontologyTypes.ts`, proof in `defs/mdmOntology.test.ts`) |
 
 ## 11. Identity facade
 

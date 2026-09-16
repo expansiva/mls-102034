@@ -1,4 +1,4 @@
-/// <mls fileReference="_102034_/l4/organization/ontology/platform.defs.ts" enhancement="_blank"/>
+/// <mls fileReference="_102034_/l4/ontology/platform.defs.ts" enhancement="_blank"/>
 
 import type { MdmPlatformCatalogArtifact } from '/_102034_/l1/mdm/defs/level1Types.js';
 

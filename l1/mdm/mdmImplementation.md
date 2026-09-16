@@ -65,11 +65,14 @@ Declared as data in `defs/ontology.ts` and as interfaces in `module.ts` — name
 ## 3. Subtypes (13) and the level-1 catalog
 
 `MdmSubtype` (`defs/ontology.ts:25`): Person, Company, Product, Service, Location, AssetGeneric, AssetVehicle, AssetProperty, AssetEquipment,
-Animal, BankAccount, Document, ContactChannel. Fields per subtype: `defs/ontology.ts` `*Detail` constants (string-typed data). Emitted for the
-solution agents into `l4/organization/ontology/<Subtype>.defs.ts` by `scripts/emitLevel1Defs.ts` → `defs/level1FromEngine.ts` (regex over
-`module.ts`, `defs/ontology.ts`, `mdmSupport.ts`; identification/base come from `BaseMdmDetailRecord`, subtype fields from `*Detail.fields`).
-`readme.md` of that folder: do not edit by hand. That emitted catalog is legacy: `level1Catalog.ts` in the solution repo still reads it, and it
-goes away with the ns5_43 task.
+Animal, BankAccount, Document, ContactChannel. Fields per subtype: `defs/ontology.ts` `*Detail` constants (string-typed data).
+
+The emitted catalog is **gone** (ns5_43 T6). `l4/organization/ontology/*.defs.ts` (13 subtypes + `index` + `platform`), the emitter
+`scripts/emitLevel1Defs.ts` with its drift test, the regex parser `defs/level1FromEngine.ts` and the catalog data `defs/platform.ts` were all
+deleted. The solution agents now read `l4/ontology/mdm.defs.ts` directly: `level1Catalog.ts` (mls-102035) derives the shape the NS4 readers
+expect from it, and the platform catalog moved verbatim to `l4/ontology/platform.defs.ts`. What is lost with the emitter is the byte-for-byte
+drift test between `defs/ontology.ts` / `module.ts` and the catalog; what remains is the subtype-set proof in `defs/mdmOntology.test.ts:47-48`
+(`MdmSubtype` ↔ `MdmSubtypeName`, both directions, by the compiler) plus `level1Catalog.test.ts` on the agent side.
 
 The catalog itself now lives in **one file**, `l4/ontology/mdm.defs.ts` (ns5_38, commit `c584e6d`): a single JSON literal with `record`, the four
 branches of `groups`, `types`, the 13 `subtypes` as a delta, the 26 `relationships`, and `capabilities` and `rules` as one sentence each. The grammar
@@ -135,10 +138,10 @@ The ontology already says so: rule `rule-document-shape-validated` is listed wit
 - `mergeEntity` (`entityPersistence.ts:502-549`: loser `status: 'Merged'`, `mergedInto`) exists but is **not exported by the facade nor routed**.
 - `delete` (`mdmFacade.ts:616-677`) is physical; blocked by active relationships (`MDM_DELETE_BLOCKED_BY_RELATIONSHIPS` 409).
 
-## 9. Source of truth today — four copies, no binding
+## 9. Source of truth today — three copies, no binding
 
-`defs/ontology.ts` (data, string types) · `module.ts` (interfaces, checked by tsc against runtime code) · `l4/organization/ontology/*.defs.ts`
-(emitted strings) · `persistence.ts` (DDL). Known mismatches: `Address`/`AddressValue`, `PrivacyConsent`/`PrivacyConsentValue`,
+`defs/ontology.ts` (data, string types) · `module.ts` (interfaces, checked by tsc against runtime code) · `persistence.ts` (DDL). The fourth
+copy, the emitted `l4/organization/ontology/*.defs.ts`, was deleted in ns5_43 T6 (see §3). Known mismatches: `Address`/`AddressValue`, `PrivacyConsent`/`PrivacyConsentValue`,
 `ContactSummary`/`ContactSummaryValue`, `CompactRelationshipRefs` 22 vs 48 keys, `UNIQUE(docType, docId)` promised (`defs/ontology.ts:291-296`) but
 absent, `searchVector: tsvector` vs `TEXT`, table `mdm_relationship_documents` cited but non-existent, JSON service defs in PascalCase vs
 camelCase columns. The single source is now `l4/ontology/mdm.defs.ts` (`defs/ontologyTypes.ts` for the grammar), which lists every one of these

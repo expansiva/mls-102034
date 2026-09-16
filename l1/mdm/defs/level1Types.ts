@@ -1,8 +1,10 @@
 /// <mls fileReference="_102034_/l1/mdm/defs/level1Types.ts" enhancement="_blank" />
 
 /**
- * Level-1 ontology artifacts emitted from this engine into l4/organization/ontology.
- * Agents read the generated defs; they do not re-parse these types.
+ * Shape of the level-1 ontology as the solution agents read it. Until ns5_43 these types described files
+ * emitted into l4/organization/ontology; that emitter and those files are gone. `level1Catalog.ts`
+ * (mls-102035) now derives this shape from l4/ontology/mdm.defs.ts, so these are a READING form and no
+ * longer a source.
  */
 
 /** Schema of the platform level-1 ontology defs. Bumped when the subtype set or field shape changes. */
