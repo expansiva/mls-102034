@@ -140,7 +140,9 @@ test('(d) the ontology declares the 13 subtypes, once each', () => {
 });
 
 test('(e) the counts are the ones measured in ns5_37', () => {
-  assert.equal(Object.keys(mdm.capabilities).length, 26, 'capabilities');
+  // 26 measured in ns5_37, plus the three the router exposes and the catalogue had missed:
+  // `read.byId` (get/getMany/hydrateMany), `locate.byTag` (mdm.tag.findByTag) and `config.kv` (mdm_kv).
+  assert.equal(Object.keys(mdm.capabilities).length, 29, 'capabilities');
   assert.equal(Object.keys(mdm.rules).length, 13, 'rules');
   assert.equal(mdm.relationships.length, 26, 'relationship types');
   assert.equal(new Set(mdm.relationships.map(item => item.type)).size, 26, 'duplicate relationship type');
