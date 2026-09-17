@@ -137,6 +137,54 @@ export interface MdmOntology {
   knownDivergences: Readonly<Record<string, string>>;
 }
 
+// --- the other two families of data ----------------------------------------
+
+/**
+ * The three families of data, by NATURE, not by origin (`hdm`/`vdm` classify origin and are another
+ * axis): `mdm` is the master record of the organization, shared between modules; `tdm` is the movement,
+ * the event, the operation of one module; `ddm` is what is recalculated from the other two and has no
+ * writer at all.
+ */
+export type DataFamilyName = 'mdm' | 'tdm' | 'ddm';
+
+/** What the platform really offers today for a capability. Measured, never promised. */
+export type DataFamilyReadiness = 'ready' | 'partial' | 'missing';
+
+/**
+ * One capability of a family catalog. `sentence` is the same three-part line the `mdm` catalog writes as
+ * prose (what it does · how · who uses it), `platform` the measured status, and `evidence` where it was
+ * measured — `file.ts:line` or a section of `l1/mdm/mdmImplementation.md`. `evidence` is for whoever
+ * reviews this file; the projection that reaches a prompt drops it.
+ */
+export interface DataFamilyCapability {
+  sentence: string;
+  /** `table`: the module table engine itself. `platform`: lent by an MDM service. */
+  source: 'table' | 'platform';
+  platform: DataFamilyReadiness;
+  evidence: string;
+}
+
+/**
+ * The catalog a table of one family starts from, in the same spirit as `mdm.defs.ts`: the record it
+ * carries, the lines the generator should keep in mind while writing it, what it may do, and the gap
+ * between this file and the engine. `record.fields` uses the same field grammar as the platform record,
+ * so `tsc` checks the shapes here too.
+ */
+export interface DataFamilyOntology {
+  schemaVersion: string;
+  family: DataFamilyName;
+  title: string;
+  description: string;
+  record: { fields: MdmDefFields };
+  /** One line each, read whole into the fan-out prompt: what this family's table looks like. */
+  recommendations: readonly string[];
+  capabilities: Readonly<Record<string, DataFamilyCapability>>;
+  /** id → one sentence about where and how the rows live. */
+  storage: Readonly<Record<string, string>>;
+  /** id → what the engine does today where it differs from this document. Listed, never hidden. */
+  knownDivergences: Readonly<Record<string, string>>;
+}
+
 // --- the record type, derived from the ontology object ---------------------
 
 type ScalarOf<K extends MdmScalarKind> =
