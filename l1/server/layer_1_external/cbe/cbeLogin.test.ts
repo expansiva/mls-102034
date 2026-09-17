@@ -9,7 +9,7 @@ import { buildProjectSettings, readProjectSettings } from '/_102034_/l1/server/l
 import type { ProjectsConfig } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import type { L5ProjectJson, ProjectSettingsConfig } from '/_102029_/l2/runtimeConfigTypes.js';
 
-const DEFAULT_VALUE = JSON.stringify({ projectDriver: 'GitHub', projectURL: 'local/local/local' });
+const DEFAULT_VALUE = JSON.stringify({ projectDriver: 'vm', projectURL: 'local/local/local' });
 
 let nextProjectId = 199001;
 
@@ -104,7 +104,7 @@ test('T3: invalid JSON uses the default and does not throw', () => {
     captureWarns(() => {
       assert.doesNotThrow(() => {
         const fromReader = readProjectSettings(id);
-        assert.equal(fromReader.driver, 'GitHub');
+        assert.equal(fromReader.driver, 'vm');
         assert.equal(fromReader.url, 'local/local/local');
         const settings = buildProjectSettings(id, []);
         assert.ok(settings);

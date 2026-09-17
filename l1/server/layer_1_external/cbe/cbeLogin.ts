@@ -24,7 +24,7 @@ import type { ProjectSettingsConfig, ProjectsConfig } from '/_102029_/l2/runtime
 
 const LOCAL_ORG_NAME = 'local';
 const LOCAL_OWNER = 'local';
-const DEFAULT_PROJECT_DRIVER = 'GitHub';
+const DEFAULT_PROJECT_DRIVER = 'vm';
 const DEFAULT_PROJECT_URL = `${LOCAL_OWNER}/${LOCAL_OWNER}/${LOCAL_OWNER}`;
 /** Lowest id the platform assigns — anything below it is not a project (same floor cbeMiniCfe uses). */
 const MIN_PROJECT_ID = 100000;
@@ -112,9 +112,9 @@ export function buildProjectSettings(
     // projectDriver/projectURL come from l5/config.json projectSettings when present;
     // the default below is used otherwise. The cfe rejects 'local'/'mls' in
     // loadProjectInfoIfNeeded, and any other driver is only consulted on an
-    // IndexedDB cache miss — which the login always fills first. 'GitHub' here
-    // never reaches the network on the VM; a dedicated 'vm' driver in the cfe
-    // can replace this marker later.
+    // IndexedDB cache miss — which the login always fills first. 'vm' resolves
+    // to the VM's own storage driver (see mls-102033/l2/cbe/driverVm.ts),
+    // registered in the cfe's 'vm' slot — it never reaches the network.
     // projectURL needs >=3 '/'-separated segments (parsed as .../branch/owner/repo
     // by getMyKeysBranch in mls-102029/l2/libCommom.ts, and mirrored in
     // driverGithub.ts/driverGitlab.ts/driverLib.ts/projects.ts) — a bare 'local'
