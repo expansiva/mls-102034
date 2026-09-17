@@ -25,7 +25,7 @@ import type {
   Ns5OntologyFieldsV3,
   Ns5OntologyIndexV3,
   Ns5OntologyRelationshipV3,
-  Ns5RulesArtifact,
+  Ns5RulesAny,
 } from '/_102035_/l2/solution/types.js';
 
 /** How ready the platform is, read from the tail of the catalog sentence. A badge, never a gate. */
@@ -352,7 +352,7 @@ export function resolveModuleEntity(
   entity: Ns5OntologyEntityV3,
   index: Ns5OntologyIndexV3,
   mdm: MdmOntology,
-  moduleRules: Ns5RulesArtifact,
+  moduleRules: Ns5RulesAny,
 ): OntologyTreeView {
   const subtype = entity.kind === 'role' ? entity.subtype : undefined;
   const namespaceKey = index.moduleNamespace?.key ?? entity.moduleName;
@@ -423,7 +423,17 @@ export function resolveModuleEntity(
     return view;
   });
 
-  const moduleRuleTexts = new Map(moduleRules.rules.map(rule => [rule.ruleId, rule.description]));
+  /*
+   * ns5_45: the catalog is a map (`rules-v2`, aligned with `mdm.defs.ts`) or the older array. Everywhere
+   * else that reading is `ns5RuleRecord` of `mls-102035/l2/solution/rulesView.ts` — NOT here: the (T3)
+   * proof in `resolveMdmEntity.test.ts` asserts this file has no value import at all, so importing the
+   * helper would fail that guard. The two readings are pinned against each other by that same test.
+   */
+  const moduleRuleTexts = new Map<string, string>(
+    moduleRules.schemaVersion === '2026-09-10-ns5-rules-v1'
+      ? moduleRules.rules.map(rule => [rule.ruleId, rule.description] as const)
+      : Object.entries(moduleRules.rules),
+  );
   const capabilities: OntologyCapabilityView[] = Object.entries(entity.capabilities).map(([id, written]) => {
     const sentence = written ?? '';
     const catalog = mdm.capabilities[id];

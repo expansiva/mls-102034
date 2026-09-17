@@ -1,5 +1,13 @@
 # MDM
 
+## 2026-09-16
+
+- ns5_45: `resolveModuleEntity` takes `Ns5RulesAny` — the module rule catalog as the `rules-v2` MAP
+  (`ruleId` -> sentence, the shape `l4/ontology/mdm.defs.ts` itself uses) or as the older array. The
+  (T3) purity proof forbids every runtime import in `resolveMdmEntity.ts`, so the two forms are read
+  by three lines there instead of by `ns5RuleRecord` of `mls-102035/l2/solution/rulesView.ts`, which is
+  what every other reader calls; the same test pins the two readings against each other.
+
 ## 2026-09-15
 
 - ns5_43 T6: the emitted level-1 catalog is gone. Deleted `l4/organization/`

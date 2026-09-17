@@ -29,7 +29,9 @@ import {
 import { mdm } from '/_102034_/l4/ontology/mdm.defs.js';
 import type { Ns5OntologyAnyEntity, Ns5OntologyEntityV3, Ns5OntologyIndexV3 } from '/_102035_/l2/solution/types.js';
 import { resolvableFieldPaths } from '/_102035_/l2/solution/ontologyPaths.js';
+import { ns5RuleEntries, ns5RuleRecord } from '/_102035_/l2/solution/rulesView.js';
 import { agendaClinicaRules } from '/_102035_/l2/agentNewSolution5/steps/ontology30/fixtures/agendaClinica-v3/rules.defs.js';
+import { agendaClinicaRulesV2 } from '/_102035_/l2/agentNewSolution5/steps/rules40/fixtures/agendaClinica-rules-v2.defs.js';
 import { agendaClinicaEntityConsulta } from '/_102035_/l2/agentNewSolution5/steps/ontology30/fixtures/agendaClinica-v3/Consulta.defs.js';
 import { agendaClinicaEntityPaciente } from '/_102035_/l2/agentNewSolution5/steps/ontology30/fixtures/agendaClinica-v3/Paciente.defs.js';
 import { agendaClinicaEntityProfissional } from '/_102035_/l2/agentNewSolution5/steps/ontology30/fixtures/agendaClinica-v3/Profissional.defs.js';
@@ -43,6 +45,14 @@ type PlatformCapabilityId = keyof typeof mdm.capabilities;
 type PlatformRuleId = keyof typeof mdm.rules;
 type ModuleCapabilityId = `agendaClinica.${string}`;
 type ModuleRuleId = typeof agendaClinicaRules.rules[number]['ruleId'];
+/**
+ * ns5_45: `rules40` writes the catalog as a MAP (`rules-v2`), like `mdm.defs.ts` does. The same ids the
+ * v1 array gives as `rules[number]['ruleId']` are the KEYS there — `satisfies Ns5RulesArtifactV2` on the
+ * fixture plus this assignment is the compile proof that the new form carries the same catalog.
+ */
+type ModuleRuleIdV2 = keyof typeof agendaClinicaRulesV2.rules;
+const _sameRuleIds: ModuleRuleId[] = [] as ModuleRuleIdV2[];
+const _sameRuleIdsBack: ModuleRuleIdV2[] = [] as ModuleRuleId[];
 type CatalogType = typeof mdm.relationships[number]['type'];
 type IndexRelationshipId = typeof agendaClinicaOntologyIndex.relationships[number]['relationshipId'];
 
@@ -137,6 +147,8 @@ function child(node: OntologyNode, id: string): OntologyNode {
 }
 
 const modulo = () => resolveModuleEntity(paciente, agendaIndex, mdm, agendaClinicaRules);
+/** ns5_45: the same call with the catalog in the v2 map form. */
+const moduloV2 = () => resolveModuleEntity(paciente, agendaIndex, mdm, agendaClinicaRulesV2);
 
 test('(T3) the platform Person resolves to five branches and seventeen links', () => {
   const view = resolvePlatformEntity(mdm, 'Person', 'agendaClinica');
@@ -261,6 +273,28 @@ test('(T3) Paciente keeps both sentences on a capability and resolves every rule
     view.rules.find(item => item.id === 'menorExigeResponsavel')?.text,
     agendaClinicaRules.rules.find(rule => rule.ruleId === 'menorExigeResponsavel')?.description,
   );
+});
+
+/**
+ * ns5_45. The resolver may not import anything at runtime (the purity proof below), so the two forms are
+ * read by three lines inside `resolveMdmEntity.ts` instead of by `ns5RuleRecord` of `rulesView.ts`, which
+ * is what every other reader calls. This test is the pin that keeps the copy honest: same view from both
+ * forms, and the same reading as the shared helper.
+ */
+test('(T3) a v2 catalog (map) resolves to the same rule view as the v1 array', () => {
+  const v1 = modulo();
+  const v2 = moduloV2();
+
+  assert.deepEqual(v2.rules, v1.rules);
+  assert.deepEqual(
+    ns5RuleEntries(agendaClinicaRulesV2).map(rule => rule.ruleId),
+    ns5RuleEntries(agendaClinicaRules).map(rule => rule.ruleId),
+  );
+  assert.equal(
+    v2.rules.find(item => item.id === 'menorExigeResponsavel')?.text,
+    ns5RuleRecord(agendaClinicaRulesV2).menorExigeResponsavel,
+  );
+  assert.ok(!v2.rules.some(item => item.unresolved), 'every rule id resolves in the map form too');
 });
 
 test('(T3) the links of an entity are crossed with the module index, which is the source', () => {
