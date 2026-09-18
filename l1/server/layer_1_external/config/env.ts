@@ -30,6 +30,8 @@ export interface AppEnv {
   awsSecretAccessKey?: string;
   awsSessionToken?: string;
   writeBehindEnabled: boolean;
+  /** Minute tick that calls `onTick` of each module. Same gate as write-behind: postgres only. */
+  tickEnabled: boolean;
   logLevel: string;
   runtimeMode: 'memory' | 'postgres';
   testsEnabled: boolean;
@@ -156,6 +158,10 @@ export function readAppEnv(): AppEnv {
     readEnvValue('WRITE_BEHIND_ENABLED', appEnv),
     appEnv !== 'development',
   );
+  const tickEnabled = parseBoolean(
+    readEnvValue('TICK_ENABLED', appEnv),
+    appEnv !== 'development',
+  );
 
   if (appEnv !== 'development' && runtimeMode === 'memory') {
     throw new Error(`APP_ENV=${appEnv} cannot run with RUNTIME_MODE=memory`);
@@ -182,6 +188,7 @@ export function readAppEnv(): AppEnv {
     awsSecretAccessKey: readEnvValue('AWS_SECRET_ACCESS_KEY', appEnv) || undefined,
     awsSessionToken: readEnvValue('AWS_SESSION_TOKEN', appEnv) || undefined,
     writeBehindEnabled,
+    tickEnabled,
     logLevel: readEnvValue('LOG_LEVEL', appEnv) ?? 'info',
     runtimeMode,
     // Opt-in gate for /monitor/tests execution. Outside development the runner uses a

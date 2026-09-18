@@ -153,3 +153,18 @@ divergences in `knownDivergences` instead of hiding them; interfaces, index DDL 
 platform keys, `general`, your own `details[<moduleId>]` with content, `namespaces: [other module ids]`. Write back with
 `ctx.mdm.entity.update({ mdmId, details: { <your keys> } })`; write your namespace with `attachRole(mdmId, '<module>.<Entity>', namespace)`.
 Do not read `details.<field>` and `details.<module>.<field>` "whichever exists" — the ontology says which layer a field lives in.
+
+## 11. The minute tick (what a generated backend may export)
+
+A module may export `onTick(ctx, now)` from its persistence file. The platform collects it the same
+way it collects `viewDefinitions` (`l1/server/layer_1_external/persistence/registry.ts:563`,
+`loadModuleTickHandlers`) and calls it **once a minute**, in series, with one `try/catch` per module —
+one module failing does not stop the others, and a tick is skipped while the previous one still runs
+(`l1/server/layer_1_external/transport/http/startServer.ts:592`, `ModuleTickLoop`). The loop runs in
+`postgres` mode when `env.tickEnabled`, and is off in the `memory` preview.
+
+Nothing is central: no alert table, no queue, no external cron. What the module does each minute, and
+where it records that it did it, is the module's own `tdm` table. `evaluateSchedule(schedule, now,
+lastRun)` (`l1/server/layer_2_application/schedule/evaluateSchedule.ts`) is a pure helper that reads
+the prose schedule a `workflows.defs.ts` carries ("todo dia", "every month", "a cada N minutos") and
+returns the occurrence due at or before `now`, or `null` when the prose is not a schedule.

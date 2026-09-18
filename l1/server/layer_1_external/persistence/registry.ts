@@ -1,6 +1,6 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/persistence/registry.ts" enhancement="_blank" />
 import { readdirSync } from 'node:fs';
-import { AppError } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
+import { AppError, type RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import {
   readProjectsConfig,
   resolveProjectDistPath,
@@ -540,4 +540,50 @@ export async function findResolvedTableDefinition(
     );
   }
   return definition;
+}
+
+/**
+ * A module that wants to be woken up exports `onTick` from its persistence file, next to
+ * `tableDefinitions` and `viewDefinitions`. The platform only lends the clock: what the module does
+ * with the minute — which occurrences it owes, where it records them — is the module's business.
+ */
+export type ModuleTickHandler = (ctx: RequestContext, now: Date) => Promise<void> | void;
+
+export interface ModuleTickRegistration {
+  moduleId: string;
+  onTick: ModuleTickHandler;
+}
+
+/**
+ * Collects `onTick` the same way `loadViewDefinitions` collects `viewDefinitions` — with one
+ * difference on purpose: a module whose import throws is warned about and skipped instead of
+ * rejecting the whole load. `loadViewDefinitions` above has no such isolation; the tick runs every
+ * minute forever, so one broken module must not silence every other module's clock.
+ */
+export async function loadModuleTickHandlers(): Promise<ModuleTickRegistration[]> {
+  const handlers: ModuleTickRegistration[] = [];
+  const seen = new Set<string>();
+  for (const registration of getPersistenceModuleRegistrations()) {
+    if (!registration.persistenceEntrypoint) {
+      continue;
+    }
+    try {
+      const moduleUrl = resolveProjectModuleImportUrl(registration.persistenceEntrypoint);
+      const mod: unknown = await import(moduleUrl);
+      const onTick = isRecord(mod) ? mod.onTick : undefined;
+      if (typeof onTick !== 'function') {
+        continue;
+      }
+      if (seen.has(registration.moduleId)) {
+        console.warn(`[tick] duplicate onTick for module ${registration.moduleId}; the first one wins`);
+        continue;
+      }
+      seen.add(registration.moduleId);
+      handlers.push({ moduleId: registration.moduleId, onTick: onTick as ModuleTickHandler });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[tick] module ${registration.moduleId} was skipped, its persistence failed to load: ${message}`);
+    }
+  }
+  return handlers;
 }

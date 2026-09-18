@@ -50,7 +50,7 @@ export const ddm = {
     "Name the source: a `ddm` entity summarises rows of a named `tdm` table (or of the master records), and its description says which one and over which window.",
     "The window and the group keys are the columns, and every one of them is indexed. Every measure lives inside `details`: nothing filters by a number, and a column with no index is refused.",
     "`storage.kind: 'timeSeries'` when the rows are a series in time and are stored as a hypertable; `relational` for a plain rollup table refreshed as a whole.",
-    "A value that follows from ONE row of a `tdm` table — a status implied by its own dates, the total of its own embedded lines — is not a `ddm` entity: it is a field of that row marked `derived`."
+    "A value that follows from ONE row of a `tdm` table — a status implied by its own dates, the total of its own embedded lines, or of lines linked to it by FK — is not a `ddm` entity: it is a field of that row marked `derived`."
   ],
 
   "capabilities": {

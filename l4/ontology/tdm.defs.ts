@@ -47,7 +47,7 @@ export const tdm = {
     "A number a person quotes (an order number, a ticket number, a receipt number) comes from `sequence.next` over `mdm_number_sequence`. Never a counter of your own, and never a column that stores the last number issued.",
     "A lifecycle is an indexed `status` column whose `values` cover the declared states; moving between them is the capability `transition`.",
     "Uniqueness is enforced on columns, through `uniqueKeys` — the engine turns it into a UNIQUE index.",
-    "A value recalculated from OTHER rows (a total of the day, an average, a position in a ranking) is not a column of this table: it is a `ddm` entity. A value that follows from this same row (a status implied by its own dates, a total of its own embedded lines) is a field of this row marked `derived`."
+    "A value recalculated from OTHER rows (a total of the day, an average, a position in a ranking) is not a column of this table: it is a `ddm` entity. A value that follows from this same row (a status implied by its own dates, a total of its own embedded lines) or from rows linked to it by FK (the sum of its payments, whether an open order points at it) is a field of this row marked `derived`."
   ],
 
   "capabilities": {

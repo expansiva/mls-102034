@@ -27,6 +27,7 @@ import {
 } from '/_102034_/l1/server/layer_1_external/storage/attachmentHttp.js';
 import { getCompiledStaticFile } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledStatic.js';
 import { WriteBehindWorker } from '/_102034_/l1/mdm/layer_1_external/queue/WriteBehindWorker.js';
+import { ModuleTickLoop, MODULE_TICK_INTERVAL_MS } from '/_102034_/l1/server/layer_2_application/tick/moduleTick.js';
 import {
   createRuntimeMetricsCollector,
   loadRuntimeMetricSamples,
@@ -588,8 +589,10 @@ if (isMainModule) {
   const runtimeMetricsCollector = env.runtimeMode === 'postgres'
     ? createRuntimeMetricsCollector(env, readProjectsConfig().defaultProjectId)
     : null;
+  const moduleTickLoop = env.runtimeMode === 'postgres' && env.tickEnabled ? new ModuleTickLoop() : null;
   server.addHook('onClose', async () => {
     runtimeMetricsCollector?.stop();
+    moduleTickLoop?.stop();
   });
   void getFrontendAppRegistrations().then((apps) => {
     // `return`: sem ele a promessa do listen fica ORFA e o `.catch` la embaixo nao a ve. Um
@@ -602,6 +605,11 @@ if (isMainModule) {
       void runtimeMetricsCollector.start()
         .then(() => console.info('Runtime metrics collection enabled every 5000ms'))
         .catch((error) => console.error('[runtimeMetrics] startup failed:', error));
+    }
+    if (moduleTickLoop) {
+      void moduleTickLoop.start()
+        .then((count) => console.info(`Module tick enabled every ${MODULE_TICK_INTERVAL_MS}ms for ${count} module(s)`))
+        .catch((error) => console.error('[tick] startup failed:', error));
     }
     if (env.runtimeMode === 'postgres' && env.writeBehindEnabled) {
       const worker = new WriteBehindWorker(env);

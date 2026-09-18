@@ -1,5 +1,7 @@
 # _102034_ l1 backend
 
+Minute tick: a module may export `onTick(ctx, now)` from its persistence file and the server calls it every 60s, isolated per module (`TICK_ENABLED`, postgres only). Prose schedules are read by `l1/server/layer_2_application/schedule/evaluateSchedule.ts`.
+
 ## Files to use
 
 - base env template: `.env.example`
