@@ -19,9 +19,11 @@ import {
   type JwtSession,
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeAuthJwt.js';
 import { listSources, readSources, writeSources } from '/_102034_/l1/server/layer_1_external/cbe/cbeSources.js';
+import { readHistory, readHistoryContent } from '/_102034_/l1/server/layer_1_external/cbe/cbeGit.js';
 import { scheduleRebuildOnSave } from '/_102034_/l1/server/layer_1_external/cbe/cbeRebuildOnSave.js';
 import {
   CBE_HTTP_BAD_REQUEST,
+  CBE_HTTP_NOT_FOUND,
   CBE_HTTP_NOT_MODIFIED,
   CBE_HTTP_OK,
   CBE_HTTP_SERVER_ERROR,
@@ -29,6 +31,8 @@ import {
   type CbeRequestAuthSession,
   type CbeRequestBase,
   type CbeRequestGetContents,
+  type CbeRequestGetHistory,
+  type CbeRequestGetHistoryContent,
   type CbeRequestLoadFilesInfo,
   type CbeRequestLogin,
   type CbeRequestSetContents,
@@ -37,7 +41,7 @@ import {
 // Bump on every change to the cbe module. Exposed via the x-cbe-version
 // response header and the {action:'ping'} probe so a deploy can be verified:
 //   curl -s localhost:3000/exec -H 'Content-Type: application/json' -d '{"action":"ping"}'
-export const CBE_MODULE_VERSION = '1.3.0';
+export const CBE_MODULE_VERSION = '1.4.0';
 
 // no-cache = always revalidate with the ETag (304 when unchanged). The server
 // is local to the VM, so revalidation is cheap — and a publish always lands
@@ -207,6 +211,73 @@ async function handleLoadFilesInfo(request: FastifyRequest, body: CbeRequestLoad
   reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, msg: 'ok', filesInfo: listSources(project) });
 }
 
+// History is source code: the same session gate the read actions use applies.
+async function handleGetHistory(request: FastifyRequest, body: CbeRequestGetHistory, reply: FastifyReply): Promise<void> {
+  if (!await isSourceRequestAllowed(request)) {
+    reply.code(CBE_HTTP_UNAUTHORIZED).send({ statusCode: CBE_HTTP_UNAUTHORIZED, msg: 'login required' });
+    return;
+  }
+  const project = readProjectId(body);
+  if (!project || typeof body.shortPath !== 'string') {
+    reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, msg: 'invalid project or shortPath' });
+    return;
+  }
+  // A project without .git, an untracked file or a rejected path all mean "no
+  // history" — an empty list, not an error: the studio must degrade quietly.
+  reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, msg: 'ok', history: readHistory(project, body.shortPath) });
+}
+
+async function handleGetHistoryContent(request: FastifyRequest, body: CbeRequestGetHistoryContent, reply: FastifyReply): Promise<void> {
+  if (!await isSourceRequestAllowed(request)) {
+    reply.code(CBE_HTTP_UNAUTHORIZED).send({ statusCode: CBE_HTTP_UNAUTHORIZED, msg: 'login required' });
+    return;
+  }
+  const project = readProjectId(body);
+  if (!project || typeof body.shortPath !== 'string' || typeof body.ref !== 'string') {
+    reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, msg: 'invalid project, shortPath or ref' });
+    return;
+  }
+  // An unacceptable ref (the UI's 'local' sentinel, anything non-hex) comes back
+  // as null content, not 400: the diff panel asks for it on an ordinary click.
+  const content = readHistoryContent(project, body.shortPath, body.ref);
+  reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, msg: 'ok', content });
+}
+
+// GET /cbe/source?project=<id>&path=<shortPath> — the file as the VM has it.
+//
+// This is what the editor's "View on repository" opens here: on the VM the
+// repository IS the VM, and DriverIOBase.getUrl is SYNCHRONOUS, so the driver
+// can only return a url it can build client-side — a same-origin one. Reads the
+// tree through readSources, so it shows exactly what getContents serves, and
+// goes through the same session gate and the same path boundary as /exec.
+async function handleSourceView(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+  if (!await isSourceRequestAllowed(request)) {
+    reply.code(CBE_HTTP_UNAUTHORIZED).type('text/plain; charset=utf-8').send('login required');
+    return;
+  }
+  const query = request.query as { project?: string; path?: string };
+  const project = Number(query.project);
+  if (!Number.isInteger(project) || project <= 0 || typeof query.path !== 'string' || !query.path) {
+    reply.code(CBE_HTTP_BAD_REQUEST).type('text/plain; charset=utf-8').send('invalid project or path');
+    return;
+  }
+
+  // readSources drops a rejected path and a missing file alike — both are "not
+  // here" to a reader, and telling them apart would report on the file system.
+  const [file] = readSources(project, [query.path]);
+  if (!file) {
+    reply.code(CBE_HTTP_NOT_FOUND).type('text/plain; charset=utf-8').send('not found');
+    return;
+  }
+  if (file.encoding === 'base64') {
+    // An l3 asset: hand it over as bytes instead of showing base64 as if it were the file.
+    reply.code(CBE_HTTP_OK).type('application/octet-stream').send(Buffer.from(file.content, 'base64'));
+    return;
+  }
+  // text/plain so the browser shows the source instead of downloading it.
+  reply.code(CBE_HTTP_OK).type('text/plain; charset=utf-8').send(file.content);
+}
+
 async function handleExec(request: FastifyRequest, reply: FastifyReply): Promise<void> {
   const body = request.body as CbeRequestBase | undefined;
   if (!body || typeof body !== 'object' || Array.isArray(body) || !body.action) {
@@ -234,6 +305,12 @@ async function handleExec(request: FastifyRequest, reply: FastifyReply): Promise
         return;
       case 'loadFilesInfo':
         await handleLoadFilesInfo(request, body as CbeRequestLoadFilesInfo, reply);
+        return;
+      case 'getHistory':
+        await handleGetHistory(request, body as CbeRequestGetHistory, reply);
+        return;
+      case 'getHistoryContent':
+        await handleGetHistoryContent(request, body as CbeRequestGetHistoryContent, reply);
         return;
       case 'login': {
         const start = Date.now();
@@ -308,6 +385,7 @@ async function handleStatic(request: FastifyRequest, reply: FastifyReply): Promi
 
 export function registerCbeRoutes(app: FastifyInstance): void {
   app.post('/exec', handleExec);
+  app.get('/cbe/source', handleSourceView);
   app.get('/libs/*', handleStatic);
   app.get('/monaco/*', handleStatic);
   app.get('/mlsServiceWorker.js', handleStatic);

@@ -22,8 +22,14 @@ const SHORT_PATH_PATTERN = new RegExp(`^(l[1-${MAX_LEVEL}]/)?[^/].*$`, 'u');
  *
  * The shortPath comes from the BROWSER and becomes a write target on the VM's
  * disk, so this is a security boundary, not a formality: the resolved path must
- * stay inside <base>/mls-<id>/. Rejects traversal ('..'), absolute paths, NUL
- * bytes and levels outside l1..l7.
+ * stay inside <base>/mls-<id>/. Rejects traversal ('..'), absolute paths,
+ * backslashes and NUL bytes.
+ *
+ * SHORT_PATH_PATTERN is shape, not a level filter: it only requires that what
+ * follows an `l<n>/` prefix is non-empty. 'l0/x.ts' and 'l8/x.ts' are accepted
+ * and read as an ordinary folder named l0 / l8 inside the project — contained,
+ * which is what matters here. What proves containment is the resolved-path
+ * check below, not the pattern.
  */
 export function resolveSourcePath(projectId: number, shortPath: string): string | null {
   if (!Number.isInteger(projectId) || projectId <= 0) return null;

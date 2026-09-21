@@ -68,6 +68,35 @@ export interface CbeRequestLoadFilesInfo extends CbeRequestBase {
   project?: number;
 }
 
+// ── File history (read-only; served from the project's git repo on the VM) ──
+// Field names mirror mls.stor.IHistory, except `date` — the cfe interface calls
+// it `data`, which the driver renames on the way out rather than spreading the
+// typo through the server.
+
+export interface CbeHistoryEntry {
+  /** Commit sha; opaque to the cfe, handed back verbatim to getHistoryContent. */
+  ref: string;
+  authorName: string;
+  /** ISO-8601 author date. */
+  date: string;
+  message: string;
+  additions: number;
+  deletions: number;
+}
+
+export interface CbeRequestGetHistory extends CbeRequestBase {
+  action: 'getHistory';
+  project?: number;
+  shortPath?: string;
+}
+
+export interface CbeRequestGetHistoryContent extends CbeRequestBase {
+  action: 'getHistoryContent';
+  project?: number;
+  shortPath?: string;
+  ref?: string;
+}
+
 export interface CbePrjSourcesFile {
   shortPath: string;
   versionRef?: string;
