@@ -19,6 +19,7 @@ import {
   type JwtSession,
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeAuthJwt.js';
 import { listSources, readSources, writeSources } from '/_102034_/l1/server/layer_1_external/cbe/cbeSources.js';
+import { CANDIDATE_BODY_LIMIT, candidateActionAllowed, proxyCandidateRequest } from '/_102034_/l1/server/layer_1_external/cbe/cbeCandidateProxy.js';
 import { readHistory, readHistoryContent } from '/_102034_/l1/server/layer_1_external/cbe/cbeGit.js';
 import { isRebuildInProgress, scheduleRebuildOnSave } from '/_102034_/l1/server/layer_1_external/cbe/cbeRebuildOnSave.js';
 import { authorFromSession, commitSavedSources } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitCommit.js';
@@ -43,7 +44,7 @@ import {
 // Bump on every change to the cbe module. Exposed via the x-cbe-version
 // response header and the {action:'ping'} probe so a deploy can be verified:
 //   curl -s localhost:3000/exec -H 'Content-Type: application/json' -d '{"action":"ping"}'
-export const CBE_MODULE_VERSION = '1.7.0';
+export const CBE_MODULE_VERSION = '1.8.0';
 
 // no-cache = always revalidate with the ETag (304 when unchanged). The server
 // is local to the VM, so revalidation is cheap — and a publish always lands
@@ -71,6 +72,33 @@ async function resolveSession(request: FastifyRequest): Promise<JwtSession & { t
   if (session.email) return session;
   const testUser = process.env.CBE_TEST_LOGIN_USER;
   return testUser ? { testUser } : {};
+}
+
+async function handleCandidateProxy(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+  const body = request.body as unknown;
+  if (!candidateActionAllowed(body)) {
+    reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, status: 'error', msg: 'candidate.invalid_action' });
+    return;
+  }
+  const cookies = parseCookies(request.headers.cookie as string | undefined);
+  const session = await resolveSession(request);
+  // CBE_TEST_LOGIN_USER is never sufficient. Forward only a JWT which this host
+  // verified (or its newly refreshed replacement), never raw request headers.
+  const verifiedToken = session.email ? session.newAccessToken ?? cookies.cauth ?? '' : '';
+  if (!verifiedToken) {
+    reply.code(CBE_HTTP_UNAUTHORIZED).send({ statusCode: CBE_HTTP_UNAUTHORIZED, status: 'error', msg: 'candidate.unauthorized' });
+    return;
+  }
+  try {
+    const result = await proxyCandidateRequest(body, verifiedToken);
+    if (session.newAccessToken) {
+      reply.header('set-cookie', [sessionCookie('cauth', session.newAccessToken, { httpOnly: true, maxAgeMs: THIRTY_DAYS_MS })]);
+    }
+    reply.code(result.statusCode).header('Content-Type', result.contentType).header('Cache-Control', 'no-store').send(result.body);
+  } catch (err) {
+    console.error('[cbe:candidate] central transport failed:', (err as Error).message);
+    reply.code(503).send({ statusCode: 503, status: 'error', msg: 'candidate.transport_unavailable' });
+  }
 }
 
 // Studio sources require a JWT session on real domains (102045.collabcodes.com
@@ -416,11 +444,12 @@ async function handleStatic(request: FastifyRequest, reply: FastifyReply): Promi
 
 export function registerCbeRoutes(app: FastifyInstance): void {
   app.post('/exec', handleExec);
+  app.post('/exec/candidate', { bodyLimit: CANDIDATE_BODY_LIMIT }, handleCandidateProxy);
   app.get('/cbe/source', handleSourceView);
   app.get('/libs/*', handleStatic);
   app.get('/monaco/*', handleStatic);
   app.get('/mlsServiceWorker.js', handleStatic);
-  console.info(`[cbe] v${CBE_MODULE_VERSION} routes registered: POST /exec (login/authSession/authLogout/getContents/setContents/loadFilesInfo), GET /libs/*, GET /monaco/*, GET /mlsServiceWorker.js`);
+  console.info(`[cbe] v${CBE_MODULE_VERSION} routes registered: POST /exec (login/authSession/authLogout/getContents/setContents/loadFilesInfo/getHistory/getHistoryContent), POST /exec/candidate, GET /cbe/source, GET /libs/*, GET /monaco/*, GET /mlsServiceWorker.js`);
   logCbeStaticConfig();
   console.info(`[cbe] projects base: ${getProjectsBaseDir()} | jwtAuth: ${isJwtAuthEnabled() ? 'enabled' : 'DISABLED'}${process.env.CBE_TEST_LOGIN_USER ? ` | TEST user: ${process.env.CBE_TEST_LOGIN_USER}` : ''}`);
 }
