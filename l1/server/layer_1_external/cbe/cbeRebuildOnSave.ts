@@ -4,6 +4,14 @@
 // I/O — without this, a save never reaches the running server until someone
 // SSHes in and runs `pnpm build` by hand.
 //
+// IT ALSO REFRESHES THE SAVED PROJECT'S obj/compiled.zip, which `pnpm build`
+// alone does NOT do for a project inside the release fecho: addNewVersion only
+// refreshes the projects OUTSIDE it (the fecho is built by the publish's git
+// hook, which a save never runs). The saved project is normally the fecho's own
+// app, and its fileinfos.json is where the browser reads each file's versionRef
+// from — leave it frozen at the last publish and the studio keeps serving the
+// pre-edit source no matter how many times the build runs.
+//
 // Two layers of coordination:
 //   1. A per-worker in-process debounce (setTimeout) collapses a burst of
 //      rapid saves handled by the SAME pm2 cluster worker into one attempt.
@@ -34,7 +42,7 @@
 // the worker holding it survives long enough, which a reload cannot guarantee.
 
 import { spawn } from 'node:child_process';
-import { closeSync, mkdirSync, openSync, rmSync, statSync, writeSync } from 'node:fs';
+import { closeSync, lstatSync, mkdirSync, openSync, rmSync, statSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { getProjectsBaseDir } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
 import { readProjectsConfig } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
@@ -89,6 +97,66 @@ function lockIsStale(): boolean {
 }
 
 let timer: NodeJS.Timeout | null = null;
+/** Projects saved since the last launched build — refreshed before it compiles. */
+const pendingProjects = new Set<number>();
+
+/**
+ * The `current-<id>` symlink the running app uses as its cwd, or '' when there is none.
+ *
+ * addNewVersion always flips the global `current`, but an ALIAS only moves when
+ * COLLAB_RELEASE_ALIAS names it — and pm2 starts this app with cwd on the alias
+ * (pm2.apps.d/app<port>.config.js). Without passing it, a save compiled a new release,
+ * moved `current`, reloaded pm2 — and the app came back on the OLD release, because its
+ * alias never moved. Observed on the VM: current -> 20260918182437 while
+ * current-102047 -> 20260918152151, with the build reporting exit=0.
+ *
+ * lstat, not existsSync: a dangling alias (its target pruned) must still be moved — that
+ * is exactly the state that needs fixing, and existsSync follows the link and says no.
+ */
+export function releaseAliasFor(clientId: string): string {
+  const fromEnv = (process.env.COLLAB_RELEASE_ALIAS ?? '').trim();
+  if (fromEnv) return fromEnv; // an explicit setting wins, as in the publish
+  if (!/^\d+$/u.test(clientId)) return '';
+  const alias = `current-${clientId}`;
+  try {
+    lstatSync(join(ROOT, alias));
+    return alias;
+  } catch {
+    return ''; // no alias on this host: the global `current` is enough
+  }
+}
+
+/**
+ * The one backgrounded job the build runs as. Everything between `{` and `}`
+ * runs as ONE job; the outer `sh -c` invocation returns as soon as it has
+ * started it, which is what lets the kernel reparent it to init before any pm2
+ * reload can find it still hanging off this worker's process tree.
+ *
+ * The obj refresh comes BEFORE `pnpm build` so the release it assembles already
+ * carries the new zip (and addNewVersion's assertFechoCompiledZips validates
+ * that one). It is a separate `;` step: if it fails, the build still runs.
+ */
+export function buildShellChain(options: { ownerToken: string; clientId: string; projects: number[]; releaseAlias?: string }): string {
+  const { ownerToken, clientId, projects, releaseAlias } = options;
+  const steps = [
+    '{',
+    `printf '=== rebuild-on-save start %s pid=%s client=%s projects=%s ===\\n' "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" ${shQuote(ownerToken)} ${shQuote(clientId)} ${shQuote(projects.join(',') || '-')};`,
+  ];
+  if (projects.length > 0) {
+    steps.push(`node scripts/runtime/buildProjectsObj.mjs --only ${shQuote(projects.join(','))};`);
+  }
+  // The alias goes on the build command itself (not exported for the whole chain) so it
+  // reaches addNewVersion's parseReleaseAliases and nothing else.
+  const aliasPrefix = releaseAlias ? `COLLAB_RELEASE_ALIAS=${shQuote(releaseAlias)} ` : '';
+  steps.push(
+    `${aliasPrefix}pnpm build -- --client ${shQuote(clientId)} --skip-install --skip-migrate;`,
+    'code=$?;',
+    `printf '=== rebuild-on-save end %s pid=%s exit=%s ===\\n' "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" ${shQuote(ownerToken)} "$code";`,
+    `if [ "$(head -1 ${shQuote(LOCK_PATH)} 2>/dev/null)" = ${shQuote(ownerToken)} ]; then rm -f ${shQuote(LOCK_PATH)}; fi`,
+    `} >> ${shQuote(LOG_PATH)} 2>&1 &`,
+  );
+  return steps.join(' ');
+}
 
 function scheduleRetry(delayMs: number): void {
   if (timer) clearTimeout(timer);
@@ -127,27 +195,43 @@ function attemptBuild(): void {
   const clientId = String(readProjectsConfig().defaultProjectId);
   mkdirSync(LOGS_DIR, { recursive: true });
 
-  // Everything between `{` and `}` runs as ONE backgrounded job; the outer
-  // `sh -c` invocation returns as soon as it has started that job, which is
-  // what lets the kernel reparent it to init before any pm2 reload can find it
-  // still hanging off this worker's process tree.
-  const shellChain = [
-    '{',
-    `printf '=== rebuild-on-save start %s pid=%s client=%s ===\\n' "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" ${shQuote(ownerToken)} ${shQuote(clientId)};`,
-    `pnpm build -- --client ${shQuote(clientId)} --skip-install --skip-migrate;`,
-    'code=$?;',
-    `printf '=== rebuild-on-save end %s pid=%s exit=%s ===\\n' "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" ${shQuote(ownerToken)} "$code";`,
-    `if [ "$(head -1 ${shQuote(LOCK_PATH)} 2>/dev/null)" = ${shQuote(ownerToken)} ]; then rm -f ${shQuote(LOCK_PATH)}; fi`,
-    `} >> ${shQuote(LOG_PATH)} 2>&1 &`,
-  ].join(' ');
+  // Claimed here, not in the timer: a worker that loses the lock race re-arms
+  // and must still carry its projects into the build that finally runs.
+  const projects = [...pendingProjects].sort((a, b) => a - b);
+  pendingProjects.clear();
 
-  const launcher = spawn('sh', ['-c', shellChain], { cwd: ROOT, detached: true, stdio: 'ignore' });
+  const chain = buildShellChain({ ownerToken, clientId, projects, releaseAlias: releaseAliasFor(clientId) });
+  const launcher = spawn('sh', ['-c', chain], {
+    cwd: ROOT,
+    detached: true,
+    stdio: 'ignore',
+  });
   launcher.unref();
 }
 
-/** Call after a successful setContents write. Debounced + safe across the 2 pm2 cluster workers. */
-export function scheduleRebuildOnSave(): void {
+/**
+ * Whether a build is running RIGHT NOW, for anyone asking "did my save land yet?".
+ * Read from disk on every call on purpose: unlike the release stamp, this is exactly
+ * the kind of state that changes under the process. The lock is created by the worker
+ * that wins the race and removed by the build's own shell chain, so it covers builds
+ * started by the other pm2 worker too.
+ */
+export function isRebuildInProgress(): boolean {
+  try {
+    return statSync(LOCK_PATH).mtimeMs > Date.now() - STALE_LOCK_MS;
+  } catch {
+    return false; // no lock file = nothing building
+  }
+}
+
+/**
+ * Call after a successful setContents write, with the project it wrote to — its
+ * obj is refreshed before the build (see the header). Debounced + safe across
+ * the 2 pm2 cluster workers.
+ */
+export function scheduleRebuildOnSave(project?: number): void {
   if (!isEnabled()) return;
+  if (Number.isInteger(project) && (project as number) > 0) pendingProjects.add(project as number);
   if (timer) clearTimeout(timer);
   timer = setTimeout(attemptBuild, DEBOUNCE_MS);
 }

@@ -61,6 +61,8 @@ export interface CbeRequestSetContents extends CbeRequestBase {
   project?: number;
   files?: CbeSourceFile[];
   deletes?: string[];
+  /** The studio's save comment — becomes the message of the commit cbeGitCommit makes. */
+  comments?: string | null;
 }
 
 export interface CbeRequestLoadFilesInfo extends CbeRequestBase {

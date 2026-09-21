@@ -6,9 +6,10 @@
 // <base>/mls-<id> as a real git repo (main, vm-baseline, post-receive). The
 // history is already on disk; only an /exec action to read it was missing.
 //
-// SCOPE: reads only. Studio saves (cbeSources.writeSources) do NOT commit, so
-// what this returns is the PUBLISH history — the commits pushed to the VM —
-// not the studio's own edits. Committing on save is a separate decision.
+// SCOPE: reads only — the writing half is cbeGitCommit.ts, which commits what a
+// studio save wrote (author from the caller's session, message from the save
+// comment). So what this returns is both the PUBLISH history and the studio's
+// own edits, newest first.
 //
 // SECURITY: shortPath and ref both come from the browser and both become git
 // arguments. Every call goes through execFileSync with an ARGUMENT ARRAY and

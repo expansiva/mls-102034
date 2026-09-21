@@ -68,12 +68,15 @@ export function readSources(projectId: number, shortPaths: string[]): CbeSourceF
  * Writes the given sources and removes the deleted ones. All-or-nothing is NOT
  * attempted (no transaction on a plain FS): a rejected path aborts the whole
  * call BEFORE any write, so a bad request never leaves a half-applied state.
+ *
+ * `paths` reports every shortPath actually touched (written and removed), which
+ * is what cbeGitCommit commits — the caller never has to re-derive it.
  */
-export function writeSources(projectId: number, files: CbeSourceFile[], deletes: string[]): { ok: boolean; msg?: string } {
+export function writeSources(projectId: number, files: CbeSourceFile[], deletes: string[]): { ok: boolean; msg?: string; paths: string[] } {
   const writes: { path: string; content: Buffer }[] = [];
   for (const file of files) {
     const path = resolveSourcePath(projectId, file.shortPath);
-    if (!path) return { ok: false, msg: `rejected shortPath: ${file.shortPath}` };
+    if (!path) return { ok: false, msg: `rejected shortPath: ${file.shortPath}`, paths: [] };
     writes.push({
       path,
       content: file.encoding === 'base64' ? Buffer.from(file.content, 'base64') : Buffer.from(file.content, 'utf8'),
@@ -83,7 +86,7 @@ export function writeSources(projectId: number, files: CbeSourceFile[], deletes:
   const removals: string[] = [];
   for (const shortPath of deletes) {
     const path = resolveSourcePath(projectId, shortPath);
-    if (!path) return { ok: false, msg: `rejected shortPath: ${shortPath}` };
+    if (!path) return { ok: false, msg: `rejected shortPath: ${shortPath}`, paths: [] };
     removals.push(path);
   }
 
@@ -95,7 +98,7 @@ export function writeSources(projectId: number, files: CbeSourceFile[], deletes:
     if (existsSync(path)) rmSync(path, { force: true });
   }
   console.info(`[cbe] setContents project ${projectId}: ${writes.length} written, ${removals.length} removed`);
-  return { ok: true };
+  return { ok: true, paths: [...files.map((file) => file.shortPath), ...deletes] };
 }
 
 /** The project's file index — same list the login ships, in plain form. */

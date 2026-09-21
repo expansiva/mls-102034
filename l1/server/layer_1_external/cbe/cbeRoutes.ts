@@ -20,7 +20,9 @@ import {
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeAuthJwt.js';
 import { listSources, readSources, writeSources } from '/_102034_/l1/server/layer_1_external/cbe/cbeSources.js';
 import { readHistory, readHistoryContent } from '/_102034_/l1/server/layer_1_external/cbe/cbeGit.js';
-import { scheduleRebuildOnSave } from '/_102034_/l1/server/layer_1_external/cbe/cbeRebuildOnSave.js';
+import { isRebuildInProgress, scheduleRebuildOnSave } from '/_102034_/l1/server/layer_1_external/cbe/cbeRebuildOnSave.js';
+import { authorFromSession, commitSavedSources } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitCommit.js';
+import { getRunningRelease } from '/_102034_/l1/server/layer_1_external/cbe/cbeRelease.js';
 import {
   CBE_HTTP_BAD_REQUEST,
   CBE_HTTP_NOT_FOUND,
@@ -41,7 +43,7 @@ import {
 // Bump on every change to the cbe module. Exposed via the x-cbe-version
 // response header and the {action:'ping'} probe so a deploy can be verified:
 //   curl -s localhost:3000/exec -H 'Content-Type: application/json' -d '{"action":"ping"}'
-export const CBE_MODULE_VERSION = '1.4.0';
+export const CBE_MODULE_VERSION = '1.7.0';
 
 // no-cache = always revalidate with the ETag (304 when unchanged). The server
 // is local to the VM, so revalidation is cheap — and a publish always lands
@@ -192,10 +194,27 @@ async function handleSetContents(request: FastifyRequest, body: CbeRequestSetCon
     reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, msg: rc.msg ?? 'invalid request' });
     return;
   }
+  // Commit BEFORE scheduling the rebuild: the build reads each file's versionRef
+  // from `git ls-tree -r HEAD`, so a build that runs on an uncommitted write
+  // republishes the OLD versionRef and the browser keeps its cached source (see
+  // cbeGitCommit.ts). It is also what puts these edits in getHistory. Awaited,
+  // never fatal — the files are already on disk.
+  const session = await resolveSession(request);
+  const commit = await commitSavedSources(project, rc.paths, {
+    comments: body.comments ?? undefined,
+    author: authorFromSession(session.email ?? session.testUser),
+  });
+  if (commit.status === 'failed') {
+    console.warn(`[cbe] setContents project ${project}: commit failed (save kept, versionRef will not move): ${commit.msg}`);
+  } else if (commit.status === 'committed') {
+    console.info(`[cbe] setContents project ${project}: committed ${commit.ref?.slice(0, 8)}`);
+  }
   // Fire-and-forget: debounced, cross-worker-safe rebuild+redeploy (see
-  // cbeRebuildOnSave.ts). Never blocks this response.
-  scheduleRebuildOnSave();
-  reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, msg: 'ok' });
+  // cbeRebuildOnSave.ts). Never blocks this response. The project goes along so
+  // its obj/compiled.zip is refreshed — `pnpm build` alone skips it whenever the
+  // project is inside the release fecho, which the VM's own app always is.
+  scheduleRebuildOnSave(project);
+  reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, msg: 'ok', commit });
 }
 
 async function handleLoadFilesInfo(request: FastifyRequest, body: CbeRequestLoadFilesInfo, reply: FastifyReply): Promise<void> {
@@ -289,7 +308,19 @@ async function handleExec(request: FastifyRequest, reply: FastifyReply): Promise
   try {
     switch (body.action) {
       case 'ping':
-        reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, msg: 'pong', version: CBE_MODULE_VERSION });
+        // Enough for a browser to tell whether the save it just made is live:
+        // `release` is the identity of THIS worker (stable while it runs), `pid`
+        // says which of the two cluster workers answered, and `rebuilding` is read
+        // from disk on the spot. A release id that changed means a new release is
+        // being served; unchanged after rebuilding goes false means the build failed.
+        reply.code(CBE_HTTP_OK).send({
+          statusCode: CBE_HTTP_OK,
+          msg: 'pong',
+          version: CBE_MODULE_VERSION,
+          pid: process.pid,
+          release: getRunningRelease(),
+          rebuilding: isRebuildInProgress(),
+        });
         return;
       case 'authSession':
         await handleAuthSession(body as CbeRequestAuthSession, reply);
