@@ -94,6 +94,25 @@ function readStaticFile(filePath: string) {
   };
 }
 
+/**
+ * O projeto CLIENTE do workspace — que nao e' o mesmo que o dono do modulo servido.
+ *
+ * `projectId` no boot significa "de quem e' este modulo", e precisa continuar assim: e' por ele que
+ * os assets da pagina resolvem. Mas quem entra por um modulo de PLATAFORMA (monitor/mdm/audit, do
+ * master backend) recebia `projectId` do master, e o studio — que usa o campo como "qual projeto eu
+ * estou editando" — ficava presa nele. Medido em 23/09/2026 no `102047.collabcodes.com`:
+ * `collabBoot.projectId === "102034"` e nenhum service do cliente na lista.
+ *
+ * Nao ha' o que inferir por rota: `validateProjectsConfig` exige EXATAMENTE UM projeto
+ * `type: "client"` por workspace, entao o servidor sabe a resposta. O `defaultProjectId` fica de
+ * reserva para config antigo que ainda nao declare `type`.
+ */
+function resolveClientProjectId(): string {
+  const config = readProjectsConfig();
+  const client = Object.entries(config.projects).find(([, project]) => project.type === 'client');
+  return client?.[0] ?? config.defaultProjectId;
+}
+
 function buildBootConfigScript(app: FrontendAppRegistration) {
   if (!app.routes.length) {
     return '';
@@ -101,6 +120,9 @@ function buildBootConfigScript(app: FrontendAppRegistration) {
 
   const payload = JSON.stringify({
     projectId: app.projectId,
+    // O projeto do cliente, sempre — mesmo servindo um modulo de plataforma. Quem quer saber
+    // "de quem e' este modulo" continua lendo `projectId`.
+    clientProjectId: resolveClientProjectId(),
     moduleId: app.appId,
     basePath: app.basePath,
     shellMode: app.shellMode,
