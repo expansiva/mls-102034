@@ -140,7 +140,7 @@ export async function resolveJwtSession(cauth: string, crefresh: string): Promis
   if (!isJwtAuthEnabled() || !cauth) return {};
   try {
     const claims = await verifyAccessToken(cauth);
-    activeOrganizationId(claims);
+    if (!activeOrganizationId(claims)) return {};
     return { email: claims.email, picture: claims.picture };
   } catch {
     if (!crefresh) return {};
@@ -160,7 +160,8 @@ export async function resolveJwtSession(cauth: string, crefresh: string): Promis
     }
     let orgId: string | null;
     try { orgId = activeOrganizationId(previous); } catch { return {}; }
-    const newAccessToken = await refreshAccessToken(crefresh, orgId ?? undefined);
+    if (!orgId) return {};
+    const newAccessToken = await refreshAccessToken(crefresh, orgId);
     if (!newAccessToken) return {};
     try {
       const claims = await verifyAccessToken(newAccessToken);

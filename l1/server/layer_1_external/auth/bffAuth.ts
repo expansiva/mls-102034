@@ -166,7 +166,7 @@ export async function resolveBffSession(
   if (!token) return { reject: isBffAuthEnforced(), reason: 'missing-token' };
   try {
     const claims = await verifyAccessToken(token);
-    activeOrganizationId(claims);
+    if (!activeOrganizationId(claims)) throw new Error('organization selection required');
     return { claims, reject: false, reason: 'ok' };
   } catch {
     const cookies = parseCookies(Array.isArray(headers?.cookie) ? headers.cookie[0] : headers?.cookie);
