@@ -37,6 +37,11 @@ import type { BffRequest, FrontendAppRegistration, RequestContext } from '/_1020
 
 const WRITE_BEHIND_INTERVAL_MS = 5000;
 
+function refreshedAuthCookie(token: string): string {
+  const expires = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toUTCString();
+  return `cauth=${encodeURIComponent(token)}; Path=/; SameSite=Strict; HttpOnly; Expires=${expires}`;
+}
+
 export function getContentType(filePath: string) {
   // `extname('.wav')` is '' (dotfile with no extension); T4 passes the ext itself.
   const ext = extname(filePath) || filePath;
@@ -318,6 +323,7 @@ export function buildHttpServer() {
   app.post('/execBff', async (request, reply) => {
     const result = await handleHttpRequest('POST', '/execBff', request.body, undefined, request.headers);
     reply.status(result.statusCode);
+    if (result.headers?.['set-cookie']) reply.header('set-cookie', result.headers['set-cookie']);
     if (result.headers?.['content-type']) {
       reply.type(result.headers['content-type']);
     }
@@ -334,6 +340,7 @@ export function buildHttpServer() {
   app.get('/session/info', async (request, reply) => {
     const session = await resolveBffSession(request.headers);
     reply.header('cache-control', 'no-store');
+    if (session.newAccessToken) reply.header('set-cookie', refreshedAuthCookie(session.newAccessToken));
     const mode = readProjectMode(readAppEnv().projectId);
     const override = session.claims && !refuseOverride(mode)
       ? await readAuthorityOverride(createDefaultRequestContext(), session.claims.sub)
@@ -584,6 +591,7 @@ export async function handleHttpRequest(
     return {
       statusCode: result.statusCode,
       body: result.response,
+      ...(session.newAccessToken ? { headers: { 'set-cookie': refreshedAuthCookie(session.newAccessToken) } } : {}),
     };
   } catch (error) {
     return {

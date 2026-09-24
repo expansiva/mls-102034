@@ -36,6 +36,7 @@ export interface CbeRequestAuthSession extends CbeRequestBase {
   action: 'authSession';
   access_token?: string;
   refresh_token?: string;
+  org_id?: string;
 }
 
 // ── Source I/O (VM storage driver, mls-102033 l2/cbe/driverVm.ts) ───────────

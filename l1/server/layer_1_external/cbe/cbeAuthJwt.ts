@@ -16,6 +16,9 @@ export interface CollabAuthClaims extends JWTPayload {
   name?: string;
   /** Standard OIDC profile claim — avatar URL (tokens issued before the claim existed lack it). */
   picture?: string;
+  org_id?: string;
+  active_org?: { id?: string };
+  orgs?: Array<{ id?: string; name?: string }>;
 }
 
 const AUTH_BASE_URL = (process.env.COLLAB_AUTH_BASE_URL ?? 'https://auth.collab.codes').replace(/\/$/u, '');
@@ -49,21 +52,65 @@ export async function verifyAccessToken(token: string): Promise<CollabAuthClaims
     if (err instanceof joseErrors.JWTExpired) {
       const payload = decodeJwt(token);
       const graceUntil = payload['grace_until'] as number | undefined;
-      if (typeof graceUntil === 'number' && Math.floor(Date.now() / 1000) < graceUntil) {
-        return payload as CollabAuthClaims;
+      const expiredAt = payload.exp;
+      if (typeof graceUntil === 'number' && typeof expiredAt === 'number' && Math.floor(Date.now() / 1000) < graceUntil) {
+        // The decoded payload only supplies a tolerance. Never trust its claims
+        // without verifying the signature and issuer, even during grace.
+        const verified = await jwtVerify(token, getJwks(), {
+          issuer: ISSUER,
+          clockTolerance: Math.max(0, graceUntil - expiredAt),
+        });
+        return verified.payload as CollabAuthClaims;
       }
     }
     throw err;
   }
 }
 
+/** An org list is a choice, not an active tenant. Conflicting signed claims are invalid. */
+export function activeOrganizationId(claims: CollabAuthClaims): string | null {
+  const active = claims.active_org?.id;
+  const legacy = claims.org_id;
+  if (active && legacy && active !== legacy) throw new Error('conflicting organization claims');
+  return active || legacy || null;
+}
+
+export function availableOrganizations(claims: CollabAuthClaims): Array<{ id: string; name: string }> {
+  if (!Array.isArray(claims.orgs)) return [];
+  return claims.orgs.filter((org): org is { id: string; name: string } =>
+    typeof org?.id === 'string' && Boolean(org.id) && typeof org.name === 'string');
+}
+
+export function sameSelectedSession(previous: CollabAuthClaims, current: CollabAuthClaims, orgId: string | null): boolean {
+  return Boolean(previous.sub) && current.sub === previous.sub && activeOrganizationId(current) === orgId;
+}
+
+/** The issuer checks membership; the returned JWT is checked again locally. */
+export async function selectOrganization(accessToken: string, original: CollabAuthClaims, orgId: string): Promise<string | null> {
+  try {
+    const response = await fetch(`${AUTH_BASE_URL}/auth/select-org`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify({ org_id: orgId }),
+    });
+    if (!response.ok) return null;
+    const data = await response.json() as { access_token?: unknown };
+    if (typeof data.access_token !== 'string') return null;
+    const selected = await verifyAccessToken(data.access_token);
+    if (!sameSelectedSession(original, selected, orgId)) return null;
+    return data.access_token;
+  } catch {
+    return null;
+  }
+}
+
 /** Exchanges a refresh token for a fresh access token; null on any failure. */
-export async function refreshAccessToken(refreshToken: string): Promise<string | null> {
+export async function refreshAccessToken(refreshToken: string, orgId?: string): Promise<string | null> {
   try {
     const res = await fetch(`${AUTH_BASE_URL}/auth/token/refresh`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refresh_token: refreshToken }),
+      body: JSON.stringify({ refresh_token: refreshToken, ...(orgId ? { org_id: orgId } : {}) }),
     });
     if (!res.ok) {
       console.info(`[cbe:auth] refresh failed: ${res.status}`);
@@ -93,13 +140,31 @@ export async function resolveJwtSession(cauth: string, crefresh: string): Promis
   if (!isJwtAuthEnabled() || !cauth) return {};
   try {
     const claims = await verifyAccessToken(cauth);
+    activeOrganizationId(claims);
     return { email: claims.email, picture: claims.picture };
   } catch {
     if (!crefresh) return {};
-    const newAccessToken = await refreshAccessToken(crefresh);
+    // A signed, expired JWT may supply the previous selection for the refresh
+    // request, but cannot authorize a request until the new JWT is verified.
+    let previous: CollabAuthClaims;
+    try {
+      const decoded = decodeJwt(cauth);
+      if (typeof decoded.exp !== 'number') return {};
+      const verified = await jwtVerify(cauth, getJwks(), {
+        issuer: ISSUER,
+        currentDate: new Date((decoded.exp - 1) * 1000),
+      });
+      previous = verified.payload as CollabAuthClaims;
+    } catch {
+      return {};
+    }
+    let orgId: string | null;
+    try { orgId = activeOrganizationId(previous); } catch { return {}; }
+    const newAccessToken = await refreshAccessToken(crefresh, orgId ?? undefined);
     if (!newAccessToken) return {};
     try {
       const claims = await verifyAccessToken(newAccessToken);
+      if (!sameSelectedSession(previous, claims, orgId)) return {};
       return { email: claims.email, picture: claims.picture, newAccessToken };
     } catch {
       return {};

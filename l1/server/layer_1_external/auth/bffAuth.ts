@@ -12,6 +12,7 @@
 // a token (server-to-server, the test runner). Never a query parameter.
 
 import { createRemoteJWKSet, jwtVerify, errors as joseErrors, decodeJwt, type JWTPayload } from 'jose';
+import { activeOrganizationId, parseCookies, resolveJwtSession } from '/_102034_/l1/server/layer_1_external/cbe/cbeAuthJwt.js';
 
 export interface CollabAuthClaims extends JWTPayload {
   sub: string;
@@ -133,8 +134,12 @@ export async function verifyAccessToken(token: string): Promise<CollabAuthClaims
     if (error instanceof joseErrors.JWTExpired) {
       const payload = decodeJwt(token);
       const graceUntil = payload.grace_until as number | undefined;
-      if (typeof graceUntil === 'number' && Math.floor(Date.now() / 1000) < graceUntil) {
-        return payload as CollabAuthClaims;
+      if (typeof graceUntil === 'number' && typeof payload.exp === 'number' && Math.floor(Date.now() / 1000) < graceUntil) {
+        const verified = await jwtVerify(token, getJwks(), {
+          issuer: ISSUER,
+          clockTolerance: Math.max(0, graceUntil - payload.exp),
+        });
+        return verified.payload as CollabAuthClaims;
       }
     }
     throw error;
@@ -147,6 +152,7 @@ export interface BffAuthOutcome {
   /** True when the request must be refused (no/invalid token AND enforcement is on). */
   reject: boolean;
   reason: 'ok' | 'missing-token' | 'invalid-token';
+  newAccessToken?: string;
 }
 
 /**
@@ -159,8 +165,24 @@ export async function resolveBffSession(
   const token = tokenFromRequest(headers);
   if (!token) return { reject: isBffAuthEnforced(), reason: 'missing-token' };
   try {
-    return { claims: await verifyAccessToken(token), reject: false, reason: 'ok' };
+    const claims = await verifyAccessToken(token);
+    activeOrganizationId(claims);
+    return { claims, reject: false, reason: 'ok' };
   } catch {
+    const cookies = parseCookies(Array.isArray(headers?.cookie) ? headers.cookie[0] : headers?.cookie);
+    if (cookies.cauth && cookies.crefresh) {
+      const renewed = await resolveJwtSession(cookies.cauth, cookies.crefresh);
+      if (renewed.newAccessToken) {
+        try {
+          return {
+            claims: await verifyAccessToken(renewed.newAccessToken),
+            newAccessToken: renewed.newAccessToken,
+            reject: false,
+            reason: 'ok',
+          };
+        } catch { /* refuse below */ }
+      }
+    }
     return { reject: isBffAuthEnforced(), reason: 'invalid-token' };
   }
 }

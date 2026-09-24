@@ -12,9 +12,12 @@ import { executeCbeLogin } from '/_102034_/l1/server/layer_1_external/cbe/cbeLog
 import { getProjectsBaseDir } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
 import { getCbeStaticFile, logCbeStaticConfig } from '/_102034_/l1/server/layer_1_external/cbe/cbeStaticFiles.js';
 import {
+  activeOrganizationId,
+  availableOrganizations,
   isJwtAuthEnabled,
   parseCookies,
   resolveJwtSession,
+  selectOrganization,
   verifyAccessToken,
   type JwtSession,
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeAuthJwt.js';
@@ -44,7 +47,7 @@ import {
 // Bump on every change to the cbe module. Exposed via the x-cbe-version
 // response header and the {action:'ping'} probe so a deploy can be verified:
 //   curl -s localhost:3000/exec -H 'Content-Type: application/json' -d '{"action":"ping"}'
-export const CBE_MODULE_VERSION = '1.8.0';
+export const CBE_MODULE_VERSION = '1.8.1';
 
 // no-cache = always revalidate with the ETag (304 when unchanged). The server
 // is local to the VM, so revalidation is cheap — and a publish always lands
@@ -52,6 +55,14 @@ export const CBE_MODULE_VERSION = '1.8.0';
 const STATIC_CACHE_CONTROL = 'no-cache';
 
 const THIRTY_DAYS_MS = 1000 * 60 * 60 * 24 * 30;
+
+function clearedAuthCookies(): string[] {
+  return [
+    sessionCookie('cauth', '', { httpOnly: true, expire: true }),
+    sessionCookie('crefresh', '', { httpOnly: true, expire: true }),
+    sessionCookie('loginUser', 'anonymous'),
+  ];
+}
 
 function sessionCookie(name: string, value: string, options: { httpOnly?: boolean; maxAgeMs?: number; expire?: boolean } = {}): string {
   const parts = [`${name}=${encodeURIComponent(value)}`, 'Path=/'];
@@ -154,26 +165,43 @@ async function handleAuthSession(body: CbeRequestAuthSession, reply: FastifyRepl
 
   try {
     const claims = await verifyAccessToken(accessToken);
+    const currentOrg = activeOrganizationId(claims);
+    const requestedOrg = typeof body.org_id === 'string' ? body.org_id.trim() : '';
+    if (!currentOrg && !requestedOrg) {
+      reply.code(409).header('set-cookie', clearedAuthCookies()).send({
+        statusCode: 409,
+        code: 'ORG_SELECTION_REQUIRED',
+        msg: 'Select an organization for this session',
+        orgs: availableOrganizations(claims),
+      });
+      return;
+    }
+    const selectedToken = requestedOrg
+      ? await selectOrganization(accessToken, claims, requestedOrg)
+      : accessToken;
+    if (!selectedToken) {
+      reply.code(CBE_HTTP_UNAUTHORIZED).header('set-cookie', clearedAuthCookies()).send({ statusCode: CBE_HTTP_UNAUTHORIZED, code: 'ORG_SELECTION_DENIED', msg: 'Organization selection was not authorized' });
+      return;
+    }
+    const selectedClaims = requestedOrg ? await verifyAccessToken(selectedToken) : claims;
     const cookies = [
-      sessionCookie('cauth', accessToken, { httpOnly: true, maxAgeMs: THIRTY_DAYS_MS }),
+      sessionCookie('cauth', selectedToken, { httpOnly: true, maxAgeMs: THIRTY_DAYS_MS }),
       // loginUser here too, so the UI unlocks without waiting for the next login call.
-      sessionCookie('loginUser', claims.email),
+      sessionCookie('loginUser', selectedClaims.email),
     ];
     if (refreshToken) cookies.push(sessionCookie('crefresh', refreshToken, { httpOnly: true, maxAgeMs: THIRTY_DAYS_MS }));
-    console.info(`[cbe] /exec action:authSession -> session established for ${claims.email}`);
+    console.info('[cbe] /exec action:authSession -> organization session established');
     reply.code(CBE_HTTP_OK).header('set-cookie', cookies).send({ statusCode: CBE_HTTP_OK, msg: 'ok' });
   } catch (err) {
     console.info(`[cbe] /exec action:authSession invalid token: ${(err as Error).message}`);
-    reply.code(CBE_HTTP_UNAUTHORIZED).send({ statusCode: CBE_HTTP_UNAUTHORIZED, msg: 'invalid access token' });
+    reply.code(CBE_HTTP_UNAUTHORIZED).header('set-cookie', clearedAuthCookies()).send({ statusCode: CBE_HTTP_UNAUTHORIZED, msg: 'invalid access token' });
   }
 }
 
 function handleAuthLogout(reply: FastifyReply): void {
   const cookies = [
-    sessionCookie('cauth', '', { httpOnly: true, expire: true }),
-    sessionCookie('crefresh', '', { httpOnly: true, expire: true }),
+    ...clearedAuthCookies(),
     sessionCookie('loginMsg', '', { httpOnly: true, expire: true }),
-    sessionCookie('loginUser', 'anonymous'),
   ];
   reply.code(CBE_HTTP_OK).header('set-cookie', cookies).send({ statusCode: CBE_HTTP_OK, msg: 'ok' });
 }
