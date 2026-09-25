@@ -127,6 +127,12 @@ export interface TestCaseResult {
   errorCode: string | null;
   errorMessage: string | null;
   reason: string;
+  /** Handler stage the producer classified (`structure` | `implement`). Catalog cases only. */
+  stage?: string;
+  /** Catalog `source`: who wrote the expectation. Not a screen-authored label. */
+  expectationSource?: string;
+  /** Catalog `expectation` text. */
+  expectation?: string;
 }
 
 export interface TestRunSummary {
@@ -1134,6 +1140,9 @@ export async function runPageTests(input: { moduleId?: string; page?: string; sk
             errorCode: null,
             errorMessage: null,
             reason: 'mutating case skipped (skipMutating)',
+            stage,
+            expectationSource: item.source,
+            expectation: item.expectation,
           });
           continue;
         }
@@ -1173,6 +1182,9 @@ export async function runPageTests(input: { moduleId?: string; page?: string; sk
           errorCode: observation.errorCode,
           errorMessage: observation.reason || null,
           reason: verdict.detail,
+          stage,
+          expectationSource: item.source,
+          expectation: item.expectation,
         });
       }
     }

@@ -55,7 +55,7 @@ import type { MonitorProcessResponse } from '/_102034_/l2/monitor/shared/contrac
 import type { RuntimeMetricsResponse } from '/_102034_/l2/monitor/shared/contracts/runtimeMetrics.js';
 import type { MonitorAbendResponse, MonitorClientErrorsResponse } from '/_102034_/l2/monitor/shared/contracts/abend.js';
 import type { MonitorTraceResponse } from '/_102034_/l2/monitor/shared/contracts/trace.js';
-import type { MonitorTestCaseStatus, MonitorTestsListResponse } from '/_102034_/l2/monitor/shared/contracts/tests.js';
+import type { MonitorTestCaseStatus, MonitorTestRunSummary, MonitorTestsListResponse } from '/_102034_/l2/monitor/shared/contracts/tests.js';
 import type { MonitorDynamoTableDetailsResponse } from '/_102034_/l2/monitor/shared/contracts/table-details-dynamodb.js';
 import type { MonitorPostgresTableDetailsResponse } from '/_102034_/l2/monitor/shared/contracts/table-details-postgres.js';
 import type { MonitorDynamoTableInspectResponse } from '/_102034_/l2/monitor/shared/contracts/table-inspect-dynamodb.js';
@@ -1449,7 +1449,6 @@ export class MonitorWebDesktopHomePage extends LitElement {
   private renderLastTestRun() {
     const run = this.testsData?.recentRuns?.[0];
     if (!run) return html``;
-    const tone = run.failed > 0 ? 'text-rose-700' : 'text-emerald-700';
     return html`
       <article class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
         <div class="flex flex-wrap items-center justify-between gap-4">
@@ -1457,12 +1456,29 @@ export class MonitorWebDesktopHomePage extends LitElement {
             <h2 class="text-lg font-semibold text-slate-900">Last test run</h2>
             <p class="mt-1 text-sm text-slate-500">${formatDateTime(run.finishedAt)} · ${run.appEnv}${run.appEnvSource ? ` (${run.appEnvSource})` : ''}${run.serverAppEnv ? ` · server ${run.serverAppEnv}` : ''}</p>
           </div>
-          <div class="text-sm ${tone}">
-            ${run.passed} passed · ${run.failed} failed · ${run.knownFail} known · ${run.inconclusive} inconclusive · ${run.skipped} skipped
+          <div class="text-right text-sm ${this.testRunTone(run)}">
+            ${this.renderRunCounts(run)}
           </div>
         </div>
       </article>
     `;
+  }
+
+  /** Producer names, not a shortened label. Untested is never a green empty run. */
+  private renderRunCounts(run: MonitorTestRunSummary) {
+    const counts = `${run.passed} passed · ${run.failed} failed · ${run.knownFail} known · ${run.expectedRed ?? 0} expectedRed · ${run.blocked ?? 0} blocked · ${run.inconclusive} inconclusive · ${run.skipped} skipped`;
+    if (!run.untested) return html`${counts}`;
+    return html`
+      <div class="font-medium">untested</div>
+      <div class="mt-1">${run.untestedReason || 'untested'}</div>
+      <div class="mt-1 text-slate-500">${counts}</div>
+    `;
+  }
+
+  private testRunTone(run: MonitorTestRunSummary): string {
+    if (run.untested) return 'text-amber-800';
+    if (run.failed > 0) return 'text-rose-700';
+    return 'text-emerald-700';
   }
 
   private async loadSessionInfo(): Promise<void> {
@@ -2873,7 +2889,9 @@ export class MonitorWebDesktopHomePage extends LitElement {
             throw this.toBlockingError('Could not run tests.', response.error);
           }
           const run = response.data;
-          this.status = `Run finished: ${run.passed} passed, ${run.failed} failed, ${run.knownFail} known, ${run.inconclusive} inconclusive, ${run.skipped} skipped`;
+          this.status = run.untested
+            ? `Run finished: untested — ${run.untestedReason || 'no registered suite'}`
+            : `Run finished: ${run.passed} passed, ${run.failed} failed, ${run.knownFail} known, ${run.expectedRed ?? 0} expectedRed, ${run.blocked ?? 0} blocked, ${run.inconclusive} inconclusive, ${run.skipped} skipped`;
           // Refresh the list so recentRuns reflects the new run.
           const list = await loadMonitorTestsList({ signal });
           if (list.ok && list.data) {
@@ -2903,7 +2921,7 @@ export class MonitorWebDesktopHomePage extends LitElement {
       ? 'rounded-full bg-emerald-100 px-2 py-1 text-xs font-medium text-emerald-800'
       : status === 'fail'
         ? 'rounded-full bg-rose-100 px-2 py-1 text-xs font-medium text-rose-800'
-        : status === 'inconclusive' || status === 'knownFail'
+        : status === 'inconclusive' || status === 'knownFail' || status === 'expectedRed' || status === 'blocked'
           ? 'rounded-full bg-amber-100 px-2 py-1 text-xs font-medium text-amber-800'
           : 'rounded-full bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600';
     return html`<span class="${cls}">${status}</span>`;
@@ -3032,8 +3050,8 @@ export class MonitorWebDesktopHomePage extends LitElement {
               <div class="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 px-6 py-4">
                 <h3 class="text-base font-semibold text-slate-900">Last run</h3>
                 <div class="flex flex-wrap items-center justify-end gap-3">
-                  <span class="text-sm text-slate-500">
-                    ${lastRun.passed} passed · ${lastRun.failed} failed · ${lastRun.knownFail} known · ${lastRun.inconclusive} inconclusive · ${lastRun.skipped} skipped · ${formatDateTime(lastRun.finishedAt)}
+                  <span class="text-sm ${this.testRunTone(lastRun)}">
+                    ${this.renderRunCounts(lastRun)} · ${formatDateTime(lastRun.finishedAt)}
                   </span>
                   <button
                     class="rounded-full border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:border-aura-blue hover:text-aura-blue"
@@ -3049,6 +3067,7 @@ export class MonitorWebDesktopHomePage extends LitElement {
                       <th class="px-6 py-3 font-medium">Duration</th>
                       <th class="px-6 py-3 font-medium">Error</th>
                       <th class="px-6 py-3 font-medium">Case / Routine</th>
+                      <th class="px-6 py-3 font-medium">Stage / source</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -3056,8 +3075,8 @@ export class MonitorWebDesktopHomePage extends LitElement {
                       <tr class="border-t border-slate-100 align-top">
                         <td class="px-6 py-4">${this.renderTestStatusBadge(testCase.status)}</td>
                         <td class="px-6 py-4 text-slate-500">${testCase.status === 'skipped' ? '—' : `${formatInteger(testCase.durationMs)} ms`}</td>
-                        <td class="px-6 py-4 text-xs ${testCase.status === 'inconclusive' || testCase.status === 'knownFail' ? 'text-amber-700' : 'text-rose-600'}">
-                          ${testCase.status === 'fail' || testCase.status === 'inconclusive' || testCase.status === 'knownFail'
+                        <td class="px-6 py-4 text-xs ${testCase.status === 'inconclusive' || testCase.status === 'knownFail' || testCase.status === 'expectedRed' || testCase.status === 'blocked' ? 'text-amber-700' : 'text-rose-600'}">
+                          ${testCase.status === 'fail' || testCase.status === 'inconclusive' || testCase.status === 'knownFail' || testCase.status === 'expectedRed' || testCase.status === 'blocked'
                             ? html`
                                 <div title=${testCase.reason || testCase.errorCode || testCase.status}>
                                   ${this.truncateTestText(testCase.reason || testCase.errorCode || testCase.status)}
@@ -3082,6 +3101,18 @@ export class MonitorWebDesktopHomePage extends LitElement {
                             ${this.truncateTestText(`${testCase.module} · ${testCase.page}`)}
                           </div>
                           <div class="mt-1 text-xs text-slate-600" title=${testCase.routine}>${this.truncateTestText(testCase.routine)}</div>
+                        </td>
+                        <td class="px-6 py-4 text-xs text-slate-600">
+                          ${testCase.stage || testCase.expectationSource
+                            ? html`
+                                <div title=${testCase.stage ?? ''}>stage ${testCase.stage ?? '—'}</div>
+                                <div class="mt-1" title=${testCase.routine}>alvo ${this.truncateTestText(testCase.routine)}</div>
+                                <div class="mt-1" title=${testCase.expectationSource ?? ''}>source ${this.truncateTestText(testCase.expectationSource ?? '—')}</div>
+                                ${testCase.expectation
+                                  ? html`<div class="mt-1 text-slate-400" title=${testCase.expectation}>${this.truncateTestText(testCase.expectation)}</div>`
+                                  : null}
+                              `
+                            : ''}
                         </td>
                       </tr>
                     `)}

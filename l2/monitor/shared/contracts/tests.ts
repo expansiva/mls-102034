@@ -20,6 +20,12 @@ export interface MonitorTestCaseResult {
   errorCode: string | null;
   errorMessage: string | null;
   reason: string;
+  /** Handler stage the producer classified. Present on catalog cases. */
+  stage?: string;
+  /** Catalog `source` — who wrote the expectation. */
+  expectationSource?: string;
+  /** Catalog `expectation` text. */
+  expectation?: string;
 }
 
 export interface MonitorTestRunSummary {
