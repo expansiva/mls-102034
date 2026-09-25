@@ -6,7 +6,7 @@
 // `<field>.required` case rejected on another field) — not an app defect.
 // 'knownFail' = the case declared `expectedFail: '<wave>'` and failed as expected: work already owned
 // elsewhere, kept out of `failed` so that count keeps meaning "something new broke".
-export type MonitorTestCaseStatus = 'pass' | 'fail' | 'inconclusive' | 'skipped' | 'knownFail';
+export type MonitorTestCaseStatus = 'pass' | 'fail' | 'inconclusive' | 'skipped' | 'knownFail' | 'expectedRed' | 'blocked';
 
 export interface MonitorTestCaseResult {
   module: string;
@@ -36,8 +36,13 @@ export interface MonitorTestRunSummary {
   passed: number;
   failed: number;
   knownFail: number;
+  expectedRed?: number;
+  blocked?: number;
   inconclusive: number;
   skipped: number;
+  /** True when the scope had no registered suite. A zero-case run is not a pass. */
+  untested?: boolean;
+  untestedReason?: string;
   cases: MonitorTestCaseResult[];
 }
 

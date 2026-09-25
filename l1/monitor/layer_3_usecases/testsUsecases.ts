@@ -40,6 +40,20 @@ import { createMemoryDataRuntime } from '/_102034_/l1/mdm/layer_1_external/data/
 import { readProjectsConfig, resolveProjectModuleImportUrl } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import { loadResolvedTableDefinitions } from '/_102034_/l1/server/layer_1_external/persistence/registry.js';
 import { createUuidV7 } from '/_102029_/l2/uuidv7.js';
+import type { M1HandlerStage } from '/_102021_/l2/agentMaterializeL1/core/registry.js';
+import {
+  M1_CATALOG_EXPORT,
+  parseCatalog,
+  type M1Scenario,
+  type M1ScenarioCase,
+  type M1ScenarioCatalog,
+} from '/_102021_/l2/agentMaterializeL1/testing/catalog.js';
+import {
+  classifyCase,
+  type M1Broken,
+  type M1Observation,
+  type M1Verdict,
+} from '/_102021_/l2/agentMaterializeL1/testing/verify.js';
 
 const SEED_REF_MARKER = '<seedRef>';
 const SEED_VALUE_MARKER = '<seedValue>';
@@ -99,7 +113,7 @@ interface DiscoveredTestFile {
 // 'inconclusive' = the case could not verify what it claims (a <seedRef> param never resolved, or a
 // `<command>.<field>.required` case was rejected on a different field). It is NOT an app defect —
 // keeping it out of `failed` is what makes the failed count mean "the backend misbehaved".
-export type TestCaseStatus = 'pass' | 'fail' | 'inconclusive' | 'skipped' | 'knownFail';
+export type TestCaseStatus = 'pass' | 'fail' | 'inconclusive' | 'skipped' | 'knownFail' | 'expectedRed' | 'blocked';
 
 export interface TestCaseResult {
   module: string;
@@ -132,8 +146,14 @@ export interface TestRunSummary {
   failed: number;
   /** Failures a case declared as already-owned work (`expectedFail`): known, not new. */
   knownFail: number;
+  /** Catalog verdict `expectedRed` (structure stub). Not a pass and not a new failure. */
+  expectedRed: number;
+  blocked: number;
   inconclusive: number;
   skipped: number;
+  /** No registered frontend pageTests and no backend.scenarioCatalog in scope. Never a green empty run. */
+  untested: boolean;
+  untestedReason: string;
   cases: TestCaseResult[];
 }
 
@@ -251,6 +271,163 @@ async function discoverTestFiles(filter: { moduleId?: string; page?: string } = 
   return files;
 }
 
+interface DiscoveredCatalog {
+  projectId: string;
+  moduleId: string;
+  path: string;
+  catalog: M1ScenarioCatalog | null;
+  broken: M1Broken;
+  loadError?: string;
+}
+
+function scenarioCatalogPath(backend: Record<string, unknown> | undefined): string {
+  const value = backend?.scenarioCatalog;
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function brokenFromImport(error: unknown): M1Broken {
+  const name = error instanceof Error ? error.name : '';
+  const message = error instanceof Error ? error.message : String(error);
+  if (name === 'SyntaxError' || /transform|compile|unexpected token/iu.test(message)) return 'compile';
+  return 'import';
+}
+
+function stageOfHandler(handlerId: string): M1HandlerStage {
+  return handlerId.startsWith('implement.') ? 'implement' : 'structure';
+}
+
+/** Params the catalog case can state without reading a route contract. Omitted names come from preconditions. */
+export function paramsForCatalogCase(item: M1ScenarioCase): Record<string, unknown> {
+  const omitted = new Set(item.preconditions.flatMap(entry => {
+    const match = /^([A-Za-z][A-Za-z0-9]*) omitted$/u.exec(entry);
+    return match ? [match[1]] : [];
+  }));
+  const params: Record<string, unknown> = {};
+  const row = item.synthetic[0];
+  if (row) {
+    for (const [key, value] of Object.entries(row)) {
+      if (!omitted.has(key)) params[key] = value;
+    }
+  }
+  if (item.actorId && !omitted.has('actorId')) params.actorId = item.actorId;
+  return params;
+}
+
+export function observationFromExec(
+  caseId: string,
+  durationMs: number,
+  exec: { response: BffResponse; statusCode: number } | null,
+  patch: { broken?: M1Broken; thrown?: boolean; actorField?: string | null } = {},
+): M1Observation {
+  const response = exec?.response;
+  const details = response?.error?.details;
+  const ruleId = isRecord(details) && typeof details.ruleId === 'string' ? details.ruleId : null;
+  const actorField = patch.actorField ?? null;
+  return {
+    caseId,
+    durationMs,
+    broken: patch.broken ?? 'none',
+    thrown: patch.thrown === true,
+    skipped: false,
+    inconclusive: false,
+    blocked: false,
+    blockOwner: '',
+    ok: response?.ok === true,
+    status: exec?.statusCode ?? 0,
+    errorCode: response?.error?.code ?? null,
+    ruleId,
+    fields: isRecord(response?.data) ? Object.keys(response.data) : [],
+    rowActorIds: actorIdsIn(response?.data, actorField),
+    reason: response?.error?.message ?? '',
+  };
+}
+
+function actorIdsIn(data: unknown, actorField: string | null): string[] {
+  if (!actorField) return [];
+  const rows = Array.isArray(data) ? data : isRecord(data) ? [data] : [];
+  return rows.flatMap(row => (isRecord(row) && typeof row[actorField] === 'string' ? [row[actorField]] : []));
+}
+
+/** Producer owns the verdict. expectedRed is only the structure stub (caseId + USECASE_NOT_IMPLEMENTED + 501). */
+export function verdictForCatalogCase(
+  stage: M1HandlerStage,
+  item: M1ScenarioCase,
+  observation: M1Observation | undefined,
+): { verdict: M1Verdict; detail: string } {
+  const evidence = classifyCase(stage, item, observation);
+  return { verdict: evidence.verdict, detail: evidence.detail };
+}
+
+function statusFromVerdict(verdict: M1Verdict): TestCaseStatus {
+  if (verdict === 'passed') return 'pass';
+  if (verdict === 'failed') return 'fail';
+  return verdict;
+}
+
+const UNTESTED_REASON = 'não testado: no frontend.pageTests and no backend.scenarioCatalog in scope';
+
+export function emptyRunCoverage(registered: number): { untested: boolean; untestedReason: string } {
+  return registered === 0
+    ? { untested: true, untestedReason: UNTESTED_REASON }
+    : { untested: false, untestedReason: '' };
+}
+
+async function discoverBackendCatalogs(filter: { moduleId?: string } = {}): Promise<DiscoveredCatalog[]> {
+  const config = readProjectsConfig();
+  const found: DiscoveredCatalog[] = [];
+  for (const [projectId, project] of Object.entries(config.projects)) {
+    for (const moduleConfig of project.modules ?? []) {
+      if (filter.moduleId && moduleConfig.moduleId !== filter.moduleId) continue;
+      const path = scenarioCatalogPath(moduleConfig.backend);
+      if (!path) continue;
+      let catalog: M1ScenarioCatalog | null = null;
+      let loadError: string | undefined;
+      let broken: M1Broken = 'none';
+      try {
+        const imported = await import(resolveProjectModuleImportUrl(path)) as Record<string, unknown>;
+        const parsed = parseCatalog(JSON.stringify(imported[M1_CATALOG_EXPORT] ?? null));
+        if (!parsed.catalog) {
+          broken = 'import';
+          loadError = parsed.issues.join('; ') || `file did not export a valid ${M1_CATALOG_EXPORT}`;
+        } else {
+          catalog = parsed.catalog;
+        }
+      } catch (error) {
+        broken = brokenFromImport(error);
+        loadError = error instanceof Error ? error.message : String(error);
+      }
+      found.push({ projectId, moduleId: moduleConfig.moduleId, path, catalog, broken, loadError });
+    }
+  }
+  return found;
+}
+
+function catalogPages(file: DiscoveredCatalog): TestListResult['modules'][number]['pages'] {
+  if (!file.catalog) {
+    return [{
+      page: 'backend',
+      variant: 'scenarioCatalog',
+      path: file.path,
+      loadError: file.loadError,
+      cases: [],
+    }];
+  }
+  return file.catalog.scenarios.map((scenario: M1Scenario) => ({
+    page: scenario.scenarioId,
+    variant: scenario.handlerId,
+    path: file.path,
+    cases: scenario.cases.map(item => ({
+      id: item.caseId,
+      routine: item.routine,
+      mutating: item.mutating,
+      expect: {
+        ok: item.expect.ok,
+        errorCode: item.expect.errorCode ?? undefined,
+      },
+    })),
+  }));
+}
+
 /** ProjectMode from l5/project.json wins over APP_ENV. The test report prints both so they cannot be confused. */
 export function reportAppEnv(projectId?: string): { appEnv: string; appEnvSource: string; serverAppEnv: string } {
   const appEnv = readProjectMode(projectId);
@@ -266,6 +443,7 @@ export function reportAppEnv(projectId?: string): { appEnv: string; appEnvSource
 export async function listPageTests(): Promise<TestListResult> {
   const env = readAppEnv();
   const files = await discoverTestFiles();
+  const catalogs = await discoverBackendCatalogs();
   const byModule = new Map<string, TestListResult['modules'][number]>();
   for (const file of files) {
     let entry = byModule.get(file.moduleId);
@@ -281,7 +459,15 @@ export async function listPageTests(): Promise<TestListResult> {
       cases: (file.tests?.cases ?? []).map(c => ({ id: c.id, routine: c.routine, mutating: c.mutating, expect: c.expect })),
     });
   }
-  const reported = reportAppEnv(files[0]?.projectId ?? env.projectId);
+  for (const catalogFile of catalogs) {
+    let entry = byModule.get(catalogFile.moduleId);
+    if (!entry) {
+      entry = { moduleId: catalogFile.moduleId, projectId: catalogFile.projectId, variantPolicy: PAGE11_VARIANT_POLICY, untestedPages: [], pages: [] };
+      byModule.set(catalogFile.moduleId, entry);
+    }
+    entry.pages.push(...catalogPages(catalogFile));
+  }
+  const reported = reportAppEnv(files[0]?.projectId ?? catalogs[0]?.projectId ?? env.projectId);
   const config = readProjectsConfig();
   for (const [projectId, project] of Object.entries(config.projects)) {
     for (const moduleConfig of project.modules ?? []) {
@@ -296,6 +482,12 @@ export async function listPageTests(): Promise<TestListResult> {
       const configured = frontendPages.map(page => page.pageId || page.id || '').filter(Boolean);
       const tested = entry.pages.map(page => page.page);
       entry.untestedPages = untestedPageEntries(configured, tested);
+      const registered = catalogs.filter(file => file.moduleId === moduleId);
+      for (const catalogFile of registered) {
+        if (catalogFile.catalog && catalogFile.catalog.scenarios.length === 0) {
+          entry.untestedPages.push({ page: 'backend', reason: 'não testado: backend.scenarioCatalog has no scenarios' });
+        }
+      }
     }
   }
   return {
@@ -904,7 +1096,91 @@ export async function runPageTests(input: { moduleId?: string; page?: string; sk
     }
   }
 
-  const reported = reportAppEnv(files[0]?.projectId ?? env.projectId);
+  const catalogs = (await discoverBackendCatalogs({ moduleId: input.moduleId }))
+    .filter(file => !input.page || file.catalog?.scenarios.some(scenario => scenario.scenarioId === input.page) || file.loadError);
+  for (const file of catalogs) {
+    if (!file.catalog || file.broken !== 'none') {
+      cases.push({
+        module: file.moduleId,
+        page: 'backend',
+        id: 'catalog',
+        routine: '',
+        status: 'fail',
+        ok: false,
+        statusCode: 0,
+        durationMs: 0,
+        errorCode: null,
+        errorMessage: file.loadError ?? null,
+        reason: `${file.broken === 'none' ? 'import' : file.broken} broken is not an expected failure`,
+      });
+      continue;
+    }
+    const scenarios = input.page
+      ? file.catalog.scenarios.filter(scenario => scenario.scenarioId === input.page)
+      : file.catalog.scenarios;
+    for (const scenario of scenarios) {
+      const stage = stageOfHandler(scenario.handlerId);
+      for (const item of scenario.cases) {
+        if (item.mutating && input.skipMutating) {
+          cases.push({
+            module: file.moduleId,
+            page: scenario.scenarioId,
+            id: item.caseId,
+            routine: item.routine,
+            status: 'skipped',
+            ok: false,
+            statusCode: 0,
+            durationMs: 0,
+            errorCode: null,
+            errorMessage: null,
+            reason: 'mutating case skipped (skipMutating)',
+          });
+          continue;
+        }
+        const startedMs = Date.now();
+        let observation: M1Observation;
+        try {
+          const request: BffRequest = {
+            routine: item.routine,
+            params: paramsForCatalogCase(item),
+            meta: { source: 'test', traceId, requestId: createUuidV7(), actorId: item.actorId || undefined },
+          };
+          const exec = await execBff(request, await contextFor({
+            projectId: file.projectId,
+            moduleId: file.moduleId,
+            path: file.path,
+            tests: { moduleName: file.catalog.moduleName, page: scenario.scenarioId, variant: scenario.handlerId, actor: item.actorId, cases: [] },
+          }));
+          observation = observationFromExec(item.caseId, Math.max(0, Date.now() - startedMs), exec, {
+            actorField: item.expect.isolatedActorField,
+          });
+        } catch (error) {
+          observation = observationFromExec(item.caseId, Math.max(0, Date.now() - startedMs), null, {
+            broken: 'transport',
+          });
+          observation.reason = error instanceof Error ? error.message : String(error);
+        }
+        const verdict = verdictForCatalogCase(stage, item, observation);
+        cases.push({
+          module: file.moduleId,
+          page: scenario.scenarioId,
+          id: item.caseId,
+          routine: item.routine,
+          status: statusFromVerdict(verdict.verdict),
+          ok: observation.ok,
+          statusCode: observation.status,
+          durationMs: observation.durationMs,
+          errorCode: observation.errorCode,
+          errorMessage: observation.reason || null,
+          reason: verdict.detail,
+        });
+      }
+    }
+  }
+
+  const reported = reportAppEnv(files[0]?.projectId ?? catalogs[0]?.projectId ?? env.projectId);
+  const coverage = emptyRunCoverage(files.length + catalogs.length);
+  const untested = cases.length === 0;
   const summary: TestRunSummary = {
     runId,
     traceId,
@@ -918,8 +1194,14 @@ export async function runPageTests(input: { moduleId?: string; page?: string; sk
     passed: cases.filter(c => c.status === 'pass').length,
     failed: cases.filter(c => c.status === 'fail').length,
     knownFail: cases.filter(c => c.status === 'knownFail').length,
+    expectedRed: cases.filter(c => c.status === 'expectedRed').length,
+    blocked: cases.filter(c => c.status === 'blocked').length,
     inconclusive: cases.filter(c => c.status === 'inconclusive').length,
     skipped: cases.filter(c => c.status === 'skipped').length,
+    untested,
+    untestedReason: untested
+      ? (coverage.untestedReason || 'não testado: registered suite produced no cases')
+      : '',
     cases,
   };
   storeRun(summary);
