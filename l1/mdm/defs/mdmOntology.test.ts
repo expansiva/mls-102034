@@ -94,6 +94,8 @@ test('(a) the ontology satisfies its own grammar and every id resolves', () => {
   void _documentRules; void _addressesOf; void _consentOf; void _geoOf; void _parentCompanyTo;
   void _noneMissing; void _noneInvented; void strayField; void strayEnum; void strayCapability; void strayValueType;
   assert.equal(maria.details.person.birthDate, '1990-01-01');
+  assert.equal(mdm.record.fields.version.writePrecondition, true);
+  assert.equal(Object.hasOwn(mdm.record.fields.id, 'writePrecondition'), false);
 });
 
 test('the file is one JSON literal the defs extractor can read', () => {

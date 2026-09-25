@@ -100,6 +100,14 @@ test('MdmEntity.update keeps document and index fields consistent and enforces e
   assert.equal(updated.index.tags.includes('cafeFlow.StockItem'), true);
   assert.equal(oldType.total, 0);
   assert.deepEqual(newType.items.map((item) => item.mdmId), [created.mdmId]);
+
+  await assert.rejects(
+    ctx.mdm.entity.update({ mdmId: created.mdmId, expectedVersion: created.version, patch: { name: 'Stale overwrite' } }),
+    /Version mismatch/,
+  );
+  const preserved = await ctx.mdm.entity.get({ mdmId: created.mdmId });
+  assert.equal(preserved.version, updated.version);
+  assert.equal(preserved.details.name, 'Updated Item', 'the first write survives a second write with the stale snapshot version');
 });
 
 test('MdmProspect supports create, update, listByType and promoteToEntity through explicit facade', async () => {

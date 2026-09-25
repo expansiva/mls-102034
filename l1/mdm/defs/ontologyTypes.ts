@@ -57,6 +57,8 @@ export interface MdmDefField {
   indexed?: true;
   /** The engine writes it; no form and no tool schema ever asks for it. */
   derived?: true;
+  /** A prior read must supply this engine-owned value when a record is written. */
+  writePrecondition?: boolean;
   /** Only when it differs from the id. */
   title?: string;
   description?: string;

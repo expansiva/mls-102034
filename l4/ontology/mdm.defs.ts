@@ -44,7 +44,7 @@ export const mdm = {
   "record": {
     "fields": {
       "id": { "type": "uuid", "required": true, "derived": true, "indexed": true, "description": "mdmId; stable through promotion and merge." },
-      "version": { "type": "integer", "required": true, "derived": true, "description": "Bumped by the engine on every write; optimistic concurrency." },
+      "version": { "type": "integer", "required": true, "derived": true, "writePrecondition": true, "description": "Bumped by the engine on every write; optimistic concurrency." },
       "details": { "type": "object", "required": true, "groups": ["identification", "base", "<subtype>", "general", "<moduleId>"], "description": "The JSONB document, as a map of groups (see groups)." }
     },
     "displayField": "identification.name"
