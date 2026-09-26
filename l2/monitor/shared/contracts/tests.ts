@@ -6,7 +6,9 @@
 // `<field>.required` case rejected on another field) — not an app defect.
 // 'knownFail' = the case declared `expectedFail: '<wave>'` and failed as expected: work already owned
 // elsewhere, kept out of `failed` so that count keeps meaning "something new broke".
-export type MonitorTestCaseStatus = 'pass' | 'fail' | 'inconclusive' | 'skipped' | 'knownFail' | 'expectedRed' | 'blocked';
+// 'moduleOnly' = catalog v1.1 `runner: 'module'`: the case belongs to the L1 node adapter, not to
+// execBff. The monitor reports it and does not run it — neither a pass nor a failure.
+export type MonitorTestCaseStatus = 'pass' | 'fail' | 'inconclusive' | 'skipped' | 'knownFail' | 'expectedRed' | 'blocked' | 'moduleOnly';
 
 export interface MonitorTestCaseResult {
   module: string;
@@ -43,6 +45,8 @@ export interface MonitorTestRunSummary {
   failed: number;
   knownFail: number;
   expectedRed?: number;
+  /** Catalog cases reported but not executed (`runner: 'module'`). Absent on a run from an older server. */
+  moduleOnly?: number;
   blocked?: number;
   inconclusive: number;
   skipped: number;

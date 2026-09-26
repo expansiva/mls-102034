@@ -1466,7 +1466,7 @@ export class MonitorWebDesktopHomePage extends LitElement {
 
   /** Producer names, not a shortened label. Untested is never a green empty run. */
   private renderRunCounts(run: MonitorTestRunSummary) {
-    const counts = `${run.passed} passed · ${run.failed} failed · ${run.knownFail} known · ${run.expectedRed ?? 0} expectedRed · ${run.blocked ?? 0} blocked · ${run.inconclusive} inconclusive · ${run.skipped} skipped`;
+    const counts = `${run.passed} passed · ${run.failed} failed · ${run.knownFail} known · ${run.expectedRed ?? 0} expectedRed · ${run.moduleOnly ?? 0} moduleOnly · ${run.blocked ?? 0} blocked · ${run.inconclusive} inconclusive · ${run.skipped} skipped`;
     if (!run.untested) return html`${counts}`;
     return html`
       <div class="font-medium">untested</div>
@@ -2891,7 +2891,7 @@ export class MonitorWebDesktopHomePage extends LitElement {
           const run = response.data;
           this.status = run.untested
             ? `Run finished: untested — ${run.untestedReason || 'no registered suite'}`
-            : `Run finished: ${run.passed} passed, ${run.failed} failed, ${run.knownFail} known, ${run.expectedRed ?? 0} expectedRed, ${run.blocked ?? 0} blocked, ${run.inconclusive} inconclusive, ${run.skipped} skipped`;
+            : `Run finished: ${run.passed} passed, ${run.failed} failed, ${run.knownFail} known, ${run.expectedRed ?? 0} expectedRed, ${run.moduleOnly ?? 0} moduleOnly, ${run.blocked ?? 0} blocked, ${run.inconclusive} inconclusive, ${run.skipped} skipped`;
           // Refresh the list so recentRuns reflects the new run.
           const list = await loadMonitorTestsList({ signal });
           if (list.ok && list.data) {

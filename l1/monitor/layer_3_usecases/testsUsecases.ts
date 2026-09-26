@@ -44,6 +44,7 @@ import type { M1HandlerStage } from '/_102021_/l2/agentMaterializeL1/core/regist
 import {
   M1_CATALOG_EXPORT,
   parseCatalog,
+  type M1CaseRunner,
   type M1Scenario,
   type M1ScenarioCase,
   type M1ScenarioCatalog,
@@ -113,7 +114,10 @@ interface DiscoveredTestFile {
 // 'inconclusive' = the case could not verify what it claims (a <seedRef> param never resolved, or a
 // `<command>.<field>.required` case was rejected on a different field). It is NOT an app defect —
 // keeping it out of `failed` is what makes the failed count mean "the backend misbehaved".
-export type TestCaseStatus = 'pass' | 'fail' | 'inconclusive' | 'skipped' | 'knownFail' | 'expectedRed' | 'blocked';
+// 'moduleOnly' = the catalog declared `runner: 'module'`: the case belongs to the L1 node adapter
+// (compilation, usecase called directly), not to `execBff`. The monitor reports it and does not run
+// it — never a pass (nothing was verified here) and never a fail (nothing misbehaved).
+export type TestCaseStatus = 'pass' | 'fail' | 'inconclusive' | 'skipped' | 'knownFail' | 'expectedRed' | 'blocked' | 'moduleOnly';
 
 export interface TestCaseResult {
   module: string;
@@ -154,6 +158,8 @@ export interface TestRunSummary {
   knownFail: number;
   /** Catalog verdict `expectedRed` (structure stub). Not a pass and not a new failure. */
   expectedRed: number;
+  /** Catalog cases with `runner: 'module'`: reported, not executed by the monitor. Not a pass, not a failure. */
+  moduleOnly: number;
   blocked: number;
   inconclusive: number;
   skipped: number;
@@ -368,6 +374,40 @@ function statusFromVerdict(verdict: M1Verdict): TestCaseStatus {
   if (verdict === 'passed') return 'pass';
   if (verdict === 'failed') return 'fail';
   return verdict;
+}
+
+// ---- Catalog v1.1: who runs the case, and who it says it is. ----
+//
+// Both fields are ADDITIVE. A v1 catalog carries neither, and the defaults below are exactly what the
+// monitor did before v1.1 existed: every case is a route, executed with `source: 'test'` and no
+// authorities. That is what keeps a v1 catalog read as it is read today.
+
+/** Absent `runner` means 'route' — the v1 behaviour, where every case went through execBff. */
+function runnerOf(item: M1ScenarioCase): M1CaseRunner {
+  return item.runner ?? 'route';
+}
+
+// Absent `caller` means today's caller: the monitor speaking as itself (`source: 'test'`, no
+// authorities). Only a v1.1 route case declares one.
+//
+// WHY DECLARING `source: 'http'` HERE OPENS NOTHING (design decision of x1_05, measured 26/09):
+// the generated controller's `authorize()` reads `request.meta.source` and
+// `request.meta.verifiedAuthorities` — not `ctx.sessionContext.actorScope` — and it is not behind
+// `ctx.sandbox`, so the declared caller is how a case represents itself. The two guards that a
+// forged `source` could have bypassed are BOTH behind `!ctx.sandbox`: `refuseTestWrite`
+// (execBff.ts:172) and the central actor gate (execBff.ts:184). This runner always builds its
+// context with `sandbox: true`, so neither applies to it today, with `source: 'test'` — changing the
+// declared source changes nothing about them. And the monitor calls `execBff` in process, never over
+// the HTTP transport, so nothing here depends on how that transport stamps meta.
+interface ResolvedCaller {
+  source: 'http' | 'message' | 'test';
+  authorities: string[];
+}
+
+const DEFAULT_CALLER: ResolvedCaller = { source: 'test', authorities: [] };
+
+function callerOf(item: M1ScenarioCase): ResolvedCaller {
+  return item.caller ? { source: item.caller.source, authorities: item.caller.authorities } : DEFAULT_CALLER;
 }
 
 const UNTESTED_REASON = 'não testado: no frontend.pageTests and no backend.scenarioCatalog in scope';
@@ -1127,6 +1167,29 @@ export async function runPageTests(input: { moduleId?: string; page?: string; sk
     for (const scenario of scenarios) {
       const stage = stageOfHandler(scenario.handlerId);
       for (const item of scenario.cases) {
+        // Catalog v1.1 `case.runner`. Absent (a v1 catalog) means 'route': everything the monitor
+        // already executed keeps being executed exactly as before.
+        if (runnerOf(item) === 'module') {
+          // Checked BEFORE `skipMutating`: a module case is never executed by execBff at all, so
+          // "skipped because mutating" would be a false reason for it.
+          cases.push({
+            module: file.moduleId,
+            page: scenario.scenarioId,
+            id: item.caseId,
+            routine: item.routine,
+            status: 'moduleOnly',
+            ok: false,
+            statusCode: 0,
+            durationMs: 0,
+            errorCode: null,
+            errorMessage: null,
+            reason: 'module case: run by the L1 node adapter, not by execBff',
+            stage,
+            expectationSource: item.source,
+            expectation: item.expectation,
+          });
+          continue;
+        }
         if (item.mutating && input.skipMutating) {
           cases.push({
             module: file.moduleId,
@@ -1149,10 +1212,20 @@ export async function runPageTests(input: { moduleId?: string; page?: string; sk
         const startedMs = Date.now();
         let observation: M1Observation;
         try {
+          const caller = callerOf(item);
           const request: BffRequest = {
             routine: item.routine,
             params: paramsForCatalogCase(item),
-            meta: { source: 'test', traceId, requestId: createUuidV7(), actorId: item.actorId || undefined },
+            meta: {
+              source: caller.source,
+              verifiedAuthorities: caller.authorities,
+              traceId,
+              requestId: createUuidV7(),
+              // Telemetry/back-compat only. With `source: 'http'` the declared identity of a meta is
+              // discarded by `trustedIdentityClaims` (execBff.ts:110-123): the identity that reaches the
+              // handler is the one `contextFor` put in the session, which is the trusted channel.
+              actorId: item.actorId || undefined,
+            },
           };
           const exec = await execBff(request, await contextFor({
             projectId: file.projectId,
@@ -1207,6 +1280,7 @@ export async function runPageTests(input: { moduleId?: string; page?: string; sk
     failed: cases.filter(c => c.status === 'fail').length,
     knownFail: cases.filter(c => c.status === 'knownFail').length,
     expectedRed: cases.filter(c => c.status === 'expectedRed').length,
+    moduleOnly: cases.filter(c => c.status === 'moduleOnly').length,
     blocked: cases.filter(c => c.status === 'blocked').length,
     inconclusive: cases.filter(c => c.status === 'inconclusive').length,
     skipped: cases.filter(c => c.status === 'skipped').length,
