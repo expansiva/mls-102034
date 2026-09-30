@@ -44,7 +44,10 @@ function readProjectDependencies(projectId: number): number[] {
     return ids
       .map((id) => Number(id))
       .filter((id) => Number.isFinite(id) && id >= MIN_PROJECT_ID && id !== projectId);
-  } catch {
+  } catch (err) {
+    console.error(
+      `[cbe] project ${projectId}: l5/config.json unreadable at ${configPath} — dependencies ignored: ${(err as Error).message}`,
+    );
     return [];
   }
 }
