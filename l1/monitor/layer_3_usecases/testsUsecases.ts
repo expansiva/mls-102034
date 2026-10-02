@@ -325,6 +325,42 @@ export function paramsForCatalogCase(item: M1ScenarioCase): Record<string, unkno
   return params;
 }
 
+// The producer (mls-102021/l2/agentMaterializeL1/testing/) reads `fields` as dotted paths, container
+// AND leaf both present (`obligations.test.ts:119`), with array rows contributing their field paths
+// WITHOUT an index segment (`oracle.test.ts:76`: `rows`, `rows.dockAt`, never `rows.0.dockAt`). The
+// response is generated-app output — untrusted — hence the depth/count caps below: never throw, just
+// stop and return what was gathered so far.
+const FIELD_PATHS_MAX_DEPTH = 6;
+const FIELD_PATHS_MAX_COUNT = 500;
+
+/** Pure. See module comment above `FIELD_PATHS_MAX_DEPTH` for the path format this feeds. */
+export function fieldPathsOf(data: unknown): string[] {
+  const out = new Set<string>();
+  collectFieldPaths(data, '', 0, out);
+  return Array.from(out).sort();
+}
+
+function collectFieldPaths(value: unknown, prefix: string, depth: number, out: Set<string>): void {
+  if (out.size >= FIELD_PATHS_MAX_COUNT) return;
+  if (Array.isArray(value)) {
+    // No index segment: every row folds into the same prefix (a root array -> row paths, no prefix).
+    for (const item of value) {
+      if (out.size >= FIELD_PATHS_MAX_COUNT) return;
+      collectFieldPaths(item, prefix, depth, out);
+    }
+    return;
+  }
+  if (!isRecord(value)) return; // primitive/null leaf: nothing to add here, caller already added its own path
+  for (const [key, child] of Object.entries(value)) {
+    if (out.size >= FIELD_PATHS_MAX_COUNT) return;
+    const pathDepth = depth + 1;
+    if (pathDepth > FIELD_PATHS_MAX_DEPTH) continue; // beyond the depth cap: not added, not descended into
+    const path = prefix ? `${prefix}.${key}` : key;
+    out.add(path);
+    collectFieldPaths(child, path, pathDepth, out);
+  }
+}
+
 export function observationFromExec(
   caseId: string,
   durationMs: number,
@@ -348,7 +384,7 @@ export function observationFromExec(
     status: exec?.statusCode ?? 0,
     errorCode: response?.error?.code ?? null,
     ruleId,
-    fields: isRecord(response?.data) ? Object.keys(response.data) : [],
+    fields: fieldPathsOf(response?.data),
     rowActorIds: actorIdsIn(response?.data, actorField),
     reason: response?.error?.message ?? '',
   };
