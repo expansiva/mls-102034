@@ -1070,15 +1070,19 @@ export async function runPageTests(input: { moduleId?: string; page?: string; sk
   const cases: TestCaseResult[] = [];
 
   // A context per page ACTOR (cached by actorId): the page's routes see a real seeded identity in the
-  // session. Falls back to the anonymous baseCtx when the page declares no actor or the module seeded no
-  // identity for it — same behaviour as before this change.
+  // session. Falls back to the anonymous baseCtx only when the page declares no actor at all. When the
+  // page DOES declare an actor but the module seeded no identity for it, the case must not run silently
+  // as anonymous (that produced a false red for "defect" when the real problem was a missing seed) — the
+  // actorId is recorded here so `runOne` can report the case 'blocked' instead of executing it.
   const ctxByActor = new Map<string, RequestContext>();
+  const missingIdentityByActor = new Map<string, { actorId: string; moduleName: string }>();
   const contextFor = async (file: DiscoveredTestFile): Promise<RequestContext> => {
     const actorId = typeof file.tests?.actor === 'string' ? file.tests.actor.trim() : '';
     if (!actorId) return baseCtx;
     const cached = ctxByActor.get(actorId);
     if (cached) return cached;
-    const mdmId = await resolveSeededActorMdmId(baseCtx, file.tests?.moduleName ?? '', actorId);
+    const moduleName = file.tests?.moduleName ?? '';
+    const mdmId = await resolveSeededActorMdmId(baseCtx, moduleName, actorId);
     // actorId ONLY — deliberately no actorScope. The generated controllers gate on scope with
     // `enforceActors`, which treats an EMPTY scope as permissive by design ("bff.actor.no-scope") but
     // rejects a non-empty scope that does not intersect its ALLOWED list, whose entries are
@@ -1087,6 +1091,7 @@ export async function runPageTests(input: { moduleId?: string; page?: string; sk
     const ctx = mdmId
       ? createRequestContext(dataRuntime, { sandbox: true, sessionContext: { actorId: mdmId } })
       : baseCtx;
+    if (!mdmId) missingIdentityByActor.set(actorId, { actorId, moduleName });
     ctxByActor.set(actorId, ctx);
     return ctx;
   };
@@ -1107,10 +1112,31 @@ export async function runPageTests(input: { moduleId?: string; page?: string; sk
   // fails its shape assertion still carries the ids the later cases need.
   const runOne = async (file: DiscoveredTestFile, testCase: PageTestCase): Promise<TestCaseResult> => {
     const tests = file.tests!;
+    const ctx = await contextFor(file);
+    const declaredActorId = typeof tests.actor === 'string' ? tests.actor.trim() : '';
+    const missingIdentity = declaredActorId ? missingIdentityByActor.get(declaredActorId) : undefined;
+    if (missingIdentity) {
+      // Never fall through to baseCtx for a case that declared an actor: that ran it anonymous and
+      // reported a false app-defect red. The real cause is the missing seed, so the case is 'blocked',
+      // not run, and the reason names the actor and module so it can be fixed at the source.
+      return {
+        module: file.moduleId,
+        page: tests.page,
+        id: testCase.id,
+        routine: testCase.routine,
+        status: 'blocked',
+        ok: false,
+        statusCode: 0,
+        durationMs: 0,
+        errorCode: null,
+        errorMessage: null,
+        reason: `actor '${missingIdentity.actorId}' declared by module '${missingIdentity.moduleName || file.moduleId}' has no seeded identity — not run anonymous`,
+      };
+    }
     const { params, unresolved } = resolveParams(testCase.params, pool, testCase.paramFieldRefs, file.moduleId);
     const request: BffRequest = { routine: testCase.routine, params, meta: { source: 'test', traceId, requestId: createUuidV7() } };
     const startedMs = Date.now();
-    const exec = await execBff(request, await contextFor(file));
+    const exec = await execBff(request, ctx);
     if (exec.response.ok) harvestRows(pool, exec.response.data, file.moduleId);
     return evaluate(testCase, file.moduleId, tests.page, exec, Math.max(0, Date.now() - startedMs), unresolved);
   };
@@ -1183,7 +1209,7 @@ export async function runPageTests(input: { moduleId?: string; page?: string; sk
             durationMs: 0,
             errorCode: null,
             errorMessage: null,
-            reason: 'module case: run by the L1 node adapter, not by execBff',
+            reason: 'module case: the monitor does not execute runner: module cases yet',
             stage,
             expectationSource: item.source,
             expectation: item.expectation,
