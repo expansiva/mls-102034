@@ -1,11 +1,11 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/cbe/cbeLogin.test.ts" enhancement="_blank" />
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import AdmZip from 'adm-zip';
-import { buildProjectSettings, readProjectSettings } from '/_102034_/l1/server/layer_1_external/cbe/cbeLogin.js';
+import { buildProjectSettings, readProjectFile, readProjectSettings, resolveOrgInfo } from '/_102034_/l1/server/layer_1_external/cbe/cbeLogin.js';
 import type { ProjectsConfig } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import type { L5ProjectJson, ProjectSettingsConfig } from '/_102029_/l2/runtimeConfigTypes.js';
 
@@ -59,6 +59,47 @@ function captureWarns(fn: () => void): string[] {
   } finally {
     console.warn = orig;
   }
+}
+
+function captureErrors(fn: () => void): string[] {
+  const errors: string[] = [];
+  const orig = console.error;
+  console.error = ((...args: unknown[]) => {
+    errors.push(args.map(String).join(' '));
+  }) as typeof console.error;
+  try {
+    fn();
+    return errors;
+  } finally {
+    console.error = orig;
+  }
+}
+
+function withProjectFilesDir<T>(fn: (root: string) => T): T {
+  const root = mkdtempSync(join(tmpdir(), 'cbe-project-files-'));
+  const prev = process.env.CBE_PROJECT_FILES_DIR;
+  process.env.CBE_PROJECT_FILES_DIR = root;
+  try {
+    return fn(root);
+  } finally {
+    if (prev === undefined) delete process.env.CBE_PROJECT_FILES_DIR;
+    else process.env.CBE_PROJECT_FILES_DIR = prev;
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function writeProjectFile(root: string, projectId: number, body: string | object): void {
+  writeFileSync(join(root, `${projectId}.json`), typeof body === 'string' ? body : JSON.stringify(body));
+}
+
+function sampleProjectFile(orgId: string, slug: string, projectId: number, extra: object = {}): object {
+  return {
+    schema: 1,
+    generatedAt: '2026-10-01T00:00:00.000Z',
+    org: { orgId, slug, name: `Name of ${slug}`, createdAt: '2026-01-01T00:00:00.000Z' },
+    project: { projectId: String(projectId), domain: null, appEnv: null, language: null, type: 'client', createdAt: '2026-02-01T00:00:00.000Z' },
+    ...extra,
+  };
 }
 
 function parseValue(value: string): { projectDriver: string; projectURL: string } {
@@ -186,4 +227,107 @@ test('T7: ProjectsConfig accepts projectSettings and workspaceDependencies; L5Pr
   assert.deepEqual(config.workspaceDependencies, ['102029']);
   const project: L5ProjectJson = { name: 'from-project-json' };
   assert.equal(project.name, 'from-project-json');
+});
+
+test('T8: valid project file -> org org/<slug>, created_at and owner filled', () => {
+  withProjectsDir((root) => {
+    withProjectFilesDir((filesRoot) => {
+      const id = allocProjectId();
+      writeCompiledZip(root, id);
+      writeProjectFile(filesRoot, id, sampleProjectFile('org-1', 'acme', id));
+
+      const orgInfo = resolveOrgInfo([id]);
+      assert.deepEqual(orgInfo, { slug: 'acme', name: 'Name of acme', createdAt: '2026-01-01T00:00:00.000Z' });
+
+      const project = buildProjectSettings(id, []);
+      assert.ok(project);
+      assert.equal(project?.owner, 'acme');
+      assert.equal(project?.created_at, '2026-02-01T00:00:00.000Z');
+    });
+  });
+});
+
+test('T9: one project with file and one dependency without -> both land in the file\'s org', () => {
+  withProjectsDir((root) => {
+    withProjectFilesDir((filesRoot) => {
+      const withFile = allocProjectId();
+      const withoutFile = allocProjectId();
+      writeCompiledZip(root, withFile);
+      writeCompiledZip(root, withoutFile);
+      writeProjectFile(filesRoot, withFile, sampleProjectFile('org-2', 'beta', withFile));
+
+      const orgInfo = resolveOrgInfo([withFile, withoutFile]);
+      assert.equal(orgInfo.slug, 'beta');
+
+      const depProject = buildProjectSettings(withoutFile, []);
+      assert.ok(depProject);
+      assert.equal(depProject?.owner, 'local');
+      assert.equal(depProject?.created_at, '');
+    });
+  });
+});
+
+test('T10: no project files -> org local with a single process-wide warning', () => {
+  withProjectFilesDir(() => {
+    const id = allocProjectId();
+    const warns = captureWarns(() => {
+      assert.deepEqual(resolveOrgInfo([id]), { slug: 'local', name: 'local', createdAt: '' });
+      assert.deepEqual(resolveOrgInfo([id]), { slug: 'local', name: 'local', createdAt: '' });
+    });
+    const relevant = warns.filter((line) => line.includes('no project file under'));
+    assert.equal(relevant.length, 1, `expected one process-wide warning, got: ${warns.join(' | ')}`);
+  });
+});
+
+test('T11: invalid project file -> console.error once per mtime, treated as absent', () => {
+  withProjectFilesDir((filesRoot) => {
+    const id = allocProjectId();
+    writeProjectFile(filesRoot, id, '{ not json');
+    const errors = captureErrors(() => {
+      assert.equal(readProjectFile(id), null);
+      assert.equal(readProjectFile(id), null);
+    });
+    const relevant = errors.filter((line) => line.includes(`project ${id}`) && line.includes('unreadable'));
+    assert.equal(relevant.length, 1, `expected one error for the unchanged mtime, got: ${errors.join(' | ')}`);
+  });
+});
+
+test('T12: project files report different org ids -> error once, org local', () => {
+  withProjectFilesDir((filesRoot) => {
+    const idA = allocProjectId();
+    const idB = allocProjectId();
+    writeProjectFile(filesRoot, idA, sampleProjectFile('org-a', 'alpha', idA));
+    writeProjectFile(filesRoot, idB, sampleProjectFile('org-b', 'bravo', idB));
+    const errors = captureErrors(() => {
+      assert.equal(resolveOrgInfo([idA, idB]).slug, 'local');
+      assert.equal(resolveOrgInfo([idA, idB]).slug, 'local');
+    });
+    const relevant = errors.filter((line) => line.includes('different org ids'));
+    assert.equal(relevant.length, 1, `expected one error for the unchanged mtimes, got: ${errors.join(' | ')}`);
+  });
+});
+
+test('T13: schema 2 with an extra field is read as v1', () => {
+  withProjectFilesDir((filesRoot) => {
+    const id = allocProjectId();
+    writeProjectFile(filesRoot, id, { ...sampleProjectFile('org-c', 'charlie', id), schema: 2, future: { field: true } });
+    const file = readProjectFile(id);
+    assert.ok(file);
+    assert.equal(file?.org.slug, 'charlie');
+    assert.equal(file?.schema, 2);
+  });
+});
+
+test('T14: rewritten project file (new mtime) is re-read', () => {
+  withProjectFilesDir((filesRoot) => {
+    const id = allocProjectId();
+    const filePath = join(filesRoot, `${id}.json`);
+    writeProjectFile(filesRoot, id, sampleProjectFile('org-d', 'delta', id));
+    assert.equal(readProjectFile(id)?.org.slug, 'delta');
+
+    writeProjectFile(filesRoot, id, sampleProjectFile('org-e', 'echo', id));
+    const future = new Date(Date.now() + 5000);
+    utimesSync(filePath, future, future);
+    assert.equal(readProjectFile(id)?.org.slug, 'echo');
+  });
 });

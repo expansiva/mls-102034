@@ -9,7 +9,8 @@
 // session (cauth cookie + JWKS validation) plugs in here later without changing
 // the response shape.
 
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import { readProjectsConfig } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import { getFilesIfNewer, getProjectsBaseDir, hasCompiledZip, resolveProjectSourcePath } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
 import {
@@ -28,6 +29,122 @@ const DEFAULT_PROJECT_DRIVER = 'vm';
 const DEFAULT_PROJECT_URL = `${LOCAL_OWNER}/${LOCAL_OWNER}/${LOCAL_OWNER}`;
 /** Lowest id the platform assigns — anything below it is not a project (same floor cbeMiniCfe uses). */
 const MIN_PROJECT_ID = 100000;
+
+// ── Project file (written by the sites, read-only here; sites_03 v1 schema) ──
+// Source of truth for the project's org and created_at, mounted on the VM at
+// /etc/collab/projects/<projectId>.json. A missing file is the normal case for
+// the workspace dependencies (mls-102029 etc.) and for dev/lima, which the
+// sites never writes for. v2 only adds fields, which this reader ignores.
+
+interface ProjectFileV1 {
+  schema: number;
+  generatedAt: string;
+  org: { orgId: string; slug: string; name: string; createdAt: string };
+  project: { projectId: string; domain: string; appEnv: string | null; language: string | null; type: string; createdAt: string };
+}
+
+interface ProjectFileCacheEntry {
+  mtimeMs: number;
+  /** null when the file is invalid (the error for this mtime has already been logged). */
+  data: ProjectFileV1 | null;
+}
+
+const projectFileCache = new Map<number, ProjectFileCacheEntry>();
+let warnedNoProjectFile = false;
+let lastMixedOrgWarnKey: string | null = null;
+
+function getProjectFilesDir(): string {
+  return process.env.CBE_PROJECT_FILES_DIR ?? '/etc/collab/projects';
+}
+
+function getProjectFilePath(projectId: number): string {
+  return join(getProjectFilesDir(), `${projectId}.json`);
+}
+
+function isValidProjectFile(parsed: unknown): parsed is ProjectFileV1 {
+  if (!parsed || typeof parsed !== 'object') return false;
+  const schema = (parsed as { schema?: unknown }).schema;
+  if (typeof schema !== 'number' || schema < 1) return false;
+  const org = (parsed as { org?: unknown }).org;
+  if (!org || typeof org !== 'object') return false;
+  const { slug, name } = org as { slug?: unknown; name?: unknown };
+  return typeof slug === 'string' && slug.length > 0 && typeof name === 'string' && name.length > 0;
+}
+
+/**
+ * Reads the project file the sites writes at `getProjectFilesDir()`, cached by
+ * mtime like the compiled.zip (cbeCompiledLocal.ts). Missing is normal and does
+ * not log. Invalid (broken JSON, or schema/org.slug/org.name missing or
+ * malformed) logs a console.error with the path and is treated as missing —
+ * once per mtime, since an unchanged mtime returns the cached result without
+ * re-parsing.
+ */
+export function readProjectFile(projectId: number): ProjectFileV1 | null {
+  const filePath = getProjectFilePath(projectId);
+  if (!existsSync(filePath)) return null;
+
+  const mtimeMs = statSync(filePath).mtimeMs;
+  const cached = projectFileCache.get(projectId);
+  if (cached && cached.mtimeMs === mtimeMs) return cached.data;
+
+  let data: ProjectFileV1 | null = null;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(filePath, 'utf8'));
+    if (isValidProjectFile(parsed)) {
+      data = parsed;
+    } else {
+      console.error(`[cbe] project ${projectId}: project file invalid at ${filePath} — schema/org.slug/org.name missing or malformed, treated as absent`);
+    }
+  } catch (err) {
+    console.error(`[cbe] project ${projectId}: project file unreadable at ${filePath} — ${(err as Error).message}, treated as absent`);
+  }
+
+  projectFileCache.set(projectId, { mtimeMs, data });
+  return data;
+}
+
+function warnNoProjectFileOnce(): void {
+  if (warnedNoProjectFile) return;
+  warnedNoProjectFile = true;
+  console.warn(`[cbe] no project file under ${getProjectFilesDir()} — org '${LOCAL_ORG_NAME}'`);
+}
+
+/**
+ * One org per VM (the sites guarantees it via assertProjectBelongsToOrg). The
+ * org comes from the valid project files of the servable projects: all with
+ * the same org.orgId resolve to that org; files with different org.orgId log
+ * a console.error (once per set of mtimes) and fall back to 'local'; no valid
+ * file logs a single console.warn per process and falls back to 'local'.
+ */
+export function resolveOrgInfo(projectIds: number[]): { slug: string; name: string; createdAt: string } {
+  const entries = projectIds
+    .map((id) => ({ id, file: readProjectFile(id) }))
+    .filter((entry): entry is { id: number; file: ProjectFileV1 } => entry.file !== null);
+
+  if (entries.length === 0) {
+    warnNoProjectFileOnce();
+    return { slug: LOCAL_ORG_NAME, name: LOCAL_ORG_NAME, createdAt: '' };
+  }
+
+  const orgIds = new Set(entries.map((entry) => entry.file.org.orgId));
+  if (orgIds.size > 1) {
+    const key = entries
+      .map((entry) => `${entry.id}:${projectFileCache.get(entry.id)?.mtimeMs}`)
+      .sort()
+      .join(',');
+    if (lastMixedOrgWarnKey !== key) {
+      lastMixedOrgWarnKey = key;
+      const detail = entries
+        .map((entry) => `project ${entry.id} (org ${entry.file.org.orgId}) at ${getProjectFilePath(entry.id)}`)
+        .join(', ');
+      console.error(`[cbe] project files report different org ids — ${detail} — falling back to org '${LOCAL_ORG_NAME}'`);
+    }
+    return { slug: LOCAL_ORG_NAME, name: LOCAL_ORG_NAME, createdAt: '' };
+  }
+
+  const { org } = entries[0].file;
+  return { slug: org.slug, name: org.name, createdAt: org.createdAt };
+}
 
 function readProjectDependencies(projectId: number): number[] {
   const configPath = resolveProjectSourcePath(projectId, 'l5/config.json');
@@ -108,10 +225,11 @@ export function buildProjectSettings(
   if (!filesInfo) return null;
 
   const settings = readProjectSettings(projectId);
+  const projectFile = readProjectFile(projectId);
   return {
     id: projectId,
     name: settings.name ? settings.name : readProjectName(projectId),
-    owner: LOCAL_OWNER,
+    owner: projectFile ? projectFile.org.slug : LOCAL_OWNER,
     // projectDriver/projectURL come from l5/config.json projectSettings when present;
     // the default below is used otherwise. The cfe rejects 'local'/'mls' in
     // loadProjectInfoIfNeeded, and any other driver is only consulted on an
@@ -125,7 +243,7 @@ export function buildProjectSettings(
     // serviceSave.ts's initInfoProject() runs. Three segments keep the same
     // 'local' placeholder convention already used elsewhere on the VM.
     value: JSON.stringify({ projectDriver: settings.driver, projectURL: settings.url }),
-    created_at: '',
+    created_at: projectFile && typeof projectFile.project?.createdAt === 'string' ? projectFile.project.createdAt : '',
     archived_at: '',
     repository_lastModified: filesInfo.lastModified,
     userAuth: settings.userAuth === 'private' ? 'private' : 'public',
@@ -162,6 +280,7 @@ export function executeCbeLogin(args: CbeRequestLogin, loginUser?: string, avata
   const projectsLastModified = Array.isArray(args.projectsLastModified) ? args.projectsLastModified : [];
 
   const projectIds = listServableProjectIds().filter((id) => hasCompiledZip(id));
+  const orgInfo = resolveOrgInfo(projectIds);
 
   const projects: CbePrjSettings[] = [];
   for (const projectId of projectIds) {
@@ -170,11 +289,11 @@ export function executeCbeLogin(args: CbeRequestLogin, loginUser?: string, avata
   }
 
   const org: CbeOrgInfo = {
-    key: `org/${LOCAL_ORG_NAME}`,
+    key: `org/${orgInfo.slug}`,
     value: '',
     sett: {
-      name: LOCAL_ORG_NAME,
-      created_at: '',
+      name: orgInfo.name,
+      created_at: orgInfo.createdAt,
       description: 'workspace projects served by the local runtime (cbe module)',
       projects,
       users: [loginUser || LOCAL_OWNER],
@@ -190,7 +309,7 @@ export function executeCbeLogin(args: CbeRequestLogin, loginUser?: string, avata
     statusCode: CBE_HTTP_OK,
     msg: 'ok',
     services: [],
-    orgs: { [LOCAL_ORG_NAME]: org },
+    orgs: { [orgInfo.slug]: org },
     inits: {},
     providers: [],
     // OIDC picture claim from the JWT session ('' for the test user/anonymous).
