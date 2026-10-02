@@ -20,8 +20,10 @@ import {
 } from '/_102034_/l1/server/layer_1_external/auth/authorityOverride.js';
 import { registerCbeRoutes } from '/_102034_/l1/server/layer_1_external/cbe/cbeRoutes.js';
 import { getLatestJson, initCbeLatestJson } from '/_102034_/l1/server/layer_1_external/cbe/cbeLatestJson.js';
+import { getRunningRelease } from '/_102034_/l1/server/layer_1_external/cbe/cbeRelease.js';
 import { registerMsgProxy } from '/_102034_/l1/server/layer_1_external/transport/http/msgProxy.js';
 import { registerGitRoutes } from '/_102034_/l1/server/layer_1_external/transport/http/gitHttp.js';
+import { buildNewReleaseQaHtml, canServeNewReleaseQa, newReleaseQaProjectHint } from '/_102034_/l1/server/layer_1_external/transport/http/newReleaseQaRoute.js';
 import {
   handleAttachmentHttp, isAttachmentHttpPath,
 } from '/_102034_/l1/server/layer_1_external/storage/attachmentHttp.js';
@@ -291,6 +293,22 @@ export function buildHttpServer() {
   // the catch-all GET /*, so a clone is never answered with the SPA shell. Additive: no existing route
   // changes behaviour, and `COLLAB_GIT_HTTP_ENABLED=false` removes it entirely.
   registerGitRoutes(app, verifyAccessToken);
+  app.get('/__qa/new-release', async (request, reply) => {
+    const mode = readProjectMode(readAppEnv().projectId);
+    if (!canServeNewReleaseQa({
+      mode,
+      host: String(request.headers.host ?? ''),
+      remoteAddress: request.ip,
+    })) {
+      reply.status(404);
+      return { statusCode: 404, msg: 'Not found' };
+    }
+    reply.type('text/html; charset=utf-8').header('cache-control', 'no-store');
+    return buildNewReleaseQaHtml(
+      getRunningRelease()?.id ?? 'development',
+      newReleaseQaProjectHint(request.url),
+    );
+  });
   app.get('/', async (_request, reply) => {
     reply.redirect(await resolveDefaultFrontendLocation());
   });
