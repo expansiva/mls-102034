@@ -2,7 +2,13 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildNewReleaseQaHtml, canServeNewReleaseQa, isQaLoopback, newReleaseQaProjectHint } from './newReleaseQaRoute.js';
+import {
+  buildNewReleaseQaHtml,
+  canServeNewReleaseQa,
+  extractNewReleaseQaLitImportMap,
+  isQaLoopback,
+  newReleaseQaProjectHint,
+} from './newReleaseQaRoute.js';
 
 test('new release QA route is limited to test modes and loopback requests', () => {
   for (const mode of ['development', 'presentation'] as const) {
@@ -25,8 +31,40 @@ test('QA html uses no login bypass and invalid project never falls back', () => 
   assert.equal(newReleaseQaProjectHint('/__qa/new-release'), 102047);
   assert.equal(newReleaseQaProjectHint('/__qa/new-release?project=102047'), 102047);
   assert.equal(newReleaseQaProjectHint('/__qa/new-release?project=bad'), 0);
-  const html = buildNewReleaseQaHtml('release-1', 0);
+  const shellMap = {
+    imports: {
+      lit: '/_libs/lit/index.js',
+      'lit/async-directive.js': '/_libs/lit/async-directive.js',
+      'lit/decorators.js': '/_libs/lit/decorators.js',
+    },
+  };
+  const importMap = extractNewReleaseQaLitImportMap(`<script type="importmap">${JSON.stringify(shellMap)}</script>`);
+  const html = buildNewReleaseQaHtml('release-1', 0, importMap);
   assert.match(html, /qaPreview\.js/u);
   assert.match(html, /projectId:"0"/u);
+  assert.match(html, /"lit\/async-directive\.js":"\/_libs\/lit\/async-directive\.js"/u);
   assert.doesNotMatch(html, /cookie|cauth|loginUser|Authorization/u);
+});
+
+test('QA import map is copied from the generated shell and fails closed when absent', () => {
+  const map = extractNewReleaseQaLitImportMap(`<!doctype html><script type="importmap">
+    {"imports":{"lit":"/_libs/lit/index.js","lit/async-directive.js":"/_libs/lit/async-directive.js"}}
+  </script>`);
+  assert.deepEqual(JSON.parse(map), {
+    imports: {
+      lit: '/_libs/lit/index.js',
+      'lit/async-directive.js': '/_libs/lit/async-directive.js',
+    },
+  });
+  assert.throws(() => extractNewReleaseQaLitImportMap('<html></html>'), /import map not found/u);
+  for (const imports of [null, [], { lit: '/_libs/lit/index.js' }]) {
+    assert.throws(
+      () => extractNewReleaseQaLitImportMap(`<script type="importmap">${JSON.stringify({ imports })}</script>`),
+      /import map is (?:invalid|incomplete)/u,
+    );
+  }
+  assert.throws(
+    () => extractNewReleaseQaLitImportMap('<script type="importmap">{"imports":{"lit":"https://cdn.example/lit.js","lit/async-directive.js":"/_libs/lit/async-directive.js"}}</script>'),
+    /import map is incomplete/u,
+  );
 });

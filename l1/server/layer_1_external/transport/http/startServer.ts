@@ -23,7 +23,7 @@ import { getLatestJson, initCbeLatestJson } from '/_102034_/l1/server/layer_1_ex
 import { getRunningRelease } from '/_102034_/l1/server/layer_1_external/cbe/cbeRelease.js';
 import { registerMsgProxy } from '/_102034_/l1/server/layer_1_external/transport/http/msgProxy.js';
 import { registerGitRoutes } from '/_102034_/l1/server/layer_1_external/transport/http/gitHttp.js';
-import { buildNewReleaseQaHtml, canServeNewReleaseQa, newReleaseQaProjectHint } from '/_102034_/l1/server/layer_1_external/transport/http/newReleaseQaRoute.js';
+import { buildNewReleaseQaHtml, canServeNewReleaseQa, extractNewReleaseQaLitImportMap, newReleaseQaProjectHint } from '/_102034_/l1/server/layer_1_external/transport/http/newReleaseQaRoute.js';
 import {
   handleAttachmentHttp, isAttachmentHttpPath,
 } from '/_102034_/l1/server/layer_1_external/storage/attachmentHttp.js';
@@ -303,10 +303,14 @@ export function buildHttpServer() {
       reply.status(404);
       return { statusCode: 404, msg: 'Not found' };
     }
+    const shell = (await getFrontendAppRegistrations())[0];
+    if (!shell) throw new Error('QA shell unavailable');
+    const litImportMap = extractNewReleaseQaLitImportMap(readFileSync(shell.indexHtmlPath, 'utf8'));
     reply.type('text/html; charset=utf-8').header('cache-control', 'no-store');
     return buildNewReleaseQaHtml(
       getRunningRelease()?.id ?? 'development',
       newReleaseQaProjectHint(request.url),
+      litImportMap,
     );
   });
   app.get('/', async (_request, reply) => {

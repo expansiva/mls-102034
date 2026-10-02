@@ -37,7 +37,32 @@ export function newReleaseQaProjectHint(url: string): number {
   return /^[1-9]\d{5}$/u.test(raw) ? Number(raw) : 0;
 }
 
-export function buildNewReleaseQaHtml(release: string, projectHint: number): string {
+export function extractNewReleaseQaLitImportMap(shellHtml: string): string {
+  const match = /<script\s+type=["']importmap["'][^>]*>([\s\S]*?)<\/script>/iu.exec(shellHtml);
+  if (!match) throw new Error('QA shell Lit import map not found');
+  const parsed: unknown = JSON.parse(match[1]);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || !('imports' in parsed)) {
+    throw new Error('QA shell Lit import map is invalid');
+  }
+  const imports = (parsed as { imports?: unknown }).imports;
+  if (!imports || typeof imports !== 'object' || Array.isArray(imports)) {
+    throw new Error('QA shell Lit import map is invalid');
+  }
+  const entries = Object.entries(imports);
+  if (!entries.length || entries.some(([, value]) => typeof value !== 'string')) {
+    throw new Error('QA shell Lit import map is invalid');
+  }
+  const required = {
+    lit: '/_libs/lit/index.js',
+    'lit/async-directive.js': '/_libs/lit/async-directive.js',
+  } as const;
+  if (Object.entries(required).some(([specifier, path]) => (imports as Record<string, string>)[specifier] !== path)) {
+    throw new Error('QA shell Lit import map is incomplete');
+  }
+  return JSON.stringify(parsed).replace(/</gu, '\\u003c');
+}
+
+export function buildNewReleaseQaHtml(release: string, projectHint: number, litImportMap: string): string {
   const bootstrap = JSON.stringify({ release, projectHint }).replace(/</gu, '\\u003c');
   const project = projectHint > 0 ? String(projectHint) : '0';
   return `<!doctype html>
@@ -46,7 +71,7 @@ export function buildNewReleaseQaHtml(release: string, projectHint: number): str
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>New release QA</title>
-  <script type="importmap">{"imports":{"lit":"/_libs/lit/index.js","lit/decorators.js":"/_libs/lit/decorators.js"}}</script>
+  <script type="importmap">${litImportMap}</script>
   <script>
     window.collabBoot={projectId:${JSON.stringify(project)},clientProjectId:${JSON.stringify(project)},moduleId:"__qa",basePath:"/__qa/new-release",shellMode:"qa",pageTitle:"New release QA",routes:[],appEnv:"presentation"};
     window.__newReleaseQaBootstrap=${bootstrap};
