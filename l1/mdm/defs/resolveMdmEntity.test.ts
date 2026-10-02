@@ -30,12 +30,12 @@ import { mdm } from '/_102034_/l4/ontology/mdm.defs.js';
 import type { Ns5OntologyAnyEntity, Ns5OntologyEntityV3, Ns5OntologyIndexV3 } from '/_102035_/l2/solution/types.js';
 import { resolvableFieldPaths } from '/_102035_/l2/solution/ontologyPaths.js';
 import { ns5RuleEntries, ns5RuleRecord } from '/_102035_/l2/solution/rulesView.js';
-import { agendaClinicaRules } from '/_102035_/l2/agentNewSolution5/steps/ontology30/fixtures/agendaClinica-v3/rules.defs.js';
-import { agendaClinicaRulesV2 } from '/_102035_/l2/agentNewSolution5/steps/rules40/fixtures/agendaClinica-rules-v2.defs.js';
-import { agendaClinicaEntityConsulta } from '/_102035_/l2/agentNewSolution5/steps/ontology30/fixtures/agendaClinica-v3/Consulta.defs.js';
-import { agendaClinicaEntityPaciente } from '/_102035_/l2/agentNewSolution5/steps/ontology30/fixtures/agendaClinica-v3/Paciente.defs.js';
-import { agendaClinicaEntityProfissional } from '/_102035_/l2/agentNewSolution5/steps/ontology30/fixtures/agendaClinica-v3/Profissional.defs.js';
-import { agendaClinicaOntologyIndex } from '/_102035_/l2/agentNewSolution5/steps/ontology30/fixtures/agendaClinica-v3/index.defs.js';
+import { agendaClinicaRules } from '/_102035_/l2/solution/fixtures/ontology30/agendaClinica-v3/rules.defs.js';
+import { agendaClinicaRulesV2 } from '/_102035_/l2/solution/fixtures/rules40/agendaClinica-rules-v2.defs.js';
+import { agendaClinicaEntityConsulta } from '/_102035_/l2/solution/fixtures/ontology30/agendaClinica-v3/Consulta.defs.js';
+import { agendaClinicaEntityPaciente } from '/_102035_/l2/solution/fixtures/ontology30/agendaClinica-v3/Paciente.defs.js';
+import { agendaClinicaEntityProfissional } from '/_102035_/l2/solution/fixtures/ontology30/agendaClinica-v3/Profissional.defs.js';
+import { agendaClinicaOntologyIndex } from '/_102035_/l2/solution/fixtures/ontology30/agendaClinica-v3/index.defs.js';
 
 // ---------------------------------------------------------------------------
 // T2 — the cross-references, checked by the compiler (same method as mdmOntology.test.ts)
