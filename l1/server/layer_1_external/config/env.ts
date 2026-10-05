@@ -145,6 +145,10 @@ function loadEnvFile(): void {
   }
 }
 
+export function ensureEnvFileLoaded(): void {
+  loadEnvFile();
+}
+
 export function readAppEnv(): AppEnv {
   loadEnvFile();
   const appEnv =

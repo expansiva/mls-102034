@@ -10,8 +10,42 @@
 // MSG_PROXY_ENABLED=false disables the route entirely.
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { ensureEnvFileLoaded } from '/_102034_/l1/server/layer_1_external/config/env.js';
 
 const DEFAULT_TARGET = 'http://127.0.0.1:8180';
+
+const SERVICE_IDENTITY_ERROR = 'MSG_PROXY_TOKEN is set but MSG_PROXY_USER_ID is empty — service identity not injected';
+
+export type ServiceIdentityHeaders =
+  | { inject: null }
+  | { inject: { authorization: string; 'x-user-id': string; 'x-org-id'?: string } }
+  | { error: string };
+
+export function serviceIdentityHeaders(env: NodeJS.ProcessEnv): ServiceIdentityHeaders {
+  const token = (env.MSG_PROXY_TOKEN ?? '').trim();
+  if (!token) return { inject: null };
+
+  const userId = (env.MSG_PROXY_USER_ID ?? '').trim();
+  if (!userId) return { error: SERVICE_IDENTITY_ERROR };
+
+  const inject: { authorization: string; 'x-user-id': string; 'x-org-id'?: string } = {
+    authorization: `Bearer ${token}`,
+    'x-user-id': userId,
+  };
+  const orgId = (env.MSG_PROXY_ORG_ID ?? '').trim();
+  if (orgId) inject['x-org-id'] = orgId;
+  return { inject };
+}
+
+export function msgProxyStartupLog(target: string, identity: ServiceIdentityHeaders): string {
+  const line = `[msgProxy] /msg + /whoami -> ${target} (MSG_PROXY_TARGET to override, MSG_PROXY_ENABLED=false to disable)`;
+  if ('inject' in identity && identity.inject) {
+    return `${line} service identity ${identity.inject['x-user-id']}`;
+  }
+  return line;
+}
+
+let serviceHeaders: Record<string, string> | null = null;
 
 // Hop-by-hop headers must not be forwarded in either direction.
 const HOP_BY_HOP = new Set([
@@ -29,6 +63,11 @@ async function forward(request: FastifyRequest, reply: FastifyReply): Promise<vo
   for (const [name, value] of Object.entries(request.headers)) {
     if (HOP_BY_HOP.has(name.toLowerCase()) || value === undefined) continue;
     headers[name] = Array.isArray(value) ? value.join(', ') : String(value);
+  }
+  if (serviceHeaders) {
+    for (const [name, value] of Object.entries(serviceHeaders)) {
+      headers[name] = value;
+    }
   }
 
   let response: Response;
@@ -56,6 +95,15 @@ async function forward(request: FastifyRequest, reply: FastifyReply): Promise<vo
 }
 
 export function registerMsgProxy(app: FastifyInstance): void {
+  ensureEnvFileLoaded();
+  const identity = serviceIdentityHeaders(process.env);
+  serviceHeaders = null;
+  if ('error' in identity) {
+    console.error(`[msgProxy] ${identity.error}`);
+  } else if (identity.inject) {
+    serviceHeaders = identity.inject;
+  }
+
   if (process.env.MSG_PROXY_ENABLED === 'false') {
     console.info('[msgProxy] disabled (MSG_PROXY_ENABLED=false)');
     return;
@@ -66,5 +114,5 @@ export function registerMsgProxy(app: FastifyInstance): void {
   // browser to see exactly what the current cauth/loginMsg cookies resolve to
   // (missing token / invalid or expired / bound identity).
   app.all('/whoami', forward);
-  console.info(`[msgProxy] /msg + /whoami -> ${getTarget()} (MSG_PROXY_TARGET to override, MSG_PROXY_ENABLED=false to disable)`);
+  console.info(msgProxyStartupLog(getTarget(), identity));
 }
