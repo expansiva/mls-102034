@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-    candidateMarkResult, candidatePublish, candidateRead, handleCandidateRevision,
+    candidateMarkResult, candidatePublish, candidateRead, handleCandidateRevision, manifestHash, sameCanonical,
     type CandidateCaller, type CandidateMarkResultInput, type CandidatePersistence, type CandidatePublishInput,
 } from "/_102034_/l1/server/layer_1_external/candidate/candidateStore.js";
 
@@ -572,6 +572,25 @@ void test("rejects an org that is not the hub org on read and publish", async ()
     const published = await candidatePublish(other, proposal("x", "one"), hubOrgId, table);
     assert.equal(published.statusCode, 403);
     assert.equal(published.msg, "candidate.forbidden");
+});
+
+void test("manifestHash ignores file key order", () => {
+    const shared = { baseId: "base-1", requestRevision: 2, request: "keep the desk" };
+    const contractOrder = manifestHash({
+        ...shared,
+        files: [{ path: "module.defs.ts", sha256: "ab", bytes: 4 }],
+    });
+    const storedOrder = manifestHash({
+        ...shared,
+        files: [{ bytes: 4, path: "module.defs.ts", sha256: "ab" }],
+    });
+    assert.equal(contractOrder, storedOrder);
+});
+
+void test("sameCanonical ignores object key order and keeps array order", () => {
+    assert.equal(sameCanonical({ path: "a", sha256: "b", bytes: 1 }, { path: "a", bytes: 1, sha256: "b" }), true);
+    assert.equal(sameCanonical({ path: "a", bytes: 1 }, { path: "a", bytes: 2 }), false);
+    assert.equal(sameCanonical([{ path: "a" }, { path: "b" }], [{ path: "b" }, { path: "a" }]), false);
 });
 
 void test("rejects a missing hub org on read and publish", async () => {

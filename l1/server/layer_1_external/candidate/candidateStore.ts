@@ -210,10 +210,26 @@ function authorizeCaller(caller: CandidateCaller, hubOrgId: string | null): { ow
     return { owner };
 }
 
-function manifestHash(snapshot: Pick<CandidateSnapshot, "baseId" | "requestRevision" | "request" | "files">): string {
+function canonicalValue(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map(canonicalValue);
+    if (value && typeof value === "object") {
+        const source = value as Record<string, unknown>;
+        const ordered: Record<string, unknown> = {};
+        for (const key of Object.keys(source).sort()) ordered[key] = canonicalValue(source[key]);
+        return ordered;
+    }
+    return value;
+}
+
+export function sameCanonical(left: unknown, right: unknown): boolean {
+    return JSON.stringify(canonicalValue(left)) === JSON.stringify(canonicalValue(right));
+}
+
+export function manifestHash(snapshot: Pick<CandidateSnapshot, "baseId" | "requestRevision" | "request" | "files">): string {
     return digest(JSON.stringify({
         baseId: snapshot.baseId, requestRevision: snapshot.requestRevision,
-        request: snapshot.request, files: snapshot.files,
+        request: snapshot.request,
+        files: snapshot.files.map((file) => ({ path: file.path, sha256: file.sha256, bytes: file.bytes })),
     }));
 }
 
@@ -252,6 +268,7 @@ function prepareResult(input: Pick<CandidateMarkResultInput, "result" | "resultH
         runId, taskId, status: input.result.status, outputSnapshotHash: input.result.outputSnapshotHash,
         artifacts, traceHash: input.result.traceHash,
     };
+    // Safe: this manifest is built field by field in contract order, not read back from storage.
     if (digest(JSON.stringify(manifest)) !== input.resultHash) {
         throw new CandidateError(400, "candidate.invalid_result_hash");
     }
@@ -283,12 +300,13 @@ function samePermit(left: CandidatePublishPermit | undefined, right: CandidatePu
 function sameOutputArtifacts(files: FileMeta[], artifacts: CandidateResultManifest["artifacts"]): boolean {
     const expected = files.map(({ path, sha256 }) => ({ path, sha256 }))
         .sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
-    return JSON.stringify(expected) === JSON.stringify(artifacts);
+    return sameCanonical(expected, artifacts);
 }
 
 function sameArtifactPaths(files: FileInput[], artifacts: CandidateResultManifest["artifacts"]): boolean {
     const inputPaths = files.map(({ path }) => path).sort();
     const outputPaths = artifacts.map(({ path }) => path).sort();
+    // Safe: both sides are sorted lists of strings, so key order cannot change the JSON.
     return JSON.stringify(inputPaths) === JSON.stringify(outputPaths);
 }
 
@@ -311,7 +329,7 @@ async function verifyPublishPermit(store: CandidatePersistence, root: string, cu
     const staged = await verifiedResultOutput(store, root, record);
     if (permit.outputSnapshotHash !== staged.hash || prepared.hash !== staged.hash ||
         prepared.baseId !== staged.baseId || prepared.requestRevision !== staged.requestRevision ||
-        prepared.request !== staged.request || JSON.stringify(prepared.metadata) !== JSON.stringify(staged.metadata) ||
+        prepared.request !== staged.request || !sameCanonical(prepared.metadata, staged.metadata) ||
         !sameOutputArtifacts(staged.metadata, result.manifest.artifacts)) {
         throw new CandidateError(409, "candidate.result_permit_mismatch");
     }
@@ -408,7 +426,7 @@ async function verifiedResultOutput(store: CandidatePersistence, root: string,
     } catch {
         throw new CandidateError(503, "candidate.corrupt_output_snapshot");
     }
-    if (JSON.stringify(prepared.metadata) !== JSON.stringify(stored.files)) {
+    if (!sameCanonical(prepared.metadata, stored.files)) {
         throw new CandidateError(503, "candidate.corrupt_output_snapshot");
     }
     return prepared;
@@ -503,7 +521,7 @@ export async function candidateRead(caller: CandidateCaller, input: CandidateRea
             const result = await verifiedResult(store, root, pointer);
             await authorizeCaller(caller, hubOrgId);
             const confirmed = parsePointer(await store.get(pointerKey));
-            if (confirmed && JSON.stringify(confirmed) === JSON.stringify(pointer)) {
+            if (confirmed && sameCanonical(confirmed, pointer)) {
                 return { statusCode: 200, status: "read", pointer, snapshot, ...(result ? { result } : {}) };
             }
             if (attempt === 1) throw new CandidateError(409, "candidate.revision_changed");
@@ -586,8 +604,8 @@ function sameResult(record: CandidateResultRecord | undefined, expected: Candida
         record.expectedRevisionId === expected.expectedRevisionId &&
         record.expectedSnapshotHash === expected.expectedSnapshotHash &&
         record.expectedRevisionNumber === expected.expectedRevisionNumber && record.resultId === expected.resultId &&
-        record.resultHash === expected.resultHash && JSON.stringify(record.manifest) === JSON.stringify(expected.manifest) &&
-        JSON.stringify(record.outputSnapshot) === JSON.stringify(expected.outputSnapshot));
+        record.resultHash === expected.resultHash && sameCanonical(record.manifest, expected.manifest) &&
+        sameCanonical(record.outputSnapshot, expected.outputSnapshot));
 }
 
 export async function candidateMarkResult(caller: CandidateCaller, input: CandidateMarkResultInput, hubOrgId: string | null,
