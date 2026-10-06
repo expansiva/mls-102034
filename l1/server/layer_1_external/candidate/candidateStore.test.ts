@@ -7,7 +7,7 @@ import test from "node:test";
 import {
     candidateMarkResult, candidatePublish, candidateRead, handleCandidateRevision,
     type CandidateCaller, type CandidateMarkResultInput, type CandidatePersistence, type CandidatePublishInput,
-} from "./candidateStore.js";
+} from "/_102034_/l1/server/layer_1_external/candidate/candidateStore.js";
 
 const hash = (data: string | Buffer): string => createHash("sha256").update(data).digest("hex");
 const caller: CandidateCaller = { owner: "alice@example.com", orgId: "org-1" };
