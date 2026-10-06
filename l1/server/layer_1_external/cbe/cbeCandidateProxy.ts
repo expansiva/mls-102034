@@ -33,16 +33,65 @@ export function candidateActionAllowed(body: unknown): body is { action: 'candid
     CANDIDATE_ACTIONS.has((body as { action?: unknown }).action as string));
 }
 
+export type CandidateIdentity =
+  | { kind: 'jwt' }
+  | { kind: 'service'; owner: string; orgId: string | null }
+  | { kind: 'none' };
+
+/** Hub classification. A JWT email wins. Otherwise an exact bearer match against a non-empty COLLAB_SERVICE_TOKEN plus a non-empty X-User-Id. */
+export function candidateIdentity(input: {
+  email?: string | null;
+  authorization?: string | null;
+  userId?: string | null;
+  orgId?: string | null;
+  serviceToken?: string | null;
+}): CandidateIdentity {
+  if (input.email) return { kind: 'jwt' };
+  const serviceToken = input.serviceToken ?? '';
+  const authorization = input.authorization ?? '';
+  const presented = authorization.startsWith('Bearer ') ? authorization.slice('Bearer '.length) : '';
+  const owner = (input.userId ?? '').trim();
+  if (serviceToken !== '' && presented === serviceToken && owner !== '') {
+    const orgId = (input.orgId ?? '').trim();
+    return { kind: 'service', owner, orgId: orgId || null };
+  }
+  return { kind: 'none' };
+}
+
+/** Headers for the forward hop. Built from the verified JWT or from MSG_PROXY_*, never from the inbound Authorization. */
+export function candidateForwardHeaders(
+  verifiedAccessToken: string,
+  env: Record<string, string | undefined> = {},
+): Record<string, string> | null {
+  if (verifiedAccessToken) {
+    return {
+      'Content-Type': 'application/json',
+      Cookie: `cauth=${encodeURIComponent(verifiedAccessToken)}`,
+    };
+  }
+  const token = env.MSG_PROXY_TOKEN ?? '';
+  const userId = (env.MSG_PROXY_USER_ID ?? '').trim();
+  if (token === '' || userId === '') return null;
+  return {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${token}`,
+    'X-User-Id': userId,
+    'X-Org-Id': env.MSG_PROXY_ORG_ID ?? '',
+  };
+}
+
 export async function proxyCandidateRequest(
   body: unknown,
   verifiedAccessToken: string,
   fetchImpl: typeof fetch = fetch,
+  forwardEnv: Record<string, string | undefined> = {},
 ): Promise<CandidateProxyResult> {
   if (!candidateActionAllowed(body)) return {
     statusCode: 400, contentType: 'application/json; charset=utf-8',
     body: { statusCode: 400, status: 'error', msg: 'candidate.invalid_action' },
   };
-  if (!verifiedAccessToken) return {
+  const headers = candidateForwardHeaders(verifiedAccessToken, forwardEnv);
+  if (!headers) return {
     statusCode: 401, contentType: 'application/json; charset=utf-8',
     body: { statusCode: 401, status: 'error', msg: 'candidate.unauthorized' },
   };
@@ -52,12 +101,7 @@ export async function proxyCandidateRequest(
   try {
     const response = await fetchImpl(centralCandidateUrl(), {
       method: 'POST', redirect: 'manual', signal: controller.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        // Constructed only from a token already verified by resolveSession.
-        // No incoming Cookie/Authorization/forwarded headers cross this boundary.
-        Cookie: `cauth=${encodeURIComponent(verifiedAccessToken)}`,
-      },
+      headers,
       body: JSON.stringify(body),
     });
     if (response.status >= 300 && response.status < 400) throw new Error('central CBE redirect denied');

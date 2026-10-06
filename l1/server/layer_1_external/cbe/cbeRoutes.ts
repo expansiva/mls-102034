@@ -22,7 +22,7 @@ import {
   type JwtSession,
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeAuthJwt.js';
 import { listSources, readSources, writeSources } from '/_102034_/l1/server/layer_1_external/cbe/cbeSources.js';
-import { CANDIDATE_BODY_LIMIT, candidateActionAllowed, candidateHubMode, candidateOrigin, proxyCandidateRequest } from '/_102034_/l1/server/layer_1_external/cbe/cbeCandidateProxy.js';
+import { CANDIDATE_BODY_LIMIT, candidateActionAllowed, candidateHubMode, candidateIdentity, candidateOrigin, proxyCandidateRequest } from '/_102034_/l1/server/layer_1_external/cbe/cbeCandidateProxy.js';
 import { handleCandidateRevision } from '/_102034_/l1/server/layer_1_external/candidate/candidateStore.js';
 import { ensureCandidateSchema, PostgresCandidatePersistence } from '/_102034_/l1/server/layer_1_external/candidate/candidatePostgres.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
@@ -89,6 +89,10 @@ async function resolveSession(request: FastifyRequest): Promise<JwtSession & { t
   return testUser ? { testUser } : {};
 }
 
+function headerString(value: string | string[] | undefined): string {
+  return Array.isArray(value) ? value[0] ?? '' : value ?? '';
+}
+
 let candidateSchemaStarted = false;
 let hubStore: PostgresCandidatePersistence | undefined;
 
@@ -105,20 +109,29 @@ async function handleCandidateProxy(request: FastifyRequest, reply: FastifyReply
   }
   const cookies = parseCookies(request.headers.cookie as string | undefined);
   const session = await resolveSession(request);
-  // CBE_TEST_LOGIN_USER is never sufficient, in either mode. A session without
-  // an email is rejected before the store and before any forward.
-  if (!session.email) {
-    reply.code(CBE_HTTP_UNAUTHORIZED).send({ statusCode: CBE_HTTP_UNAUTHORIZED, status: 'error', msg: 'candidate.unauthorized' });
-    return;
-  }
-  if (session.newAccessToken) {
-    reply.header('set-cookie', [sessionCookie('cauth', session.newAccessToken, { httpOnly: true, maxAgeMs: THIRTY_DAYS_MS })]);
-  }
+  // CBE_TEST_LOGIN_USER is never sufficient, in either mode.
   if (candidateHubMode() === 'local') {
+    const identity = candidateIdentity({
+      email: session.email,
+      authorization: headerString(request.headers.authorization),
+      userId: headerString(request.headers['x-user-id']),
+      orgId: headerString(request.headers['x-org-id']),
+      serviceToken: process.env.COLLAB_SERVICE_TOKEN,
+    });
+    if (identity.kind === 'none') {
+      reply.code(CBE_HTTP_UNAUTHORIZED).send({ statusCode: CBE_HTTP_UNAUTHORIZED, status: 'error', msg: 'candidate.unauthorized' });
+      return;
+    }
+    if (identity.kind === 'jwt' && session.newAccessToken) {
+      reply.header('set-cookie', [sessionCookie('cauth', session.newAccessToken, { httpOnly: true, maxAgeMs: THIRTY_DAYS_MS })]);
+    }
+    const caller = identity.kind === 'jwt'
+      ? { owner: session.email ?? '', orgId: session.orgId ?? null }
+      : { owner: identity.owner, orgId: identity.orgId };
     try {
       const hubOrgId = readProjectFile(Number(process.env.COLLAB_PROJECT_ID))?.org.orgId ?? null;
       const result = await handleCandidateRevision(
-        { owner: session.email, orgId: session.orgId ?? null },
+        caller,
         body as Parameters<typeof handleCandidateRevision>[1],
         hubOrgId,
         hubCandidateStore(),
@@ -130,15 +143,14 @@ async function handleCandidateProxy(request: FastifyRequest, reply: FastifyReply
     }
     return;
   }
-  // Forward only a JWT which this host verified (or its newly refreshed
-  // replacement), never raw request headers.
-  const verifiedToken = session.newAccessToken ?? cookies.cauth ?? '';
-  if (!verifiedToken) {
-    reply.code(CBE_HTTP_UNAUTHORIZED).send({ statusCode: CBE_HTTP_UNAUTHORIZED, status: 'error', msg: 'candidate.unauthorized' });
-    return;
+  // Forward a verified JWT as cauth, or the lima desenv identity from MSG_PROXY_*.
+  // Never copy the inbound Authorization.
+  if (session.email && session.newAccessToken) {
+    reply.header('set-cookie', [sessionCookie('cauth', session.newAccessToken, { httpOnly: true, maxAgeMs: THIRTY_DAYS_MS })]);
   }
+  const verifiedToken = session.email ? (session.newAccessToken ?? cookies.cauth ?? '') : '';
   try {
-    const result = await proxyCandidateRequest(body, verifiedToken);
+    const result = await proxyCandidateRequest(body, verifiedToken, fetch, process.env);
     reply.code(result.statusCode).header('Content-Type', result.contentType).header('Cache-Control', 'no-store').send(result.body);
   } catch (err) {
     console.error('[cbe:candidate] central transport failed:', (err as Error).message);

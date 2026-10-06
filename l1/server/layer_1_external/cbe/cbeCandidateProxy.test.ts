@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import Fastify from 'fastify';
-import { CANDIDATE_BODY_LIMIT, candidateActionAllowed, candidateHubMode, candidateOrigin, proxyCandidateRequest } from '/_102034_/l1/server/layer_1_external/cbe/cbeCandidateProxy.js';
+import { CANDIDATE_BODY_LIMIT, candidateActionAllowed, candidateForwardHeaders, candidateHubMode, candidateIdentity, candidateOrigin, proxyCandidateRequest } from '/_102034_/l1/server/layer_1_external/cbe/cbeCandidateProxy.js';
 import { registerCbeRoutes } from '/_102034_/l1/server/layer_1_external/cbe/cbeRoutes.js';
 
 test('candidate proxy allowlists exactly read, publish and mark-result', () => {
@@ -79,8 +79,12 @@ test('runtime candidate route rejects test-user auth and rejects non-candidate a
   const previousUser = process.env.CBE_TEST_LOGIN_USER;
   const previousOrigin = process.env.CANDIDATE_ORIGIN;
   const previousHub = process.env.CANDIDATE_HUB;
+  const previousProxyToken = process.env.MSG_PROXY_TOKEN;
+  const previousProxyUser = process.env.MSG_PROXY_USER_ID;
   process.env.CBE_TEST_LOGIN_USER = 'local-test-user';
   delete process.env.CANDIDATE_HUB;
+  delete process.env.MSG_PROXY_TOKEN;
+  delete process.env.MSG_PROXY_USER_ID;
   // If the allowlist regresses this unreachable origin would make the assertion fail as 503.
   process.env.CANDIDATE_ORIGIN = 'https://127.0.0.1.invalid';
   const app = Fastify();
@@ -100,7 +104,63 @@ test('runtime candidate route rejects test-user auth and rejects non-candidate a
     else process.env.CANDIDATE_ORIGIN = previousOrigin;
     if (previousHub === undefined) delete process.env.CANDIDATE_HUB;
     else process.env.CANDIDATE_HUB = previousHub;
+    if (previousProxyToken === undefined) delete process.env.MSG_PROXY_TOKEN;
+    else process.env.MSG_PROXY_TOKEN = previousProxyToken;
+    if (previousProxyUser === undefined) delete process.env.MSG_PROXY_USER_ID;
+    else process.env.MSG_PROXY_USER_ID = previousProxyUser;
   }
+});
+
+test('hub identity is service only for the exact non-empty token plus a user id', () => {
+  assert.deepEqual(candidateIdentity({
+    authorization: 'Bearer secret', userId: 'desenv', orgId: 'collabcodes', serviceToken: 'secret',
+  }), { kind: 'service', owner: 'desenv', orgId: 'collabcodes' });
+  assert.deepEqual(candidateIdentity({
+    email: 'alice@example.com', authorization: 'Bearer secret', userId: 'desenv', serviceToken: 'secret',
+  }), { kind: 'jwt' });
+  assert.deepEqual(candidateIdentity({
+    authorization: 'Bearer wrong', userId: 'desenv', serviceToken: 'secret',
+  }), { kind: 'none' });
+  assert.deepEqual(candidateIdentity({
+    authorization: 'Bearer secret', userId: 'desenv', serviceToken: '',
+  }), { kind: 'none' });
+  assert.deepEqual(candidateIdentity({
+    authorization: 'Bearer secret', userId: 'desenv',
+  }), { kind: 'none' });
+  assert.deepEqual(candidateIdentity({
+    authorization: 'Bearer secret', userId: '   ', serviceToken: 'secret',
+  }), { kind: 'none' });
+  assert.deepEqual(candidateIdentity({
+    authorization: 'Bearer secret', serviceToken: 'secret',
+  }), { kind: 'none' });
+});
+
+test('forward sends the cauth cookie for a jwt and MSG_PROXY headers otherwise', async () => {
+  const serviceEnv = { MSG_PROXY_TOKEN: 'svc', MSG_PROXY_USER_ID: 'desenv', MSG_PROXY_ORG_ID: 'collabcodes' };
+  const withJwt = await proxyCandidateRequest({ action: 'candidateRead' }, 'verified token', async (_input, init) => {
+    assert.deepEqual(init?.headers, { 'Content-Type': 'application/json', Cookie: 'cauth=verified%20token' });
+    assert.equal((init?.headers as Record<string, string>).Authorization, undefined);
+    return new Response('{}', { status: 200 });
+  }, serviceEnv);
+  assert.equal(withJwt.statusCode, 200);
+
+  await proxyCandidateRequest({ action: 'candidateRead' }, '', async (_input, init) => {
+    assert.deepEqual(init?.headers, {
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer svc',
+      'X-User-Id': 'desenv',
+      'X-Org-Id': 'collabcodes',
+    });
+    return new Response('{}', { status: 200 });
+  }, serviceEnv);
+
+  assert.equal(candidateForwardHeaders('', {}), null);
+  assert.equal((await proxyCandidateRequest({ action: 'candidateRead' }, '', async () => {
+    throw new Error('must not fetch');
+  }, {})).statusCode, 401);
+  assert.equal((await proxyCandidateRequest({ action: 'candidateRead' }, '', async () => {
+    throw new Error('must not fetch');
+  }, { MSG_PROXY_TOKEN: 'svc', MSG_PROXY_USER_ID: '' })).statusCode, 401);
 });
 
 test('1.25MB route limit accommodates the maximum contracted payload', () => {
