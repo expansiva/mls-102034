@@ -8,7 +8,7 @@
 // in this folder so it can later move to a release-packaged module untouched.
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { executeCbeLogin } from '/_102034_/l1/server/layer_1_external/cbe/cbeLogin.js';
+import { executeCbeLogin, readProjectFile } from '/_102034_/l1/server/layer_1_external/cbe/cbeLogin.js';
 import { getProjectsBaseDir } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
 import { getCbeStaticFile, logCbeStaticConfig } from '/_102034_/l1/server/layer_1_external/cbe/cbeStaticFiles.js';
 import {
@@ -22,7 +22,11 @@ import {
   type JwtSession,
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeAuthJwt.js';
 import { listSources, readSources, writeSources } from '/_102034_/l1/server/layer_1_external/cbe/cbeSources.js';
-import { CANDIDATE_BODY_LIMIT, candidateActionAllowed, proxyCandidateRequest } from '/_102034_/l1/server/layer_1_external/cbe/cbeCandidateProxy.js';
+import { CANDIDATE_BODY_LIMIT, candidateActionAllowed, candidateHubMode, candidateOrigin, proxyCandidateRequest } from '/_102034_/l1/server/layer_1_external/cbe/cbeCandidateProxy.js';
+import { handleCandidateRevision } from '/_102034_/l1/server/layer_1_external/candidate/candidateStore.js';
+import { ensureCandidateSchema, PostgresCandidatePersistence } from '/_102034_/l1/server/layer_1_external/candidate/candidatePostgres.js';
+import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
+import { getSharedPgPool } from '/_102034_/l1/server/layer_1_external/data/postgres/pg.js';
 import { readHistory, readHistoryContent } from '/_102034_/l1/server/layer_1_external/cbe/cbeGit.js';
 import { isRebuildInProgress, scheduleRebuildOnSave } from '/_102034_/l1/server/layer_1_external/cbe/cbeRebuildOnSave.js';
 import { authorFromSession, commitSavedSources } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitCommit.js';
@@ -85,6 +89,14 @@ async function resolveSession(request: FastifyRequest): Promise<JwtSession & { t
   return testUser ? { testUser } : {};
 }
 
+let candidateSchemaStarted = false;
+let hubStore: PostgresCandidatePersistence | undefined;
+
+function hubCandidateStore(): PostgresCandidatePersistence {
+  if (!hubStore) hubStore = new PostgresCandidatePersistence(getSharedPgPool(readAppEnv()));
+  return hubStore;
+}
+
 async function handleCandidateProxy(request: FastifyRequest, reply: FastifyReply): Promise<void> {
   const body = request.body as unknown;
   if (!candidateActionAllowed(body)) {
@@ -93,18 +105,40 @@ async function handleCandidateProxy(request: FastifyRequest, reply: FastifyReply
   }
   const cookies = parseCookies(request.headers.cookie as string | undefined);
   const session = await resolveSession(request);
-  // CBE_TEST_LOGIN_USER is never sufficient. Forward only a JWT which this host
-  // verified (or its newly refreshed replacement), never raw request headers.
-  const verifiedToken = session.email ? session.newAccessToken ?? cookies.cauth ?? '' : '';
+  // CBE_TEST_LOGIN_USER is never sufficient, in either mode. A session without
+  // an email is rejected before the store and before any forward.
+  if (!session.email) {
+    reply.code(CBE_HTTP_UNAUTHORIZED).send({ statusCode: CBE_HTTP_UNAUTHORIZED, status: 'error', msg: 'candidate.unauthorized' });
+    return;
+  }
+  if (session.newAccessToken) {
+    reply.header('set-cookie', [sessionCookie('cauth', session.newAccessToken, { httpOnly: true, maxAgeMs: THIRTY_DAYS_MS })]);
+  }
+  if (candidateHubMode() === 'local') {
+    try {
+      const hubOrgId = readProjectFile(Number(process.env.COLLAB_PROJECT_ID))?.org.orgId ?? null;
+      const result = await handleCandidateRevision(
+        { owner: session.email, orgId: session.orgId ?? null },
+        body as Parameters<typeof handleCandidateRevision>[1],
+        hubOrgId,
+        hubCandidateStore(),
+      );
+      reply.code(result.statusCode).header('Content-Type', 'application/json; charset=utf-8').header('Cache-Control', 'no-store').send(result);
+    } catch (err) {
+      console.error('[cbe:candidate] local hub failed:', (err as Error).message);
+      reply.code(503).send({ statusCode: 503, status: 'error', msg: 'candidate.transport_unavailable' });
+    }
+    return;
+  }
+  // Forward only a JWT which this host verified (or its newly refreshed
+  // replacement), never raw request headers.
+  const verifiedToken = session.newAccessToken ?? cookies.cauth ?? '';
   if (!verifiedToken) {
     reply.code(CBE_HTTP_UNAUTHORIZED).send({ statusCode: CBE_HTTP_UNAUTHORIZED, status: 'error', msg: 'candidate.unauthorized' });
     return;
   }
   try {
     const result = await proxyCandidateRequest(body, verifiedToken);
-    if (session.newAccessToken) {
-      reply.header('set-cookie', [sessionCookie('cauth', session.newAccessToken, { httpOnly: true, maxAgeMs: THIRTY_DAYS_MS })]);
-    }
     reply.code(result.statusCode).header('Content-Type', result.contentType).header('Cache-Control', 'no-store').send(result.body);
   } catch (err) {
     console.error('[cbe:candidate] central transport failed:', (err as Error).message);
@@ -478,6 +512,17 @@ export function registerCbeRoutes(app: FastifyInstance): void {
   app.get('/monaco/*', handleStatic);
   app.get('/mlsServiceWorker.js', handleStatic);
   console.info(`[cbe] v${CBE_MODULE_VERSION} routes registered: POST /exec (login/authSession/authLogout/getContents/setContents/loadFilesInfo/getHistory/getHistoryContent), POST /exec/candidate, GET /cbe/source, GET /libs/*, GET /monaco/*, GET /mlsServiceWorker.js`);
+  if (candidateHubMode() === 'local') {
+    if (!candidateSchemaStarted) {
+      candidateSchemaStarted = true;
+      void ensureCandidateSchema(getSharedPgPool(readAppEnv())).catch((err) => {
+        console.error('[cbe:candidate] schema ensure failed:', (err as Error).message);
+      });
+    }
+    console.info('[cbe] candidate: local hub');
+  } else {
+    console.info(`[cbe] candidate: forward to ${candidateOrigin()}`);
+  }
   logCbeStaticConfig();
   console.info(`[cbe] projects base: ${getProjectsBaseDir()} | jwtAuth: ${isJwtAuthEnabled() ? 'enabled' : 'DISABLED'}${process.env.CBE_TEST_LOGIN_USER ? ` | TEST user: ${process.env.CBE_TEST_LOGIN_USER}` : ''}`);
 }

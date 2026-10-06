@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import Fastify from 'fastify';
-import { CANDIDATE_BODY_LIMIT, candidateActionAllowed, proxyCandidateRequest } from '/_102034_/l1/server/layer_1_external/cbe/cbeCandidateProxy.js';
+import { CANDIDATE_BODY_LIMIT, candidateActionAllowed, candidateHubMode, candidateOrigin, proxyCandidateRequest } from '/_102034_/l1/server/layer_1_external/cbe/cbeCandidateProxy.js';
 import { registerCbeRoutes } from '/_102034_/l1/server/layer_1_external/cbe/cbeRoutes.js';
 
 test('candidate proxy allowlists exactly read, publish and mark-result', () => {
@@ -14,13 +14,13 @@ test('candidate proxy allowlists exactly read, publish and mark-result', () => {
 });
 
 test('candidate proxy forwards only the verified cauth token and preserves conflict', async () => {
-  const original = process.env.CBE_CENTRAL_ORIGIN;
-  process.env.CBE_CENTRAL_ORIGIN = 'https://on.collab.codes';
+  const original = process.env.CANDIDATE_ORIGIN;
+  delete process.env.CANDIDATE_ORIGIN;
   try {
     const result = await proxyCandidateRequest(
       { action: 'candidatePublish', project: 102047 }, 'verified token',
       async (input, init) => {
-        assert.equal(String(input), 'https://on.collab.codes/exec/candidate');
+        assert.equal(String(input), 'https://102056.collabcodes.com/exec/candidate');
         assert.equal(init?.redirect, 'manual');
         assert.deepEqual(init?.headers, {
           'Content-Type': 'application/json', Cookie: 'cauth=verified%20token',
@@ -34,9 +34,37 @@ test('candidate proxy forwards only the verified cauth token and preserves confl
     assert.equal(result.statusCode, 409);
     assert.deepEqual(result.body, { statusCode: 409, status: 'conflict' });
   } finally {
-    if (original === undefined) delete process.env.CBE_CENTRAL_ORIGIN;
-    else process.env.CBE_CENTRAL_ORIGIN = original;
+    if (original === undefined) delete process.env.CANDIDATE_ORIGIN;
+    else process.env.CANDIDATE_ORIGIN = original;
   }
+});
+
+test('candidate origin defaults to the 102056 runtime and rejects non-localhost HTTP', async () => {
+  const previous = process.env.CANDIDATE_ORIGIN;
+  delete process.env.CANDIDATE_ORIGIN;
+  try {
+    assert.equal(candidateOrigin(), 'https://102056.collabcodes.com');
+    process.env.CANDIDATE_ORIGIN = 'http://example.com';
+    await assert.rejects(
+      () => proxyCandidateRequest({ action: 'candidateRead' }, 'jwt', async () => new Response('{}', { status: 200 })),
+      /CANDIDATE_ORIGIN must use HTTPS/,
+    );
+    process.env.CANDIDATE_ORIGIN = 'http://127.0.0.1:2047';
+    await proxyCandidateRequest({ action: 'candidateRead' }, 'jwt', async (input) => {
+      assert.equal(String(input), 'http://127.0.0.1:2047/exec/candidate');
+      return new Response('{}', { status: 200 });
+    });
+  } finally {
+    if (previous === undefined) delete process.env.CANDIDATE_ORIGIN;
+    else process.env.CANDIDATE_ORIGIN = previous;
+  }
+});
+
+test('candidate hub mode is local only when CANDIDATE_HUB=local', () => {
+  assert.equal(candidateHubMode({}), 'forward');
+  assert.equal(candidateHubMode({ CANDIDATE_HUB: '' }), 'forward');
+  assert.equal(candidateHubMode({ CANDIDATE_HUB: 'remote' }), 'forward');
+  assert.equal(candidateHubMode({ CANDIDATE_HUB: 'local' }), 'local');
 });
 
 test('candidate proxy refuses anonymous, redirects and non-json transport', async () => {
@@ -49,10 +77,12 @@ test('candidate proxy refuses anonymous, redirects and non-json transport', asyn
 
 test('runtime candidate route rejects test-user auth and rejects non-candidate actions locally', async () => {
   const previousUser = process.env.CBE_TEST_LOGIN_USER;
-  const previousOrigin = process.env.CBE_CENTRAL_ORIGIN;
+  const previousOrigin = process.env.CANDIDATE_ORIGIN;
+  const previousHub = process.env.CANDIDATE_HUB;
   process.env.CBE_TEST_LOGIN_USER = 'local-test-user';
+  delete process.env.CANDIDATE_HUB;
   // If the allowlist regresses this unreachable origin would make the assertion fail as 503.
-  process.env.CBE_CENTRAL_ORIGIN = 'https://127.0.0.1.invalid';
+  process.env.CANDIDATE_ORIGIN = 'https://127.0.0.1.invalid';
   const app = Fastify();
   registerCbeRoutes(app);
   try {
@@ -66,8 +96,10 @@ test('runtime candidate route rejects test-user auth and rejects non-candidate a
     await app.close();
     if (previousUser === undefined) delete process.env.CBE_TEST_LOGIN_USER;
     else process.env.CBE_TEST_LOGIN_USER = previousUser;
-    if (previousOrigin === undefined) delete process.env.CBE_CENTRAL_ORIGIN;
-    else process.env.CBE_CENTRAL_ORIGIN = previousOrigin;
+    if (previousOrigin === undefined) delete process.env.CANDIDATE_ORIGIN;
+    else process.env.CANDIDATE_ORIGIN = previousOrigin;
+    if (previousHub === undefined) delete process.env.CANDIDATE_HUB;
+    else process.env.CANDIDATE_HUB = previousHub;
   }
 });
 

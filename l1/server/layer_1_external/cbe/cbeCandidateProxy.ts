@@ -2,7 +2,7 @@
 
 export const CANDIDATE_BODY_LIMIT = 1_250_000;
 export const CANDIDATE_ACTIONS = new Set(['candidateRead', 'candidatePublish', 'candidateMarkResult']);
-const DEFAULT_CBE_ORIGIN = 'https://on.collab.codes';
+export const DEFAULT_CANDIDATE_ORIGIN = 'https://102056.collabcodes.com';
 const DEFAULT_TIMEOUT_MS = 15_000;
 
 export interface CandidateProxyResult {
@@ -11,11 +11,19 @@ export interface CandidateProxyResult {
   contentType: string;
 }
 
-function centralCandidateUrl(): URL {
-  const origin = (process.env.CBE_CENTRAL_ORIGIN ?? DEFAULT_CBE_ORIGIN).replace(/\/$/u, '');
-  const url = new URL(`${origin}/exec/candidate`);
+/** `local` only when CANDIDATE_HUB=local (the 102056 hub). Anything else forwards. */
+export function candidateHubMode(env: Record<string, string | undefined> = process.env): 'local' | 'forward' {
+  return env.CANDIDATE_HUB === 'local' ? 'local' : 'forward';
+}
+
+export function candidateOrigin(env: Record<string, string | undefined> = process.env): string {
+  return (env.CANDIDATE_ORIGIN ?? DEFAULT_CANDIDATE_ORIGIN).replace(/\/$/u, '');
+}
+
+function centralCandidateUrl(env: Record<string, string | undefined> = process.env): URL {
+  const url = new URL(`${candidateOrigin(env)}/exec/candidate`);
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && (url.hostname === '127.0.0.1' || url.hostname === 'localhost'))) {
-    throw new Error('CBE_CENTRAL_ORIGIN must use HTTPS (HTTP is allowed only for localhost)');
+    throw new Error('CANDIDATE_ORIGIN must use HTTPS (HTTP is allowed only for localhost)');
   }
   return url;
 }
