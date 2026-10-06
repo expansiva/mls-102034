@@ -124,10 +124,22 @@ export async function refreshAccessToken(refreshToken: string, orgId?: string): 
   }
 }
 
+/** Session fields taken from a verified access token. Null when it has no active org. */
+export function jwtSessionFromClaims(
+  claims: CollabAuthClaims,
+  extra: Pick<JwtSession, 'newAccessToken'> = {},
+): JwtSession | null {
+  const orgId = activeOrganizationId(claims);
+  if (!orgId) return null;
+  return { email: claims.email, picture: claims.picture, orgId, ...extra };
+}
+
 export interface JwtSession {
   email?: string;
   /** OIDC picture claim — the login response's avatar_url. */
   picture?: string;
+  /** Active organization from the verified access token. */
+  orgId?: string;
   /** Set when a refresh produced a new access token that should replace the cauth cookie. */
   newAccessToken?: string;
 }
@@ -140,8 +152,7 @@ export async function resolveJwtSession(cauth: string, crefresh: string): Promis
   if (!isJwtAuthEnabled() || !cauth) return {};
   try {
     const claims = await verifyAccessToken(cauth);
-    if (!activeOrganizationId(claims)) return {};
-    return { email: claims.email, picture: claims.picture };
+    return jwtSessionFromClaims(claims) ?? {};
   } catch {
     if (!crefresh) return {};
     // A signed, expired JWT may supply the previous selection for the refresh
@@ -166,7 +177,7 @@ export async function resolveJwtSession(cauth: string, crefresh: string): Promis
     try {
       const claims = await verifyAccessToken(newAccessToken);
       if (!sameSelectedSession(previous, claims, orgId)) return {};
-      return { email: claims.email, picture: claims.picture, newAccessToken };
+      return jwtSessionFromClaims(claims, { newAccessToken }) ?? {};
     } catch {
       return {};
     }

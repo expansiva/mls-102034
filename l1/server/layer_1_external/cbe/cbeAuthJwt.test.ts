@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   activeOrganizationId,
   availableOrganizations,
+  jwtSessionFromClaims,
   sameSelectedSession,
   type CollabAuthClaims,
 } from './cbeAuthJwt.js';
@@ -17,6 +18,12 @@ void test('orgs list never becomes an active organization, including one item', 
   assert.equal(activeOrganizationId(claims('user', { orgs: [] })), null);
   assert.equal(activeOrganizationId(claims('user', { orgs: [{ id: 'a', name: 'A' }] })), null);
   assert.equal(availableOrganizations(claims('user', { orgs: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }] })).length, 2);
+});
+
+void test('active_org.id becomes the session orgId', () => {
+  const session = jwtSessionFromClaims(claims('user', { active_org: { id: 'org-1' }, email: 'a@b.c' }));
+  assert.equal(session?.orgId, 'org-1');
+  assert.equal(jwtSessionFromClaims(claims('user')) , null);
 });
 
 void test('signed active and legacy org claims must agree', () => {
