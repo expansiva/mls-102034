@@ -22,7 +22,7 @@ import {
   type JwtSession,
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeAuthJwt.js';
 import { listSources, readSources, writeSources } from '/_102034_/l1/server/layer_1_external/cbe/cbeSources.js';
-import { CANDIDATE_BODY_LIMIT, candidateActionAllowed, candidateHubMode, candidateIdentity, candidateOrigin, proxyCandidateRequest } from '/_102034_/l1/server/layer_1_external/cbe/cbeCandidateProxy.js';
+import { CANDIDATE_BODY_LIMIT, candidateActionAllowed, candidateHubMode, candidateHubOrgId, candidateIdentity, candidateLocalCaller, candidateOrigin, proxyCandidateRequest } from '/_102034_/l1/server/layer_1_external/cbe/cbeCandidateProxy.js';
 import { handleCandidateRevision } from '/_102034_/l1/server/layer_1_external/candidate/candidateStore.js';
 import { ensureCandidateSchema, PostgresCandidatePersistence } from '/_102034_/l1/server/layer_1_external/candidate/candidatePostgres.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
@@ -118,18 +118,19 @@ async function handleCandidateProxy(request: FastifyRequest, reply: FastifyReply
       orgId: headerString(request.headers['x-org-id']),
       serviceToken: process.env.COLLAB_SERVICE_TOKEN,
     });
-    if (identity.kind === 'none') {
+    const caller = candidateLocalCaller(identity, session, process.env);
+    if (!caller) {
       reply.code(CBE_HTTP_UNAUTHORIZED).send({ statusCode: CBE_HTTP_UNAUTHORIZED, status: 'error', msg: 'candidate.unauthorized' });
       return;
     }
     if (identity.kind === 'jwt' && session.newAccessToken) {
       reply.header('set-cookie', [sessionCookie('cauth', session.newAccessToken, { httpOnly: true, maxAgeMs: THIRTY_DAYS_MS })]);
     }
-    const caller = identity.kind === 'jwt'
-      ? { owner: session.email ?? '', orgId: session.orgId ?? null }
-      : { owner: identity.owner, orgId: identity.orgId };
     try {
-      const hubOrgId = readProjectFile(Number(process.env.COLLAB_PROJECT_ID))?.org.orgId ?? null;
+      const hubOrgId = candidateHubOrgId(
+        readProjectFile(Number(process.env.COLLAB_PROJECT_ID))?.org.orgId ?? null,
+        process.env,
+      );
       const result = await handleCandidateRevision(
         caller,
         body as Parameters<typeof handleCandidateRevision>[1],

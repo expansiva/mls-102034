@@ -58,6 +58,36 @@ export function candidateIdentity(input: {
   return { kind: 'none' };
 }
 
+/** Project file wins. Otherwise CANDIDATE_HUB_ORG_ID. Blank is null. */
+export function candidateHubOrgId(
+  projectFileOrgId: string | null | undefined,
+  env: Record<string, string | undefined> = {},
+): string | null {
+  const fromFile = (projectFileOrgId ?? '').trim();
+  if (fromFile !== '') return fromFile;
+  const fromEnv = (env.CANDIDATE_HUB_ORG_ID ?? '').trim();
+  return fromEnv === '' ? null : fromEnv;
+}
+
+/**
+ * Local-hub caller. JWT and service keep their identity.
+ * `none` becomes the lima desenv only when MSG_PROXY_TOKEN and MSG_PROXY_USER_ID are non-empty; otherwise null (401).
+ * The token is never returned.
+ */
+export function candidateLocalCaller(
+  identity: CandidateIdentity,
+  session: { email?: string | null; orgId?: string | null },
+  env: Record<string, string | undefined> = {},
+): { owner: string; orgId: string | null } | null {
+  if (identity.kind === 'jwt') return { owner: session.email ?? '', orgId: session.orgId ?? null };
+  if (identity.kind === 'service') return { owner: identity.owner, orgId: identity.orgId };
+  const token = env.MSG_PROXY_TOKEN ?? '';
+  const userId = (env.MSG_PROXY_USER_ID ?? '').trim();
+  if (token === '' || userId === '') return null;
+  const orgId = (env.MSG_PROXY_ORG_ID ?? '').trim();
+  return { owner: userId, orgId: orgId === '' ? null : orgId };
+}
+
 /** Headers for the forward hop. Built from the verified JWT or from MSG_PROXY_*, never from the inbound Authorization. */
 export function candidateForwardHeaders(
   verifiedAccessToken: string,

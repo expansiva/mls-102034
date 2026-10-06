@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import Fastify from 'fastify';
-import { CANDIDATE_BODY_LIMIT, candidateActionAllowed, candidateForwardHeaders, candidateHubMode, candidateIdentity, candidateOrigin, proxyCandidateRequest } from '/_102034_/l1/server/layer_1_external/cbe/cbeCandidateProxy.js';
+import { CANDIDATE_BODY_LIMIT, candidateActionAllowed, candidateForwardHeaders, candidateHubMode, candidateHubOrgId, candidateIdentity, candidateLocalCaller, candidateOrigin, proxyCandidateRequest } from '/_102034_/l1/server/layer_1_external/cbe/cbeCandidateProxy.js';
 import { registerCbeRoutes } from '/_102034_/l1/server/layer_1_external/cbe/cbeRoutes.js';
 
 test('candidate proxy allowlists exactly read, publish and mark-result', () => {
@@ -161,6 +161,40 @@ test('forward sends the cauth cookie for a jwt and MSG_PROXY headers otherwise',
   assert.equal((await proxyCandidateRequest({ action: 'candidateRead' }, '', async () => {
     throw new Error('must not fetch');
   }, { MSG_PROXY_TOKEN: 'svc', MSG_PROXY_USER_ID: '' })).statusCode, 401);
+});
+
+test('hub org id prefers the project file, then a non-empty env', () => {
+  assert.equal(candidateHubOrgId('org-file', { CANDIDATE_HUB_ORG_ID: 'org-env' }), 'org-file');
+  assert.equal(candidateHubOrgId(null, { CANDIDATE_HUB_ORG_ID: 'org-env' }), 'org-env');
+  assert.equal(candidateHubOrgId(undefined, { CANDIDATE_HUB_ORG_ID: '  org-env  ' }), 'org-env');
+  assert.equal(candidateHubOrgId('   ', { CANDIDATE_HUB_ORG_ID: 'org-env' }), 'org-env');
+  assert.equal(candidateHubOrgId(null, { CANDIDATE_HUB_ORG_ID: '' }), null);
+  assert.equal(candidateHubOrgId(null, { CANDIDATE_HUB_ORG_ID: '   ' }), null);
+  assert.equal(candidateHubOrgId(null, {}), null);
+});
+
+test('local caller is the session, the service identity, the desenv, or null', () => {
+  const desenv = { MSG_PROXY_TOKEN: 'svc', MSG_PROXY_USER_ID: 'desenv', MSG_PROXY_ORG_ID: 'collabcodes' };
+  assert.deepEqual(
+    candidateLocalCaller({ kind: 'jwt' }, { email: 'alice@example.com', orgId: 'org-1' }, {}),
+    { owner: 'alice@example.com', orgId: 'org-1' },
+  );
+  assert.deepEqual(
+    candidateLocalCaller({ kind: 'service', owner: 'svc-user', orgId: 'org-svc' }, {}, desenv),
+    { owner: 'svc-user', orgId: 'org-svc' },
+  );
+  assert.deepEqual(
+    candidateLocalCaller({ kind: 'none' }, {}, desenv),
+    { owner: 'desenv', orgId: 'collabcodes' },
+  );
+  assert.equal(candidateLocalCaller({ kind: 'none' }, {}, {}), null);
+  assert.equal(candidateLocalCaller({ kind: 'none' }, {}, { MSG_PROXY_TOKEN: 'svc', MSG_PROXY_USER_ID: '' }), null);
+  assert.equal(candidateLocalCaller({ kind: 'none' }, {}, { MSG_PROXY_TOKEN: '', MSG_PROXY_USER_ID: 'desenv' }), null);
+  assert.deepEqual(
+    candidateLocalCaller({ kind: 'none' }, {}, { MSG_PROXY_TOKEN: 'svc', MSG_PROXY_USER_ID: 'desenv' }),
+    { owner: 'desenv', orgId: null },
+  );
+  assert.equal(JSON.stringify(candidateLocalCaller({ kind: 'none' }, {}, desenv)).includes('svc'), false);
 });
 
 test('1.25MB route limit accommodates the maximum contracted payload', () => {
