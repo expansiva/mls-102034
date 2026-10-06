@@ -22,6 +22,23 @@ const rejectedExtraPaths = [
     "ontology/Patient-2.defs.ts", "journeys/check_in.defs.ts",
 ] as const;
 
+// Postgres jsonb sorts object keys by length, then byte order, at every depth. Arrays keep their order.
+function jsonbOrder(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map((item) => jsonbOrder(item));
+    if (!value || typeof value !== "object") return value;
+    const source = value as Record<string, unknown>;
+    const ordered: Record<string, unknown> = {};
+    for (const key of Object.keys(source).sort((left, right) =>
+        left.length - right.length || (left < right ? -1 : left > right ? 1 : 0))) {
+        ordered[key] = jsonbOrder(source[key]);
+    }
+    return ordered;
+}
+
+function storedRow(value: unknown): { key: string; [field: string]: unknown } {
+    return jsonbOrder(structuredClone(value)) as { key: string; [field: string]: unknown };
+}
+
 class SharedTable implements CandidatePersistence {
     readonly records = new Map<string, { key: string; [field: string]: unknown }>();
     failStage = false;
@@ -38,7 +55,7 @@ class SharedTable implements CandidatePersistence {
     async putFile(item: { key: string; contentBase64: string; sha256: string }) {
         if (this.failStage) throw new Error("connection lost after staging");
         if (this.records.has(item.key)) return false;
-        this.records.set(item.key, structuredClone(this.corruptStage ? { ...item, contentBase64: "bad" } : item));
+        this.records.set(item.key, storedRow(this.corruptStage ? { ...item, contentBase64: "bad" } : item));
         return true;
     }
 
@@ -55,9 +72,9 @@ class SharedTable implements CandidatePersistence {
                 current?.resultRevisionNumber !== input.permit.inputRevisionNumber ||
                 current?.resultId !== input.permit.resultId || current?.resultHash !== input.permit.resultHash)) ||
             this.records.has(input.snapshot.key) || this.records.has(input.request.key)) return false;
-        this.records.set(input.pointerKey, { key: input.pointerKey, ...structuredClone(input.pointer) });
-        this.records.set(input.snapshot.key, structuredClone(input.snapshot) as unknown as { key: string; [field: string]: unknown });
-        this.records.set(input.request.key, structuredClone(input.request) as unknown as { key: string; [field: string]: unknown });
+        this.records.set(input.pointerKey, storedRow({ key: input.pointerKey, ...input.pointer }));
+        this.records.set(input.snapshot.key, storedRow(input.snapshot));
+        this.records.set(input.request.key, storedRow(input.request));
         if (this.failAfterCommit) return false;
         return true;
     }
@@ -67,12 +84,12 @@ class SharedTable implements CandidatePersistence {
         if (current?.revisionId !== input.expectedRevisionId || current?.snapshotHash !== input.expectedSnapshotHash ||
             current?.revisionNumber !== input.expectedRevisionNumber || current?.resultId !== undefined ||
             this.records.has(input.result.key)) return false;
-        this.records.set(input.result.key, structuredClone(input.result) as unknown as { key: string; [field: string]: unknown });
-        this.records.set(input.pointerKey, {
-            ...structuredClone(current), resultRevisionId: input.expectedRevisionId,
+        this.records.set(input.result.key, storedRow(input.result));
+        this.records.set(input.pointerKey, storedRow({
+            ...current, resultRevisionId: input.expectedRevisionId,
             resultSnapshotHash: input.expectedSnapshotHash, resultRevisionNumber: input.expectedRevisionNumber,
             resultId: input.result.resultId, resultHash: input.result.resultHash,
-        });
+        }));
         if (this.failAfterCommit) return false;
         return true;
     }
