@@ -1,7 +1,6 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/candidate/candidateStore.ts" enhancement="_blank" />
 import { createHash } from "node:crypto";
 
-const TABLE = "cadastro";
 const MAX_FILES = 80;
 const MAX_FILE_BYTES = 250_000;
 const MAX_SNAPSHOT_BYTES = 700_000;

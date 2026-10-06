@@ -1,4 +1,6 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/candidate/candidateStore.test.ts" enhancement="_blank" />
+// Legacy tests not ported — they were cadastro ACL, not this org check:
+// candidateRevision.test.ts:232, :337, :356, and the changed-authorization part of :320.
 import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -548,4 +550,36 @@ void test("lets only one publication consume a result mark and keeps timeout ret
     const changedPermit = structuredClone(next);
     changedPermit.permit!.resultHash = "e".repeat(64);
     assert.equal((await candidatePublish(caller, changedPermit, hubOrgId, retryTable)).msg, "candidate.request_reused");
+});
+
+void test("rejects an empty owner on read and publish", async () => {
+    const table = new SharedTable();
+    const empty: CandidateCaller = { owner: "", orgId: "org-1" };
+    const read = await candidateRead(empty, { project: 102047, moduleName: "agendaClinica" }, hubOrgId, table);
+    assert.equal(read.statusCode, 401);
+    assert.equal(read.msg, "candidate.unauthorized");
+    const published = await candidatePublish(empty, proposal("x", "one"), hubOrgId, table);
+    assert.equal(published.statusCode, 401);
+    assert.equal(published.msg, "candidate.unauthorized");
+});
+
+void test("rejects an org that is not the hub org on read and publish", async () => {
+    const table = new SharedTable();
+    const other: CandidateCaller = { owner: "alice@example.com", orgId: "org-2" };
+    const read = await candidateRead(other, { project: 102047, moduleName: "agendaClinica" }, hubOrgId, table);
+    assert.equal(read.statusCode, 403);
+    assert.equal(read.msg, "candidate.forbidden");
+    const published = await candidatePublish(other, proposal("x", "one"), hubOrgId, table);
+    assert.equal(published.statusCode, 403);
+    assert.equal(published.msg, "candidate.forbidden");
+});
+
+void test("rejects a missing hub org on read and publish", async () => {
+    const table = new SharedTable();
+    const read = await candidateRead(caller, { project: 102047, moduleName: "agendaClinica" }, null, table);
+    assert.equal(read.statusCode, 503);
+    assert.equal(read.msg, "candidate.hub_org_unavailable");
+    const published = await candidatePublish(caller, proposal("x", "one"), null, table);
+    assert.equal(published.statusCode, 503);
+    assert.equal(published.msg, "candidate.hub_org_unavailable");
 });
