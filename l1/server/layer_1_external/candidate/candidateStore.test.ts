@@ -291,3 +291,102 @@ void test("fails closed on storage outage", async () => {
     table.failRead = true;
     assert.equal((await candidateRead(caller, { project: 102047, moduleName: "agendaClinica" }, hubOrgId, table)).statusCode, 503);
 });
+
+void test("marks a terminal result only on the current revision and retries lost acknowledgement idempotently", async () => {
+    const table = new SharedTable();
+    const revision = proposal("first", "one");
+    const published = await candidatePublish(caller, revision, hubOrgId, table);
+    assert.equal(published.status, "committed");
+    table.failAfterCommit = true;
+    const input = resultProposal(published.pointer!, revision.snapshot);
+    const marked = await candidateMarkResult(caller, input, hubOrgId, table);
+    assert.equal(marked.status, "marked");
+    assert.equal(marked.pointer?.revisionId, revision.revisionId);
+    assert.equal(marked.pointer?.resultRevisionId, revision.revisionId);
+    assert.equal(marked.pointer?.resultSnapshotHash, revision.snapshot.hash);
+    assert.equal(marked.pointer?.resultRevisionNumber, 1);
+    assert.equal(marked.pointer?.resultId, input.resultId);
+    assert.equal(marked.pointer?.resultHash, input.resultHash);
+    assert.deepEqual(await candidateMarkResult(caller, input, hubOrgId, table), marked);
+    const read = await candidateRead(caller, revision, hubOrgId, table);
+    assert.deepEqual(read.pointer, marked.pointer);
+    assert.deepEqual(read.result, {
+        resultRevisionId: revision.revisionId, resultId: input.resultId,
+        resultSnapshotHash: revision.snapshot.hash, resultRevisionNumber: 1,
+        resultHash: input.resultHash, manifest: input.result,
+    });
+});
+
+void test("invalidates the prior result atomically when a newer revision publishes", async () => {
+    const table = new SharedTable();
+    const first = proposal("first", "one");
+    const firstPublished = await candidatePublish(caller, first, hubOrgId, table);
+    table.failAfterCommit = false;
+    const second = await permitNext(table, firstPublished.pointer!, proposal("second", "two", first.revisionId));
+    const published = await candidatePublish(caller, second, hubOrgId, table);
+    assert.equal(published.status, "committed");
+    assert.equal(published.pointer?.revisionId, second.revisionId);
+    assert.equal(published.pointer?.resultId, undefined);
+    const read = await candidateRead(caller, second, hubOrgId, table);
+    assert.equal(read.pointer?.resultId, undefined);
+    const late = await candidateMarkResult(caller, resultProposal(firstPublished.pointer!, first.snapshot, "late_result"), hubOrgId, table);
+    assert.equal(late.status, "conflict");
+    assert.equal(late.pointer?.revisionId, second.revisionId);
+    assert.equal(late.pointer?.resultId, undefined);
+});
+
+void test("retries a read when the active pointer changes while snapshot bytes are being verified", async () => {
+    const table = new SharedTable();
+    const first = await candidatePublish(caller, proposal("first", "one"), hubOrgId, table);
+    const secondInput = await permitNext(table, first.pointer!, proposal("second", "two", first.pointer!.revisionId));
+    const second = await candidatePublish(caller, secondInput, hubOrgId, table);
+    const pointerKey = "candidate/102047/agendaClinica/active";
+    table.records.set(pointerKey, { key: pointerKey, ...structuredClone(first.pointer!) });
+    const originalGet = table.get.bind(table);
+    let switched = false;
+    table.get = async (key) => {
+        const row = await originalGet(key);
+        if (!switched && key.includes(`/changes/${first.pointer!.changeId}/revisions/${first.pointer!.revisionId}/snapshot`)) {
+            switched = true;
+            table.records.set(pointerKey, { key: pointerKey, ...structuredClone(second.pointer!) });
+        }
+        return row;
+    };
+
+    const read = await candidateRead(caller, { project: 102047, moduleName: "agendaClinica" }, hubOrgId, table);
+    assert.equal(read.status, "read");
+    assert.deepEqual(read.pointer, second.pointer);
+    assert.equal(read.snapshot?.request, "Please change second");
+});
+
+void test("rejects a late result when a revisionId is reused by a different snapshot", async () => {
+    const table = new SharedTable();
+    const firstInput = proposal("first-a", "one");
+    firstInput.revisionId = "revision_reused";
+    const first = await candidatePublish(caller, firstInput, hubOrgId, table);
+    const late = resultProposal(first.pointer!, firstInput.snapshot, "late_first_a");
+
+    const middleInput = await permitNext(table, first.pointer!, proposal("middle", "two", first.pointer!.revisionId));
+    const middle = await candidatePublish(caller, middleInput, hubOrgId, table);
+    const lastInput = await permitNext(table, middle.pointer!, proposal("last-a", "three", middle.pointer!.revisionId));
+    lastInput.revisionId = "revision_reused";
+    const last = await candidatePublish(caller, lastInput, hubOrgId, table);
+    assert.equal(last.pointer?.revisionId, first.pointer?.revisionId);
+    assert.notEqual(last.pointer?.snapshotHash, first.pointer?.snapshotHash);
+
+    const marked = await candidateMarkResult(caller, late, hubOrgId, table);
+    assert.equal(marked.status, "conflict");
+    assert.deepEqual(marked.pointer, last.pointer);
+    assert.equal(marked.pointer?.resultId, undefined);
+});
+
+void test("allows exactly one distinct result for a revision", async () => {
+    const table = new SharedTable();
+    const revision = proposal("first", "one");
+    const published = await candidatePublish(caller, revision, hubOrgId, table);
+    const [one, two] = await Promise.all([
+        candidateMarkResult(caller, resultProposal(published.pointer!, revision.snapshot, "result_one"), hubOrgId, table),
+        candidateMarkResult(caller, resultProposal(published.pointer!, revision.snapshot, "result_two"), hubOrgId, table),
+    ]);
+    assert.deepEqual([one.status, two.status].sort(), ["conflict", "marked"]);
+});
