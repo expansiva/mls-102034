@@ -23,7 +23,7 @@ const cache = new Map<number, CompiledStaticCache>();
 // Extensionless module imports (e.g. /_100554_/l2/collabIcons) are how the
 // studio modules import each other — the mls service worker resolves them by
 // assuming .js, and this source does the same.
-const MODULE_PATH_RE = /^\/(_(\d+)_\/l2\/[^?]+)$/u;
+const MODULE_PATH_RE = /^\/(_(\d+)_\/(?:l2|l4)\/[^?]+)$/u;
 const KNOWN_EXTENSIONS_RE = /\.(?:js|css|json|map)$/u;
 
 function loadZipEntries(projectId: number): CompiledStaticCache | null {

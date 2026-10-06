@@ -2,7 +2,7 @@
 export type ProjectAssetKind = 'module' | 'static' | 'libs';
 
 const QUERY_RE = /\?.*$/u;
-const PROJECT_PATH_RE = /^\/_\d+_\/(l2|l3)\/(.+)$/u;
+const PROJECT_PATH_RE = /^\/_\d+_\/(l2|l3|l4)\/(.+)$/u;
 
 function remainderEscapesRoot(remainder: string): boolean {
   return remainder.split('/').includes('..');
@@ -12,7 +12,8 @@ function remainderEscapesRoot(remainder: string): boolean {
  * Who answers a runtime URL. Query string is ignored.
  * `module` → obj/compiled.zip only. `static`/`libs` → dist/<target>.
  * `/_chunks/**` and everything else → null (chunks are gone; rest is handleHttpRequest).
- * `l3` is always `static` (never a JS module). `..` in the remainder is refused.
+ * `l3` is always `static` (never a JS module). `l4` is `module` only
+ * (`.js` or extensionless); any other `l4` file is null. `..` in the remainder is refused.
  */
 export function classifyProjectAssetUrl(urlPath: string): ProjectAssetKind | null {
   const path = urlPath.replace(QUERY_RE, '');
@@ -41,5 +42,8 @@ export function classifyProjectAssetUrl(urlPath: string): ProjectAssetKind | nul
     return 'module';
   }
   const ext = fileName.slice(lastDot + 1).toLowerCase();
+  if (layer === 'l4') {
+    return ext === 'js' ? 'module' : null;
+  }
   return ext === 'js' ? 'module' : 'static';
 }

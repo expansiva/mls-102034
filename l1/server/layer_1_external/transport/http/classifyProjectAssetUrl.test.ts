@@ -35,3 +35,11 @@ test('T3: l3 .js is static, never module', () => {
   assert.equal(classifyProjectAssetUrl('/_102025_/l3/x.js'), 'static');
   assert.notEqual(classifyProjectAssetUrl('/_102025_/l3/x.js'), 'module');
 });
+
+test('l4 is module only for .js or extensionless', () => {
+  assert.equal(classifyProjectAssetUrl('/_102034_/l4/ontology/mdm.defs.js'), 'module');
+  assert.equal(classifyProjectAssetUrl('/_102034_/l4/ontology/mdm'), 'module');
+  assert.equal(classifyProjectAssetUrl('/_102034_/l4/ontology/mdm.defs.ts'), null);
+  assert.equal(classifyProjectAssetUrl('/_102034_/l4/x.json'), null);
+  assert.equal(classifyProjectAssetUrl('/_102034_/l4/../l1/x.js'), null);
+});
