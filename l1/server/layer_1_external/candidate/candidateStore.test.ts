@@ -390,3 +390,162 @@ void test("allows exactly one distinct result for a revision", async () => {
     ]);
     assert.deepEqual([one.status, two.status].sort(), ["conflict", "marked"]);
 });
+
+void test("rejects a loose result hash, traversal and completed result without artifacts", async () => {
+    const table = new SharedTable();
+    const revision = proposal("first", "one");
+    const published = await candidatePublish(caller, revision, hubOrgId, table);
+    const loose = resultProposal(published.pointer!, revision.snapshot);
+    loose.resultHash = "f".repeat(64);
+    assert.equal((await candidateMarkResult(caller, loose, hubOrgId, table)).msg, "candidate.invalid_result_hash");
+    const traversal = resultProposal(published.pointer!, revision.snapshot);
+    traversal.result.artifacts[0].path = "../secret.json";
+    assert.equal((await candidateMarkResult(caller, traversal, hubOrgId, table)).msg, "candidate.invalid_result_artifact");
+    const empty = resultProposal(published.pointer!, revision.snapshot);
+    empty.result.artifacts = [];
+    empty.resultHash = hash(JSON.stringify(empty.result));
+    assert.equal((await candidateMarkResult(caller, empty, hubOrgId, table)).msg, "candidate.invalid_result");
+});
+
+void test("requires a consumed authoritative result permit for every non-initial publication", async () => {
+    const table = new SharedTable();
+    const initial = proposal("initial", "initial");
+    const first = await candidatePublish(caller, initial, hubOrgId, table);
+    const direct = proposal("direct", "direct", first.pointer!.revisionId);
+    assert.equal((await candidatePublish(caller, direct, hubOrgId, table)).msg, "candidate.result_permit_required");
+    assert.deepEqual((await candidateRead(caller, initial, hubOrgId, table)).pointer, first.pointer);
+});
+
+void test("rejects partial, extra and duplicate output artifact manifests", async () => {
+    const partialTable = new SharedTable();
+    const initial = proposal("initial", "initial");
+    const first = await candidatePublish(caller, initial, hubOrgId, partialTable);
+    const output = proposal("output", "output", first.pointer!.revisionId);
+    const partialMark = resultProposal(first.pointer!, output.snapshot, "partial");
+    partialMark.result.artifacts = partialMark.result.artifacts.filter((artifact) => artifact.path !== "ontology/Patient.defs.ts");
+    partialMark.resultHash = hash(JSON.stringify(partialMark.result));
+    assert.equal((await candidateMarkResult(caller, partialMark, hubOrgId, partialTable)).msg, "candidate.result_artifact_paths_mismatch");
+    assert.equal((await candidateRead(caller, initial, hubOrgId, partialTable)).pointer?.resultId, undefined);
+
+    const extraTable = new SharedTable();
+    const extraFirst = await candidatePublish(caller, initial, hubOrgId, extraTable);
+    const extraOutput = proposal("output", "extra", extraFirst.pointer!.revisionId);
+    const extraMark = resultProposal(extraFirst.pointer!, extraOutput.snapshot, "extra");
+    extraMark.result.artifacts.push({ path: "ontology/Extra.defs.ts", sha256: "d".repeat(64) });
+    extraMark.result.artifacts.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+    extraMark.resultHash = hash(JSON.stringify(extraMark.result));
+    assert.equal((await candidateMarkResult(caller, extraMark, hubOrgId, extraTable)).msg, "candidate.result_artifact_paths_mismatch");
+    assert.equal((await candidateRead(caller, initial, hubOrgId, extraTable)).pointer?.resultId, undefined);
+
+    const duplicateTable = new SharedTable();
+    const duplicateFirst = await candidatePublish(caller, initial, hubOrgId, duplicateTable);
+    const duplicate = resultProposal(duplicateFirst.pointer!, initial.snapshot, "duplicate");
+    duplicate.result.artifacts.push({ ...duplicate.result.artifacts[0] });
+    duplicate.resultHash = hash(JSON.stringify(duplicate.result));
+    assert.equal((await candidateMarkResult(caller, duplicate, hubOrgId, duplicateTable)).msg, "candidate.invalid_result_artifact");
+});
+
+void test("rejects arbitrary output hashes and divergent bytes before occupying the result mark", async () => {
+    const table = new SharedTable();
+    const initial = proposal("initial", "initial");
+    const first = await candidatePublish(caller, initial, hubOrgId, table);
+    const output = proposal("output", "output", first.pointer!.revisionId);
+
+    const artifactHash = resultProposal(first.pointer!, output.snapshot, "bad_artifact_hash");
+    artifactHash.result.artifacts[0].sha256 = "f".repeat(64);
+    artifactHash.resultHash = hash(JSON.stringify(artifactHash.result));
+    assert.equal((await candidateMarkResult(caller, artifactHash, hubOrgId, table)).msg, "candidate.result_output_mismatch");
+
+    const outputHash = resultProposal(first.pointer!, output.snapshot, "bad_output_hash");
+    outputHash.result.outputSnapshotHash = "e".repeat(64);
+    outputHash.resultHash = hash(JSON.stringify(outputHash.result));
+    assert.equal((await candidateMarkResult(caller, outputHash, hubOrgId, table)).msg, "candidate.result_output_mismatch");
+
+    const bytes = resultProposal(first.pointer!, output.snapshot, "bad_output_bytes");
+    bytes.outputSnapshot.files[0].contentBase64 = Buffer.from("different bytes").toString("base64");
+    assert.equal((await candidateMarkResult(caller, bytes, hubOrgId, table)).msg, "candidate.invalid_file_hash");
+    assert.equal((await candidateRead(caller, initial, hubOrgId, table)).pointer?.resultId, undefined);
+});
+
+void test("keeps partial output staging orphaned, rejects overwrite and retries the exact snapshot", async () => {
+    const table = new SharedTable();
+    const initial = proposal("initial", "initial");
+    const first = await candidatePublish(caller, initial, hubOrgId, table);
+    const output = proposal("output", "output", first.pointer!.revisionId);
+    const mark = resultProposal(first.pointer!, output.snapshot, "result_staged_retry");
+    const put = table.putFile.bind(table);
+    let outputPuts = 0;
+    table.putFile = async item => {
+        if (item.key.includes("/results/result_staged_retry/output/files/") && ++outputPuts === 6) {
+            throw new Error("staging interrupted");
+        }
+        return put(item);
+    };
+    assert.equal((await candidateMarkResult(caller, mark, hubOrgId, table)).msg, "candidate.storage_unavailable");
+    assert.equal((await candidateRead(caller, initial, hubOrgId, table)).pointer?.resultId, undefined);
+    assert.equal([...table.records.keys()].filter(key => key.includes("/results/result_staged_retry/output/files/")).length, 5);
+
+    table.putFile = put;
+    const divergent = proposal("divergent", "divergent", first.pointer!.revisionId);
+    const divergentMark = resultProposal(first.pointer!, divergent.snapshot, "result_staged_retry");
+    assert.equal((await candidateMarkResult(caller, divergentMark, hubOrgId, table)).msg, "candidate.immutable_file_conflict");
+    assert.equal((await candidateRead(caller, initial, hubOrgId, table)).pointer?.resultId, undefined);
+
+    assert.equal((await candidateMarkResult(caller, mark, hubOrgId, table)).status, "marked");
+    output.permit = {
+        resultId: mark.resultId, resultHash: mark.resultHash,
+        inputRevisionId: mark.expectedRevisionId, inputSnapshotHash: mark.expectedSnapshotHash,
+        inputRevisionNumber: mark.expectedRevisionNumber, outputSnapshotHash: mark.outputSnapshot.hash,
+    };
+    assert.equal((await candidatePublish(caller, output, hubOrgId, table)).status, "committed");
+    assert.deepEqual((await candidateRead(caller, output, hubOrgId, table)).snapshot, output.snapshot);
+});
+
+void test("rejects permits for another result, revision, snapshot hash or non-completed result", async () => {
+    const variants: Array<"result" | "revision" | "hash" | "failed" | "disputed"> =
+        ["result", "revision", "hash", "failed", "disputed"];
+    for (const variant of variants) {
+        const table = new SharedTable();
+        const initial = proposal(`initial-${variant}`, `initial_${variant}`);
+        const first = await candidatePublish(caller, initial, hubOrgId, table);
+        const output = proposal(`output-${variant}`, `output_${variant}`, first.pointer!.revisionId);
+        const status = variant === "failed" || variant === "disputed" ? variant : "completed";
+        const mark = resultProposal(first.pointer!, output.snapshot, `result_${variant}`, status);
+        assert.equal((await candidateMarkResult(caller, mark, hubOrgId, table)).status, "marked");
+        output.permit = {
+            resultId: mark.resultId, resultHash: mark.resultHash,
+            inputRevisionId: mark.expectedRevisionId, inputSnapshotHash: mark.expectedSnapshotHash,
+            inputRevisionNumber: mark.expectedRevisionNumber, outputSnapshotHash: mark.result.outputSnapshotHash,
+        };
+        if (variant === "result") output.permit.resultId = "another_result";
+        if (variant === "revision") output.permit.inputRevisionId = "another_revision";
+        if (variant === "hash") output.permit.inputSnapshotHash = "f".repeat(64);
+        assert.equal((await candidatePublish(caller, output, hubOrgId, table)).status, "error");
+    }
+});
+
+void test("lets only one publication consume a result mark and keeps timeout retry idempotent", async () => {
+    const raceTable = new SharedTable();
+    const initial = proposal("initial", "initial");
+    const first = await candidatePublish(caller, initial, hubOrgId, raceTable);
+    const one = proposal("same-output", "one", first.pointer!.revisionId);
+    const two = proposal("same-output", "two", first.pointer!.revisionId);
+    two.snapshot = structuredClone(one.snapshot);
+    await permitNext(raceTable, first.pointer!, one, "race_result");
+    two.permit = structuredClone(one.permit);
+    const raced = await Promise.all([
+        candidatePublish(caller, one, hubOrgId, raceTable), candidatePublish(caller, two, hubOrgId, raceTable),
+    ]);
+    assert.deepEqual(raced.map((value) => value.status).sort(), ["committed", "conflict"]);
+
+    const retryTable = new SharedTable();
+    const retryFirst = await candidatePublish(caller, initial, hubOrgId, retryTable);
+    const next = await permitNext(retryTable, retryFirst.pointer!, proposal("next", "next", retryFirst.pointer!.revisionId));
+    retryTable.failAfterCommit = true;
+    const committed = await candidatePublish(caller, next, hubOrgId, retryTable);
+    assert.equal(committed.status, "committed");
+    assert.deepEqual(await candidatePublish(caller, next, hubOrgId, retryTable), committed);
+    const changedPermit = structuredClone(next);
+    changedPermit.permit!.resultHash = "e".repeat(64);
+    assert.equal((await candidatePublish(caller, changedPermit, hubOrgId, retryTable)).msg, "candidate.request_reused");
+});
