@@ -672,6 +672,85 @@ void test("stores permit fields as pointer source and keeps them after a later o
     assert.equal((await candidateRead(caller, initial, hubOrgId, table)).msg, "candidate.corrupt_pointer");
 });
 
+void test("reads the source result on an output revision that has no own result", async () => {
+    const table = new SharedTable();
+    const first = await candidatePublish(caller, proposal("initial", "initial"), hubOrgId, table);
+    const nextInput = await permitNext(table, first.pointer!, proposal("second", "second", first.pointer!.revisionId));
+    const published = await candidatePublish(caller, nextInput, hubOrgId, table);
+    const source = published.pointer!.source!;
+    const read = await candidateRead(caller, { project: 102047, moduleName: "agendaClinica" }, hubOrgId, table);
+    assert.equal(read.status, "read");
+    assert.equal(read.pointer?.resultId, undefined);
+    assert.deepEqual(read.result, {
+        resultRevisionId: source.revisionId, resultSnapshotHash: source.snapshotHash,
+        resultRevisionNumber: source.revisionNumber, resultId: source.resultId,
+        resultHash: source.resultHash,
+        manifest: {
+            runId: "run_one", taskId: "task_one", status: "completed",
+            outputSnapshotHash: published.pointer!.snapshotHash,
+            artifacts: nextInput.snapshot.files.map(({ path, sha256 }) => ({ path, sha256 })),
+            traceHash: "c".repeat(64),
+        },
+    });
+});
+
+void test("rejects a source result whose stored hash was changed", async () => {
+    const table = new SharedTable();
+    const first = await candidatePublish(caller, proposal("initial", "hash"), hubOrgId, table);
+    const nextInput = await permitNext(table, first.pointer!, proposal("second", "hash", first.pointer!.revisionId));
+    await candidatePublish(caller, nextInput, hubOrgId, table);
+    const resultKey = [...table.records.keys()].find((key) => key.endsWith(`/results/${nextInput.permit!.resultId}`))!;
+    const row = structuredClone(table.records.get(resultKey)!);
+    row.resultHash = "d".repeat(64);
+    table.records.set(resultKey, storedRow(row));
+    assert.equal((await candidateRead(caller, { project: 102047, moduleName: "agendaClinica" }, hubOrgId, table)).msg,
+        "candidate.result_unavailable");
+});
+
+void test("rejects a source result whose output snapshot is not this revision", async () => {
+    const table = new SharedTable();
+    const first = await candidatePublish(caller, proposal("initial", "snap1"), hubOrgId, table);
+    const nextInput = await permitNext(table, first.pointer!, proposal("second", "snap2", first.pointer!.revisionId));
+    await candidatePublish(caller, nextInput, hubOrgId, table);
+    const resultKey = [...table.records.keys()].find((key) => key.endsWith(`/results/${nextInput.permit!.resultId}`))!;
+    const row = structuredClone(table.records.get(resultKey)!) as unknown as {
+        manifest: { outputSnapshotHash: string; runId: string; taskId: string; status: string; artifacts: unknown; traceHash: string };
+        resultHash: string;
+    };
+    row.manifest.outputSnapshotHash = "d".repeat(64);
+    row.resultHash = hash(JSON.stringify({
+        runId: row.manifest.runId, taskId: row.manifest.taskId, status: row.manifest.status,
+        outputSnapshotHash: row.manifest.outputSnapshotHash, artifacts: row.manifest.artifacts,
+        traceHash: row.manifest.traceHash,
+    }));
+    table.records.set(resultKey, storedRow(row));
+    const activeKey = "candidate/102047/agendaClinica/active";
+    const pointer = structuredClone(table.records.get(activeKey)!);
+    (pointer.source as { resultHash: string }).resultHash = row.resultHash;
+    table.records.set(activeKey, storedRow(pointer));
+    assert.equal((await candidateRead(caller, { project: 102047, moduleName: "agendaClinica" }, hubOrgId, table)).msg,
+        "candidate.result_unavailable");
+});
+
+void test("prefers the revision's own result over the source result", async () => {
+    const table = new SharedTable();
+    const first = await candidatePublish(caller, proposal("initial", "own1"), hubOrgId, table);
+    const nextInput = await permitNext(table, first.pointer!, proposal("second", "own2", first.pointer!.revisionId));
+    const published = await candidatePublish(caller, nextInput, hubOrgId, table);
+    assert.equal(published.status, "committed");
+    const ownOutput = proposal("own-out", "own-out", published.pointer!.revisionId);
+    const mark = resultProposal(published.pointer!, ownOutput.snapshot, "own_result");
+    const marked = await candidateMarkResult(caller, mark, hubOrgId, table);
+    assert.equal(marked.status, "marked");
+    const read = await candidateRead(caller, { project: 102047, moduleName: "agendaClinica" }, hubOrgId, table);
+    assert.equal(read.pointer?.source?.resultId, published.pointer!.source!.resultId);
+    assert.deepEqual(read.result, {
+        resultRevisionId: published.pointer!.revisionId, resultSnapshotHash: published.pointer!.snapshotHash,
+        resultRevisionNumber: published.pointer!.revisionNumber, resultId: mark.resultId,
+        resultHash: mark.resultHash, manifest: mark.result,
+    });
+});
+
 void test("rejects a missing hub org on read and publish", async () => {
     const table = new SharedTable();
     const read = await candidateRead(caller, { project: 102047, moduleName: "agendaClinica" }, null, table);

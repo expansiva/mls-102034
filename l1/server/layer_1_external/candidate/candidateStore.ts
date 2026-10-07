@@ -528,6 +528,32 @@ async function verifiedResult(store: CandidatePersistence, root: string, pointer
     };
 }
 
+async function verifiedSourceResult(store: CandidatePersistence, root: string, pointer: CandidatePointer): Promise<CandidateResponse["result"]> {
+    const source = pointer.source;
+    if (!source) return undefined;
+    const item = await store.get(resultKeyOf(root, source.resultId)) as unknown as CandidateResultRecord | undefined;
+    if (!item || item.expectedRevisionId !== source.revisionId ||
+        item.expectedSnapshotHash !== source.snapshotHash ||
+        item.expectedRevisionNumber !== source.revisionNumber ||
+        item.resultHash !== source.resultHash || !item.manifest) {
+        throw new CandidateError(503, "candidate.result_unavailable");
+    }
+    let manifest: CandidateResultManifest;
+    try {
+        manifest = prepareResult({ resultHash: source.resultHash, result: item.manifest });
+    } catch {
+        throw new CandidateError(503, "candidate.result_unavailable");
+    }
+    if (manifest.outputSnapshotHash !== pointer.snapshotHash) {
+        throw new CandidateError(503, "candidate.result_unavailable");
+    }
+    return {
+        resultRevisionId: source.revisionId, resultSnapshotHash: source.snapshotHash,
+        resultRevisionNumber: source.revisionNumber, resultId: source.resultId,
+        resultHash: source.resultHash, manifest,
+    };
+}
+
 function errorResponse(error: unknown): CandidateResponse {
     if (error instanceof CandidateError) return { statusCode: error.statusCode, status: "error", msg: error.code };
     // Storage errors are not a conflict and must never be reported as success.
@@ -550,7 +576,11 @@ export async function candidateRead(caller: CandidateCaller, input: CandidateRea
                 throw new CandidateError(409, "candidate.revision_changed");
             }
             const snapshot = await verifiedSnapshot(store, root, pointer);
-            const result = await verifiedResult(store, root, pointer);
+            const result = pointer.resultId
+                ? await verifiedResult(store, root, pointer)
+                : pointer.source
+                    ? await verifiedSourceResult(store, root, pointer)
+                    : undefined;
             await authorizeCaller(caller, hubOrgId);
             const confirmed = parsePointer(await store.get(pointerKey));
             if (confirmed && sameCanonical(confirmed, pointer)) {
