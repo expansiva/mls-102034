@@ -47,6 +47,13 @@ interface CandidatePointer {
     resultRevisionNumber?: number;
     resultId?: string;
     resultHash?: string;
+    source?: {
+        resultId: string;
+        resultHash: string;
+        revisionId: string;
+        snapshotHash: string;
+        revisionNumber: number;
+    };
 }
 interface CandidateSnapshot extends CandidatePointer {
     baseId: string; requestRevision: number; request: string; files: FileMeta[];
@@ -189,6 +196,7 @@ function parsePointer(item: RecordWithKey | undefined): CandidatePointer | null 
         item.resultRevisionNumber !== item.revisionNumber)) {
         throw new CandidateError(503, "candidate.corrupt_pointer");
     }
+    const source = parsePointerSource(item.source, item.revisionId, item.revisionNumber as number);
     return {
         changeId: item.changeId, revisionId: item.revisionId,
         snapshotHash: item.snapshotHash, revisionNumber: item.revisionNumber,
@@ -199,7 +207,29 @@ function parsePointer(item: RecordWithKey | undefined): CandidatePointer | null 
             resultId: item.resultId,
             resultHash: item.resultHash,
         } : {}),
+        ...(source ? { source } : {}),
     } as CandidatePointer;
+}
+
+function parsePointerSource(value: unknown, pointerRevisionId: unknown, pointerRevisionNumber: number): CandidatePointer["source"] {
+    if (value === undefined) return undefined;
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new CandidateError(503, "candidate.corrupt_pointer");
+    }
+    const source = value as Record<string, unknown>;
+    if (typeof source.resultId !== "string" || !TOKEN.test(source.resultId) ||
+        typeof source.revisionId !== "string" || !TOKEN.test(source.revisionId) ||
+        typeof source.resultHash !== "string" || !HASH.test(source.resultHash) ||
+        typeof source.snapshotHash !== "string" || !HASH.test(source.snapshotHash) ||
+        !Number.isSafeInteger(source.revisionNumber) || (source.revisionNumber as number) < 1 ||
+        (source.revisionNumber as number) >= pointerRevisionNumber ||
+        source.revisionId === pointerRevisionId) {
+        throw new CandidateError(503, "candidate.corrupt_pointer");
+    }
+    return {
+        resultId: source.resultId, resultHash: source.resultHash, revisionId: source.revisionId,
+        snapshotHash: source.snapshotHash, revisionNumber: source.revisionNumber as number,
+    };
 }
 
 function authorizeCaller(caller: CandidateCaller, hubOrgId: string | null): { owner: string } {
@@ -568,6 +598,10 @@ export async function candidatePublish(caller: CandidateCaller, input: Candidate
         }
         const pointer: CandidatePointer = {
             changeId, revisionId, snapshotHash: prepared.hash, revisionNumber: (current?.revisionNumber ?? 0) + 1,
+            ...(permit ? { source: {
+                resultId: permit.resultId, resultHash: permit.resultHash, revisionId: permit.inputRevisionId,
+                snapshotHash: permit.inputSnapshotHash, revisionNumber: permit.inputRevisionNumber,
+            } } : {}),
         };
         // Staging is immutable and isolated. A failed commit may leave recoverable orphan files.
         await stagePreparedFiles(store, prepared, path => fileKeyOf(root, changeId, revisionId, path));

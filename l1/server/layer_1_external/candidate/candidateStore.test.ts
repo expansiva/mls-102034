@@ -643,6 +643,35 @@ void test("sameCanonical ignores object key order and keeps array order", () => 
     assert.equal(sameCanonical([{ path: "a" }, { path: "b" }], [{ path: "b" }, { path: "a" }]), false);
 });
 
+void test("stores permit fields as pointer source and keeps them after a later own mark", async () => {
+    const table = new SharedTable();
+    const initial = proposal("initial", "initial");
+    const first = await candidatePublish(caller, initial, hubOrgId, table);
+    assert.equal(first.status, "committed");
+    assert.equal(first.pointer?.source, undefined);
+
+    const nextInput = await permitNext(table, first.pointer!, proposal("second", "second", first.pointer!.revisionId));
+    const published = await candidatePublish(caller, nextInput, hubOrgId, table);
+    const permit = nextInput.permit!;
+    assert.deepEqual(published.pointer?.source, {
+        resultId: permit.resultId, resultHash: permit.resultHash, revisionId: permit.inputRevisionId,
+        snapshotHash: permit.inputSnapshotHash, revisionNumber: permit.inputRevisionNumber,
+    });
+
+    const ownOutput = proposal("own", "own", published.pointer!.revisionId);
+    const marked = await candidateMarkResult(caller, resultProposal(published.pointer!, ownOutput.snapshot, "own_result"), hubOrgId, table);
+    assert.equal(marked.status, "marked");
+    const read = await candidateRead(caller, initial, hubOrgId, table);
+    assert.deepEqual(read.pointer?.source, published.pointer?.source);
+    assert.equal(read.pointer?.resultId, "own_result");
+
+    const activeKey = [...table.records.keys()].find((key) => key.endsWith("/active"))!;
+    const row = structuredClone(table.records.get(activeKey)!);
+    (row.source as { revisionNumber: number }).revisionNumber = read.pointer!.revisionNumber;
+    table.records.set(activeKey, storedRow(row));
+    assert.equal((await candidateRead(caller, initial, hubOrgId, table)).msg, "candidate.corrupt_pointer");
+});
+
 void test("rejects a missing hub org on read and publish", async () => {
     const table = new SharedTable();
     const read = await candidateRead(caller, { project: 102047, moduleName: "agendaClinica" }, null, table);
