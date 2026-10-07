@@ -410,6 +410,39 @@ void test("allows exactly one distinct result for a revision", async () => {
     assert.deepEqual([one.status, two.status].sort(), ["conflict", "marked"]);
 });
 
+void test("accepts a platform taskId and still rejects slash, empty taskId and a dotted runId", async () => {
+    const table = new SharedTable();
+    const revision = proposal("first", "one");
+    const published = await candidatePublish(caller, revision, hubOrgId, table);
+    const accepted = resultProposal(published.pointer!, revision.snapshot, "result_opaque");
+    accepted.result.taskId = "20261007053809.1001";
+    accepted.resultHash = hash(JSON.stringify(accepted.result));
+    const marked = await candidateMarkResult(caller, accepted, hubOrgId, table);
+    assert.equal(marked.statusCode, 200);
+    assert.equal(marked.status, "marked");
+
+    const slash = resultProposal(published.pointer!, revision.snapshot, "result_slash");
+    slash.result.taskId = "task/one";
+    slash.resultHash = hash(JSON.stringify(slash.result));
+    const slashReply = await candidateMarkResult(caller, slash, hubOrgId, table);
+    assert.equal(slashReply.statusCode, 400);
+    assert.equal(slashReply.msg, "candidate.invalid_identifier");
+
+    const empty = resultProposal(published.pointer!, revision.snapshot, "result_empty");
+    empty.result.taskId = "";
+    empty.resultHash = hash(JSON.stringify(empty.result));
+    const emptyReply = await candidateMarkResult(caller, empty, hubOrgId, table);
+    assert.equal(emptyReply.statusCode, 400);
+    assert.equal(emptyReply.msg, "candidate.invalid_identifier");
+
+    const dottedRun = resultProposal(published.pointer!, revision.snapshot, "result_run");
+    dottedRun.result.runId = "run.one";
+    dottedRun.resultHash = hash(JSON.stringify(dottedRun.result));
+    const runReply = await candidateMarkResult(caller, dottedRun, hubOrgId, table);
+    assert.equal(runReply.statusCode, 400);
+    assert.equal(runReply.msg, "candidate.invalid_identifier");
+});
+
 void test("rejects a loose result hash, traversal and completed result without artifacts", async () => {
     const table = new SharedTable();
     const revision = proposal("first", "one");

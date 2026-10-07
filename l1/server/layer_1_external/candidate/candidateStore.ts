@@ -6,6 +6,8 @@ const MAX_FILE_BYTES = 250_000;
 const MAX_SNAPSHOT_BYTES = 700_000;
 const MAX_REQUEST_BYTES = 64_000;
 const TOKEN = /^[A-Za-z0-9_-]{1,100}$/;
+/** Opaque id from collab-messages reviewRuns.ts; taskId only. */
+const OPAQUE_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,191}$/u;
 const MODULE = /^[a-z][A-Za-z0-9]{0,59}$/;
 const RESULT_PATH = /^(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+$/;
 const HASH = /^[a-f0-9]{64}$/;
@@ -238,7 +240,7 @@ function prepareResult(input: Pick<CandidateMarkResultInput, "result" | "resultH
         throw new CandidateError(400, "candidate.invalid_result");
     }
     const runId = requireToken(input.result.runId, TOKEN);
-    const taskId = requireToken(input.result.taskId, TOKEN);
+    const taskId = requireToken(input.result.taskId, OPAQUE_ID);
     if (!HASH.test(input.result.traceHash) || !HASH.test(input.result.outputSnapshotHash) ||
         !["completed", "failed", "disputed"].includes(input.result.status) ||
         !Array.isArray(input.result.artifacts) || input.result.artifacts.length > 80 ||
