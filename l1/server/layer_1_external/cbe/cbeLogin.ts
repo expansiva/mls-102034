@@ -216,6 +216,13 @@ export function readProjectSettings(projectId: number): ProjectSettingsConfig {
   }
 }
 
+/** VM-wide driver announcement. An empty or whitespace-only override is absent. */
+export function announcedProjectDriver(settingsDriver: string, env: { CBE_PROJECT_DRIVER_OVERRIDE?: string }): string {
+  const override = env.CBE_PROJECT_DRIVER_OVERRIDE?.trim();
+  if (override) return override;
+  return settingsDriver;
+}
+
 export function buildProjectSettings(
   projectId: number,
   projectsLastModified: CbeProjectsLastModified[],
@@ -242,7 +249,9 @@ export function buildProjectSettings(
     // has 1, throwing "Insufficient information to progress" the moment
     // serviceSave.ts's initInfoProject() runs. Three segments keep the same
     // 'local' placeholder convention already used elsewhere on the VM.
-    value: JSON.stringify({ projectDriver: settings.driver, projectURL: settings.url }),
+    // CBE_PROJECT_DRIVER_OVERRIDE (lima: `vm`) replaces every declared driver: on
+    // a VM whose project copies are the source, no file is read from a git host.
+    value: JSON.stringify({ projectDriver: announcedProjectDriver(settings.driver, process.env), projectURL: settings.url }),
     created_at: projectFile && typeof projectFile.project?.createdAt === 'string' ? projectFile.project.createdAt : '',
     archived_at: '',
     repository_lastModified: filesInfo.lastModified,

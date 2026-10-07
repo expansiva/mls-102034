@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import AdmZip from 'adm-zip';
-import { buildProjectSettings, readProjectFile, readProjectSettings, resolveOrgInfo } from '/_102034_/l1/server/layer_1_external/cbe/cbeLogin.js';
+import { announcedProjectDriver, buildProjectSettings, readProjectFile, readProjectSettings, resolveOrgInfo } from '/_102034_/l1/server/layer_1_external/cbe/cbeLogin.js';
 import type { ProjectsConfig } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import type { L5ProjectJson, ProjectSettingsConfig } from '/_102029_/l2/runtimeConfigTypes.js';
 
@@ -105,6 +105,18 @@ function sampleProjectFile(orgId: string, slug: string, projectId: number, extra
 function parseValue(value: string): { projectDriver: string; projectURL: string } {
   return JSON.parse(value) as { projectDriver: string; projectURL: string };
 }
+
+test('announcedProjectDriver: absent env keeps the declared driver', () => {
+  assert.equal(announcedProjectDriver('GitHub', {}), 'GitHub');
+});
+
+test('announcedProjectDriver: CBE_PROJECT_DRIVER_OVERRIDE=vm replaces the declared driver', () => {
+  assert.equal(announcedProjectDriver('GitHub', { CBE_PROJECT_DRIVER_OVERRIDE: 'vm' }), 'vm');
+});
+
+test('announcedProjectDriver: whitespace-only override is absent', () => {
+  assert.equal(announcedProjectDriver('GitHub', { CBE_PROJECT_DRIVER_OVERRIDE: '   ' }), 'GitHub');
+});
 
 test('T1: l5/config.json with valid projectSettings fills value from the file', () => {
   withProjectsDir((root) => {
