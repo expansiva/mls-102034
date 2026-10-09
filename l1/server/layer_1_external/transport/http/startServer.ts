@@ -28,6 +28,7 @@ import {
   handleAttachmentHttp, isAttachmentHttpPath,
 } from '/_102034_/l1/server/layer_1_external/storage/attachmentHttp.js';
 import { getCompiledStaticFile } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledStatic.js';
+import { localAliasCandidates } from '/_102034_/l1/server/layer_1_external/cbe/cbeLocalAlias.js';
 import { WriteBehindWorker } from '/_102034_/l1/mdm/layer_1_external/queue/WriteBehindWorker.js';
 import { ModuleTickLoop, MODULE_TICK_INTERVAL_MS } from '/_102034_/l1/server/layer_2_application/tick/moduleTick.js';
 import {
@@ -490,6 +491,31 @@ export async function handleHttpRequest(
   }
 
   if (method === 'GET') {
+    if (url.startsWith('/local/')) {
+      for (const candidate of localAliasCandidates(url)) {
+        const compiled = getCompiledStaticFile(candidate);
+        if (compiled) {
+          return {
+            statusCode: 200,
+            body: compiled.content,
+            headers: {
+              'content-type': compiled.contentType,
+              'cache-control': 'no-cache',
+              etag: `"${compiled.eTag}"`,
+            },
+          };
+        }
+      }
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          data: null,
+          error: { code: 'NOT_FOUND', message: 'Route not found' },
+        },
+      };
+    }
+
     const kind = classifyProjectAssetUrl(url);
     if (kind === 'module') {
       const compiled = getCompiledStaticFile(url);
