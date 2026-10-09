@@ -67,6 +67,9 @@ function getConfiguredModuleRegistrations(): ModuleBffRegistration[] {
           moduleId: moduleConfig.moduleId,
           frontendBasePath: moduleConfig.basePath,
           frontendEntrypoint: '',
+          ...(typeof moduleConfig.backendControllers === 'string'
+            ? { backendControllers: moduleConfig.backendControllers }
+            : {}),
           loadRouter: async () => {
             if (tableDefsDir) {
               await loadCompositionRoot(tableDefsDir, moduleConfig.moduleId);

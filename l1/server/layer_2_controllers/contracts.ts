@@ -262,6 +262,7 @@ export interface ModuleBffRegistration {
   frontendBasePath: string;
   frontendEntrypoint: string;
   loadRouter: () => Promise<Map<string, BffHandler>>;
+  backendControllers?: string;
 }
 
 export interface FrontendAppRegistration {
