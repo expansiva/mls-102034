@@ -15,6 +15,7 @@ import {
   CBE_HTTP_NOT_MODIFIED,
   CBE_HTTP_OK,
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeTypes.js';
+import { getRunningRelease } from '/_102034_/l1/server/layer_1_external/cbe/cbeRelease.js';
 
 const DEFAULT_REMOTE_ORIGIN = 'https://on.collab.codes';
 
@@ -115,13 +116,46 @@ const SW_MISS_PATCHED = `    totalNotFound += 1;
     return new Response(null, {
       status: 404,`;
 
-function patchServiceWorkerForRuntime(content: Buffer): Buffer {
-  const source = content.toString('utf8');
+const CACHE_NAME_ASSIGN = /(\bCACHE_NAME\s*=\s*)(["'])([^"']+)\2/u;
+const RELEASE_ID_OK = /^[A-Za-z0-9_-]{1,64}$/u;
+
+let warnedUnscopedReleaseId = false;
+let warnedMissingCacheName = false;
+
+/** Tests reset the once-per-process warnings. */
+export function resetPatchServiceWorkerWarnings(): void {
+  warnedUnscopedReleaseId = false;
+  warnedMissingCacheName = false;
+}
+
+function warnUnscopedReleaseId(reason: string): void {
+  if (warnedUnscopedReleaseId) return;
+  warnedUnscopedReleaseId = true;
+  console.warn(`[cbe] mlsServiceWorker.js: ${reason}`);
+}
+
+export function patchServiceWorkerForRuntime(content: Buffer, releaseId: string | null): Buffer {
+  let source = content.toString('utf8');
   if (!source.includes(SW_MISS_ORIGINAL)) {
     console.warn('[cbe] mlsServiceWorker.js: miss-404 block not found — serving UNPATCHED (cold-cache module loads may 404; check upstream SW changes)');
-    return content;
+  } else {
+    source = source.replace(SW_MISS_ORIGINAL, SW_MISS_PATCHED);
   }
-  return Buffer.from(source.replace(SW_MISS_ORIGINAL, SW_MISS_PATCHED), 'utf8');
+
+  if (releaseId == null) {
+    warnUnscopedReleaseId('no running release (dev checkout) — serving without release-scoped cache');
+  } else if (!RELEASE_ID_OK.test(releaseId)) {
+    warnUnscopedReleaseId('release id rejected — serving without release-scoped cache');
+  } else if (!CACHE_NAME_ASSIGN.test(source)) {
+    if (!warnedMissingCacheName) {
+      warnedMissingCacheName = true;
+      console.warn('[cbe] mlsServiceWorker.js: CACHE_NAME assignment not found — serving without release-scoped cache (check upstream SW changes)');
+    }
+  } else {
+    source = source.replace(CACHE_NAME_ASSIGN, `$1$2$3-r${releaseId}$2`);
+  }
+
+  return Buffer.from(source, 'utf8');
 }
 
 /** Logs the resolved locations once at startup so deploys are easy to debug. */
@@ -164,7 +198,7 @@ export async function getCbeStaticFile(rawUrlPath: string, clientETag: string): 
   }
 
   if (urlPath === '/mlsServiceWorker.js') {
-    content = patchServiceWorkerForRuntime(content);
+    content = patchServiceWorkerForRuntime(content, getRunningRelease()?.id ?? null);
   }
 
   const eTag = computeETag(content);
