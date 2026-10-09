@@ -1,6 +1,7 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/cbe/cbeRoutes.ts" enhancement="_blank" />
 // Fastify wiring for the cbe-compatible endpoints on the runtime VM:
 //   POST /exec               -> action dispatcher (login/authSession/authLogout; admin actions stay central)
+//   GET  /exec/logout        -> navigation logout (clears cookies, 303 to /)
 //   GET  /libs/*             -> mls lib assets (disk cache + remote origin)
 //   GET  /monaco/*           -> monaco editor assets (disk cache + remote origin)
 //   GET  /mlsServiceWorker.js
@@ -66,6 +67,65 @@ function clearedAuthCookies(): string[] {
     sessionCookie('crefresh', '', { httpOnly: true, expire: true }),
     sessionCookie('loginUser', 'anonymous'),
   ];
+}
+
+/** Cookies of a completed logout: expire cauth/crefresh/loginMsg, loginUser=anonymous. */
+export function logoutCookies(): string[] {
+  return [
+    ...clearedAuthCookies(),
+    sessionCookie('loginMsg', '', { httpOnly: true, expire: true }),
+  ];
+}
+
+const LOGOUT_REVOKE_MS = 2000;
+
+function authBaseUrl(): string {
+  return (process.env.COLLAB_AUTH_BASE_URL ?? 'https://auth.collab.codes').replace(/\/$/u, '');
+}
+
+export async function revokeCrefresh(
+  refreshToken: string | undefined,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  const token = refreshToken?.trim();
+  if (!token) return;
+  try {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), LOGOUT_REVOKE_MS);
+    try {
+      const res = await fetchImpl(`${authBaseUrl()}/auth/logout`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: token }),
+        signal: ac.signal,
+      });
+      if (!res.ok) console.warn(`[cbe] logout revoke failed: collab-auth answered ${res.status}`);
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch (err) {
+    console.warn(`[cbe] logout revoke failed: ${(err as Error).message}`);
+  }
+}
+
+async function completeLogout(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  mode: 'redirect' | 'json',
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  const session = await resolveSession(request);
+  const who = session.email ?? session.testUser ?? 'anonymous';
+  console.info(`[cbe] logout (${who})`);
+  const cookies = parseCookies(request.headers.cookie as string | undefined);
+  await revokeCrefresh(cookies.crefresh, fetchImpl);
+  reply.header('set-cookie', logoutCookies());
+  reply.header('Cache-Control', 'no-store');
+  if (mode === 'redirect') {
+    reply.code(303).header('Location', '/').send();
+    return;
+  }
+  reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, msg: 'ok' });
 }
 
 function sessionCookie(name: string, value: string, options: { httpOnly?: boolean; maxAgeMs?: number; expire?: boolean } = {}): string {
@@ -245,12 +305,12 @@ async function handleAuthSession(body: CbeRequestAuthSession, reply: FastifyRepl
   }
 }
 
-function handleAuthLogout(reply: FastifyReply): void {
-  const cookies = [
-    ...clearedAuthCookies(),
-    sessionCookie('loginMsg', '', { httpOnly: true, expire: true }),
-  ];
-  reply.code(CBE_HTTP_OK).header('set-cookie', cookies).send({ statusCode: CBE_HTTP_OK, msg: 'ok' });
+async function handleAuthLogout(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+  await completeLogout(request, reply, 'json');
+}
+
+async function handleExecLogout(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+  await completeLogout(request, reply, 'redirect');
 }
 
 // ── Source I/O (VM storage driver) ──────────────────────────────────────────
@@ -429,7 +489,7 @@ async function handleExec(request: FastifyRequest, reply: FastifyReply): Promise
         await handleAuthSession(body as CbeRequestAuthSession, reply);
         return;
       case 'authLogout':
-        handleAuthLogout(reply);
+        await handleAuthLogout(request, reply);
         return;
       case 'getContents':
         await handleGetContents(request, body as CbeRequestGetContents, reply);
@@ -519,12 +579,13 @@ async function handleStatic(request: FastifyRequest, reply: FastifyReply): Promi
 
 export function registerCbeRoutes(app: FastifyInstance): void {
   app.post('/exec', handleExec);
+  app.get('/exec/logout', handleExecLogout);
   app.post('/exec/candidate', { bodyLimit: CANDIDATE_BODY_LIMIT }, handleCandidateProxy);
   app.get('/cbe/source', handleSourceView);
   app.get('/libs/*', handleStatic);
   app.get('/monaco/*', handleStatic);
   app.get('/mlsServiceWorker.js', handleStatic);
-  console.info(`[cbe] v${CBE_MODULE_VERSION} routes registered: POST /exec (login/authSession/authLogout/getContents/setContents/loadFilesInfo/getHistory/getHistoryContent), POST /exec/candidate, GET /cbe/source, GET /libs/*, GET /monaco/*, GET /mlsServiceWorker.js`);
+  console.info(`[cbe] v${CBE_MODULE_VERSION} routes registered: POST /exec (login/authSession/authLogout/getContents/setContents/loadFilesInfo/getHistory/getHistoryContent), GET /exec/logout, POST /exec/candidate, GET /cbe/source, GET /libs/*, GET /monaco/*, GET /mlsServiceWorker.js`);
   if (candidateHubMode() === 'local') {
     if (!candidateSchemaStarted) {
       candidateSchemaStarted = true;
