@@ -13,6 +13,7 @@ import {
   claimAuthorities, isActorEnforcementOn, isBffAuthEnforced, moduleAuthorities, resolveBffSession, verifyAccessToken,
   type BffAuthOutcome,
 } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
+import { isAlphaAllAuthorities } from '/_102034_/l1/server/layer_1_external/config/alphaAuthorities.js';
 import { readProjectMode, type ProjectMode } from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
 import {
   effectiveAuthorities, readAuthorityOverride, refuseOverride, writeAuthorityOverride,
@@ -673,6 +674,14 @@ if (isMainModule) {
     moduleTickLoop?.stop();
   });
   void getFrontendAppRegistrations().then((apps) => {
+    const warnedProjects = new Set<string>();
+    for (const app of apps) {
+      if (warnedProjects.has(app.projectId)) continue;
+      warnedProjects.add(app.projectId);
+      if (isAlphaAllAuthorities(app.projectId)) {
+        console.warn(`[alpha] project ${app.projectId}: alphaAllAuthorities ON — every signed-in user gets every actor of every module (remove before beta)`);
+      }
+    }
     // `return`: sem ele a promessa do listen fica ORFA e o `.catch` la embaixo nao a ve. Um
     // EADDRINUSE produziria exatamente o zumbi que esta correcao existe para matar (processo vivo,
     // pm2 verde, ninguem escutando) — so que uma camada mais fundo.

@@ -1,5 +1,6 @@
 /// <mls fileReference="_102034_/l1/server/layer_2_controllers/execBff.ts" enhancement="_blank" />
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
+import { isAlphaAllAuthorities, moduleActorRefs } from '/_102034_/l1/server/layer_1_external/config/alphaAuthorities.js';
 import { readProjectMode, refuseTestWrite } from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
 import { isActorEnforcementOn } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
 import { readProjectsConfig } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
@@ -152,6 +153,32 @@ function normalizeRequest(request: BffRequest): BffRequest {
   };
 }
 
+export type AlphaAuthorityDeps = {
+  isAlphaAllAuthorities?: (projectId?: string | number) => boolean;
+  moduleActorRefs?: (controllersDir: string) => Promise<string[]>;
+};
+
+/** Union of the JWT authorities with every `<moduleId>:<actorRef>` when alpha is on. Pure aside from `deps`. */
+export async function withAlphaAuthorities(
+  meta: BffRequest['meta'],
+  moduleId: string,
+  projectId: string | number | undefined,
+  controllersDir: string | undefined,
+  deps: AlphaAuthorityDeps = {},
+): Promise<BffRequest['meta']> {
+  if (!meta || meta.source !== 'http' || !meta.verifiedUserId) return meta;
+  const isOn = deps.isAlphaAllAuthorities ?? isAlphaAllAuthorities;
+  if (!isOn(projectId)) return meta;
+  const loadRefs = deps.moduleActorRefs ?? moduleActorRefs;
+  const actorRefs = controllersDir ? await loadRefs(controllersDir) : [];
+  const merged = [...(meta.verifiedAuthorities ?? [])];
+  for (const actorRef of actorRefs) {
+    const authority = `${moduleId}:${actorRef}`;
+    if (!merged.includes(authority)) merged.push(authority);
+  }
+  return { ...meta, verifiedAuthorities: merged };
+}
+
 export async function execBff(
   request: BffRequest,
   ctx = createDefaultRequestContext(),
@@ -177,6 +204,12 @@ export async function execBff(
       });
       if (refusal) throw new AppError('TEST_WRITE_REFUSED', refusal, 403, { routine: normalizedRequest.routine });
     }
+    normalizedRequest.meta = await withAlphaAuthorities(
+      normalizedRequest.meta,
+      resolution.moduleId,
+      resolution.registration.projectId,
+      resolution.registration.backendControllers,
+    );
     // DENY-BY-DEFAULT, behind its own flag. `enforceActors` in the generated controllers treats an empty
     // scope as permissive, which is why the actor gate is inert for real traffic. Flipping it centrally —
     // here, once — spares regenerating every module, and it stays off until the issuer actually emits
