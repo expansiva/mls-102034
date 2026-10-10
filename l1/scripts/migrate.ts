@@ -3,6 +3,7 @@ import { Pool } from 'pg';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { ensureTestDatabase, readProjectMode } from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
 import { bootstrapSchema } from '/_102034_/l1/server/layer_1_external/persistence/schemaBootstrap.js';
+import { formatMigrationReport } from '/_102034_/l1/server/layer_1_external/persistence/schemaModulePlan.js';
 
 /**
  * Create the TEST database before bootstrapping into it.
@@ -38,10 +39,11 @@ async function ensureTestDatabaseExists(): Promise<void> {
 
 export async function runMigrations(): Promise<void> {
   await ensureTestDatabaseExists();
-  await bootstrapSchema(readAppEnv(), {
+  const result = await bootstrapSchema(readAppEnv(), {
     ensureDynamo: false,
     recordSnapshotLog: false,
   });
+  console.info(formatMigrationReport(result.report));
 }
 
 const isMainModule = process.argv[1]?.endsWith('/migrate.js');
