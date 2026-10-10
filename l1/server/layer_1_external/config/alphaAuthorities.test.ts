@@ -1,16 +1,11 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/config/alphaAuthorities.test.ts" enhancement="_blank" />
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { resolveProjectDistPath } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
-import { isAlphaAllAuthorities, moduleActorRefs, resetAlphaAuthoritiesCache } from '/_102034_/l1/server/layer_1_external/config/alphaAuthorities.js';
-
-function writeJson(projectId: string, body: unknown): void {
-  const path = resolveProjectDistPath(`_${projectId}_/l5/project.json`);
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(body));
-}
+import { isAlphaAllAuthorities, moduleActorRefs, resetAlphaAuthoritiesCache, runtimeFlagsFile } from '/_102034_/l1/server/layer_1_external/config/alphaAuthorities.js';
 
 function writeMap(controllersDir: string, source: string): void {
   const path = resolveProjectDistPath(`${controllersDir.replace(/\/$/u, '')}/../../auth/authorityMap.js`);
@@ -18,21 +13,50 @@ function writeMap(controllersDir: string, source: string): void {
   writeFileSync(path, source);
 }
 
-test('alphaAllAuthorities: true liga; false, ausente ou string não ligam', () => {
-  resetAlphaAuthoritiesCache();
-  writeJson('990001', { alphaAllAuthorities: true });
-  writeJson('990002', { alphaAllAuthorities: false });
-  writeJson('990003', { appEnv: 'presentation' });
-  writeJson('990004', { alphaAllAuthorities: 'true' });
-  assert.equal(isAlphaAllAuthorities('990001'), true);
-  assert.equal(isAlphaAllAuthorities('990002'), false);
-  assert.equal(isAlphaAllAuthorities('990003'), false);
-  assert.equal(isAlphaAllAuthorities('990004'), false);
-  assert.equal(isAlphaAllAuthorities('990099'), false);
-  rmSync(dirname(resolveProjectDistPath('_990001_/l5/project.json')), { recursive: true, force: true });
-  rmSync(dirname(resolveProjectDistPath('_990002_/l5/project.json')), { recursive: true, force: true });
-  rmSync(dirname(resolveProjectDistPath('_990003_/l5/project.json')), { recursive: true, force: true });
-  rmSync(dirname(resolveProjectDistPath('_990004_/l5/project.json')), { recursive: true, force: true });
+function writeFlags(file: string, body: unknown, mtimeSeconds: number): void {
+  writeFileSync(file, typeof body === 'string' ? body : JSON.stringify(body));
+  utimesSync(file, mtimeSeconds, mtimeSeconds);
+}
+
+test('alphaAllAuthorities: só `true` no arquivo da VM liga; false, string, JSON inválido ou sem arquivo não ligam', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'alpha-'));
+  const file = join(dir, 'runtime-flags.json');
+  try {
+    resetAlphaAuthoritiesCache();
+    assert.equal(isAlphaAllAuthorities(undefined, file), false);
+    writeFlags(file, { alphaAllAuthorities: true }, 1000);
+    assert.equal(isAlphaAllAuthorities(undefined, file), true);
+    writeFlags(file, { alphaAllAuthorities: false }, 1001);
+    assert.equal(isAlphaAllAuthorities(undefined, file), false);
+    writeFlags(file, { alphaAllAuthorities: 'true' }, 1002);
+    assert.equal(isAlphaAllAuthorities(undefined, file), false);
+    writeFlags(file, '{not json', 1003);
+    assert.equal(isAlphaAllAuthorities(undefined, file), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('alphaAllAuthorities: liga e desliga sem reiniciar, pelo mtime do arquivo', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'alpha-'));
+  const file = join(dir, 'runtime-flags.json');
+  try {
+    resetAlphaAuthoritiesCache();
+    writeFlags(file, { alphaAllAuthorities: true }, 2000);
+    assert.equal(isAlphaAllAuthorities('102056', file), true);
+    writeFlags(file, { alphaAllAuthorities: false }, 2001);
+    assert.equal(isAlphaAllAuthorities('102056', file), false);
+    rmSync(file);
+    assert.equal(isAlphaAllAuthorities('102056', file), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('runtimeFlagsFile: /data/mls-base por padrão; COLLAB_RUNTIME_FLAGS_FILE sobrepõe', () => {
+  assert.equal(runtimeFlagsFile({}), '/data/mls-base/runtime-flags.json');
+  assert.equal(runtimeFlagsFile({ COLLAB_RUNTIME_FLAGS_FILE: '/tmp/x.json' }), '/tmp/x.json');
+  assert.equal(runtimeFlagsFile({ COLLAB_RUNTIME_FLAGS_FILE: '  ' }), '/data/mls-base/runtime-flags.json');
 });
 
 test('moduleActorRefs: mapa com caixa/garcom devolve os dois; sem mapa, []', async () => {

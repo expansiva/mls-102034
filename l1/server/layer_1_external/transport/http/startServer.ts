@@ -674,14 +674,8 @@ if (isMainModule) {
     moduleTickLoop?.stop();
   });
   void getFrontendAppRegistrations().then((apps) => {
-    const warnedProjects = new Set<string>();
-    for (const app of apps) {
-      if (warnedProjects.has(app.projectId)) continue;
-      warnedProjects.add(app.projectId);
-      if (isAlphaAllAuthorities(app.projectId)) {
-        console.warn(`[alpha] project ${app.projectId}: alphaAllAuthorities ON — every signed-in user gets every actor of every module (remove before beta)`);
-      }
-    }
+    // Logs the [alpha] line at boot when the VM switch is on (the check itself warns on every off→on flip).
+    isAlphaAllAuthorities();
     // `return`: sem ele a promessa do listen fica ORFA e o `.catch` la embaixo nao a ve. Um
     // EADDRINUSE produziria exatamente o zumbi que esta correcao existe para matar (processo vivo,
     // pm2 verde, ninguem escutando) — so que uma camada mais fundo.
