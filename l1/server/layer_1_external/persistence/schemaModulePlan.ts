@@ -23,6 +23,7 @@ export interface MigrationReportSummary {
   rebuilt: MigrationReportRebuiltModule[];
   untouched: string[];
   removed: string[];
+  orphans?: string[];
 }
 
 function sortedModuleIds(ids: Iterable<string>): string[] {
@@ -95,10 +96,14 @@ function formatRebuilt(items: MigrationReportRebuiltModule[]): string {
 }
 
 export function formatMigrationReport(summary: MigrationReportSummary): string {
-  return [
+  const lines = [
     `[migrate] refeitos (tabelas zeradas): ${formatRebuilt(summary.rebuilt)}`,
     `[migrate] intactos: ${formatModuleList(summary.untouched)}`,
     `[migrate] removidos: ${formatModuleList(summary.removed)}`,
-    `[migrate] migração real (preservar dados ao mudar esquema): ainda não existe`,
-  ].join('\n');
+  ];
+  if (summary.orphans) {
+    lines.push(`[migrate] órfãs (não apagadas): ${formatModuleList(summary.orphans)}`);
+  }
+  lines.push('[migrate] migração real (preservar dados ao mudar esquema): ainda não existe');
+  return lines.join('\n');
 }

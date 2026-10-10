@@ -12,7 +12,11 @@ import type {
   TableIndexColumnDefinition,
   TableIndexDefinition,
 } from '/_102034_/l1/server/layer_1_external/persistence/contracts.js';
-import { projectTableNamespacePrefix, usesPostgres } from '/_102034_/l1/server/layer_1_external/persistence/contracts.js';
+import {
+  moduleTableNamespacePrefix,
+  projectTableNamespacePrefix,
+  usesPostgres,
+} from '/_102034_/l1/server/layer_1_external/persistence/contracts.js';
 import {
   buildSchemaSnapshot,
   loadResolvedTableDefinitions,
@@ -22,6 +26,128 @@ import {
   ensureRegisteredDynamoTables,
   writeSchemaSnapshotLog,
 } from '/_102034_/l1/server/layer_1_external/persistence/dynamoAdmin.js';
+import {
+  moduleHashes,
+  planModuleRebuild,
+  type ModuleRebuildMode,
+} from '/_102034_/l1/server/layer_1_external/persistence/schemaModulePlan.js';
+
+const SCHEMA_MODULE_STATE_TABLE = '_schema_module_state';
+const SCHEMA_MIGRATIONS_TABLE = '_schema_migrations';
+
+export type OwnedNameDefinition = Pick<
+  ResolvedTableDefinition,
+  'tableName' | 'logicalTableName' | 'moduleId' | 'projectId'
+>;
+
+/** Names that `rebuildPostgresSchema` may drop. `modules: 'all'` is the full rebuild of today. */
+export function ownedNamesFor(
+  definitions: OwnedNameDefinition[],
+  modules: string[] | 'all',
+  removed: string[],
+): { isOwned: (name: string) => boolean } {
+  const full = modules === 'all';
+  const rebuildIds = full ? null : new Set(modules);
+  const selected = rebuildIds
+    ? definitions.filter((definition) => rebuildIds.has(definition.moduleId))
+    : definitions;
+
+  const ownedNames = new Set<string>();
+  for (const definition of selected) {
+    if (definition.tableName === definition.logicalTableName) {
+      ownedNames.add(definition.tableName);
+    } else {
+      ownedNames.add(definition.tableName);
+      ownedNames.add(definition.logicalTableName);
+    }
+  }
+
+  const projectIds = [
+    ...new Set(
+      definitions
+        .filter((definition) => definition.tableName !== definition.logicalTableName)
+        .map((definition) => definition.projectId),
+    ),
+  ];
+
+  const prefixes: string[] = [];
+  if (full) {
+    prefixes.push(...projectIds.map((projectId) => projectTableNamespacePrefix(projectId)));
+  } else {
+    const moduleIds = [...modules, ...removed];
+    for (const projectId of projectIds) {
+      const projectPrefix = projectTableNamespacePrefix(projectId);
+      for (const moduleId of moduleIds) {
+        prefixes.push(`${projectPrefix}${moduleTableNamespacePrefix(moduleId)}`);
+      }
+    }
+  }
+
+  return {
+    isOwned: (name: string): boolean => {
+      if (name === SCHEMA_MODULE_STATE_TABLE) {
+        return false;
+      }
+      if (!full && name === SCHEMA_MIGRATIONS_TABLE) {
+        return false;
+      }
+      return ownedNames.has(name) || prefixes.some((prefix) => prefix.length > 0 && name.startsWith(prefix));
+    },
+  };
+}
+
+/** Tables this rebuild creates. `_schema_migrations` is recreated only in `full`. */
+export function tablesToCreate<T extends OwnedNameDefinition>(
+  definitions: T[],
+  mode: 'full' | 'modules',
+  rebuildModules: string[],
+): T[] {
+  if (mode === 'full') {
+    return definitions;
+  }
+  const rebuildIds = new Set(rebuildModules);
+  return definitions.filter((definition) =>
+    rebuildIds.has(definition.moduleId) && definition.tableName !== SCHEMA_MIGRATIONS_TABLE);
+}
+
+/**
+ * A leftover client table: project prefix, not in any current definition, and not dropped.
+ * Intact modules stay in `definitions`, so they are not orphans. `full` owns the prefix, so the list is empty.
+ */
+export function orphanNames(
+  existing: string[],
+  definitions: OwnedNameDefinition[],
+  isOwned: (name: string) => boolean,
+  clientPrefixes: string[],
+): string[] {
+  const known = new Set<string>();
+  for (const definition of definitions) {
+    known.add(definition.tableName);
+    known.add(definition.logicalTableName);
+  }
+  return existing
+    .filter((name) =>
+      name !== SCHEMA_MODULE_STATE_TABLE
+      && clientPrefixes.some((prefix) => prefix.length > 0 && name.startsWith(prefix))
+      && !known.has(name)
+      && !isOwned(name))
+    .sort((left, right) => left.localeCompare(right));
+}
+
+export interface SchemaBootstrapReport {
+  rebuilt: Array<{ moduleId: string; tables: number; seedRows: number }>;
+  untouched: string[];
+  removed: string[];
+  mode: ModuleRebuildMode;
+  orphans: string[];
+}
+
+export interface SchemaBootstrapResult {
+  snapshotId: string;
+  postgresTableCount: number;
+  dynamoTableCount: number;
+  report: SchemaBootstrapReport;
+}
 
 /** Unprefixed physical name ⇒ platform/shared table (mdm_*, monitor_*, _schema_migrations). */
 export function isPlatformOwnedTable(
@@ -176,35 +302,28 @@ async function rebuildPostgresSchema(
   env: AppEnv,
   definitions: ResolvedTableDefinition[],
   snapshotId: string,
-): Promise<boolean> {
+  input: {
+    mode: 'full' | 'modules';
+    rebuildModules: string[];
+    removedModules: string[];
+    insertSnapshot: boolean;
+  },
+): Promise<{ timescaleAvailable: boolean; orphans: string[] }> {
   const pool = getSharedPgPool(env);
+  const postgresDefinitions = definitions.filter((definition) => usesPostgres(definition));
   const hasTimescale = definitions.some((d) => d.timescale?.hypertable);
   const timescaleAvailable = hasTimescale ? await ensureTimescaleAvailable(pool) : false;
 
-  // Multi-project isolation: several client projects can share one database/schema on a VM, so this
-  // publish must rebuild ONLY the objects this workspace owns and never drop another project's tables.
-  // "Owned" = every physical name we are about to (re)create, plus any stale object still carrying this
-  // workspace's client prefix (mls<projectId>_) from a prior publish. Platform tables (mdm_*, monitor,
-  // _schema_migrations) are unprefixed and part of `definitions`, so they are owned and rebuilt as
-  // before; another project's mls<otherId>_* tables match neither set and are left untouched.
-  const ownedNames = new Set(
-    definitions
-      .filter((d) => usesPostgres(d))
-      .flatMap((d) => d.tableName === d.logicalTableName
-        ? [d.tableName]
-        : [d.tableName, d.logicalTableName]),
+  const dropScope = ownedNamesFor(
+    postgresDefinitions,
+    input.mode === 'full' ? 'all' : input.rebuildModules,
+    input.removedModules,
   );
-  const clientPrefixes = [
-    ...new Set(
-      definitions
-        .filter((d) => d.tableName !== d.logicalTableName)
-        .map((d) => projectTableNamespacePrefix(d.projectId)),
-    ),
-  ];
   const viewDefs = await loadViewDefinitions();
   const ownedViewNames = new Set(viewDefs.map((view) => view.viewName));
+  const dropViews = input.mode === 'full' || input.rebuildModules.length > 0 || input.removedModules.length > 0;
   const isOwned = (name: string): boolean =>
-    ownedNames.has(name) || ownedViewNames.has(name) || clientPrefixes.some((prefix) => name.startsWith(prefix));
+    dropScope.isOwned(name) || (dropViews && ownedViewNames.has(name));
 
   // Surgical cleanup instead of DROP SCHEMA public CASCADE: dropping the schema would
   // CASCADE-drop the timescaledb extension (its functions live in public) and the app
@@ -251,18 +370,32 @@ async function rebuildPostgresSchema(
   const existingTables = await pool.query<{ tablename: string }>(
     "SELECT tablename FROM pg_tables WHERE schemaname = 'public'",
   );
+  const clientPrefixes = [
+    ...new Set(
+      postgresDefinitions
+        .filter((definition) => definition.tableName !== definition.logicalTableName)
+        .map((definition) => projectTableNamespacePrefix(definition.projectId)),
+    ),
+  ];
+  const orphans = orphanNames(
+    existingTables.rows.map((row) => row.tablename),
+    postgresDefinitions,
+    isOwned,
+    clientPrefixes,
+  );
   for (const row of existingTables.rows) {
     if (!isOwned(row.tablename)) continue;
     await pool.query(`DROP TABLE IF EXISTS ${quoteIdentifier(row.tablename)} CASCADE`);
   }
 
-  const orderedDefinitions = [...definitions]
-    .filter((definition) => usesPostgres(definition))
+  const createDefinitions = tablesToCreate(postgresDefinitions, input.mode, input.rebuildModules);
+
+  const orderedDefinitions = [...createDefinitions]
     .sort((left, right) => {
-      if (left.tableName === '_schema_migrations') {
+      if (left.tableName === SCHEMA_MIGRATIONS_TABLE) {
         return -1;
       }
-      if (right.tableName === '_schema_migrations') {
+      if (right.tableName === SCHEMA_MIGRATIONS_TABLE) {
         return 1;
       }
       return left.tableName.localeCompare(right.tableName);
@@ -333,8 +466,68 @@ async function rebuildPostgresSchema(
     }
   }
 
-  await pool.query('INSERT INTO "_schema_migrations" ("id") VALUES ($1)', [snapshotId]);
-  return timescaleAvailable;
+  if (input.insertSnapshot) {
+    await pool.query('INSERT INTO "_schema_migrations" ("id") VALUES ($1)', [snapshotId]);
+  }
+  return { timescaleAvailable, orphans };
+}
+
+async function readAppliedModuleHashes(pool: Pool): Promise<Map<string, string> | null> {
+  try {
+    const result = await pool.query<{ module_id: string; hash: string }>(
+      `SELECT module_id, hash FROM ${quoteIdentifier(SCHEMA_MODULE_STATE_TABLE)}`,
+    );
+    return new Map(result.rows.map((row) => [row.module_id, row.hash]));
+  } catch {
+    return null;
+  }
+}
+
+async function writeModuleState(pool: Pool, hashes: Map<string, string>): Promise<void> {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ${quoteIdentifier(SCHEMA_MODULE_STATE_TABLE)} (
+      module_id text primary key,
+      hash text not null,
+      applied_at timestamptz not null default now()
+    )
+  `);
+  await pool.query(`DELETE FROM ${quoteIdentifier(SCHEMA_MODULE_STATE_TABLE)}`);
+  for (const [moduleId, hash] of hashes) {
+    await pool.query(
+      `INSERT INTO ${quoteIdentifier(SCHEMA_MODULE_STATE_TABLE)} (module_id, hash) VALUES ($1, $2)`,
+      [moduleId, hash],
+    );
+  }
+}
+
+function rebuiltSummary(
+  env: AppEnv,
+  definitions: ResolvedTableDefinition[],
+  rebuildModules: string[],
+): SchemaBootstrapReport['rebuilt'] {
+  const serverMode = readProjectMode(env.projectId);
+  return [...rebuildModules].sort((left, right) => left.localeCompare(right)).map((moduleId) => {
+    const tables = definitions.filter((definition) => definition.moduleId === moduleId && usesPostgres(definition));
+    let seedRows = 0;
+    for (const definition of tables) {
+      const declared = definition.seedRows?.length ?? 0;
+      if (declared === 0) continue;
+      const decision = shouldApplySeedRows({
+        tableName: definition.tableName,
+        logicalTableName: definition.logicalTableName,
+        projectMode: readProjectMode(definition.projectId),
+        serverMode,
+      });
+      if (decision.apply) {
+        seedRows += declared;
+      }
+    }
+    return { moduleId, tables: tables.length, seedRows };
+  });
+}
+
+function emptyReport(mode: ModuleRebuildMode): SchemaBootstrapReport {
+  return { rebuilt: [], untouched: [], removed: [], mode, orphans: [] };
 }
 
 const TIMESCALE_STATEMENT_PATTERN = /timescaledb|time_bucket|create_hypertable|continuous aggregate|add_retention_policy|add_compression_policy/iu;
@@ -363,26 +556,48 @@ export async function bootstrapSchema(
     ensureDynamo?: boolean;
     recordSnapshotLog?: boolean;
   },
-): Promise<{ snapshotId: string; postgresTableCount: number; dynamoTableCount: number }> {
+): Promise<SchemaBootstrapResult> {
   if (env.runtimeMode === 'memory') {
     console.info('[bootstrapSchema] Skipped — memory mode');
-    return { snapshotId: 'memory', postgresTableCount: 0, dynamoTableCount: 0 };
+    return { snapshotId: 'memory', postgresTableCount: 0, dynamoTableCount: 0, report: emptyReport('none') };
   }
 
   const definitions = await loadResolvedTableDefinitions(env);
   const snapshot = await buildSchemaSnapshot(env);
   const pool = getSharedPgPool(env);
   const lastSnapshotId = await readLastAppliedSnapshotId(pool);
-  if (lastSnapshotId === snapshot.id) {
+  const currentHashes = await moduleHashes(snapshot.tables);
+  const appliedHashes = await readAppliedModuleHashes(pool);
+  const plan = planModuleRebuild({
+    current: currentHashes,
+    applied: appliedHashes,
+    lastSnapshotId,
+    currentSnapshotId: snapshot.id,
+  });
+
+  let orphans: string[] = [];
+  if (plan.mode === 'none') {
     console.info(`[bootstrapSchema] schema unchanged (${snapshot.id}); skipping rebuild`);
+  } else if (plan.mode === 'recordOnly') {
+    console.info(`[bootstrapSchema] schema unchanged (${snapshot.id}); recording module state`);
+    await writeModuleState(pool, currentHashes);
   } else {
     if (lastSnapshotId) {
       console.info(`[bootstrapSchema] schema changed (${lastSnapshotId} → ${snapshot.id}); rebuilding`);
     } else {
       console.info(`[bootstrapSchema] no applied snapshot; rebuilding (${snapshot.id})`);
     }
-    const timescaleAvailable = await rebuildPostgresSchema(env, definitions, snapshot.id);
-    await applyViewDefinitions(pool, { timescaleAvailable });
+    const rebuilt = await rebuildPostgresSchema(env, definitions, snapshot.id, {
+      mode: plan.mode === 'full' ? 'full' : 'modules',
+      rebuildModules: plan.rebuild,
+      removedModules: plan.removed,
+      insertSnapshot: lastSnapshotId !== snapshot.id,
+    });
+    orphans = rebuilt.orphans;
+    if (plan.rebuild.length > 0 || plan.removed.length > 0) {
+      await applyViewDefinitions(pool, { timescaleAvailable: rebuilt.timescaleAvailable });
+    }
+    await writeModuleState(pool, currentHashes);
   }
 
   let dynamoTableCount = 0;
@@ -399,5 +614,12 @@ export async function bootstrapSchema(
     snapshotId: snapshot.id,
     postgresTableCount: definitions.filter((definition) => usesPostgres(definition)).length,
     dynamoTableCount,
+    report: {
+      rebuilt: rebuiltSummary(env, definitions, plan.rebuild),
+      untouched: plan.untouched,
+      removed: plan.removed,
+      mode: plan.mode,
+      orphans,
+    },
   };
 }

@@ -3,9 +3,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   isPlatformOwnedTable,
+  orphanNames,
+  ownedNamesFor,
+  tablesToCreate,
   sanitizeDefinitionIndexes,
   shouldApplySeedRows,
 } from '/_102034_/l1/server/layer_1_external/persistence/schemaBootstrap.js';
+import { formatMigrationReport } from '/_102034_/l1/server/layer_1_external/persistence/schemaModulePlan.js';
 import type { TableIndexDefinition } from '/_102034_/l1/server/layer_1_external/persistence/contracts.js';
 
 function def(input: {
@@ -140,4 +144,143 @@ test('seeds follow the owning project mode; platform tables follow the server mo
     serverMode: 'production',
   });
   assert.equal(development.apply, true);
+});
+
+function ownedDef(input: {
+  tableName: string;
+  logicalTableName: string;
+  moduleId: string;
+  projectId?: string;
+}) {
+  return { projectId: input.projectId ?? '102047', ...input };
+}
+
+const moduleA = [
+  ownedDef({
+    tableName: 'mls102047_controleestoque_item',
+    logicalTableName: 'item',
+    moduleId: 'controleEstoque',
+  }),
+  ownedDef({
+    tableName: 'mls102047_controleestoque_movimento',
+    logicalTableName: 'movimento',
+    moduleId: 'controleEstoque',
+  }),
+];
+const moduleB = [
+  ownedDef({
+    tableName: 'mls102047_comandarestaurante_pedido',
+    logicalTableName: 'pedido',
+    moduleId: 'comandaRestaurante',
+  }),
+];
+const platform = [
+  ownedDef({
+    tableName: '_schema_migrations',
+    logicalTableName: '_schema_migrations',
+    moduleId: 'mdm',
+  }),
+  ownedDef({
+    tableName: 'mdm_documents',
+    logicalTableName: 'mdm_documents',
+    moduleId: 'mdm',
+  }),
+];
+const allDefs = [...moduleA, ...moduleB, ...platform];
+
+test('ownedNamesFor rebuilds A and leaves B intact', () => {
+  const { isOwned } = ownedNamesFor(allDefs, ['controleEstoque'], []);
+  assert.equal(isOwned('mls102047_controleestoque_item'), true);
+  assert.equal(isOwned('mls102047_controleestoque_movimento'), true);
+  assert.equal(isOwned('item'), true);
+  assert.equal(isOwned('mls102047_comandarestaurante_pedido'), false);
+  assert.equal(isOwned('pedido'), false);
+  assert.equal(isOwned('mdm_documents'), false);
+  assert.equal(isOwned('_schema_migrations'), false);
+});
+
+test('ownedNamesFor drops a removed module by prefix only', () => {
+  const { isOwned } = ownedNamesFor([...moduleB, ...platform], [], ['controleEstoque']);
+  assert.equal(isOwned('mls102047_controleestoque_item'), true);
+  assert.equal(isOwned('mls102047_comandarestaurante_pedido'), false);
+  assert.equal(isOwned('_schema_migrations'), false);
+});
+
+test('ownedNamesFor keeps _schema_migrations out of a modules rebuild', () => {
+  const { isOwned } = ownedNamesFor(allDefs, ['mdm'], []);
+  assert.equal(isOwned('mdm_documents'), true);
+  assert.equal(isOwned('_schema_migrations'), false);
+});
+
+test('ownedNamesFor full matches today: project prefix, platform tables, migrations', () => {
+  const { isOwned } = ownedNamesFor(allDefs, 'all', []);
+  assert.equal(isOwned('mls102047_controleestoque_item'), true);
+  assert.equal(isOwned('mls102047_comandarestaurante_pedido'), true);
+  assert.equal(isOwned('mls102047_legacy_unprefixed'), true);
+  assert.equal(isOwned('mdm_documents'), true);
+  assert.equal(isOwned('_schema_migrations'), true);
+  assert.equal(isOwned('mls102030_otherproject_table'), false);
+  assert.equal(isOwned('_schema_module_state'), false);
+});
+
+test('tablesToCreate skips _schema_migrations when platform is rebuilt', () => {
+  const platformModule = [
+    ownedDef({
+      tableName: '_schema_migrations',
+      logicalTableName: '_schema_migrations',
+      moduleId: 'platform',
+    }),
+    ownedDef({
+      tableName: 'mdm_documents',
+      logicalTableName: 'mdm_documents',
+      moduleId: 'platform',
+    }),
+  ];
+  const created = tablesToCreate([...moduleA, ...moduleB, ...platformModule], 'modules', ['platform'])
+    .map((definition) => definition.tableName);
+  assert.deepEqual(created, ['mdm_documents']);
+  const { isOwned } = ownedNamesFor([...moduleA, ...moduleB, ...platformModule], ['platform'], []);
+  assert.equal(isOwned('_schema_migrations'), false);
+});
+
+test('orphanNames ignores intact modules and is empty in a full rebuild', () => {
+  const existing = [
+    'mls102047_controleestoque_item',
+    'mls102047_comandarestaurante_pedido',
+    'mls102047_item',
+    'mdm_documents',
+  ];
+  const prefixes = ['mls102047_'];
+  const modules = ownedNamesFor(allDefs, ['controleEstoque'], []);
+  assert.deepEqual(
+    orphanNames(existing, allDefs, modules.isOwned, prefixes),
+    ['mls102047_item'],
+  );
+  const full = ownedNamesFor(allDefs, 'all', []);
+  assert.deepEqual(orphanNames(existing, allDefs, full.isOwned, prefixes), []);
+});
+
+test('ownedNamesFor does not drop an old table without the module prefix', () => {
+  const { isOwned } = ownedNamesFor(allDefs, ['controleEstoque'], []);
+  assert.equal(isOwned('mls102047_item'), false);
+  assert.equal(isOwned('mls102047_pedido'), false);
+});
+
+test('formatMigrationReport includes orphans when provided', () => {
+  const text = formatMigrationReport({
+    rebuilt: [{ moduleId: 'controleEstoque', tables: 3, seedRows: 12 }],
+    untouched: ['comandaRestaurante'],
+    removed: [],
+    orphans: ['mls102047_item'],
+  });
+  assert.equal(
+    text,
+    [
+      '[migrate] refeitos (tabelas zeradas): controleEstoque (3 tabelas, seed: 12 linhas)',
+      '[migrate] intactos: comandaRestaurante',
+      '[migrate] removidos: —',
+      '[migrate] órfãs (não apagadas): mls102047_item',
+      '[migrate] migração real (preservar dados ao mudar esquema): ainda não existe',
+    ].join('\n'),
+  );
 });
