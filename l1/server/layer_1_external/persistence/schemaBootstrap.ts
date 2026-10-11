@@ -517,9 +517,9 @@ async function ensureModuleStateTable(
     SELECT a.attname
     FROM pg_index i
     JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey)
-    WHERE i.indrelid = ${table}::regclass AND i.indisprimary
+    WHERE i.indrelid = $1::regclass AND i.indisprimary
     ORDER BY array_position(i.indkey, a.attnum)
-  `);
+  `, [SCHEMA_MODULE_STATE_TABLE]);
   const columns = key.rows.map((row) => row.attname);
   if (columns.length === 2 && columns[0] === 'project_id' && columns[1] === 'module_id') {
     return;
@@ -527,8 +527,8 @@ async function ensureModuleStateTable(
   const constraint = await pool.query<{ conname: string }>(`
     SELECT con.conname
     FROM pg_constraint con
-    WHERE con.conrelid = ${table}::regclass AND con.contype = 'p'
-  `);
+    WHERE con.conrelid = $1::regclass AND con.contype = 'p'
+  `, [SCHEMA_MODULE_STATE_TABLE]);
   const name = constraint.rows[0]?.conname;
   if (name) {
     await pool.query(`ALTER TABLE ${table} DROP CONSTRAINT ${quoteIdentifier(name)}`);
