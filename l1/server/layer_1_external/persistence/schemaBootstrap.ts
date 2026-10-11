@@ -582,10 +582,17 @@ export async function bootstrapSchema(
     console.info(`[bootstrapSchema] schema unchanged (${snapshot.id}); recording module state`);
     await writeModuleState(pool, currentHashes);
   } else {
-    if (lastSnapshotId) {
-      console.info(`[bootstrapSchema] schema changed (${lastSnapshotId} → ${snapshot.id}); rebuilding`);
+    if (plan.mode === 'full') {
+      if (lastSnapshotId && lastSnapshotId !== snapshot.id) {
+        console.info(`[bootstrapSchema] schema changed (${lastSnapshotId} → ${snapshot.id}); rebuilding`);
+      } else if (!lastSnapshotId) {
+        console.info(`[bootstrapSchema] no applied snapshot; rebuilding (${snapshot.id})`);
+      }
     } else {
-      console.info(`[bootstrapSchema] no applied snapshot; rebuilding (${snapshot.id})`);
+      const removed = plan.removed.length > 0 ? plan.removed.join(', ') : '—';
+      console.info(
+        `[bootstrapSchema] module state changed (rebuild: ${plan.rebuild.join(', ')}; removed: ${removed}); rebuilding only those`,
+      );
     }
     const rebuilt = await rebuildPostgresSchema(env, definitions, snapshot.id, {
       mode: plan.mode === 'full' ? 'full' : 'modules',
