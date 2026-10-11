@@ -5,8 +5,15 @@ import type { SchemaSnapshot } from '/_102034_/l1/server/layer_1_external/persis
 import {
   formatMigrationReport,
   moduleHashes,
+  parseStateKey,
   planModuleRebuild,
+  stateKey,
 } from '/_102034_/l1/server/layer_1_external/persistence/schemaModulePlan.js';
+
+const CLIENT = '900001';
+const MASTER = '102034';
+const OTHER = '102047';
+const ownProjects = [CLIENT, MASTER];
 
 type SnapshotTable = SchemaSnapshot['tables'][number];
 
@@ -25,14 +32,15 @@ function table(overrides: Partial<SnapshotTable> & Pick<SnapshotTable, 'moduleId
 
 test('plan is none when every applied hash matches', () => {
   const current = new Map([
-    ['agendaClinica', 'h1'],
-    ['comandaRestaurante', 'h2'],
+    [stateKey(CLIENT, 'agendaClinica'), 'h1'],
+    [stateKey(CLIENT, 'comandaRestaurante'), 'h2'],
   ]);
   const plan = planModuleRebuild({
     current,
     applied: new Map(current),
     lastSnapshotId: 'registry:abc',
     currentSnapshotId: 'registry:abc',
+    ownProjects,
   });
   assert.deepEqual(plan, {
     mode: 'none',
@@ -45,17 +53,18 @@ test('plan is none when every applied hash matches', () => {
 test('plan is modules with only the changed module', () => {
   const plan = planModuleRebuild({
     current: new Map([
-      ['controleEstoque', 'new'],
-      ['comandaRestaurante', 'same'],
-      ['mdm', 'same'],
+      [stateKey(CLIENT, 'controleEstoque'), 'new'],
+      [stateKey(CLIENT, 'comandaRestaurante'), 'same'],
+      [stateKey(MASTER, 'mdm'), 'same'],
     ]),
     applied: new Map([
-      ['controleEstoque', 'old'],
-      ['comandaRestaurante', 'same'],
-      ['mdm', 'same'],
+      [stateKey(CLIENT, 'controleEstoque'), 'old'],
+      [stateKey(CLIENT, 'comandaRestaurante'), 'same'],
+      [stateKey(MASTER, 'mdm'), 'same'],
     ]),
     lastSnapshotId: 'registry:old',
     currentSnapshotId: 'registry:new',
+    ownProjects,
   });
   assert.deepEqual(plan, {
     mode: 'modules',
@@ -68,12 +77,13 @@ test('plan is modules with only the changed module', () => {
 test('new module is rebuilt', () => {
   const plan = planModuleRebuild({
     current: new Map([
-      ['agendaClinica', 'h1'],
-      ['novoModulo', 'h2'],
+      [stateKey(CLIENT, 'agendaClinica'), 'h1'],
+      [stateKey(CLIENT, 'novoModulo'), 'h2'],
     ]),
-    applied: new Map([['agendaClinica', 'h1']]),
+    applied: new Map([[stateKey(CLIENT, 'agendaClinica'), 'h1']]),
     lastSnapshotId: 'registry:a',
     currentSnapshotId: 'registry:b',
+    ownProjects,
   });
   assert.deepEqual(plan, {
     mode: 'modules',
@@ -85,13 +95,14 @@ test('new module is rebuilt', () => {
 
 test('missing module is removed', () => {
   const plan = planModuleRebuild({
-    current: new Map([['mdm', 'h1']]),
+    current: new Map([[stateKey(MASTER, 'mdm'), 'h1']]),
     applied: new Map([
-      ['mdm', 'h1'],
-      ['legado', 'h2'],
+      [stateKey(MASTER, 'mdm'), 'h1'],
+      [stateKey(CLIENT, 'legado'), 'h2'],
     ]),
     lastSnapshotId: 'registry:a',
     currentSnapshotId: 'registry:b',
+    ownProjects,
   });
   assert.deepEqual(plan, {
     mode: 'modules',
@@ -104,12 +115,13 @@ test('missing module is removed', () => {
 test('no state and matching snapshot is recordOnly', () => {
   const plan = planModuleRebuild({
     current: new Map([
-      ['mdm', 'h1'],
-      ['monitor', 'h2'],
+      [stateKey(MASTER, 'mdm'), 'h1'],
+      [stateKey(MASTER, 'monitor'), 'h2'],
     ]),
     applied: null,
     lastSnapshotId: 'registry:same',
     currentSnapshotId: 'registry:same',
+    ownProjects,
   });
   assert.deepEqual(plan, {
     mode: 'recordOnly',
@@ -122,12 +134,13 @@ test('no state and matching snapshot is recordOnly', () => {
 test('no state and different snapshot is full', () => {
   const plan = planModuleRebuild({
     current: new Map([
-      ['mdm', 'h1'],
-      ['monitor', 'h2'],
+      [stateKey(MASTER, 'mdm'), 'h1'],
+      [stateKey(MASTER, 'monitor'), 'h2'],
     ]),
     applied: null,
     lastSnapshotId: 'registry:old',
     currentSnapshotId: 'registry:new',
+    ownProjects,
   });
   assert.deepEqual(plan, {
     mode: 'full',
@@ -135,6 +148,110 @@ test('no state and different snapshot is full', () => {
     untouched: [],
     removed: [],
   });
+});
+
+test('another client in applied is neither rebuilt nor removed', () => {
+  const plan = planModuleRebuild({
+    current: new Map([
+      [stateKey(CLIENT, 'agendaClinica'), 'h1'],
+      [stateKey(MASTER, 'mdm'), 'h2'],
+    ]),
+    applied: new Map([
+      [stateKey(CLIENT, 'agendaClinica'), 'h1'],
+      [stateKey(MASTER, 'mdm'), 'h2'],
+      [stateKey(OTHER, 'controleChamados'), 'other'],
+      [stateKey(OTHER, 'sumiu'), 'gone'],
+    ]),
+    lastSnapshotId: 'registry:other-app',
+    currentSnapshotId: 'registry:this-app',
+    ownProjects,
+  });
+  assert.deepEqual(plan, {
+    mode: 'none',
+    rebuild: [],
+    untouched: ['agendaClinica', 'mdm'],
+    removed: [],
+  });
+  assert.equal(plan.rebuild.includes(stateKey(OTHER, 'controleChamados')), false);
+  assert.equal(plan.removed.includes(stateKey(OTHER, 'controleChamados')), false);
+  assert.equal(plan.removed.includes(stateKey(OTHER, 'sumiu')), false);
+});
+
+test('different lastSnapshotId with equal own hashes is none', () => {
+  const current = new Map([
+    [stateKey(CLIENT, 'agendaClinica'), 'h1'],
+    [stateKey(MASTER, 'mdm'), 'h2'],
+  ]);
+  const plan = planModuleRebuild({
+    current,
+    applied: new Map(current),
+    lastSnapshotId: 'registry:previous-app',
+    currentSnapshotId: 'registry:this-app',
+    ownProjects,
+  });
+  assert.deepEqual(plan, {
+    mode: 'none',
+    rebuild: [],
+    untouched: ['agendaClinica', 'mdm'],
+    removed: [],
+  });
+});
+
+test('a missing module of the own client is removed and equal mdm stays', () => {
+  const plan = planModuleRebuild({
+    current: new Map([
+      [stateKey(CLIENT, 'agendaClinica'), 'h1'],
+      [stateKey(MASTER, 'mdm'), 'same'],
+    ]),
+    applied: new Map([
+      [stateKey(CLIENT, 'agendaClinica'), 'h1'],
+      [stateKey(CLIENT, 'moduloSumido'), 'h9'],
+      [stateKey(MASTER, 'mdm'), 'same'],
+      [stateKey(MASTER, 'platform'), 'old-master'],
+    ]),
+    lastSnapshotId: 'registry:old',
+    currentSnapshotId: 'registry:new',
+    ownProjects,
+  });
+  assert.deepEqual(plan, {
+    mode: 'modules',
+    rebuild: [],
+    untouched: ['agendaClinica', 'mdm'],
+    removed: ['moduloSumido'],
+  });
+});
+
+test('no own-client row keeps the snapshot transition rule', () => {
+  const current = new Map([
+    [stateKey(CLIENT, 'agendaClinica'), 'h1'],
+    [stateKey(MASTER, 'mdm'), 'h2'],
+  ]);
+  const applied = new Map([
+    [stateKey(MASTER, 'mdm'), 'different'],
+    [stateKey(OTHER, 'controleChamados'), 'x'],
+  ]);
+  const full = planModuleRebuild({
+    current,
+    applied,
+    lastSnapshotId: 'registry:old',
+    currentSnapshotId: 'registry:new',
+    ownProjects,
+  });
+  assert.deepEqual(full, {
+    mode: 'full',
+    rebuild: ['agendaClinica', 'mdm'],
+    untouched: [],
+    removed: [],
+  });
+  const recordOnly = planModuleRebuild({
+    current,
+    applied,
+    lastSnapshotId: 'registry:same',
+    currentSnapshotId: 'registry:same',
+    ownProjects,
+  });
+  assert.equal(recordOnly.mode, 'recordOnly');
+  assert.deepEqual(recordOnly.removed, []);
 });
 
 test('module hash is independent of table and module order', async () => {
@@ -152,9 +269,10 @@ test('module hash is independent of table and module order', async () => {
   const first = await moduleHashes([c, b, a]);
   const second = await moduleHashes([a, c, b]);
 
-  assert.equal(first.get('estoque'), second.get('estoque'));
-  assert.equal(first.get('mdm'), second.get('mdm'));
+  assert.equal(first.get(stateKey('900001', 'estoque')), second.get(stateKey('900001', 'estoque')));
+  assert.equal(first.get(stateKey('900001', 'mdm')), second.get(stateKey('900001', 'mdm')));
   assert.equal(first.size, 2);
+  assert.deepEqual(parseStateKey(stateKey('900001', 'estoque')), { projectId: '900001', moduleId: 'estoque' });
 });
 
 test('migration report matches the published block line by line', () => {

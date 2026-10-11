@@ -26,24 +26,39 @@ export interface MigrationReportSummary {
   orphans?: string[];
 }
 
+const MASTER_PROJECT_ID = '102034';
+
 function sortedModuleIds(ids: Iterable<string>): string[] {
   return [...ids].sort((left, right) => left.localeCompare(right));
+}
+
+export function stateKey(projectId: string, moduleId: string): string {
+  return `${projectId}:${moduleId}`;
+}
+
+export function parseStateKey(key: string): { projectId: string; moduleId: string } | null {
+  const index = key.indexOf(':');
+  if (index <= 0 || index === key.length - 1) {
+    return null;
+  }
+  return { projectId: key.slice(0, index), moduleId: key.slice(index + 1) };
 }
 
 export async function moduleHashes(tables: SnapshotTable[]): Promise<Map<string, string>> {
   const byModule = new Map<string, SnapshotTable[]>();
   for (const table of tables) {
-    const list = byModule.get(table.moduleId) ?? [];
+    const key = stateKey(table.projectId, table.moduleId);
+    const list = byModule.get(key) ?? [];
     list.push(table);
-    byModule.set(table.moduleId, list);
+    byModule.set(key, list);
   }
 
   const hashes = new Map<string, string>();
-  for (const moduleId of sortedModuleIds(byModule.keys())) {
-    const ordered = [...(byModule.get(moduleId) ?? [])].sort((left, right) =>
+  for (const key of sortedModuleIds(byModule.keys())) {
+    const ordered = [...(byModule.get(key) ?? [])].sort((left, right) =>
       left.tableName.localeCompare(right.tableName),
     );
-    hashes.set(moduleId, await sha256Hex(JSON.stringify(ordered)));
+    hashes.set(key, await sha256Hex(JSON.stringify(ordered)));
   }
   return hashes;
 }
@@ -53,33 +68,65 @@ export function planModuleRebuild(args: {
   applied: Map<string, string> | null;
   lastSnapshotId: string | null;
   currentSnapshotId: string;
+  ownProjects: string[];
 }): ModuleRebuildPlan {
   const currentIds = sortedModuleIds(args.current.keys());
+  const own = new Set(args.ownProjects);
+  const clientIds = new Set(args.ownProjects.filter((projectId) => projectId !== MASTER_PROJECT_ID));
 
-  if (args.applied === null) {
+  const appliedOwn =
+    args.applied === null
+      ? null
+      : new Map(
+          [...args.applied].filter(([key]) => {
+            const parsed = parseStateKey(key);
+            return parsed !== null && own.has(parsed.projectId);
+          }),
+        );
+
+  const hasClientState =
+    appliedOwn !== null &&
+    [...appliedOwn.keys()].some((key) => {
+      const parsed = parseStateKey(key);
+      return parsed !== null && clientIds.has(parsed.projectId);
+    });
+
+  if (!hasClientState) {
     if (args.lastSnapshotId === args.currentSnapshotId) {
-      return { mode: 'recordOnly', rebuild: [], untouched: currentIds, removed: [] };
+      return { mode: 'recordOnly', rebuild: [], untouched: moduleIdsOf(currentIds), removed: [] };
     }
-    return { mode: 'full', rebuild: currentIds, untouched: [], removed: [] };
+    return { mode: 'full', rebuild: moduleIdsOf(currentIds), untouched: [], removed: [] };
   }
 
   const rebuild: string[] = [];
   const untouched: string[] = [];
-  for (const moduleId of currentIds) {
-    const appliedHash = args.applied.get(moduleId);
-    if (appliedHash === args.current.get(moduleId)) {
-      untouched.push(moduleId);
+  for (const key of currentIds) {
+    const appliedHash = appliedOwn.get(key);
+    if (appliedHash === args.current.get(key)) {
+      untouched.push(key);
     } else {
-      rebuild.push(moduleId);
+      rebuild.push(key);
     }
   }
 
-  const removed = sortedModuleIds(args.applied.keys()).filter((moduleId) => !args.current.has(moduleId));
+  const removed = sortedModuleIds(appliedOwn.keys()).filter((key) => {
+    if (args.current.has(key)) {
+      return false;
+    }
+    const parsed = parseStateKey(key);
+    return parsed !== null && clientIds.has(parsed.projectId);
+  });
 
+  const plan = { rebuild: moduleIdsOf(rebuild), untouched: moduleIdsOf(untouched), removed: moduleIdsOf(removed) };
   if (rebuild.length === 0 && removed.length === 0) {
-    return { mode: 'none', rebuild, untouched, removed };
+    return { mode: 'none', ...plan };
   }
-  return { mode: 'modules', rebuild, untouched, removed };
+  return { mode: 'modules', ...plan };
+}
+
+// The plan compares by "<projectId>:<moduleId>"; its lists stay moduleIds, which is what the rebuild matches against.
+function moduleIdsOf(keys: string[]): string[] {
+  return sortedModuleIds(keys.map((key) => parseStateKey(key)?.moduleId ?? key));
 }
 
 function formatModuleList(ids: string[]): string {
