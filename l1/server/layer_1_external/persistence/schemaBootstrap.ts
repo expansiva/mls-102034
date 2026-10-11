@@ -469,7 +469,11 @@ async function rebuildPostgresSchema(
   }
 
   if (input.insertSnapshot) {
-    await pool.query('INSERT INTO "_schema_migrations" ("id") VALUES ($1)', [snapshotId]);
+    // Apps sharing a database alternate snapshots, so this id may already be there from an earlier publish.
+    await pool.query(
+      'INSERT INTO "_schema_migrations" ("id") VALUES ($1) ON CONFLICT ("id") DO UPDATE SET "applied_at" = NOW()',
+      [snapshotId],
+    );
   }
   return { timescaleAvailable, orphans };
 }
