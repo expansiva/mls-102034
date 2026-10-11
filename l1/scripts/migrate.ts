@@ -1,9 +1,22 @@
 /// <mls fileReference="_102034_/l1/scripts/migrate.ts" enhancement="_blank" />
 import { Pool } from 'pg';
-import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
-import { ensureTestDatabase, readProjectMode } from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
+import { readAppEnv, type AppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
+import {
+  databaseUrlEnvFor, ensureTestDatabase, parseDatabaseUrl, readProjectMode,
+} from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
 import { bootstrapSchema } from '/_102034_/l1/server/layer_1_external/persistence/schemaBootstrap.js';
 import { formatMigrationReport } from '/_102034_/l1/server/layer_1_external/persistence/schemaModulePlan.js';
+
+/** Database name only — never host, user or password. */
+function databaseNameForLog(env: AppEnv): string {
+  const mode = readProjectMode(env.projectId);
+  const url = process.env[databaseUrlEnvFor(mode)];
+  if (url) {
+    const parsed = parseDatabaseUrl(url);
+    if (parsed?.database) return parsed.database;
+  }
+  return env.pgDatabase;
+}
 
 /**
  * Create the TEST database before bootstrapping into it.
@@ -39,7 +52,10 @@ async function ensureTestDatabaseExists(): Promise<void> {
 
 export async function runMigrations(): Promise<void> {
   await ensureTestDatabaseExists();
-  const result = await bootstrapSchema(readAppEnv(), {
+  const env = readAppEnv();
+  const mode = readProjectMode(env.projectId);
+  console.info(`[migrate] projeto ${env.projectId ?? '—'}, appEnv=${mode}, banco ${databaseNameForLog(env)}`);
+  const result = await bootstrapSchema(env, {
     ensureDynamo: false,
     recordSnapshotLog: false,
   });
