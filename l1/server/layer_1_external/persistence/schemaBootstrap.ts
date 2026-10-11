@@ -28,7 +28,9 @@ import {
 } from '/_102034_/l1/server/layer_1_external/persistence/dynamoAdmin.js';
 import {
   moduleHashes,
+  parseStateKey,
   planModuleRebuild,
+  stateKey,
   type ModuleRebuildMode,
 } from '/_102034_/l1/server/layer_1_external/persistence/schemaModulePlan.js';
 
@@ -472,30 +474,92 @@ async function rebuildPostgresSchema(
   return { timescaleAvailable, orphans };
 }
 
-async function readAppliedModuleHashes(pool: Pool): Promise<Map<string, string> | null> {
-  try {
-    const result = await pool.query<{ module_id: string; hash: string }>(
-      `SELECT module_id, hash FROM ${quoteIdentifier(SCHEMA_MODULE_STATE_TABLE)}`,
+function modulesOf(tables: { projectId: string; moduleId: string }[]): { projectId: string; moduleId: string }[] {
+  const byModule = new Map<string, string>();
+  for (const table of tables) {
+    if (!byModule.has(table.moduleId)) {
+      byModule.set(table.moduleId, table.projectId);
+    }
+  }
+  return [...byModule].map(([moduleId, projectId]) => ({ projectId, moduleId }));
+}
+
+/** Adds `project_id`, adopts rows this migrate owns, and switches the PK once no legacy nulls remain. */
+async function ensureModuleStateTable(
+  pool: Pool,
+  adoptions: { projectId: string; moduleId: string }[],
+): Promise<void> {
+  const table = quoteIdentifier(SCHEMA_MODULE_STATE_TABLE);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ${table} (
+      project_id text,
+      module_id text,
+      hash text not null,
+      applied_at timestamptz not null default now(),
+      primary key (project_id, module_id)
+    )
+  `);
+  await pool.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS project_id text`);
+  for (const adoption of adoptions) {
+    await pool.query(
+      `UPDATE ${table} SET project_id = $1 WHERE project_id IS NULL AND module_id = $2`,
+      [adoption.projectId, adoption.moduleId],
     );
-    return new Map(result.rows.map((row) => [row.module_id, row.hash]));
+  }
+  // A leftover null belongs to the other app. PK (project_id, module_id) rejects nulls, so it waits.
+  const pending = await pool.query<{ pending: string }>(
+    `SELECT count(*)::text AS pending FROM ${table} WHERE project_id IS NULL`,
+  );
+  if (pending.rows[0]?.pending !== '0') {
+    return;
+  }
+  const key = await pool.query<{ attname: string }>(`
+    SELECT a.attname
+    FROM pg_index i
+    JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey)
+    WHERE i.indrelid = ${table}::regclass AND i.indisprimary
+    ORDER BY array_position(i.indkey, a.attnum)
+  `);
+  const columns = key.rows.map((row) => row.attname);
+  if (columns.length === 2 && columns[0] === 'project_id' && columns[1] === 'module_id') {
+    return;
+  }
+  const constraint = await pool.query<{ conname: string }>(`
+    SELECT con.conname
+    FROM pg_constraint con
+    WHERE con.conrelid = ${table}::regclass AND con.contype = 'p'
+  `);
+  const name = constraint.rows[0]?.conname;
+  if (name) {
+    await pool.query(`ALTER TABLE ${table} DROP CONSTRAINT ${quoteIdentifier(name)}`);
+  }
+  await pool.query(`ALTER TABLE ${table} ALTER COLUMN project_id SET NOT NULL`);
+  await pool.query(`ALTER TABLE ${table} ADD PRIMARY KEY (project_id, module_id)`);
+}
+
+async function readAppliedModuleHashes(pool: Pool, ownProjects: string[]): Promise<Map<string, string> | null> {
+  try {
+    const result = await pool.query<{ project_id: string; module_id: string; hash: string }>(
+      `SELECT project_id, module_id, hash FROM ${quoteIdentifier(SCHEMA_MODULE_STATE_TABLE)} WHERE project_id = ANY($1::text[])`,
+      [ownProjects],
+    );
+    return new Map(result.rows.map((row) => [stateKey(row.project_id, row.module_id), row.hash]));
   } catch {
     return null;
   }
 }
 
-async function writeModuleState(pool: Pool, hashes: Map<string, string>): Promise<void> {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS ${quoteIdentifier(SCHEMA_MODULE_STATE_TABLE)} (
-      module_id text primary key,
-      hash text not null,
-      applied_at timestamptz not null default now()
-    )
-  `);
-  await pool.query(`DELETE FROM ${quoteIdentifier(SCHEMA_MODULE_STATE_TABLE)}`);
-  for (const [moduleId, hash] of hashes) {
+async function writeModuleState(pool: Pool, hashes: Map<string, string>, ownProjects: string[]): Promise<void> {
+  const table = quoteIdentifier(SCHEMA_MODULE_STATE_TABLE);
+  await pool.query(`DELETE FROM ${table} WHERE project_id = ANY($1::text[])`, [ownProjects]);
+  for (const [key, hash] of hashes) {
+    const parsed = parseStateKey(key);
+    if (!parsed || !ownProjects.includes(parsed.projectId)) {
+      continue;
+    }
     await pool.query(
-      `INSERT INTO ${quoteIdentifier(SCHEMA_MODULE_STATE_TABLE)} (module_id, hash) VALUES ($1, $2)`,
-      [moduleId, hash],
+      `INSERT INTO ${table} (project_id, module_id, hash) VALUES ($1, $2, $3)`,
+      [parsed.projectId, parsed.moduleId, hash],
     );
   }
 }
@@ -565,14 +629,18 @@ export async function bootstrapSchema(
   const definitions = await loadResolvedTableDefinitions(env);
   const snapshot = await buildSchemaSnapshot(env);
   const pool = getSharedPgPool(env);
+  const definedModules = modulesOf(snapshot.tables);
+  const ownProjects = [...new Set(definedModules.map((module) => module.projectId))];
+  await ensureModuleStateTable(pool, definedModules);
   const lastSnapshotId = await readLastAppliedSnapshotId(pool);
   const currentHashes = await moduleHashes(snapshot.tables);
-  const appliedHashes = await readAppliedModuleHashes(pool);
+  const appliedHashes = await readAppliedModuleHashes(pool, ownProjects);
   const plan = planModuleRebuild({
     current: currentHashes,
     applied: appliedHashes,
     lastSnapshotId,
     currentSnapshotId: snapshot.id,
+    ownProjects,
   });
 
   let orphans: string[] = [];
@@ -580,7 +648,7 @@ export async function bootstrapSchema(
     console.info(`[bootstrapSchema] schema unchanged (${snapshot.id}); skipping rebuild`);
   } else if (plan.mode === 'recordOnly') {
     console.info(`[bootstrapSchema] schema unchanged (${snapshot.id}); recording module state`);
-    await writeModuleState(pool, currentHashes);
+    await writeModuleState(pool, currentHashes, ownProjects);
   } else {
     if (plan.mode === 'full') {
       if (lastSnapshotId && lastSnapshotId !== snapshot.id) {
@@ -604,7 +672,7 @@ export async function bootstrapSchema(
     if (plan.rebuild.length > 0 || plan.removed.length > 0) {
       await applyViewDefinitions(pool, { timescaleAvailable: rebuilt.timescaleAvailable });
     }
-    await writeModuleState(pool, currentHashes);
+    await writeModuleState(pool, currentHashes, ownProjects);
   }
 
   let dynamoTableCount = 0;
