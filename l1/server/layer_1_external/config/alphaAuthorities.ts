@@ -1,43 +1,25 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/config/alphaAuthorities.ts" enhancement="_blank" />
-import { existsSync, readFileSync, statSync } from 'node:fs';
-import { resolveProjectDistPath, resolveProjectModuleImportUrl } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
+import { existsSync } from 'node:fs';
+import { resolveProjectDistPath, resolveProjectModuleImportUrl, readProjectsConfig } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 
-// The switch lives ON THE VM, outside the releases and outside the repo: an alpha operator turns it on
-// or off by editing this file, with no publish and no restart. One org per VM, so it is VM-wide.
-//   /data/mls-base/runtime-flags.json  ->  { "alphaAllAuthorities": true }
-const DEFAULT_RUNTIME_FLAGS_FILE = '/data/mls-base/runtime-flags.json';
+// Release switch: l5/config.json top-level `"alphaAllAuthorities": true`, copied to the
+// release config.json by the build. A new release is a new process, so the value is read once.
+type AlphaConfig = { alphaAllAuthorities?: unknown };
 
-let flagState: { file: string; mtimeMs: number; on: boolean } | null = null;
+let decided: boolean | null = null;
 const actorCache = new Map<string, Promise<string[]>>();
 
-export function runtimeFlagsFile(env: Record<string, string | undefined> = process.env): string {
-  return env.COLLAB_RUNTIME_FLAGS_FILE?.trim() || DEFAULT_RUNTIME_FLAGS_FILE;
-}
-
-/** VM-wide alpha switch. Re-read whenever the file's mtime changes; missing file = off. */
-export function isAlphaAllAuthorities(_projectId?: string | number, file: string = runtimeFlagsFile()): boolean {
-  let mtimeMs = -1;
-  try {
-    mtimeMs = statSync(file).mtimeMs;
-  } catch {
-    mtimeMs = -1;
+/** Per-release alpha switch. True only when config.json has alphaAllAuthorities === true. */
+export function isAlphaAllAuthorities(
+  _projectId?: string | number,
+  readConfig: () => AlphaConfig = () => readProjectsConfig() as AlphaConfig,
+): boolean {
+  if (decided !== null) return decided;
+  const on = readConfig().alphaAllAuthorities === true;
+  if (on) {
+    console.warn('[alpha] alphaAllAuthorities ON (config.json) — every signed-in user gets every actor of every module (remove before beta)');
   }
-  if (flagState && flagState.file === file && flagState.mtimeMs === mtimeMs) return flagState.on;
-  let on = false;
-  if (mtimeMs >= 0) {
-    try {
-      on = (JSON.parse(readFileSync(file, 'utf8')) as { alphaAllAuthorities?: unknown }).alphaAllAuthorities === true;
-    } catch (err) {
-      console.warn(`[alpha] ${file} unreadable — alphaAllAuthorities off: ${(err as Error).message}`);
-    }
-  }
-  const was = flagState?.file === file ? flagState.on : false;
-  if (on && !was) {
-    console.warn(`[alpha] alphaAllAuthorities ON (${file}) — every signed-in user gets every actor of every module (remove before beta)`);
-  } else if (!on && was) {
-    console.info(`[alpha] alphaAllAuthorities OFF (${file})`);
-  }
-  flagState = { file, mtimeMs, on };
+  decided = on;
   return on;
 }
 
@@ -69,6 +51,6 @@ async function loadActorRefs(controllersDir: string): Promise<string[]> {
 }
 
 export function resetAlphaAuthoritiesCache(): void {
-  flagState = null;
+  decided = null;
   actorCache.clear();
 }
