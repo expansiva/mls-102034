@@ -20,10 +20,24 @@ async function loadRouterFromEntrypoint(backendRouter: string): Promise<Map<stri
 
 // Hexagonal model: discover routes by enumerating the module's controllers folder and reading each
 // controller's exported `routes: ControllerRoute[]`. No generated router file.
-async function loadRouterFromControllers(controllersDir: string): Promise<Map<string, BffHandler>> {
+export async function loadRouterFromControllers(controllersDir: string): Promise<Map<string, BffHandler>> {
   const dir = resolveProjectDistPath(controllersDir);
   const router = new Map<string, BffHandler>();
-  const files = readdirSync(dir).filter((file) => file.endsWith('.js') && !file.endsWith('.defs.js'));
+  const entries = readdirSync(dir);
+  const jsStems = new Set(
+    entries
+      .filter((file) => file.endsWith('.js') && !file.endsWith('.defs.js'))
+      .map((file) => file.slice(0, -3)),
+  );
+  const files = entries.filter((file) => {
+    if (file.endsWith('.js')) {
+      return !file.endsWith('.defs.js');
+    }
+    if (!file.endsWith('.ts') || file.endsWith('.d.ts') || file.endsWith('.defs.ts') || file.endsWith('.test.ts')) {
+      return false;
+    }
+    return !jsStems.has(file.slice(0, -3));
+  });
   for (const file of files) {
     const moduleUrl = resolveProjectModuleImportUrl(`${controllersDir.replace(/\/$/u, '')}/${file}`);
     const mod = await import(moduleUrl);
