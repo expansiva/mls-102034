@@ -8,6 +8,7 @@ import { parseDraftSlug } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraf
 import {
   ensureDevProcess,
   touchDevProcess,
+  waitForDevReady,
   type DevProcessInfo,
   type EnsureDevProcessOpts,
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
@@ -33,6 +34,7 @@ export interface DraftExecDeps {
   fetchImpl?: typeof fetch;
   ensureDevProcessImpl?: (opts: EnsureDevProcessOpts) => DevProcessInfo;
   touchDevProcessImpl?: (base: string, slug: string, now: number) => void;
+  waitForDevReadyImpl?: (port: number) => Promise<boolean>;
 }
 
 export function draftDownBody(): { ok: false; data: null; error: { code: 'DRAFT_DOWN'; message: string } } {
@@ -101,6 +103,7 @@ export async function proxyExecBff(args: {
   const ensure = args.ensureDevProcessImpl ?? ensureDevProcess;
   const touch = args.touchDevProcessImpl ?? touchDevProcess;
   const doFetch = args.fetchImpl ?? fetch;
+  const waitReady = args.waitForDevReadyImpl ?? ((port: number) => waitForDevReady(port));
   const url = (port: number) => `http://127.0.0.1:${port}/execBff`;
 
   let info: DevProcessInfo;
@@ -118,18 +121,40 @@ export async function proxyExecBff(args: {
     console.error(`[draftProxy] touch dev ${args.slug} failed: ${(err as Error).message}`);
   }
 
+  const body = JSON.stringify(args.request.body ?? {});
+  const post = (): Promise<Response> => doFetch(url(info.port), {
+    method: 'POST',
+    headers: requestHeaders(args.request),
+    body,
+    signal: AbortSignal.timeout(10000),
+  });
+
   let response: Response;
   try {
-    response = await doFetch(url(info.port), {
-      method: 'POST',
-      headers: requestHeaders(args.request),
-      body: JSON.stringify(args.request.body ?? {}),
-      signal: AbortSignal.timeout(10000),
-    });
+    response = await post();
   } catch (err) {
     console.error(`[draftProxy] dev ${args.slug} at ${url(info.port)} unreachable: ${(err as Error).message}`);
-    args.reply.code(503).send(draftDownBody());
-    return;
+    if ((err as Error).name === 'TimeoutError') {
+      args.reply.code(503).send(draftDownBody());
+      return;
+    }
+    let ready = false;
+    try {
+      ready = await waitReady(info.port);
+    } catch (waitErr) {
+      console.error(`[draftProxy] dev ${args.slug} ready check failed: ${(waitErr as Error).message}`);
+    }
+    if (!ready) {
+      args.reply.code(503).send(draftDownBody());
+      return;
+    }
+    try {
+      response = await post();
+    } catch (err2) {
+      console.error(`[draftProxy] dev ${args.slug} at ${url(info.port)} unreachable: ${(err2 as Error).message}`);
+      args.reply.code(503).send(draftDownBody());
+      return;
+    }
   }
 
   args.reply.code(response.status);
@@ -173,6 +198,7 @@ export async function applyDraftExecBff(args: {
     fetchImpl: args.fetchImpl,
     ensureDevProcessImpl: args.ensureDevProcessImpl,
     touchDevProcessImpl: args.touchDevProcessImpl,
+    waitForDevReadyImpl: args.waitForDevReadyImpl,
   });
   return { handled: true };
 }

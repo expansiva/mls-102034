@@ -27,8 +27,10 @@ test('GET /desenv sets the draft cookie; GET /desenv/sair clears it', async () =
   const devs: Array<{ base: string; slug: string; clientProjectId: number }> = [];
   const origWorktree = desenvIo.ensureDraftWorktree;
   const origDev = desenvIo.ensureDevProcess;
+  const origReady = desenvIo.waitForDevReady;
   const origProject = desenvIo.resolveClientProjectId;
   desenvIo.resolveClientProjectId = () => String(PROJECT_ID);
+  desenvIo.waitForDevReady = async () => true;
   desenvIo.ensureDraftWorktree = async (opts) => {
     worktrees.push({ base: opts.base, projectId: opts.projectId, slug: opts.slug, branch: opts.branch });
     return '/tmp/draft';
@@ -98,6 +100,48 @@ test('GET /desenv sets the draft cookie; GET /desenv/sair clears it', async () =
   } finally {
     desenvIo.ensureDraftWorktree = origWorktree;
     desenvIo.ensureDevProcess = origDev;
+    desenvIo.waitForDevReady = origReady;
+    desenvIo.resolveClientProjectId = origProject;
+    if (prevLogin === undefined) delete process.env.CBE_REQUIRE_LOGIN;
+    else process.env.CBE_REQUIRE_LOGIN = prevLogin;
+    await app.close();
+  }
+});
+
+test('GET /desenv answers 503 without a cookie when the dev port is not ready', async () => {
+  const prevLogin = process.env.CBE_REQUIRE_LOGIN;
+  delete process.env.CBE_REQUIRE_LOGIN;
+
+  const origWorktree = desenvIo.ensureDraftWorktree;
+  const origDev = desenvIo.ensureDevProcess;
+  const origReady = desenvIo.waitForDevReady;
+  const origProject = desenvIo.resolveClientProjectId;
+  desenvIo.resolveClientProjectId = () => String(PROJECT_ID);
+  desenvIo.ensureDraftWorktree = async () => '/tmp/draft';
+  desenvIo.ensureDevProcess = () => ({ port: 4100, pid: 1, startedAt: 0, lastRequestAt: 0 });
+  let waited: number | undefined;
+  desenvIo.waitForDevReady = async (port) => {
+    waited = port;
+    return false;
+  };
+
+  const app = Fastify();
+  registerCbeRoutes(app);
+  try {
+    const down = await app.inject({
+      method: 'GET',
+      url: `/desenv?draft=${SLUG}`,
+      headers: { host: 'localhost' },
+    });
+    assert.equal(down.statusCode, 503);
+    assert.equal(headerValue(down.headers['set-cookie']), '');
+    assert.equal(headerValue(down.headers.location), '');
+    assert.deepEqual(down.json(), { statusCode: 503, msg: 'draft unavailable: dev not ready' });
+    assert.equal(waited, 4100);
+  } finally {
+    desenvIo.ensureDraftWorktree = origWorktree;
+    desenvIo.ensureDevProcess = origDev;
+    desenvIo.waitForDevReady = origReady;
     desenvIo.resolveClientProjectId = origProject;
     if (prevLogin === undefined) delete process.env.CBE_REQUIRE_LOGIN;
     else process.env.CBE_REQUIRE_LOGIN = prevLogin;

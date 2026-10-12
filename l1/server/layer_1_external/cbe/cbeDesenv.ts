@@ -4,7 +4,7 @@
 
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { parseDraftSlug, ensureDraftWorktree } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
-import { ensureDevProcess } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
+import { ensureDevProcess, waitForDevReady } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
 import { getProjectsBaseDir } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
 import { readProjectsConfig } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import {
@@ -39,6 +39,7 @@ export const desenvIo = {
   getProjectsBaseDir,
   ensureDraftWorktree,
   ensureDevProcess,
+  waitForDevReady,
   isAllowed: async (_request: FastifyRequest): Promise<boolean> => {
     console.error('[cbe] /desenv: session gate was not registered');
     return false;
@@ -99,12 +100,19 @@ export async function runDesenvEnter(input: {
   }
 
   const base = desenvIo.getProjectsBaseDir();
+  let port: number;
   try {
     await desenvIo.ensureDraftWorktree({ base, projectId, slug: parsed.slug, branch: parsed.branch });
-    desenvIo.ensureDevProcess({ base, slug: parsed.slug, clientProjectId: projectId });
+    port = desenvIo.ensureDevProcess({ base, slug: parsed.slug, clientProjectId: projectId }).port;
   } catch (err) {
     console.error(`[cbe] /desenv: draft ${parsed.slug} failed: ${(err as Error).message}`);
     return jsonResult(CBE_HTTP_SERVER_ERROR, 'draft unavailable');
+  }
+
+  const ready = await desenvIo.waitForDevReady(port);
+  if (!ready) {
+    console.error(`[cbe] /desenv: draft ${parsed.slug} dev not ready on port ${port}`);
+    return jsonResult(503, 'draft unavailable: dev not ready');
   }
 
   return { status: HTTP_FOUND, location, setCookie: draftCookie(parsed.slug) };

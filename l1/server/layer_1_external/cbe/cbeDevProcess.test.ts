@@ -15,6 +15,7 @@ import {
   reapIdle,
   restartDevProcess,
   touchDevProcess,
+  waitForDevReady,
   type DevSpawn,
   type DevSpawnOptions,
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
@@ -329,6 +330,42 @@ test('linkSharedProjects symlinks sibling mls dirs into the draft and leaves a r
     console.warn = origWarn;
     rmSync(base, { recursive: true, force: true });
   }
+});
+
+test('waitForDevReady is true on the third health check and false when the port stays down', async () => {
+  let checks = 0;
+  const sleeps: number[] = [];
+  const ready = await waitForDevReady(4101, {
+    timeoutMs: 10_000,
+    stepMs: 250,
+    fetchImpl: async (input, init) => {
+      checks += 1;
+      assert.equal(String(input), 'http://127.0.0.1:4101/health');
+      assert.equal(init?.method, 'GET');
+      assert.ok(init?.signal);
+      if (checks < 3) throw new Error('connect ECONNREFUSED');
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    },
+    sleep: async (ms) => {
+      sleeps.push(ms);
+    },
+  });
+  assert.equal(ready, true);
+  assert.equal(checks, 3);
+  assert.deepEqual(sleeps, [250, 250]);
+
+  let misses = 0;
+  const never = await waitForDevReady(4102, {
+    timeoutMs: 500,
+    stepMs: 250,
+    fetchImpl: async () => {
+      misses += 1;
+      return new Response('no', { status: 503 });
+    },
+    sleep: async () => {},
+  });
+  assert.equal(never, false);
+  assert.equal(misses, 2);
 });
 
 function existsDev(base: string, slug: string): boolean {

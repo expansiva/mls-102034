@@ -101,6 +101,9 @@ test('a valid draft cookie with an accepted session proxies /execBff to the dev 
       assert.equal(typeof now, 'number');
       touched += 1;
     },
+    waitForDevReadyImpl: async () => {
+      throw new Error('probe on the happy path');
+    },
     fetchImpl: async (url, init) => {
       fetched.push({
         url: String(url),
@@ -134,9 +137,81 @@ test('a valid draft cookie with an accepted session proxies /execBff to the dev 
   assert.deepEqual(reply.headers['set-cookie'], ['cauth=renewed; Path=/; HttpOnly', 'loginMsg=dev']);
 });
 
-test('a fetch failure answers 503 DRAFT_DOWN', async () => {
+test('a connection error probes the dev port and retries /execBff once', async () => {
+  delete process.env.COLLAB_DRAFT;
+  const body = { routine: 'x.y.z' };
+  const reply = fakeReply();
+  const bodies: string[] = [];
+  let fetches = 0;
+  let probes = 0;
+  const result = await applyDraftExecBff({
+    request: fakeRequest(body, { cookie: `collab-draft=${SLUG}`, 'content-type': 'application/json' }),
+    reply,
+    base: BASE,
+    clientProjectId: '102047',
+    resolveSession: async () => ({ reject: false }),
+    refreshedAuthCookie: (token) => token,
+    ensureDevProcessImpl: () => devInfo(),
+    touchDevProcessImpl: () => {},
+    waitForDevReadyImpl: async (port) => {
+      probes += 1;
+      assert.equal(port, PORT);
+      return true;
+    },
+    fetchImpl: async (_url, init) => {
+      fetches += 1;
+      bodies.push(String(init?.body));
+      if (fetches === 1) throw new Error('connect ECONNREFUSED');
+      return new Response(JSON.stringify({ ok: true, data: { n: 2 }, error: null }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+
+  assert.equal(result.handled, true);
+  assert.equal(probes, 1);
+  assert.equal(fetches, 2);
+  assert.deepEqual(bodies, [JSON.stringify(body), JSON.stringify(body)]);
+  assert.equal(reply.statusCode, 200);
+  assert.equal(Buffer.isBuffer(reply.sent) ? reply.sent.toString() : '', '{"ok":true,"data":{"n":2},"error":null}');
+});
+
+test('a TimeoutError answers 503 DRAFT_DOWN without probing', async () => {
   delete process.env.COLLAB_DRAFT;
   const reply = fakeReply();
+  let probes = 0;
+  const timeout = new Error('The operation was aborted due to timeout');
+  timeout.name = 'TimeoutError';
+  const result = await applyDraftExecBff({
+    request: fakeRequest({ routine: 'x.y.z' }, { cookie: `collab-draft=${SLUG}` }),
+    reply,
+    base: BASE,
+    clientProjectId: '102047',
+    resolveSession: async () => ({ reject: false }),
+    refreshedAuthCookie: (token) => token,
+    ensureDevProcessImpl: () => devInfo(),
+    touchDevProcessImpl: () => {},
+    waitForDevReadyImpl: async () => {
+      probes += 1;
+      return true;
+    },
+    fetchImpl: async () => {
+      throw timeout;
+    },
+  });
+
+  assert.equal(result.handled, true);
+  assert.equal(probes, 0);
+  assert.equal(reply.statusCode, 503);
+  assert.deepEqual(reply.sent, draftDownBody());
+});
+
+test('a connection error with a down port answers 503 DRAFT_DOWN', async () => {
+  delete process.env.COLLAB_DRAFT;
+  const reply = fakeReply();
+  let probes = 0;
+  let fetches = 0;
   const result = await applyDraftExecBff({
     request: fakeRequest({ routine: 'x.y.z' }, { cookie: `collab-draft=${SLUG}`, 'content-type': 'application/json' }),
     reply,
@@ -146,12 +221,19 @@ test('a fetch failure answers 503 DRAFT_DOWN', async () => {
     refreshedAuthCookie: (token) => token,
     ensureDevProcessImpl: () => devInfo(),
     touchDevProcessImpl: () => {},
+    waitForDevReadyImpl: async () => {
+      probes += 1;
+      return false;
+    },
     fetchImpl: async () => {
+      fetches += 1;
       throw new Error('connect ECONNREFUSED');
     },
   });
 
   assert.equal(result.handled, true);
+  assert.equal(probes, 1);
+  assert.equal(fetches, 1);
   assert.equal(reply.statusCode, 503);
   assert.deepEqual(reply.sent, draftDownBody());
 });

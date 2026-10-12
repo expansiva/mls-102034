@@ -543,6 +543,59 @@ export function reapIdle(opts: { base: string; now: number }): void {
   }
 }
 
+const DEV_READY_TIMEOUT_MS = 10_000;
+const DEV_READY_STEP_MS = 250;
+
+export interface WaitForDevReadyOpts {
+  timeoutMs?: number;
+  stepMs?: number;
+  fetchImpl?: typeof fetch;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+function delayMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Polls `GET /health` on the dev port until a 2xx or the deadline.
+ * A network error retries. Never throws.
+ */
+export async function waitForDevReady(port: number, opts?: WaitForDevReadyOpts): Promise<boolean> {
+  const timeoutMs = opts?.timeoutMs ?? DEV_READY_TIMEOUT_MS;
+  const stepMs = opts?.stepMs ?? DEV_READY_STEP_MS;
+  const doFetch = opts?.fetchImpl ?? fetch;
+  const sleep = opts?.sleep ?? delayMs;
+  const url = `http://127.0.0.1:${port}/health`;
+  let elapsed = 0;
+  try {
+    while (elapsed < timeoutMs) {
+      const started = Date.now();
+      try {
+        const response = await doFetch(url, {
+          method: 'GET',
+          signal: AbortSignal.timeout(stepMs * 4),
+        });
+        if (response.status >= 200 && response.status < 300) return true;
+      } catch {
+        // The process is still binding the port. Try again until the deadline.
+      }
+      elapsed += Date.now() - started;
+      if (elapsed >= timeoutMs) break;
+      const pause = Math.min(stepMs, timeoutMs - elapsed);
+      if (pause <= 0) break;
+      const sleepStarted = Date.now();
+      await sleep(pause);
+      elapsed += Math.max(pause, Date.now() - sleepStarted);
+    }
+  } catch (err) {
+    console.error(`[cbe] dev port ${port} ready check failed: ${(err as Error).message}`);
+    return false;
+  }
+  console.error(`[cbe] dev port ${port} not ready after ${timeoutMs}ms`);
+  return false;
+}
+
 /** Rewrites `lastRequestAt`. No-op when `dev.json` is absent. `restart`/`ensure` already stamp it. */
 export function touchDevProcess(base: string, slug: string, now: number): void {
   assertSlug(slug);
