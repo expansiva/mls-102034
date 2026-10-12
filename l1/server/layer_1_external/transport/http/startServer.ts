@@ -20,6 +20,9 @@ import {
   type AuthorityOverride,
 } from '/_102034_/l1/server/layer_1_external/auth/authorityOverride.js';
 import { registerCbeRoutes } from '/_102034_/l1/server/layer_1_external/cbe/cbeRoutes.js';
+import { resolveClientProjectId } from '/_102034_/l1/server/layer_1_external/cbe/cbeDesenv.js';
+import { getProjectsBaseDir } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
+import { applyDraftExecBff } from '/_102034_/l1/server/layer_1_external/transport/http/draftProxy.js';
 import { getLatestJson, initCbeLatestJson } from '/_102034_/l1/server/layer_1_external/cbe/cbeLatestJson.js';
 import { getRunningRelease } from '/_102034_/l1/server/layer_1_external/cbe/cbeRelease.js';
 import { registerMsgProxy } from '/_102034_/l1/server/layer_1_external/transport/http/msgProxy.js';
@@ -101,25 +104,6 @@ function readStaticFile(filePath: string) {
     body: readFileSync(filePath),
     contentType: getContentType(filePath),
   };
-}
-
-/**
- * O projeto CLIENTE do workspace — que nao e' o mesmo que o dono do modulo servido.
- *
- * `projectId` no boot significa "de quem e' este modulo", e precisa continuar assim: e' por ele que
- * os assets da pagina resolvem. Mas quem entra por um modulo de PLATAFORMA (monitor/mdm/audit, do
- * master backend) recebia `projectId` do master, e o studio — que usa o campo como "qual projeto eu
- * estou editando" — ficava presa nele. Medido em 23/09/2026 no `102047.collabcodes.com`:
- * `collabBoot.projectId === "102034"` e nenhum service do cliente na lista.
- *
- * Nao ha' o que inferir por rota: `validateProjectsConfig` exige EXATAMENTE UM projeto
- * `type: "client"` por workspace, entao o servidor sabe a resposta. O `defaultProjectId` fica de
- * reserva para config antigo que ainda nao declare `type`.
- */
-function resolveClientProjectId(): string {
-  const config = readProjectsConfig();
-  const client = Object.entries(config.projects).find(([, project]) => project.type === 'client');
-  return client?.[0] ?? config.defaultProjectId;
 }
 
 function buildBootConfigScript(app: FrontendAppRegistration) {
@@ -345,6 +329,15 @@ export function buildHttpServer() {
     return result.body;
   });
   app.post('/execBff', async (request, reply) => {
+    const draft = await applyDraftExecBff({
+      request,
+      reply,
+      base: getProjectsBaseDir(),
+      clientProjectId: resolveClientProjectId(),
+      resolveSession: () => resolveBffSession(request.headers),
+      refreshedAuthCookie,
+    });
+    if (draft.handled) return;
     const result = await handleHttpRequest('POST', '/execBff', request.body, undefined, request.headers);
     reply.status(result.statusCode);
     if (result.headers?.['set-cookie']) reply.header('set-cookie', result.headers['set-cookie']);

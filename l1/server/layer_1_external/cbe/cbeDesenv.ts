@@ -24,8 +24,8 @@ export interface DesenvResult {
 }
 
 /**
- * Same rule as `resolveClientProjectId` in startServer.ts. That function is not
- * imported here: startServer imports registerCbeRoutes, which imports this module.
+ * The workspace's single `type: "client"` project (fallback: `defaultProjectId`). Used by
+ * startServer.ts for the boot config and for the draft proxy.
  */
 export function resolveClientProjectId(): string {
   const config = readProjectsConfig();
