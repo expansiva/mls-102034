@@ -33,6 +33,7 @@ import { isRebuildInProgress, scheduleRebuildOnSave } from '/_102034_/l1/server/
 import { authorFromSession, commitSavedSources } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitCommit.js';
 import { resolveRequestDraft, type RequestDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
 import { ensureDevReaper, restartDevProcess } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
+import { desenvIo, handleDesenvEnter, handleDesenvExit } from '/_102034_/l1/server/layer_1_external/cbe/cbeDesenv.js';
 import { getRunningRelease } from '/_102034_/l1/server/layer_1_external/cbe/cbeRelease.js';
 import {
   CBE_HTTP_BAD_REQUEST,
@@ -54,7 +55,7 @@ import {
 // Bump on every change to the cbe module. Exposed via the x-cbe-version
 // response header and the {action:'ping'} probe so a deploy can be verified:
 //   curl -s localhost:3000/exec -H 'Content-Type: application/json' -d '{"action":"ping"}'
-export const CBE_MODULE_VERSION = '1.8.1';
+export const CBE_MODULE_VERSION = '1.8.2';
 
 // no-cache = always revalidate with the ETag (304 when unchanged). The server
 // is local to the VM, so revalidation is cheap — and a publish always lands
@@ -624,14 +625,17 @@ async function handleStatic(request: FastifyRequest, reply: FastifyReply): Promi
 }
 
 export function registerCbeRoutes(app: FastifyInstance): void {
+  desenvIo.isAllowed = isSourceRequestAllowed;
   app.post('/exec', handleExec);
   app.get('/exec/logout', handleExecLogout);
   app.post('/exec/candidate', { bodyLimit: CANDIDATE_BODY_LIMIT }, handleCandidateProxy);
+  app.get('/desenv/sair', handleDesenvExit);
+  app.get('/desenv', handleDesenvEnter);
   app.get('/cbe/source', handleSourceView);
   app.get('/libs/*', handleStatic);
   app.get('/monaco/*', handleStatic);
   app.get('/mlsServiceWorker.js', handleStatic);
-  console.info(`[cbe] v${CBE_MODULE_VERSION} routes registered: POST /exec (login/authSession/authLogout/getContents/setContents/loadFilesInfo/getHistory/getHistoryContent), GET /exec/logout, POST /exec/candidate, GET /cbe/source, GET /libs/*, GET /monaco/*, GET /mlsServiceWorker.js`);
+  console.info(`[cbe] v${CBE_MODULE_VERSION} routes registered: POST /exec (login/authSession/authLogout/getContents/setContents/loadFilesInfo/getHistory/getHistoryContent), GET /exec/logout, POST /exec/candidate, GET /desenv, GET /desenv/sair, GET /cbe/source, GET /libs/*, GET /monaco/*, GET /mlsServiceWorker.js`);
   if (candidateHubMode() === 'local') {
     if (!candidateSchemaStarted) {
       candidateSchemaStarted = true;
