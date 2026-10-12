@@ -31,6 +31,7 @@ import { getSharedPgPool } from '/_102034_/l1/server/layer_1_external/data/postg
 import { readHistory, readHistoryContent } from '/_102034_/l1/server/layer_1_external/cbe/cbeGit.js';
 import { isRebuildInProgress, scheduleRebuildOnSave } from '/_102034_/l1/server/layer_1_external/cbe/cbeRebuildOnSave.js';
 import { authorFromSession, commitSavedSources } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitCommit.js';
+import { discardDraft, draftDiff, listDrafts, promoteDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitPromote.js';
 import { resolveRequestDraft, type RequestDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
 import { ensureDevReaper, restartDevProcess } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
 import { desenvIo, handleDesenvEnter, handleDesenvExit } from '/_102034_/l1/server/layer_1_external/cbe/cbeDesenv.js';
@@ -44,18 +45,22 @@ import {
   CBE_HTTP_UNAUTHORIZED,
   type CbeRequestAuthSession,
   type CbeRequestBase,
+  type CbeRequestDiscardDraft,
+  type CbeRequestDraftDiff,
   type CbeRequestGetContents,
   type CbeRequestGetHistory,
   type CbeRequestGetHistoryContent,
+  type CbeRequestListDrafts,
   type CbeRequestLoadFilesInfo,
   type CbeRequestLogin,
+  type CbeRequestPromote,
   type CbeRequestSetContents,
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeTypes.js';
 
 // Bump on every change to the cbe module. Exposed via the x-cbe-version
 // response header and the {action:'ping'} probe so a deploy can be verified:
 //   curl -s localhost:3000/exec -H 'Content-Type: application/json' -d '{"action":"ping"}'
-export const CBE_MODULE_VERSION = '1.8.2';
+export const CBE_MODULE_VERSION = '1.8.3';
 
 // no-cache = always revalidate with the ETag (304 when unchanged). The server
 // is local to the VM, so revalidation is cheap — and a publish always lands
@@ -507,6 +512,137 @@ async function handleSourceView(request: FastifyRequest, reply: FastifyReply): P
   reply.code(CBE_HTTP_OK).type('text/plain; charset=utf-8').send(file.content);
 }
 
+/** Set only while `promoteDraft` runs. `ping` reads it to say a publish is in flight. */
+export let promoting: { project: number; draft: string; startedAt: string } | null = null;
+
+/** Route tests replace these so a promote does not start a release build. */
+export const promoteRouteHooks = {
+  scheduleRebuildOnSave,
+  isRebuildInProgress,
+};
+
+async function requireSourceProject(
+  request: FastifyRequest,
+  body: { project?: number },
+  reply: FastifyReply,
+): Promise<number | null> {
+  if (!await isSourceRequestAllowed(request)) {
+    reply.code(CBE_HTTP_UNAUTHORIZED).send({ statusCode: CBE_HTTP_UNAUTHORIZED, msg: 'login required' });
+    return null;
+  }
+  const project = readProjectId(body);
+  if (!project) {
+    reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, msg: 'invalid project' });
+    return null;
+  }
+  return project;
+}
+
+function replyGitFailure(
+  reply: FastifyReply,
+  result: { status: number; code: string; files?: string[] },
+): void {
+  reply.code(result.status).send({
+    statusCode: result.status,
+    code: result.code,
+    ...('files' in result ? { files: result.files } : {}),
+  });
+}
+
+async function handlePromote(request: FastifyRequest, body: CbeRequestPromote, reply: FastifyReply): Promise<void> {
+  const project = await requireSourceProject(request, body, reply);
+  if (!project) return;
+
+  if (body.target !== 'production') {
+    const code = body.target === 'homolog' ? 'NOT_YET' : 'BAD_TARGET';
+    console.warn(`[cbe] promote project ${project}: rejected target ${String(body.target)} (${code})`);
+    reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, code });
+    return;
+  }
+
+  // Before any git: a rebuild already running must not start a second release.
+  if (promoting || promoteRouteHooks.isRebuildInProgress()) {
+    console.warn(`[cbe] promote project ${project}: rebuild in progress`);
+    reply.code(409).send({ statusCode: 409, code: 'REBUILD_BUSY' });
+    return;
+  }
+
+  const session = await resolveSession(request);
+  const slug = typeof body.draft === 'string' ? body.draft : '';
+  const comment = typeof body.comment === 'string' ? body.comment : '';
+  promoting = { project, draft: slug, startedAt: new Date().toISOString() };
+  let result;
+  try {
+    result = await promoteDraft({
+      base: getProjectsBaseDir(),
+      projectId: project,
+      slug,
+      author: authorFromSession(session.email),
+      comment,
+    });
+  } finally {
+    promoting = null;
+  }
+
+  if (result.status === 'merged') {
+    promoteRouteHooks.scheduleRebuildOnSave(project);
+    reply.code(CBE_HTTP_OK).send({
+      statusCode: CBE_HTTP_OK,
+      status: 'merged',
+      ref: result.ref,
+      release: 'scheduled',
+    });
+    return;
+  }
+  if (typeof result.status === 'number') {
+    replyGitFailure(reply, result);
+    return;
+  }
+  reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, status: result.status });
+}
+
+async function handleDiscardDraft(request: FastifyRequest, body: CbeRequestDiscardDraft, reply: FastifyReply): Promise<void> {
+  const project = await requireSourceProject(request, body, reply);
+  if (!project) return;
+  const result = await discardDraft({
+    base: getProjectsBaseDir(),
+    projectId: project,
+    slug: typeof body.draft === 'string' ? body.draft : '',
+  });
+  if (typeof result.status === 'number') {
+    replyGitFailure(reply, result);
+    return;
+  }
+  reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, status: 'discarded' });
+}
+
+async function handleListDrafts(request: FastifyRequest, body: CbeRequestListDrafts, reply: FastifyReply): Promise<void> {
+  const project = await requireSourceProject(request, body, reply);
+  if (!project) return;
+  const result = await listDrafts({ base: getProjectsBaseDir(), projectId: project });
+  if (typeof result.status === 'number') {
+    replyGitFailure(reply, result);
+    return;
+  }
+  reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, status: 'listed', drafts: result.drafts });
+}
+
+async function handleDraftDiff(request: FastifyRequest, body: CbeRequestDraftDiff, reply: FastifyReply): Promise<void> {
+  const project = await requireSourceProject(request, body, reply);
+  if (!project) return;
+  const result = await draftDiff({
+    base: getProjectsBaseDir(),
+    projectId: project,
+    slug: typeof body.draft === 'string' ? body.draft : '',
+    shortPath: typeof body.shortPath === 'string' ? body.shortPath : undefined,
+  });
+  if (typeof result.status === 'number') {
+    replyGitFailure(reply, result);
+    return;
+  }
+  reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, status: 'diff', text: result.text });
+}
+
 async function handleExec(request: FastifyRequest, reply: FastifyReply): Promise<void> {
   const body = request.body as CbeRequestBase | undefined;
   if (!body || typeof body !== 'object' || Array.isArray(body) || !body.action) {
@@ -552,6 +688,18 @@ async function handleExec(request: FastifyRequest, reply: FastifyReply): Promise
         return;
       case 'getHistoryContent':
         await handleGetHistoryContent(request, body as CbeRequestGetHistoryContent, reply);
+        return;
+      case 'promote':
+        await handlePromote(request, body as CbeRequestPromote, reply);
+        return;
+      case 'discardDraft':
+        await handleDiscardDraft(request, body as CbeRequestDiscardDraft, reply);
+        return;
+      case 'listDrafts':
+        await handleListDrafts(request, body as CbeRequestListDrafts, reply);
+        return;
+      case 'draftDiff':
+        await handleDraftDiff(request, body as CbeRequestDraftDiff, reply);
         return;
       case 'login': {
         const start = Date.now();
@@ -635,7 +783,7 @@ export function registerCbeRoutes(app: FastifyInstance): void {
   app.get('/libs/*', handleStatic);
   app.get('/monaco/*', handleStatic);
   app.get('/mlsServiceWorker.js', handleStatic);
-  console.info(`[cbe] v${CBE_MODULE_VERSION} routes registered: POST /exec (login/authSession/authLogout/getContents/setContents/loadFilesInfo/getHistory/getHistoryContent), GET /exec/logout, POST /exec/candidate, GET /desenv, GET /desenv/sair, GET /cbe/source, GET /libs/*, GET /monaco/*, GET /mlsServiceWorker.js`);
+  console.info(`[cbe] v${CBE_MODULE_VERSION} routes registered: POST /exec (login/authSession/authLogout/getContents/setContents/loadFilesInfo/getHistory/getHistoryContent/promote/discardDraft/listDrafts/draftDiff), GET /exec/logout, POST /exec/candidate, GET /desenv, GET /desenv/sair, GET /cbe/source, GET /libs/*, GET /monaco/*, GET /mlsServiceWorker.js`);
   if (candidateHubMode() === 'local') {
     if (!candidateSchemaStarted) {
       candidateSchemaStarted = true;

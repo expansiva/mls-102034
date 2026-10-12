@@ -100,6 +100,37 @@ export interface CbeRequestGetHistoryContent extends CbeRequestBase {
   ref?: string;
 }
 
+// ── Draft promote (merge onto main), discard, list, diff ────────────────────
+// `draft` is the slug (`team-102047`), never a raw git ref.
+
+export interface CbeRequestPromote extends CbeRequestBase {
+  action: 'promote';
+  project?: number;
+  draft?: string;
+  /** `production` merges now. `homolog` is reserved and answers NOT_YET. */
+  target?: string;
+  /** Becomes the merge subject: `promote <branch>: <comment>`. */
+  comment?: string;
+}
+
+export interface CbeRequestDiscardDraft extends CbeRequestBase {
+  action: 'discardDraft';
+  project?: number;
+  draft?: string;
+}
+
+export interface CbeRequestListDrafts extends CbeRequestBase {
+  action: 'listDrafts';
+  project?: number;
+}
+
+export interface CbeRequestDraftDiff extends CbeRequestBase {
+  action: 'draftDiff';
+  project?: number;
+  draft?: string;
+  shortPath?: string;
+}
+
 export interface CbePrjSourcesFile {
   shortPath: string;
   versionRef?: string;
