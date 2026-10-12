@@ -126,6 +126,39 @@ test('ensureDraftWorktree retries once on index.lock', async () => {
   assert.equal(addAttempts, 2);
 });
 
+test('ensureDraftWorktree retries when another caller just created the branch', async () => {
+  const base = '/data/mls-base';
+  const projectId = 102047;
+  const slug = 'team-x';
+  const branch = 'team/x';
+  const worktreePath = resolve(draftSourceRoot(base, slug, projectId));
+  let addAttempts = 0;
+  let listAttempts = 0;
+
+  const git: DraftGit = async (args) => {
+    const cmd = innerArgs(args);
+    if (cmd[0] === 'worktree' && cmd[1] === 'list') {
+      listAttempts += 1;
+      if (listAttempts === 1) return '';
+      return `worktree ${worktreePath}\nHEAD abcdef\nbranch refs/heads/${branch}\n`;
+    }
+    if (cmd[0] === 'rev-parse') {
+      throw Object.assign(new Error('Needed a single revision'), { stderr: 'fatal: Needed a single revision' });
+    }
+    if (cmd[0] === 'worktree' && cmd[1] === 'add') {
+      addAttempts += 1;
+      const stderr = `fatal: cannot force update the branch '${branch}' used by worktree at ${worktreePath}`;
+      throw Object.assign(new Error(stderr), { stderr });
+    }
+    throw new Error(`unexpected git ${cmd.join(' ')}`);
+  };
+
+  const path = await ensureDraftWorktree({ base, projectId, slug, branch, git });
+  assert.equal(path, worktreePath);
+  assert.equal(addAttempts, 1);
+  assert.equal(listAttempts, 2);
+});
+
 const execFileAsync = promisify(execFile);
 
 async function initMainRepo(repoPath: string): Promise<void> {

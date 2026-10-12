@@ -63,7 +63,11 @@ function errorText(err: unknown): string {
 
 function isRetryableGitError(err: unknown): boolean {
   const text = errorText(err);
-  return text.includes('index.lock') || text.includes('already exists');
+  return text.includes('index.lock')
+    || text.includes('already exists')
+    || text.includes('cannot force update the branch')
+    || text.includes('is already checked out')
+    || text.includes('already used by worktree');
 }
 
 function sleep(ms: number): Promise<void> {
