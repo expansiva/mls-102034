@@ -81,6 +81,7 @@ export interface EnsureDevProcessOpts {
   clientProjectId: number;
   spawn?: DevSpawn;
   now?: () => number;
+  writeConfig?: (input: { base: string; slug: string; clientProjectId: number }) => void;
 }
 
 interface PendingRestart {
@@ -265,6 +266,25 @@ function childEnv(port: number, slug: string, clientProjectId: number): Record<s
   };
 }
 
+function defaultWriteConfig(input: { base: string; slug: string; clientProjectId: number }): void {
+  const script = join(input.base, 'scripts', 'runtime', 'denoDraftConfig.mjs');
+  if (!existsSync(script)) {
+    console.error(`[cbe] dev ${input.slug}: deno config script missing at ${script}`);
+    throw new Error(`deno config script missing at ${script}`);
+  }
+  const result = spawnSync(process.execPath, [
+    script,
+    input.base,
+    input.slug,
+    String(input.clientProjectId),
+  ], { encoding: 'utf8' });
+  if (result.status !== 0) {
+    const detail = (result.stderr || result.stdout || result.error?.message || `exit ${result.status}`).trim();
+    console.error(`[cbe] dev ${input.slug}: write deno.json failed: ${detail}`);
+    throw new Error(`write deno.json failed: ${detail}`);
+  }
+}
+
 /** Background the real process and let `sh` exit so the kernel reparents it to init. */
 function defaultDevSpawn(command: string, args: string[], options: DevSpawnOptions): { pid: number } {
   mkdirSync(dirname(options.logPath), { recursive: true });
@@ -361,6 +381,9 @@ function ensureUnlocked(opts: EnsureDevProcessOpts): DevProcessInfo {
   const existing = readDevJson(path);
   if (existing && isDevPidAlive(existing.pid)) return existing;
   if (existsSync(path)) rmSync(path, { force: true });
+
+  const writeConfig = opts.writeConfig ?? defaultWriteConfig;
+  writeConfig({ base, slug, clientProjectId });
 
   const port = choosePort(base, slug);
   const cwd = draftDirOf(base, slug);

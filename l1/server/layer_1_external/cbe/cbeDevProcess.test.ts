@@ -79,8 +79,9 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
         return { pid: dummyPid(pids) };
       };
       const now = () => 1_700_000_000_000;
-      const first = ensureDevProcess({ base, slug: SLUG, clientProjectId: 102047, spawn: spawnDev, now });
-      const second = ensureDevProcess({ base, slug: SLUG, clientProjectId: 102047, spawn: spawnDev, now });
+      const writeConfig = () => {};
+      const first = ensureDevProcess({ base, slug: SLUG, clientProjectId: 102047, spawn: spawnDev, now, writeConfig });
+      const second = ensureDevProcess({ base, slug: SLUG, clientProjectId: 102047, spawn: spawnDev, now, writeConfig });
 
       assert.equal(calls.length, 1);
       assert.equal(calls[0].command, 'deno');
@@ -134,7 +135,7 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
         calls.push(pid);
         return { pid };
       };
-      const opts = { base, slug: SLUG, clientProjectId: 102047, spawn: spawnDev, now: () => 1_700_000_000_000 };
+      const opts = { base, slug: SLUG, clientProjectId: 102047, spawn: spawnDev, now: () => 1_700_000_000_000, writeConfig: () => {} };
       const first = ensureDevProcess(opts);
       const pending = [restartDevProcess(opts), restartDevProcess(opts), restartDevProcess(opts)];
       assert.equal(calls.length, 1);
@@ -162,6 +163,7 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
         slug: SLUG,
         clientProjectId: 102047,
         now: () => 5,
+        writeConfig: () => {},
         spawn: () => {
           spawned += 1;
           return { pid: dummyPid(pids) };
@@ -170,6 +172,41 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
       assert.equal(spawned, 1);
       assert.equal(info.pid > 0, true);
       assert.notEqual(info.pid, 2_147_483_646);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  await t.test('writeConfig runs once before the first spawn and a failure does not spawn or write dev.json', () => {
+    const base = mkdtempSync(join(tmpdir(), 'cbe-dev-'));
+    try {
+      writeFileSync(join(base, 'config.json'), '{"release":true}\n');
+      const order: string[] = [];
+      const now = () => 1_700_000_000_000;
+      const writeConfig = () => { order.push('write'); };
+      const spawnDev: DevSpawn = () => {
+        order.push('spawn');
+        return { pid: dummyPid(pids) };
+      };
+      ensureDevProcess({ base, slug: SLUG, clientProjectId: 102047, spawn: spawnDev, now, writeConfig });
+      ensureDevProcess({ base, slug: SLUG, clientProjectId: 102047, spawn: spawnDev, now, writeConfig });
+      assert.deepEqual(order, ['write', 'spawn']);
+
+      const other = 'team-102048';
+      let spawned = 0;
+      assert.throws(() => ensureDevProcess({
+        base,
+        slug: other,
+        clientProjectId: 102047,
+        now,
+        spawn: () => {
+          spawned += 1;
+          return { pid: dummyPid(pids) };
+        },
+        writeConfig: () => { throw new Error('config write failed'); },
+      }), /config write failed/);
+      assert.equal(spawned, 0);
+      assert.equal(existsSync(join(base, 'drafts', other, 'dev.json')), false);
     } finally {
       rmSync(base, { recursive: true, force: true });
     }
