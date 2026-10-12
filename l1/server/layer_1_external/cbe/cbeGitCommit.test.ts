@@ -176,3 +176,31 @@ test('T10: disabled by default outside production — no commit happens', async 
     }
   });
 });
+
+test('T11: sourceRoot commits on the draft worktree branch and leaves main HEAD', async () => {
+  await withGitProject(async ({ projectId, projectRoot }) => {
+    const mainHead = git(projectRoot, ['rev-parse', 'HEAD']);
+    const worktree = join(projectRoot, '..', 'wt-team-x');
+    git(projectRoot, ['worktree', 'add', '-B', 'team/x', worktree, 'main']);
+    writeFileSync(join(worktree, 'l2', 'a.ts'), 'export const a = 4;\n');
+
+    const rc = await commitSavedSources(projectId, ['l2/a.ts'], {
+      sourceRoot: worktree,
+      comments: 'draft edit',
+    });
+
+    assert.equal(rc.status, 'committed');
+    assert.equal(git(worktree, ['rev-parse', '--abbrev-ref', 'HEAD']), 'team/x');
+    assert.equal(git(worktree, ['log', '-1', '--format=%s']), 'draft edit');
+    assert.notEqual(git(worktree, ['rev-parse', 'HEAD']), mainHead);
+    assert.equal(git(projectRoot, ['rev-parse', 'HEAD']), mainHead);
+    assert.equal(git(projectRoot, ['rev-parse', 'main']), mainHead);
+
+    const worktreeHead = git(worktree, ['rev-parse', 'HEAD']);
+    const relative = await commitSavedSources(projectId, ['l2/a.ts'], { sourceRoot: 'drafts/x' });
+    assert.equal(relative.status, 'failed');
+    assert.match(relative.msg ?? '', /absolute/);
+    assert.equal(git(projectRoot, ['rev-parse', 'HEAD']), mainHead);
+    assert.equal(git(worktree, ['rev-parse', 'HEAD']), worktreeHead);
+  });
+});

@@ -25,7 +25,7 @@
 
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { resolveProjectSourcePath } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
 
@@ -122,12 +122,22 @@ async function hasStagedChanges(projectRoot: string, pathspecs: string[]): Promi
 export async function commitSavedSources(
   projectId: number,
   shortPaths: string[],
-  options: { comments?: string; author?: GitCommitAuthor } = {},
+  options: { comments?: string; author?: GitCommitAuthor; sourceRoot?: string } = {},
 ): Promise<GitCommitOutcome> {
   if (!isCommitOnSaveEnabled()) return { status: 'disabled' };
   if (shortPaths.length === 0) return { status: 'nothing' };
 
-  const projectRoot = resolve(resolveProjectSourcePath(projectId, '.'));
+  // sourceRoot is the draft worktree. A relative root is refused before any git
+  // call: resolve() would quietly anchor it to the process cwd.
+  let projectRoot: string;
+  if (options.sourceRoot !== undefined) {
+    if (!isAbsolute(options.sourceRoot)) {
+      return { status: 'failed', msg: `sourceRoot must be absolute: ${options.sourceRoot}` };
+    }
+    projectRoot = resolve(options.sourceRoot);
+  } else {
+    projectRoot = resolve(resolveProjectSourcePath(projectId, '.'));
+  }
   if (!existsSync(join(projectRoot, '.git'))) {
     return { status: 'not-a-repo', msg: `${projectRoot} is not a git checkout` };
   }
