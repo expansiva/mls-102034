@@ -9,7 +9,7 @@
 // and what buildProjectsObj compiles — so read-after-write stays consistent.
 
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, resolve, sep } from 'node:path';
 import { getProjectFilesInfo, resolveProjectSourcePath } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
 import type { CbePrjSourcesFile, CbeSourceFile } from '/_102034_/l1/server/layer_1_external/cbe/cbeTypes.js';
 
@@ -29,17 +29,22 @@ const SHORT_PATH_PATTERN = new RegExp(`^(l[1-${MAX_LEVEL}]/)?[^/].*$`, 'u');
  * follows an `l<n>/` prefix is non-empty. 'l0/x.ts' and 'l8/x.ts' are accepted
  * and read as an ordinary folder named l0 / l8 inside the project — contained,
  * which is what matters here. What proves containment is the resolved-path
- * check below, not the pattern.
+ * check below, not the pattern. The same rules apply when `sourceRoot`
+ * replaces `<base>/mls-<id>` (a draft worktree; it must be absolute).
  */
-export function resolveSourcePath(projectId: number, shortPath: string): string | null {
+export function resolveSourcePath(projectId: number, shortPath: string, sourceRoot?: string): string | null {
   if (!Number.isInteger(projectId) || projectId <= 0) return null;
+  if (sourceRoot !== undefined && !isAbsolute(sourceRoot)) {
+    console.warn(`[cbe] sourceRoot is not absolute: "${sourceRoot}" (project ${projectId})`);
+    return null;
+  }
   if (typeof shortPath !== 'string' || shortPath.length === 0) return null;
   if (shortPath.includes('\0') || shortPath.includes('\\')) return null;
   if (shortPath.startsWith('/') || /^[A-Za-z]:/u.test(shortPath)) return null;
   if (shortPath.split('/').some((segment) => segment === '..' || segment === '.')) return null;
   if (!SHORT_PATH_PATTERN.test(shortPath)) return null;
 
-  const projectRoot = resolve(resolveProjectSourcePath(projectId, '.'));
+  const projectRoot = resolve(resolveProjectSourcePath(projectId, '.', sourceRoot));
   const target = resolve(projectRoot, shortPath);
   // Containment check on the resolved paths — the only one that actually proves it.
   if (target !== projectRoot && !target.startsWith(projectRoot + sep)) return null;
@@ -47,10 +52,10 @@ export function resolveSourcePath(projectId: number, shortPath: string): string 
 }
 
 /** Reads the requested sources; a file that is not there comes back as null content. */
-export function readSources(projectId: number, shortPaths: string[]): CbeSourceFile[] {
+export function readSources(projectId: number, shortPaths: string[], sourceRoot?: string): CbeSourceFile[] {
   const rc: CbeSourceFile[] = [];
   for (const shortPath of shortPaths) {
-    const path = resolveSourcePath(projectId, shortPath);
+    const path = resolveSourcePath(projectId, shortPath, sourceRoot);
     if (!path) {
       console.warn(`[cbe] getContents: rejected shortPath "${shortPath}" (project ${projectId})`);
       continue;
@@ -72,10 +77,16 @@ export function readSources(projectId: number, shortPaths: string[]): CbeSourceF
  * `paths` reports every shortPath actually touched (written and removed), which
  * is what cbeGitCommit commits — the caller never has to re-derive it.
  */
-export function writeSources(projectId: number, files: CbeSourceFile[], deletes: string[]): { ok: boolean; msg?: string; paths: string[] } {
+export function writeSources(
+  projectId: number,
+  files: CbeSourceFile[],
+  deletes: string[],
+  options: { sourceRoot?: string } = {},
+): { ok: boolean; msg?: string; paths: string[] } {
+  const { sourceRoot } = options;
   const writes: { path: string; content: Buffer }[] = [];
   for (const file of files) {
-    const path = resolveSourcePath(projectId, file.shortPath);
+    const path = resolveSourcePath(projectId, file.shortPath, sourceRoot);
     if (!path) return { ok: false, msg: `rejected shortPath: ${file.shortPath}`, paths: [] };
     writes.push({
       path,
@@ -85,7 +96,7 @@ export function writeSources(projectId: number, files: CbeSourceFile[], deletes:
 
   const removals: string[] = [];
   for (const shortPath of deletes) {
-    const path = resolveSourcePath(projectId, shortPath);
+    const path = resolveSourcePath(projectId, shortPath, sourceRoot);
     if (!path) return { ok: false, msg: `rejected shortPath: ${shortPath}`, paths: [] };
     removals.push(path);
   }

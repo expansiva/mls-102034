@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readSources, resolveSourcePath } from '/_102034_/l1/server/layer_1_external/cbe/cbeSources.js';
+import { readSources, resolveSourcePath, writeSources } from '/_102034_/l1/server/layer_1_external/cbe/cbeSources.js';
 
 const PROJECT_ID = 197001;
 
@@ -28,7 +28,8 @@ function withProject<T>(fn: (dir: string, root: string) => T): T {
 }
 
 test('a path that escapes the project is refused', () => {
-  withProject(() => {
+  withProject((_dir, root) => {
+    const draft = join(root, 'draft-root');
     for (const shortPath of [
       '../secret.txt',
       'l2/../../secret.txt',
@@ -41,6 +42,7 @@ test('a path that escapes the project is refused', () => {
       '',
     ]) {
       assert.equal(resolveSourcePath(PROJECT_ID, shortPath), null, shortPath);
+      assert.equal(resolveSourcePath(PROJECT_ID, shortPath, draft), null, `draft ${shortPath}`);
     }
   });
 });
@@ -103,5 +105,49 @@ test('one rejected path does not drop the valid ones in the same call', () => {
     const rc = readSources(PROJECT_ID, ['../secret.txt', 'l2/foo.ts']);
     assert.equal(rc.length, 1);
     assert.equal(rc[0].shortPath, 'l2/foo.ts');
+  });
+});
+
+test('sourceRoot reads and writes the draft tree, not the project', () => {
+  withProject((dir, root) => {
+    const draft = join(root, 'drafts', 'team-x', `mls-${PROJECT_ID}`);
+    mkdirSync(join(draft, 'l2'), { recursive: true });
+    writeFileSync(join(dir, 'l2', 'foo.ts'), 'main\n');
+    writeFileSync(join(draft, 'l2', 'foo.ts'), 'draft\n');
+
+    assert.equal(resolveSourcePath(PROJECT_ID, 'l2/foo.ts'), join(dir, 'l2', 'foo.ts'));
+    assert.equal(resolveSourcePath(PROJECT_ID, 'l2/foo.ts', draft), join(draft, 'l2', 'foo.ts'));
+    assert.equal(resolveSourcePath(PROJECT_ID, 'l2/foo.ts', 'not/absolute'), null);
+
+    const [fromDraft] = readSources(PROJECT_ID, ['l2/foo.ts'], draft);
+    assert.equal(fromDraft.content, 'draft\n');
+    const [fromMain] = readSources(PROJECT_ID, ['l2/foo.ts']);
+    assert.equal(fromMain.content, 'main\n');
+
+    const written = writeSources(
+      PROJECT_ID,
+      [{ shortPath: 'l2/bar.ts', content: 'new\n', encoding: 'utf8' }],
+      [],
+      { sourceRoot: draft },
+    );
+    assert.equal(written.ok, true);
+    assert.deepEqual(written.paths, ['l2/bar.ts']);
+    assert.equal(readFileSync(join(draft, 'l2', 'bar.ts'), 'utf8'), 'new\n');
+    assert.equal(existsSync(join(dir, 'l2', 'bar.ts')), false);
+
+    const removed = writeSources(PROJECT_ID, [], ['l2/foo.ts'], { sourceRoot: draft });
+    assert.equal(removed.ok, true);
+    assert.equal(existsSync(join(draft, 'l2', 'foo.ts')), false);
+    assert.equal(readFileSync(join(dir, 'l2', 'foo.ts'), 'utf8'), 'main\n');
+
+    const rejected = writeSources(
+      PROJECT_ID,
+      [{ shortPath: '../secret.txt', content: 'x', encoding: 'utf8' }],
+      [],
+      { sourceRoot: draft },
+    );
+    assert.equal(rejected.ok, false);
+    assert.equal(existsSync(join(root, 'secret.txt')), false);
+    assert.equal(existsSync(join(dir, 'l2', 'bar.ts')), false);
   });
 });

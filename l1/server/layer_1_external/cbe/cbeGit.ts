@@ -19,6 +19,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { isAbsolute } from 'node:path';
 import { resolveProjectSourcePath } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
 import { resolveSourcePath } from '/_102034_/l1/server/layer_1_external/cbe/cbeSources.js';
 import type { CbeHistoryEntry } from '/_102034_/l1/server/layer_1_external/cbe/cbeTypes.js';
@@ -37,9 +38,14 @@ const LOG_FORMAT = `${RECORD_SEP}%H${FIELD_SEP}%an${FIELD_SEP}%aI${FIELD_SEP}%s`
 const MAX_HISTORY = 100;
 const MAX_BUFFER = 32 * 1024 * 1024;
 
-function git(projectId: number, args: string[]): string | null {
+/** `cwd`, when set, replaces `<base>/mls-<id>` (a draft worktree). It must be absolute. */
+function git(projectId: number, args: string[], cwd?: string): string | null {
+  if (cwd !== undefined && !isAbsolute(cwd)) {
+    console.warn(`[cbe] git cwd is not absolute: "${cwd}" (project ${projectId})`);
+    return null;
+  }
   try {
-    return execFileSync('git', ['-C', resolveProjectSourcePath(projectId, '.'), ...args], {
+    return execFileSync('git', ['-C', cwd ?? resolveProjectSourcePath(projectId, '.'), ...args], {
       encoding: 'utf8',
       maxBuffer: MAX_BUFFER,
       windowsHide: true,
@@ -54,10 +60,14 @@ function git(projectId: number, args: string[]): string | null {
 
 /** True when the project folder is a git repository (a dev workspace or a dep
  * cloned outside the standard layout may not be). */
-export function isGitRepo(projectId: number): boolean {
+export function isGitRepo(projectId: number, sourceRoot?: string): boolean {
   if (!Number.isInteger(projectId) || projectId <= 0) return false;
-  if (!existsSync(resolveProjectSourcePath(projectId, '.git'))) return false;
-  return git(projectId, ['rev-parse', '--is-inside-work-tree'])?.trim() === 'true';
+  if (sourceRoot !== undefined && !isAbsolute(sourceRoot)) {
+    console.warn(`[cbe] sourceRoot is not absolute: "${sourceRoot}" (project ${projectId})`);
+    return false;
+  }
+  if (!existsSync(resolveProjectSourcePath(projectId, '.git', sourceRoot))) return false;
+  return git(projectId, ['rev-parse', '--is-inside-work-tree'], sourceRoot)?.trim() === 'true';
 }
 
 /** Splits `git log --numstat` output into the history entries the cfe expects. */
@@ -96,12 +106,12 @@ function parseLog(out: string): CbeHistoryEntry[] {
  * Returns [] for an unknown path, an untracked file or a non-repo — all of
  * which mean "no history", not "failed".
  */
-export function readHistory(projectId: number, shortPath: string): CbeHistoryEntry[] {
-  const path = resolveSourcePath(projectId, shortPath);
-  if (!path || !isGitRepo(projectId)) return [];
+export function readHistory(projectId: number, shortPath: string, sourceRoot?: string): CbeHistoryEntry[] {
+  const path = resolveSourcePath(projectId, shortPath, sourceRoot);
+  if (!path || !isGitRepo(projectId, sourceRoot)) return [];
   const out = git(projectId, [
     'log', `--max-count=${MAX_HISTORY}`, '--follow', '--numstat', `--format=${LOG_FORMAT}`, '--', shortPath,
-  ]);
+  ], sourceRoot);
   return out ? parseLog(out) : [];
 }
 
@@ -114,10 +124,10 @@ export function readHistory(projectId: number, shortPath: string): CbeHistoryEnt
  * from newest to oldest and keeping the old name of each rename gives the name
  * in force at each commit.
  */
-function pathAtCommit(projectId: number, shortPath: string, ref: string): string | null {
+function pathAtCommit(projectId: number, shortPath: string, ref: string, sourceRoot?: string): string | null {
   const out = git(projectId, [
     'log', `--max-count=${MAX_HISTORY}`, '--follow', '--name-status', `--format=${RECORD_SEP}%H`, '--', shortPath,
-  ]);
+  ], sourceRoot);
   if (!out) return null;
 
   let current = shortPath;
@@ -137,20 +147,20 @@ function pathAtCommit(projectId: number, shortPath: string, ref: string): string
  * The file's content at a commit, or null when the ref is not acceptable, the
  * commit is unknown, or the file did not exist there.
  */
-export function readHistoryContent(projectId: number, shortPath: string, ref: string): string | null {
+export function readHistoryContent(projectId: number, shortPath: string, ref: string, sourceRoot?: string): string | null {
   if (typeof ref !== 'string' || !REF_PATTERN.test(ref)) return null;
-  const path = resolveSourcePath(projectId, shortPath);
-  if (!path || !isGitRepo(projectId)) return null;
+  const path = resolveSourcePath(projectId, shortPath, sourceRoot);
+  if (!path || !isGitRepo(projectId, sourceRoot)) return null;
 
-  const direct = git(projectId, ['show', `${ref}:${shortPath}`]);
+  const direct = git(projectId, ['show', `${ref}:${shortPath}`], sourceRoot);
   if (direct !== null) return direct;
 
   // Older than a rename: retry under the name the file had at that commit.
-  const historicalPath = pathAtCommit(projectId, shortPath, ref);
+  const historicalPath = pathAtCommit(projectId, shortPath, ref, sourceRoot);
   if (!historicalPath || historicalPath === shortPath) return null;
   // The historical name comes from git itself, not from the browser — but it
   // still has to land inside the project, so it goes through the same gate.
-  if (!resolveSourcePath(projectId, historicalPath)) return null;
-  return git(projectId, ['show', `${ref}:${historicalPath}`]);
+  if (!resolveSourcePath(projectId, historicalPath, sourceRoot)) return null;
+  return git(projectId, ['show', `${ref}:${historicalPath}`], sourceRoot);
 }
 

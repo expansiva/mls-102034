@@ -186,3 +186,39 @@ test('a valid-looking but unknown sha returns null, not a throw', () => {
     assert.equal(readHistoryContent(PROJECT_ID, 'l2/foo.ts', '0'.repeat(40)), null);
   });
 });
+
+test('sourceRoot reads history from that worktree, not the project', () => {
+  withRepo((dir) => {
+    writeFileSync(join(dir, 'l2', 'foo.ts'), 'main\n');
+    commit(dir, 'on main');
+
+    const draft = mkdtempSync(join(tmpdir(), 'cbe-git-draft-'));
+    try {
+      mkdirSync(join(draft, 'l2'), { recursive: true });
+      git(draft, ['init', '-b', 'team/x']);
+      git(draft, ['config', 'user.name', 'Draft Author']);
+      git(draft, ['config', 'user.email', 'draft@collab.codes']);
+      writeFileSync(join(draft, 'l2', 'foo.ts'), 'draft\n');
+      git(draft, ['add', '-A']);
+      git(draft, ['commit', '-m', 'on draft']);
+
+      const mainHistory = readHistory(PROJECT_ID, 'l2/foo.ts');
+      assert.equal(mainHistory[0].message, 'on main');
+
+      assert.equal(isGitRepo(PROJECT_ID, draft), true);
+      assert.equal(isGitRepo(PROJECT_ID, 'not/absolute'), false);
+      const draftHistory = readHistory(PROJECT_ID, 'l2/foo.ts', draft);
+      assert.equal(draftHistory.length, 1);
+      assert.equal(draftHistory[0].message, 'on draft');
+      assert.equal(draftHistory[0].authorName, 'Draft Author');
+      assert.equal(readHistoryContent(PROJECT_ID, 'l2/foo.ts', draftHistory[0].ref, draft), 'draft\n');
+      assert.notEqual(readHistoryContent(PROJECT_ID, 'l2/foo.ts', mainHistory[0].ref), 'draft\n');
+
+      assert.deepEqual(readHistory(PROJECT_ID, '../secret.txt', draft), []);
+      assert.equal(readHistoryContent(PROJECT_ID, '../secret.txt', draftHistory[0].ref, draft), null);
+      assert.deepEqual(readHistory(PROJECT_ID, 'l2/foo.ts', 'not/absolute'), []);
+    } finally {
+      rmSync(draft, { recursive: true, force: true });
+    }
+  });
+});

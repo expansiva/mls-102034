@@ -6,7 +6,7 @@
 // the zip is only re-read when it changes.
 
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import AdmZip from 'adm-zip';
 import { resolveProjectsPath } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
@@ -25,8 +25,18 @@ export function getProjectsBaseDir(): string {
   return resolveProjectsPath('.');
 }
 
-/** Resolves a path inside a project's source folder at the base (e.g. 'obj/compiled.zip'). */
-export function resolveProjectSourcePath(projectId: number, relativePath: string): string {
+/**
+ * Resolves a path inside a project's source folder at the base (e.g. 'obj/compiled.zip').
+ * `sourceRoot`, when set, replaces `<base>/mls-<id>` — a draft worktree, absolute.
+ * Omitted, the path is exactly what it was.
+ */
+export function resolveProjectSourcePath(projectId: number, relativePath: string, sourceRoot?: string): string {
+  if (sourceRoot !== undefined) {
+    if (!isAbsolute(sourceRoot)) {
+      console.warn(`[cbe] sourceRoot is not absolute: "${sourceRoot}" (project ${projectId})`);
+    }
+    return join(sourceRoot, relativePath);
+  }
   return join(getProjectsBaseDir(), `mls-${projectId}`, relativePath);
 }
 
