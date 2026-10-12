@@ -1,17 +1,19 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.test.ts" enhancement="_blank" />
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import {
   buildDenoArgs,
   ensureDevProcess,
+  ensureDevReaper,
   isDevPidAlive,
   memoryModeAllowEnv,
   reapIdle,
   restartDevProcess,
+  touchDevProcess,
   type DevSpawn,
   type DevSpawnOptions,
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
@@ -206,6 +208,38 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
       rmSync(base, { recursive: true, force: true });
     }
   });
+});
+
+test('touchDevProcess updates only lastRequestAt; ensureDevReaper arms one timer per base', () => {
+  const base = mkdtempSync(join(tmpdir(), 'cbe-dev-touch-'));
+  const timers: Array<ReturnType<typeof setInterval>> = [];
+  const origInterval = globalThis.setInterval;
+  try {
+    const record = { port: 4100, pid: 4242, startedAt: 10, lastRequestAt: 10 };
+    writeDev(base, SLUG, record);
+    touchDevProcess(base, SLUG, 99);
+    assert.deepEqual(JSON.parse(readFileSync(join(base, 'drafts', SLUG, 'dev.json'), 'utf8')), {
+      ...record,
+      lastRequestAt: 99,
+    });
+
+    const missing = 'team-102048';
+    touchDevProcess(base, missing, 5);
+    assert.equal(existsSync(join(base, 'drafts', missing, 'dev.json')), false);
+
+    globalThis.setInterval = ((handler: () => void, ms?: number) => {
+      const timer = origInterval(handler, ms);
+      timers.push(timer);
+      return timer;
+    }) as typeof setInterval;
+    ensureDevReaper(base);
+    ensureDevReaper(base);
+    assert.equal(timers.length, 1);
+  } finally {
+    globalThis.setInterval = origInterval;
+    for (const timer of timers) clearInterval(timer);
+    rmSync(base, { recursive: true, force: true });
+  }
 });
 
 function existsDev(base: string, slug: string): boolean {

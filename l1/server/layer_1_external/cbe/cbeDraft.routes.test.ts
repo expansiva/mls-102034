@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify from 'fastify';
-import { registerCbeRoutes } from '/_102034_/l1/server/layer_1_external/cbe/cbeRoutes.js';
+import { draftDevHooks, registerCbeRoutes } from '/_102034_/l1/server/layer_1_external/cbe/cbeRoutes.js';
 
 const PROJECT_ID = 102047;
 const SLUG = 'team-102047';
@@ -44,6 +44,17 @@ test('setContents: draft cookie commits on the draft branch and skips the releas
 
   const app = Fastify();
   registerCbeRoutes(app);
+  const restarts: Array<{ base: string; slug: string; clientProjectId: number }> = [];
+  const reaperBases: string[] = [];
+  const origRestart = draftDevHooks.restartDevProcess;
+  const origReaper = draftDevHooks.ensureDevReaper;
+  draftDevHooks.restartDevProcess = (opts) => {
+    restarts.push({ base: opts.base, slug: opts.slug, clientProjectId: opts.clientProjectId });
+    return new Promise(() => {});
+  };
+  draftDevHooks.ensureDevReaper = (dir) => {
+    reaperBases.push(dir);
+  };
   try {
     git(base, ['init', '-b', 'main', projectRoot]);
     git(projectRoot, ['config', 'user.name', 'fixture']);
@@ -73,6 +84,8 @@ test('setContents: draft cookie commits on the draft branch and skips the releas
     assert.equal(git(draftRoot, ['log', '-1', '--format=%s']), 'draft save');
     assert.equal(head(projectRoot), mainAtStart);
     assert.ok(logs.some((line) => line === `[cbe] draft ${SLUG}: no release rebuild`));
+    assert.deepEqual(restarts, [{ base, slug: SLUG, clientProjectId: PROJECT_ID }]);
+    assert.deepEqual(reaperBases, [base]);
 
     const readDraft = await app.inject({
       method: 'POST',
@@ -127,6 +140,8 @@ test('setContents: draft cookie commits on the draft branch and skips the releas
     assert.equal(git(projectRoot, ['log', '-1', '--format=%s']), 'main save');
     assert.notEqual(head(projectRoot), mainAtStart);
     assert.equal(logs.some((line) => line.includes('no release rebuild')), false);
+    assert.deepEqual(restarts, [{ base, slug: SLUG, clientProjectId: PROJECT_ID }]);
+    assert.deepEqual(reaperBases, [base]);
 
     const mainBeforeInvalid = head(projectRoot);
     logs.length = 0;
@@ -150,6 +165,8 @@ test('setContents: draft cookie commits on the draft branch and skips the releas
     assert.equal(existsSync(join(base, 'drafts', 'nope')), false);
     assert.equal(logs.some((line) => line.includes('no release rebuild')), false);
   } finally {
+    draftDevHooks.restartDevProcess = origRestart;
+    draftDevHooks.ensureDevReaper = origReaper;
     console.info = origInfo;
     await app.close();
     if (prev.dir === undefined) delete process.env.CBE_PROJECTS_DIR;

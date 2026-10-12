@@ -32,6 +32,7 @@ import { readHistory, readHistoryContent } from '/_102034_/l1/server/layer_1_ext
 import { isRebuildInProgress, scheduleRebuildOnSave } from '/_102034_/l1/server/layer_1_external/cbe/cbeRebuildOnSave.js';
 import { authorFromSession, commitSavedSources } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitCommit.js';
 import { resolveRequestDraft, type RequestDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
+import { ensureDevReaper, restartDevProcess } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
 import { getRunningRelease } from '/_102034_/l1/server/layer_1_external/cbe/cbeRelease.js';
 import {
   CBE_HTTP_BAD_REQUEST,
@@ -348,6 +349,12 @@ async function handleGetContents(request: FastifyRequest, body: CbeRequestGetCon
   reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, msg: 'ok', files, draft: draftBody(draft) });
 }
 
+/** Route tests replace these so a draft save does not spawn Deno. */
+export const draftDevHooks = {
+  restartDevProcess,
+  ensureDevReaper,
+};
+
 async function handleSetContents(request: FastifyRequest, body: CbeRequestSetContents, reply: FastifyReply): Promise<void> {
   if (!await isSourceRequestAllowed(request)) {
     reply.code(CBE_HTTP_UNAUTHORIZED).send({ statusCode: CBE_HTTP_UNAUTHORIZED, msg: 'login required' });
@@ -388,6 +395,21 @@ async function handleSetContents(request: FastifyRequest, body: CbeRequestSetCon
   // A draft commit stays on its branch: no release rebuild.
   if (draft) {
     console.info(`[cbe] draft ${draft.slug}: no release rebuild`);
+    const base = getProjectsBaseDir();
+    draftDevHooks.ensureDevReaper(base);
+    // Fire-and-forget: the save responds before the debounced restart. A rejection
+    // (or a sync throw from an invalid slug) is logged and never fails this handler.
+    try {
+      void draftDevHooks.restartDevProcess({
+        base,
+        slug: draft.slug,
+        clientProjectId: project,
+      }).catch((err: unknown) => {
+        console.error(`[cbe] draft ${draft.slug}: dev restart failed: ${(err as Error).message}`);
+      });
+    } catch (err) {
+      console.error(`[cbe] draft ${draft.slug}: dev restart failed: ${(err as Error).message}`);
+    }
   } else {
     scheduleRebuildOnSave(project);
   }

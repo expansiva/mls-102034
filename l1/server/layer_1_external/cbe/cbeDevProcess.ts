@@ -443,3 +443,31 @@ export function reapIdle(opts: { base: string; now: number }): void {
     alive = listDevRecords(opts.base).filter((entry) => isDevPidAlive(entry.record.pid));
   }
 }
+
+/** Rewrites `lastRequestAt`. No-op when `dev.json` is absent. `restart`/`ensure` already stamp it. */
+export function touchDevProcess(base: string, slug: string, now: number): void {
+  assertSlug(slug);
+  withLock(base, slug, () => {
+    const path = devJsonPath(base, slug);
+    const record = readDevJson(path);
+    if (!record) return;
+    const next: DevProcessInfo = { ...record, lastRequestAt: now };
+    writeFileSync(path, `${JSON.stringify(next)}\n`);
+  });
+}
+
+const devReapers = new Map<string, ReturnType<typeof setInterval>>();
+
+/** One idle sweep per base. The first draft save in this worker arms it. */
+export function ensureDevReaper(base: string): void {
+  if (devReapers.has(base)) return;
+  const timer = setInterval(() => {
+    try {
+      reapIdle({ base, now: Date.now() });
+    } catch (err) {
+      console.error(`[cbe] dev reaper failed for ${base}: ${(err as Error).message}`);
+    }
+  }, 60_000);
+  timer.unref();
+  devReapers.set(base, timer);
+}
