@@ -3,9 +3,10 @@
 // worktree. Invalid slugs are "no draft" (null), never an error.
 
 import { execFile } from 'node:child_process';
-import { realpath } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { mkdir, realpath } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { parseCookies } from '/_102034_/l1/server/layer_1_external/cbe/cbeAuthJwt.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -16,6 +17,12 @@ const SLUG_RE = /^(team|user)-([a-z0-9_.-]{1,64})$/;
 export interface DraftSlug {
   slug: string;
   branch: string;
+}
+
+export interface RequestDraft {
+  slug: string;
+  branch: string;
+  sourceRoot: string;
 }
 
 export type DraftGit = (args: string[], cwd: string) => Promise<string>;
@@ -133,4 +140,31 @@ export async function ensureDraftWorktree(opts: {
       throw err;
     }
   }
+}
+
+/**
+ * Draft named by the `collab-draft` cookie, with its worktree ready.
+ * Missing or invalid slug is null — the caller keeps today's paths.
+ */
+export async function resolveRequestDraft(
+  cookieHeader: string | undefined,
+  base: string,
+  projectId: number,
+): Promise<RequestDraft | null> {
+  const parsed = parseDraftSlug(parseCookies(cookieHeader)['collab-draft']);
+  if (!parsed) return null;
+  const sourceRoot = resolve(draftSourceRoot(base, parsed.slug, projectId));
+  try {
+    await mkdir(dirname(sourceRoot), { recursive: true });
+    await ensureDraftWorktree({
+      base,
+      projectId,
+      slug: parsed.slug,
+      branch: parsed.branch,
+    });
+  } catch (err) {
+    console.error(`[cbe] draft ${parsed.slug}: worktree failed: ${(err as Error).message}`);
+    throw err;
+  }
+  return { slug: parsed.slug, branch: parsed.branch, sourceRoot };
 }

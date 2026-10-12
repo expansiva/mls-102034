@@ -31,6 +31,7 @@ import { getSharedPgPool } from '/_102034_/l1/server/layer_1_external/data/postg
 import { readHistory, readHistoryContent } from '/_102034_/l1/server/layer_1_external/cbe/cbeGit.js';
 import { isRebuildInProgress, scheduleRebuildOnSave } from '/_102034_/l1/server/layer_1_external/cbe/cbeRebuildOnSave.js';
 import { authorFromSession, commitSavedSources } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitCommit.js';
+import { resolveRequestDraft, type RequestDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
 import { getRunningRelease } from '/_102034_/l1/server/layer_1_external/cbe/cbeRelease.js';
 import {
   CBE_HTTP_BAD_REQUEST,
@@ -328,6 +329,10 @@ function readProjectId(body: { project?: number }): number | null {
   return Number.isInteger(project) && project > 0 ? project : null;
 }
 
+function draftBody(draft: RequestDraft | null): { slug: string; branch: string } | null {
+  return draft ? { slug: draft.slug, branch: draft.branch } : null;
+}
+
 async function handleGetContents(request: FastifyRequest, body: CbeRequestGetContents, reply: FastifyReply): Promise<void> {
   if (!await isSourceRequestAllowed(request)) {
     reply.code(CBE_HTTP_UNAUTHORIZED).send({ statusCode: CBE_HTTP_UNAUTHORIZED, msg: 'login required' });
@@ -338,8 +343,9 @@ async function handleGetContents(request: FastifyRequest, body: CbeRequestGetCon
     reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, msg: 'invalid project or shortPaths' });
     return;
   }
-  const files = readSources(project, body.shortPaths);
-  reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, msg: 'ok', files });
+  const draft = await resolveRequestDraft(request.headers.cookie as string | undefined, getProjectsBaseDir(), project);
+  const files = readSources(project, body.shortPaths, draft?.sourceRoot);
+  reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, msg: 'ok', files, draft: draftBody(draft) });
 }
 
 async function handleSetContents(request: FastifyRequest, body: CbeRequestSetContents, reply: FastifyReply): Promise<void> {
@@ -352,7 +358,8 @@ async function handleSetContents(request: FastifyRequest, body: CbeRequestSetCon
     reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, msg: 'invalid project' });
     return;
   }
-  const rc = writeSources(project, body.files ?? [], body.deletes ?? []);
+  const draft = await resolveRequestDraft(request.headers.cookie as string | undefined, getProjectsBaseDir(), project);
+  const rc = writeSources(project, body.files ?? [], body.deletes ?? [], { sourceRoot: draft?.sourceRoot });
   if (!rc.ok) {
     reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, msg: rc.msg ?? 'invalid request' });
     return;
@@ -361,11 +368,13 @@ async function handleSetContents(request: FastifyRequest, body: CbeRequestSetCon
   // from `git ls-tree -r HEAD`, so a build that runs on an uncommitted write
   // republishes the OLD versionRef and the browser keeps its cached source (see
   // cbeGitCommit.ts). It is also what puts these edits in getHistory. Awaited,
-  // never fatal — the files are already on disk.
+  // never fatal — the files are already on disk. `sourceRoot` is the draft
+  // worktree; omitted, the commit stays on the project's current branch.
   const session = await resolveSession(request);
   const commit = await commitSavedSources(project, rc.paths, {
     comments: body.comments ?? undefined,
     author: authorFromSession(session.email ?? session.testUser),
+    sourceRoot: draft?.sourceRoot,
   });
   if (commit.status === 'failed') {
     console.warn(`[cbe] setContents project ${project}: commit failed (save kept, versionRef will not move): ${commit.msg}`);
@@ -376,8 +385,13 @@ async function handleSetContents(request: FastifyRequest, body: CbeRequestSetCon
   // cbeRebuildOnSave.ts). Never blocks this response. The project goes along so
   // its obj/compiled.zip is refreshed — `pnpm build` alone skips it whenever the
   // project is inside the release fecho, which the VM's own app always is.
-  scheduleRebuildOnSave(project);
-  reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, msg: 'ok', commit });
+  // A draft commit stays on its branch: no release rebuild.
+  if (draft) {
+    console.info(`[cbe] draft ${draft.slug}: no release rebuild`);
+  } else {
+    scheduleRebuildOnSave(project);
+  }
+  reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, msg: 'ok', commit, draft: draftBody(draft) });
 }
 
 async function handleLoadFilesInfo(request: FastifyRequest, body: CbeRequestLoadFilesInfo, reply: FastifyReply): Promise<void> {
@@ -390,7 +404,9 @@ async function handleLoadFilesInfo(request: FastifyRequest, body: CbeRequestLoad
     reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, msg: 'invalid project' });
     return;
   }
-  reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, msg: 'ok', filesInfo: listSources(project) });
+  const draft = await resolveRequestDraft(request.headers.cookie as string | undefined, getProjectsBaseDir(), project);
+  // listSources has no sourceRoot: the index is still the project's compiled zip.
+  reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, msg: 'ok', filesInfo: listSources(project), draft: draftBody(draft) });
 }
 
 // History is source code: the same session gate the read actions use applies.
@@ -404,9 +420,15 @@ async function handleGetHistory(request: FastifyRequest, body: CbeRequestGetHist
     reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, msg: 'invalid project or shortPath' });
     return;
   }
+  const draft = await resolveRequestDraft(request.headers.cookie as string | undefined, getProjectsBaseDir(), project);
   // A project without .git, an untracked file or a rejected path all mean "no
   // history" — an empty list, not an error: the studio must degrade quietly.
-  reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, msg: 'ok', history: readHistory(project, body.shortPath) });
+  reply.code(CBE_HTTP_OK).send({
+    statusCode: CBE_HTTP_OK,
+    msg: 'ok',
+    history: readHistory(project, body.shortPath, draft?.sourceRoot),
+    draft: draftBody(draft),
+  });
 }
 
 async function handleGetHistoryContent(request: FastifyRequest, body: CbeRequestGetHistoryContent, reply: FastifyReply): Promise<void> {
@@ -419,10 +441,11 @@ async function handleGetHistoryContent(request: FastifyRequest, body: CbeRequest
     reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, msg: 'invalid project, shortPath or ref' });
     return;
   }
+  const draft = await resolveRequestDraft(request.headers.cookie as string | undefined, getProjectsBaseDir(), project);
   // An unacceptable ref (the UI's 'local' sentinel, anything non-hex) comes back
   // as null content, not 400: the diff panel asks for it on an ordinary click.
-  const content = readHistoryContent(project, body.shortPath, body.ref);
-  reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, msg: 'ok', content });
+  const content = readHistoryContent(project, body.shortPath, body.ref, draft?.sourceRoot);
+  reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, msg: 'ok', content, draft: draftBody(draft) });
 }
 
 // GET /cbe/source?project=<id>&path=<shortPath> — the file as the VM has it.
@@ -443,10 +466,11 @@ async function handleSourceView(request: FastifyRequest, reply: FastifyReply): P
     reply.code(CBE_HTTP_BAD_REQUEST).type('text/plain; charset=utf-8').send('invalid project or path');
     return;
   }
+  const draft = await resolveRequestDraft(request.headers.cookie as string | undefined, getProjectsBaseDir(), project);
 
   // readSources drops a rejected path and a missing file alike — both are "not
   // here" to a reader, and telling them apart would report on the file system.
-  const [file] = readSources(project, [query.path]);
+  const [file] = readSources(project, [query.path], draft?.sourceRoot);
   if (!file) {
     reply.code(CBE_HTTP_NOT_FOUND).type('text/plain; charset=utf-8').send('not found');
     return;
