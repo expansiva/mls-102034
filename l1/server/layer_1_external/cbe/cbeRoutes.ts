@@ -8,6 +8,8 @@
 // Kept apart from the app/BFF routes on purpose — everything cbe-related lives
 // in this folder so it can later move to a release-packaged module untouched.
 
+import { closeSync, openSync, readFileSync, rmSync, writeFileSync, writeSync } from 'node:fs';
+import { join } from 'node:path';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { executeCbeLogin, readProjectFile } from '/_102034_/l1/server/layer_1_external/cbe/cbeLogin.js';
 import { getProjectsBaseDir } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
@@ -512,14 +514,204 @@ async function handleSourceView(request: FastifyRequest, reply: FastifyReply): P
   reply.code(CBE_HTTP_OK).type('text/plain; charset=utf-8').send(file.content);
 }
 
-/** Set only while `promoteDraft` runs. `ping` reads it to say a publish is in flight. */
-export let promoting: { project: number; draft: string; startedAt: string } | null = null;
+/** Publish claim shared by both pm2 workers. Alive until the rebuild lock appears, or 30s. */
+interface PromoteInFlight {
+  project: number;
+  draft: string;
+  startedAt: string;
+}
+
+/** Written when a claim expires and the rebuild never started. `ping` returns it. */
+interface LastPromote {
+  status: 'rebuild-not-started';
+  project: number;
+  draft: string;
+  at: string;
+}
+
+const PROMOTE_IN_FLIGHT_FILE = '.promote-in-flight.json';
+const LAST_PROMOTE_FILE = '.last-promote.json';
+const PROMOTE_IN_FLIGHT_MS = 30_000;
+
+function buildPromoteInFlight(project: number, draft: string, startedAt: string): PromoteInFlight {
+  return { project, draft, startedAt };
+}
+
+function buildLastPromote(project: number, draft: string, at: string): LastPromote {
+  return { status: 'rebuild-not-started', project, draft, at };
+}
 
 /** Route tests replace these so a promote does not start a release build. */
 export const promoteRouteHooks = {
   scheduleRebuildOnSave,
   isRebuildInProgress,
+  promoteStateDir: (): string => getProjectsBaseDir(),
+  now: (): number => Date.now(),
 };
+
+function promoteInFlightPath(): string {
+  return join(promoteRouteHooks.promoteStateDir(), PROMOTE_IN_FLIGHT_FILE);
+}
+
+function lastPromotePath(): string {
+  return join(promoteRouteHooks.promoteStateDir(), LAST_PROMOTE_FILE);
+}
+
+function isPromoteInFlight(value: Partial<PromoteInFlight> | null): value is PromoteInFlight {
+  return !!value
+    && Number.isInteger(value.project)
+    && typeof value.draft === 'string'
+    && typeof value.startedAt === 'string'
+    && Number.isFinite(Date.parse(value.startedAt));
+}
+
+/** `null` when the file is absent. `'corrupt'` when it is there but unusable. */
+function readPromoteFile(): PromoteInFlight | null | 'corrupt' {
+  const path = promoteInFlightPath();
+  let raw: string;
+  try {
+    raw = readFileSync(path, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    console.warn(`[cbe] promote in-flight unreadable: ${(err as Error).message}`);
+    return 'corrupt';
+  }
+  try {
+    const value = JSON.parse(raw) as Partial<PromoteInFlight>;
+    if (!isPromoteInFlight(value)) {
+      console.warn('[cbe] promote in-flight file has an invalid shape');
+      return 'corrupt';
+    }
+    return value;
+  } catch (err) {
+    console.warn(`[cbe] promote in-flight file is not json: ${(err as Error).message}`);
+    return 'corrupt';
+  }
+}
+
+/**
+ * The claim the panel should show, or null. Reading is what retires it:
+ * a rebuild in progress takes over, and 30s without one records `lastPromote`.
+ */
+function readLivePromote(): PromoteInFlight | null {
+  const record = readPromoteFile();
+  if (record === null) return null;
+  if (record === 'corrupt') {
+    rmSync(promoteInFlightPath(), { force: true });
+    return null;
+  }
+  if (promoteRouteHooks.isRebuildInProgress()) {
+    rmSync(promoteInFlightPath(), { force: true });
+    return null;
+  }
+  if (promoteRouteHooks.now() - Date.parse(record.startedAt) >= PROMOTE_IN_FLIGHT_MS) {
+    const last = buildLastPromote(record.project, record.draft, new Date(promoteRouteHooks.now()).toISOString());
+    rmSync(promoteInFlightPath(), { force: true });
+    try {
+      writeFileSync(lastPromotePath(), JSON.stringify(last));
+    } catch (err) {
+      console.warn(`[cbe] could not record last promote: ${(err as Error).message}`);
+    }
+    return null;
+  }
+  return record;
+}
+
+function readLastPromote(): LastPromote | null {
+  const path = lastPromotePath();
+  let raw: string;
+  try {
+    raw = readFileSync(path, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      console.warn(`[cbe] last promote unreadable: ${(err as Error).message}`);
+    }
+    return null;
+  }
+  try {
+    const value = JSON.parse(raw) as Partial<LastPromote>;
+    if (value.status !== 'rebuild-not-started' || !Number.isInteger(value.project) || typeof value.draft !== 'string' || typeof value.at !== 'string') {
+      console.warn('[cbe] last promote file has an invalid shape — removing it');
+      rmSync(path, { force: true });
+      return null;
+    }
+    return value as LastPromote;
+  } catch (err) {
+    console.warn(`[cbe] last promote file is not json — removing it: ${(err as Error).message}`);
+    rmSync(path, { force: true });
+    return null;
+  }
+}
+
+function tryClaimPromote(record: PromoteInFlight): 'ok' | 'eexist' | 'error' {
+  let fd: number;
+  try {
+    fd = openSync(promoteInFlightPath(), 'wx');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') return 'eexist';
+    console.warn(`[cbe] promote project ${record.project}: claim failed: ${(err as Error).message}`);
+    return 'error';
+  }
+  try {
+    writeSync(fd, JSON.stringify(record));
+  } catch (err) {
+    console.warn(`[cbe] promote project ${record.project}: claim write failed: ${(err as Error).message}`);
+    closeSync(fd);
+    rmSync(promoteInFlightPath(), { force: true });
+    return 'error';
+  }
+  closeSync(fd);
+  return 'ok';
+}
+
+/** Drops the file only when it is still the claim this request created. */
+function releaseClaim(record: PromoteInFlight): void {
+  const current = readPromoteFile();
+  if (current === null) return;
+  if (current === 'corrupt' || current.project !== record.project || current.draft !== record.draft || current.startedAt !== record.startedAt) {
+    console.warn(`[cbe] promote project ${record.project}: in-flight file is not this claim — leaving it`);
+    return;
+  }
+  rmSync(promoteInFlightPath(), { force: true });
+}
+
+function replyPromoteBlocked(reply: FastifyReply, code: 'REBUILD_BUSY' | 'PROMOTE_IN_PROGRESS'): void {
+  reply.code(409).send({ statusCode: 409, code });
+}
+
+/** `true` once this request owns the file. One retry when the file on disk has expired. */
+function claimPromote(record: PromoteInFlight, reply: FastifyReply): boolean {
+  const first = takePromoteClaim(record, reply);
+  if (first !== 'retry') return first === 'ok';
+  const second = takePromoteClaim(record, reply);
+  if (second === 'retry') {
+    console.warn(`[cbe] promote project ${record.project}: in-flight file still blocked after one retry`);
+    replyPromoteBlocked(reply, 'PROMOTE_IN_PROGRESS');
+    return false;
+  }
+  return second === 'ok';
+}
+
+function takePromoteClaim(record: PromoteInFlight, reply: FastifyReply): 'ok' | 'retry' | 'rejected' {
+  const attempt = tryClaimPromote(record);
+  if (attempt === 'ok') return 'ok';
+  if (attempt === 'error') {
+    reply.code(CBE_HTTP_SERVER_ERROR).send({ statusCode: CBE_HTTP_SERVER_ERROR, code: 'PROMOTE_CLAIM_FAILED' });
+    return 'rejected';
+  }
+  const live = readLivePromote();
+  if (live) {
+    console.warn(`[cbe] promote project ${record.project}: another promote is in flight for ${live.project}/${live.draft}`);
+    replyPromoteBlocked(reply, 'PROMOTE_IN_PROGRESS');
+    return 'rejected';
+  }
+  if (promoteRouteHooks.isRebuildInProgress()) {
+    console.warn(`[cbe] promote project ${record.project}: rebuild took the in-flight promote`);
+    replyPromoteBlocked(reply, 'REBUILD_BUSY');
+    return 'rejected';
+  }
+  return 'retry';
+}
 
 async function requireSourceProject(
   request: FastifyRequest,
@@ -561,16 +753,18 @@ async function handlePromote(request: FastifyRequest, body: CbeRequestPromote, r
   }
 
   // Before any git: a rebuild already running must not start a second release.
-  if (promoting || promoteRouteHooks.isRebuildInProgress()) {
+  if (promoteRouteHooks.isRebuildInProgress()) {
     console.warn(`[cbe] promote project ${project}: rebuild in progress`);
-    reply.code(409).send({ statusCode: 409, code: 'REBUILD_BUSY' });
+    replyPromoteBlocked(reply, 'REBUILD_BUSY');
     return;
   }
 
   const session = await resolveSession(request);
   const slug = typeof body.draft === 'string' ? body.draft : '';
   const comment = typeof body.comment === 'string' ? body.comment : '';
-  promoting = { project, draft: slug, startedAt: new Date().toISOString() };
+  const claim = buildPromoteInFlight(project, slug, new Date(promoteRouteHooks.now()).toISOString());
+  if (!claimPromote(claim, reply)) return;
+
   let result;
   try {
     result = await promoteDraft({
@@ -580,9 +774,11 @@ async function handlePromote(request: FastifyRequest, body: CbeRequestPromote, r
       author: authorFromSession(session.email),
       comment,
     });
-  } finally {
-    promoting = null;
+  } catch (err) {
+    releaseClaim(claim);
+    throw err;
   }
+  if (result.status !== 'merged') releaseClaim(claim);
 
   if (result.status === 'merged') {
     promoteRouteHooks.scheduleRebuildOnSave(project);
@@ -659,7 +855,8 @@ async function handleExec(request: FastifyRequest, reply: FastifyReply): Promise
         // says which of the two cluster workers answered, and `rebuilding` is read
         // from disk on the spot. A release id that changed means a new release is
         // being served; unchanged after rebuilding goes false means the build failed.
-        // `promoting` is the publish in flight, or null — the L5 panel reads it.
+        // `promoting` is the publish in flight (the file, so both workers agree), or null.
+        // `lastPromote` is set when that claim expired and the rebuild never started.
         reply.code(CBE_HTTP_OK).send({
           statusCode: CBE_HTTP_OK,
           msg: 'pong',
@@ -667,7 +864,8 @@ async function handleExec(request: FastifyRequest, reply: FastifyReply): Promise
           pid: process.pid,
           release: getRunningRelease(),
           rebuilding: isRebuildInProgress(),
-          promoting,
+          promoting: readLivePromote(),
+          lastPromote: readLastPromote(),
         });
         return;
       case 'authSession':

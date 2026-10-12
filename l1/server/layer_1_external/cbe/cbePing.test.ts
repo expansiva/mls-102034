@@ -32,7 +32,7 @@ async function waitForFile(file: string): Promise<void> {
   }
 }
 
-test('exec ping reports promoting while a publish merge is in flight, and null otherwise', async () => {
+test('exec ping reports promoting while a publish merge is in flight, and keeps it after the merge lands', async () => {
   const base = mkdtempSync(join(tmpdir(), 'cbe-ping-'));
   const holdReady = join(base, 'hold-ready');
   const holdGo = join(base, 'hold-go');
@@ -122,7 +122,11 @@ test('exec ping reports promoting while a publish merge is in flight, and null o
 
     const done = await app.inject({ method: 'POST', url: '/exec', payload: { action: 'ping' } });
     assert.equal(done.statusCode, 200, done.body);
-    assert.equal(done.json().promoting, null);
+    const landed = done.json().promoting as { project: number; draft: string; startedAt: string };
+    assert.equal(landed.project, PROJECT_ID);
+    assert.equal(landed.draft, SLUG);
+    assert.equal(existsSync(join(base, '.promote-in-flight.json')), true);
+    assert.equal(done.json().lastPromote, null);
   } finally {
     if (!existsSync(holdGo)) writeFileSync(holdGo, 'go\n');
     if (promote) await promote.catch(() => undefined);
