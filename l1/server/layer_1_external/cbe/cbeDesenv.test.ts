@@ -9,6 +9,7 @@ import {
   draftCookie,
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeDesenv.js';
 import { getProjectsBaseDir } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
+import { AncestorDenoConfigError } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
 
 const SLUG = 'team-102047';
 const PROJECT_ID = 102047;
@@ -138,6 +139,52 @@ test('GET /desenv answers 503 without a cookie when the dev port is not ready', 
     assert.equal(headerValue(down.headers.location), '');
     assert.deepEqual(down.json(), { statusCode: 503, msg: 'draft unavailable: dev not ready' });
     assert.equal(waited, 4100);
+  } finally {
+    desenvIo.ensureDraftWorktree = origWorktree;
+    desenvIo.ensureDevProcess = origDev;
+    desenvIo.waitForDevReady = origReady;
+    desenvIo.resolveClientProjectId = origProject;
+    if (prevLogin === undefined) delete process.env.CBE_REQUIRE_LOGIN;
+    else process.env.CBE_REQUIRE_LOGIN = prevLogin;
+    await app.close();
+  }
+});
+
+test('GET /desenv answers 503 without a cookie when an ancestor deno config blocks the dev process', async () => {
+  const prevLogin = process.env.CBE_REQUIRE_LOGIN;
+  delete process.env.CBE_REQUIRE_LOGIN;
+
+  const origWorktree = desenvIo.ensureDraftWorktree;
+  const origDev = desenvIo.ensureDevProcess;
+  const origReady = desenvIo.waitForDevReady;
+  const origProject = desenvIo.resolveClientProjectId;
+  desenvIo.resolveClientProjectId = () => String(PROJECT_ID);
+  desenvIo.ensureDraftWorktree = async () => '/tmp/draft';
+  desenvIo.ensureDevProcess = () => {
+    throw new AncestorDenoConfigError('ancestor deno config: /data/mls-base/deno.json');
+  };
+  let waited = false;
+  desenvIo.waitForDevReady = async () => {
+    waited = true;
+    return true;
+  };
+
+  const app = Fastify();
+  registerCbeRoutes(app);
+  try {
+    const blocked = await app.inject({
+      method: 'GET',
+      url: `/desenv?draft=${SLUG}`,
+      headers: { host: 'localhost' },
+    });
+    assert.equal(blocked.statusCode, 503);
+    assert.equal(headerValue(blocked.headers['set-cookie']), '');
+    assert.equal(headerValue(blocked.headers.location), '');
+    assert.deepEqual(blocked.json(), {
+      statusCode: 503,
+      msg: 'draft unavailable: ancestor deno config: /data/mls-base/deno.json',
+    });
+    assert.equal(waited, false);
   } finally {
     desenvIo.ensureDraftWorktree = origWorktree;
     desenvIo.ensureDevProcess = origDev;

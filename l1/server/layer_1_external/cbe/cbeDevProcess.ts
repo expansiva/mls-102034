@@ -92,6 +92,24 @@ const EXTRA_ENV_KEYS = [
   'USER',
 ] as const;
 
+export class AncestorDenoConfigError extends Error {}
+
+export function findAncestorDenoConfig(
+  draftDir: string,
+  exists: (path: string) => boolean = existsSync,
+): string | undefined {
+  let dir = dirname(draftDir);
+  while (true) {
+    for (const name of ['deno.json', 'deno.jsonc']) {
+      const candidate = join(dir, name);
+      if (exists(candidate)) return candidate;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+}
+
 export interface DevProcessInfo {
   port: number;
   pid: number;
@@ -457,6 +475,13 @@ function ensureUnlocked(opts: EnsureDevProcessOpts): DevProcessInfo {
   const existing = readDevJson(path);
   if (existing && isDevPidAlive(existing.pid)) return existing;
   if (existsSync(path)) rmSync(path, { force: true });
+
+  const ancestor = findAncestorDenoConfig(draftDirOf(base, slug));
+  if (ancestor) {
+    const message = `ancestor deno config: ${ancestor}`;
+    console.error(`[cbe] dev ${slug}: ${message}`);
+    throw new AncestorDenoConfigError(message);
+  }
 
   const writeConfig = opts.writeConfig ?? defaultWriteConfig;
   writeConfig({ base, slug, clientProjectId });

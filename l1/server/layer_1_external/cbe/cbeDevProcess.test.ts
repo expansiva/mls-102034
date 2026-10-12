@@ -3,12 +3,14 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
 import {
+  AncestorDenoConfigError,
   buildDenoArgs,
   ensureDevProcess,
   ensureDevReaper,
+  findAncestorDenoConfig,
   isDevPidAlive,
   linkSharedProjects,
   memoryModeAllowEnv,
@@ -366,6 +368,99 @@ test('waitForDevReady is true on the third health check and false when the port 
   });
   assert.equal(never, false);
   assert.equal(misses, 2);
+});
+
+test('findAncestorDenoConfig finds deno.json above the draft and ignores the draft file', () => {
+  const draftDir = join('/data/mls-base/drafts', SLUG);
+  const ancestor = join('/data/mls-base', 'deno.json');
+  assert.equal(findAncestorDenoConfig(draftDir, (candidate) => candidate === ancestor), ancestor);
+
+  const own = join(draftDir, 'deno.json');
+  const asked: string[] = [];
+  assert.equal(findAncestorDenoConfig(draftDir, (candidate) => {
+    asked.push(candidate);
+    return candidate === own;
+  }), undefined);
+  assert.equal(asked.includes(own), false);
+
+  assert.equal(findAncestorDenoConfig(draftDir, () => false), undefined);
+
+  const jsonc = join('/data', 'deno.jsonc');
+  assert.equal(findAncestorDenoConfig(draftDir, (candidate) => candidate === jsonc), jsonc);
+  assert.equal(
+    findAncestorDenoConfig(draftDir, (candidate) => candidate === join(dirname(draftDir), 'deno.json') || candidate === join(dirname(draftDir), 'deno.jsonc')),
+    join(dirname(draftDir), 'deno.json'),
+  );
+});
+
+test('ancestor deno.json blocks a new dev process; a live process skips the guard', () => {
+  const base = mkdtempSync(join(tmpdir(), 'cbe-dev-ancestor-'));
+  const prevRange = process.env.COLLAB_DEV_PORT_RANGE;
+  process.env.COLLAB_DEV_PORT_RANGE = '4100-4199';
+  try {
+    writeFileSync(join(base, 'config.json'), '{"release":true}\n');
+    writeFileSync(join(base, 'deno.json'), '{}\n');
+    const calls: string[] = [];
+    const spawnDev: DevSpawn = () => {
+      calls.push('spawn');
+      return { pid: 1 };
+    };
+    const writeConfig = () => {
+      calls.push('config');
+    };
+    assert.throws(
+      () => ensureDevProcess({ base, slug: SLUG, clientProjectId: 102047, spawn: spawnDev, writeConfig }),
+      (err: unknown) => {
+        assert.ok(err instanceof AncestorDenoConfigError);
+        assert.equal((err as AncestorDenoConfigError).message, `ancestor deno config: ${join(base, 'deno.json')}`);
+        return true;
+      },
+    );
+    assert.deepEqual(calls, []);
+    assert.equal(existsDev(base, SLUG), false);
+
+    writeDev(base, SLUG, { port: 4100, pid: process.pid, startedAt: 1, lastRequestAt: 2 });
+    const live = ensureDevProcess({ base, slug: SLUG, clientProjectId: 102047, spawn: spawnDev, writeConfig });
+    assert.equal(live.pid, process.pid);
+    assert.equal(live.port, 4100);
+    assert.deepEqual(calls, []);
+  } finally {
+    if (prevRange === undefined) delete process.env.COLLAB_DEV_PORT_RANGE;
+    else process.env.COLLAB_DEV_PORT_RANGE = prevRange;
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('ensureDevProcess spawns when no ancestor deno config exists', () => {
+  const pids: number[] = [];
+  const base = mkdtempSync(join(tmpdir(), 'cbe-dev-clean-'));
+  const prevRange = process.env.COLLAB_DEV_PORT_RANGE;
+  process.env.COLLAB_DEV_PORT_RANGE = '4100-4199';
+  try {
+    writeFileSync(join(base, 'config.json'), '{"release":true}\n');
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnDev: DevSpawn = (command, args) => {
+      calls.push({ command, args });
+      return { pid: dummyPid(pids) };
+    };
+    const info = ensureDevProcess({
+      base,
+      slug: SLUG,
+      clientProjectId: 102047,
+      spawn: spawnDev,
+      now: () => 1_700_000_000_000,
+      writeConfig: () => {},
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].command, 'deno');
+    assert.equal(info.pid > 0, true);
+    assert.equal(existsDev(base, SLUG), true);
+  } finally {
+    killPids(pids);
+    if (prevRange === undefined) delete process.env.COLLAB_DEV_PORT_RANGE;
+    else process.env.COLLAB_DEV_PORT_RANGE = prevRange;
+    rmSync(base, { recursive: true, force: true });
+  }
 });
 
 function existsDev(base: string, slug: string): boolean {
