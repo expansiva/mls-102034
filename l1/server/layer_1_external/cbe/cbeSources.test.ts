@@ -5,12 +5,17 @@
 // rules are worth pinning down on their own.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readSources, resolveSourcePath, writeSources } from '/_102034_/l1/server/layer_1_external/cbe/cbeSources.js';
+import { listSources, readSources, resolveSourcePath, writeSources } from '/_102034_/l1/server/layer_1_external/cbe/cbeSources.js';
 
 const PROJECT_ID = 197001;
+
+function g(cwd: string, ...args: string[]): string {
+  return execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' }).trim();
+}
 
 function withProject<T>(fn: (dir: string, root: string) => T): T {
   const root = mkdtempSync(join(tmpdir(), 'cbe-sources-'));
@@ -149,5 +154,48 @@ test('sourceRoot reads and writes the draft tree, not the project', () => {
     assert.equal(rejected.ok, false);
     assert.equal(existsSync(join(root, 'secret.txt')), false);
     assert.equal(existsSync(join(dir, 'l2', 'bar.ts')), false);
+  });
+});
+
+test('listSources lists the draft worktree and drops files removed on that branch', () => {
+  withProject((dir, root) => {
+    writeFileSync(join(dir, 'l2', 'a.ts'), 'a\n');
+    writeFileSync(join(dir, 'l2', 'b.ts'), 'b\n');
+    g(dir, 'init', '-b', 'main');
+    g(dir, 'add', '.');
+    g(dir, 'commit', '-m', 'init');
+
+    const wt = join(root, 'wt');
+    g(dir, 'worktree', 'add', '-b', 'team/x', wt);
+    rmSync(join(wt, 'l2', 'b.ts'));
+    writeFileSync(join(wt, 'l2', 'c.ts'), 'c\n');
+    g(wt, 'add', '-A');
+    g(wt, 'commit', '-m', 'draft');
+
+    const listed = listSources(PROJECT_ID, wt);
+    const byPath = new Map(listed.map((file) => [file.shortPath, file]));
+    assert.equal(byPath.get('l2/a.ts')?.versionRef, g(wt, 'hash-object', 'l2/a.ts'));
+    assert.ok(byPath.has('l2/c.ts'));
+    assert.equal(byPath.has('l2/b.ts'), false);
+    for (const file of listed) assert.equal(file.jsContent, undefined);
+  });
+});
+
+test('listSources without a git repo returns the production index and does not throw', () => {
+  withProject((_dir, root) => {
+    assert.deepEqual(listSources(PROJECT_ID), []);
+    const bare = join(root, 'not-a-repo');
+    mkdirSync(bare);
+    const errors: string[] = [];
+    const orig = console.error;
+    console.error = ((...args: unknown[]) => {
+      errors.push(args.map(String).join(' '));
+    }) as typeof console.error;
+    try {
+      assert.deepEqual(listSources(PROJECT_ID, bare), []);
+    } finally {
+      console.error = orig;
+    }
+    assert.ok(errors.some((line) => line.includes('[cbe] loadFilesInfo draft')));
   });
 });

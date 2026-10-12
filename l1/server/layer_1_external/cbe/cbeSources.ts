@@ -8,6 +8,7 @@
 // obj/source.zip: the tree is what the publish syncs, what a write must change,
 // and what buildProjectsObj compiles — so read-after-write stays consistent.
 
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, resolve, sep } from 'node:path';
 import { getProjectFilesInfo, resolveProjectSourcePath } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
@@ -112,7 +113,42 @@ export function writeSources(
   return { ok: true, paths: [...files.map((file) => file.shortPath), ...deletes] };
 }
 
-/** The project's file index — same list the login ships, in plain form. */
-export function listSources(projectId: number): CbePrjSourcesFile[] {
-  return getProjectFilesInfo(projectId);
+/** l1–l7 of a draft worktree. l0 stays on the production index (it is not project source). */
+const DRAFT_LEVEL_PATH = /^l[1-7]\//u;
+
+/**
+ * The project's file index. Without sourceRoot, the compiled.zip list the login ships.
+ * With sourceRoot, l1–l7 come from that draft worktree (`git ls-files`) and l0 from the production index, without jsContent.
+ * Git failure logs and returns the production index.
+ */
+export function listSources(projectId: number, sourceRoot?: string): CbePrjSourcesFile[] {
+  if (sourceRoot === undefined) return getProjectFilesInfo(projectId);
+  try {
+    const raw = execFileSync('git', ['ls-files', '-s', '-z'], { cwd: sourceRoot, encoding: 'utf8' });
+    const files: CbePrjSourcesFile[] = [];
+    for (const entry of raw.split('\0')) {
+      if (!entry) continue;
+      const tab = entry.indexOf('\t');
+      if (tab < 0) continue;
+      const shortPath = entry.slice(tab + 1);
+      if (!DRAFT_LEVEL_PATH.test(shortPath)) continue;
+      const versionRef = entry.slice(0, tab).split(' ')[1];
+      if (!versionRef) continue;
+      const info = statSync(resolve(sourceRoot, shortPath));
+      files.push({
+        shortPath,
+        versionRef,
+        Length: info.size,
+        update_at: info.mtime.toISOString(),
+      });
+    }
+    for (const file of getProjectFilesInfo(projectId)) {
+      if (!file.shortPath.startsWith('l0/')) continue;
+      files.push({ shortPath: file.shortPath, versionRef: file.versionRef, Length: file.Length, update_at: file.update_at });
+    }
+    return files;
+  } catch (err) {
+    console.error(`[cbe] loadFilesInfo draft ${sourceRoot}: ${(err as Error).message}`);
+    return getProjectFilesInfo(projectId);
+  }
 }

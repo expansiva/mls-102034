@@ -433,8 +433,7 @@ async function handleLoadFilesInfo(request: FastifyRequest, body: CbeRequestLoad
     return;
   }
   const draft = await resolveRequestDraft(request.headers.cookie as string | undefined, getProjectsBaseDir(), project);
-  // listSources has no sourceRoot: the index is still the project's compiled zip.
-  reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, msg: 'ok', filesInfo: listSources(project), draft: draftBody(draft) });
+  reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, msg: 'ok', filesInfo: listSources(project, draft?.sourceRoot), draft: draftBody(draft) });
 }
 
 // History is source code: the same session gate the read actions use applies.
