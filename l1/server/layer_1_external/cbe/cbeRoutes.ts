@@ -659,6 +659,7 @@ async function handleExec(request: FastifyRequest, reply: FastifyReply): Promise
         // says which of the two cluster workers answered, and `rebuilding` is read
         // from disk on the spot. A release id that changed means a new release is
         // being served; unchanged after rebuilding goes false means the build failed.
+        // `promoting` is the publish in flight, or null — the L5 panel reads it.
         reply.code(CBE_HTTP_OK).send({
           statusCode: CBE_HTTP_OK,
           msg: 'pong',
@@ -666,6 +667,7 @@ async function handleExec(request: FastifyRequest, reply: FastifyReply): Promise
           pid: process.pid,
           release: getRunningRelease(),
           rebuilding: isRebuildInProgress(),
+          promoting,
         });
         return;
       case 'authSession':
