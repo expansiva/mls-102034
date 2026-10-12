@@ -134,7 +134,7 @@ function warnUnscopedReleaseId(reason: string): void {
   console.warn(`[cbe] mlsServiceWorker.js: ${reason}`);
 }
 
-export function patchServiceWorkerForRuntime(content: Buffer, releaseId: string | null): Buffer {
+export function patchServiceWorkerForRuntime(content: Buffer, releaseId: string | null, draftSlug?: string | null): Buffer {
   let source = content.toString('utf8');
   if (!source.includes(SW_MISS_ORIGINAL)) {
     console.warn('[cbe] mlsServiceWorker.js: miss-404 block not found — serving UNPATCHED (cold-cache module loads may 404; check upstream SW changes)');
@@ -142,17 +142,25 @@ export function patchServiceWorkerForRuntime(content: Buffer, releaseId: string 
     source = source.replace(SW_MISS_ORIGINAL, SW_MISS_PATCHED);
   }
 
+  let cacheSuffix = '';
   if (releaseId == null) {
     warnUnscopedReleaseId('no running release (dev checkout) — serving without release-scoped cache');
   } else if (!RELEASE_ID_OK.test(releaseId)) {
     warnUnscopedReleaseId('release id rejected — serving without release-scoped cache');
-  } else if (!CACHE_NAME_ASSIGN.test(source)) {
-    if (!warnedMissingCacheName) {
-      warnedMissingCacheName = true;
-      console.warn('[cbe] mlsServiceWorker.js: CACHE_NAME assignment not found — serving without release-scoped cache (check upstream SW changes)');
-    }
   } else {
-    source = source.replace(CACHE_NAME_ASSIGN, `$1$2$3-r${releaseId}$2`);
+    cacheSuffix += `-r${releaseId}`;
+  }
+  if (draftSlug) cacheSuffix += `-d${draftSlug}`;
+
+  if (cacheSuffix) {
+    if (!CACHE_NAME_ASSIGN.test(source)) {
+      if (!warnedMissingCacheName) {
+        warnedMissingCacheName = true;
+        console.warn('[cbe] mlsServiceWorker.js: CACHE_NAME assignment not found — serving without release-scoped cache (check upstream SW changes)');
+      }
+    } else {
+      source = source.replace(CACHE_NAME_ASSIGN, `$1$2$3${cacheSuffix}$2`);
+    }
   }
 
   return Buffer.from(source, 'utf8');
@@ -167,7 +175,7 @@ export function logCbeStaticConfig(): void {
  * Serves a cbe static asset: disk cache -> remote origin (written back to
  * disk). Returns 304 when the client ETag still matches.
  */
-export async function getCbeStaticFile(rawUrlPath: string, clientETag: string): Promise<CbeStaticFileResult> {
+export async function getCbeStaticFile(rawUrlPath: string, clientETag: string, draftSlug?: string | null): Promise<CbeStaticFileResult> {
   const urlPath = rawUrlPath.replace(/\?.*$/u, '');
   if (!isAllowedPath(urlPath) || urlPath.includes('..')) {
     return { statusCode: CBE_HTTP_BAD_REQUEST, msg: `invalid path ${urlPath}` };
@@ -198,7 +206,7 @@ export async function getCbeStaticFile(rawUrlPath: string, clientETag: string): 
   }
 
   if (urlPath === '/mlsServiceWorker.js') {
-    content = patchServiceWorkerForRuntime(content, getRunningRelease()?.id ?? null);
+    content = patchServiceWorkerForRuntime(content, getRunningRelease()?.id ?? null, draftSlug);
   }
 
   const eTag = computeETag(content);
