@@ -21,6 +21,14 @@ import {
 const IDLE_MS = 30 * 60 * 1000;
 const SLUG = 'team-102047';
 
+test('memoryModeAllowEnv contains the measured env names once', () => {
+  const names = memoryModeAllowEnv();
+  assert.equal(names.includes('COLLAB_AUTH_BASE_URL'), true);
+  assert.equal(names.includes('APP_ENV'), true);
+  assert.equal(names.includes('DATABASE_URL'), false);
+  assert.equal(new Set(names).size, names.length);
+});
+
 function dummyPid(pids: number[]): number {
   const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
     detached: true,

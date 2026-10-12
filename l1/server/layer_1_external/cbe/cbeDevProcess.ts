@@ -60,6 +60,38 @@ const MEMORY_ENV_KEYS = [
   'IDENTITY_CACHE_TTL_SECONDS',
 ] as const;
 
+/** Env names read outside `env.ts` (lima: boot + `loadPatients`). No `_DEVELOPMENT` suffix. */
+const EXTRA_ENV_KEYS = [
+  'AUTH_JWT_ENABLED',
+  'AWS_LAMBDA_BENCHMARK_MODE',
+  'AWS_LAMBDA_NODEJS_NO_GLOBAL_AWSLAMBDA',
+  'AWS_NEW_RETRIES_2026',
+  'BFF_ACTORS_ENFORCED',
+  'BFF_JWT_ENABLED',
+  'CANDIDATE_HUB',
+  'CANDIDATE_ORIGIN',
+  'CBE_LATEST_URL',
+  'CBE_PROJECTS_DIR',
+  'CBE_STATIC_DIR',
+  'CBE_STATIC_ORIGIN',
+  'CBE_TEST_LOGIN_USER',
+  'COLLAB_AUTH_BASE_URL',
+  'COLLAB_AUTH_ISSUER',
+  'COLLAB_AUTH_JWKS_TIMEOUT_MS',
+  'COLLAB_AUTH_JWKS_URL',
+  'COLLAB_GIT_HTTP_ENABLED',
+  'COLLAB_GIT_PROJECT_ROOT',
+  'COLLAB_REBUILD_DEBOUNCE_MS',
+  'COLLAB_RUNTIME_MODE',
+  'COLLAB_DRAFT',
+  'MSG_PROXY_ENABLED',
+  'MSG_PROXY_TARGET',
+  'MSG_PROXY_TOKEN',
+  'NODE_PG_FORCE_NATIVE',
+  'SMITHY_NEW_RETRIES_2026',
+  'USER',
+] as const;
+
 export interface DevProcessInfo {
   port: number;
   pid: number;
@@ -99,7 +131,8 @@ export function memoryModeAllowEnv(): string[] {
   for (const key of MEMORY_ENV_KEYS) {
     names.push(`${key}_DEVELOPMENT`, key);
   }
-  return names;
+  names.push(...EXTRA_ENV_KEYS);
+  return [...new Set(names)];
 }
 
 export function buildDenoArgs(base: string, slug: string, port: number): string[] {
