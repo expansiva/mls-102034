@@ -6,8 +6,8 @@
 
 import { spawnSync } from 'node:child_process';
 import {
-  closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync,
-  readFileSync, rmSync, writeFileSync, writeSync,
+  closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync,
+  readFileSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { parseDraftSlug } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
@@ -288,6 +288,48 @@ function copyReleaseConfig(base: string, slug: string): void {
   copyFileSync(src, dest);
 }
 
+const MLS_PROJECT_DIR = /^mls-\d+$/;
+
+export function linkSharedProjects(base: string, slug: string, clientProjectId: number): void {
+  const draftDir = draftDirOf(base, slug);
+  mkdirSync(draftDir, { recursive: true });
+  const clientName = `mls-${clientProjectId}`;
+  let entries;
+  try {
+    entries = readdirSync(base, { withFileTypes: true });
+  } catch (err) {
+    console.error(`[cbe] dev ${slug}: cannot list ${base}: ${(err as Error).message}`);
+    return;
+  }
+  for (const entry of entries) {
+    if (!MLS_PROJECT_DIR.test(entry.name) || entry.name === clientName) continue;
+    const source = join(base, entry.name);
+    try {
+      if (!statSync(source).isDirectory()) continue;
+    } catch (err) {
+      console.error(`[cbe] dev ${slug}: ${entry.name} is not a readable directory: ${(err as Error).message}`);
+      continue;
+    }
+    const dest = join(draftDir, entry.name);
+    try {
+      const existing = lstatSync(dest);
+      if (existing.isSymbolicLink()) continue;
+      console.warn(`[cbe] dev ${slug}: ${entry.name} is a real path, not linking`);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT') {
+        console.error(`[cbe] dev ${slug}: ${entry.name}: ${(err as Error).message}`);
+        continue;
+      }
+      try {
+        symlinkSync(`../../${entry.name}`, dest);
+      } catch (linkErr) {
+        console.error(`[cbe] dev ${slug}: failed to link ${entry.name}: ${(linkErr as Error).message}`);
+      }
+    }
+  }
+}
+
 function childEnv(port: number, slug: string, clientProjectId: number): Record<string, string> {
   return {
     PATH: process.env.PATH ?? '',
@@ -410,6 +452,7 @@ function ensureUnlocked(opts: EnsureDevProcessOpts): DevProcessInfo {
   const { base, slug, clientProjectId } = opts;
   const now = opts.now ?? (() => Date.now());
   copyReleaseConfig(base, slug);
+  linkSharedProjects(base, slug, clientProjectId);
   const path = devJsonPath(base, slug);
   const existing = readDevJson(path);
   if (existing && isDevPidAlive(existing.pid)) return existing;

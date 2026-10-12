@@ -1,7 +1,7 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.test.ts" enhancement="_blank" />
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -10,6 +10,7 @@ import {
   ensureDevProcess,
   ensureDevReaper,
   isDevPidAlive,
+  linkSharedProjects,
   memoryModeAllowEnv,
   reapIdle,
   restartDevProcess,
@@ -283,6 +284,49 @@ test('touchDevProcess updates only lastRequestAt; ensureDevReaper arms one timer
   } finally {
     globalThis.setInterval = origInterval;
     for (const timer of timers) clearInterval(timer);
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('linkSharedProjects symlinks sibling mls dirs into the draft and leaves a real path', () => {
+  const base = mkdtempSync(join(tmpdir(), 'cbe-dev-link-'));
+  const warns: string[] = [];
+  const origWarn = console.warn;
+  console.warn = (message?: unknown, ...rest: unknown[]) => {
+    warns.push([message, ...rest].map(String).join(' '));
+  };
+  try {
+    mkdirSync(join(base, 'mls-1'));
+    mkdirSync(join(base, 'mls-2'));
+    mkdirSync(join(base, 'mls-9'));
+    writeFileSync(join(base, 'config.json'), '{}\n');
+    const draft = join(base, 'drafts', 's');
+    const realLib = join(draft, 'mls-2');
+    mkdirSync(realLib, { recursive: true });
+    writeFileSync(join(realLib, 'keep.txt'), 'stay');
+
+    linkSharedProjects(base, 's', 9);
+    assert.equal(readFileSync(join(realLib, 'keep.txt'), 'utf8'), 'stay');
+    assert.equal(lstatSync(realLib).isSymbolicLink(), false);
+    assert.equal(warns.includes('[cbe] dev s: mls-2 is a real path, not linking'), true);
+    assert.equal(readlinkSync(join(draft, 'mls-1')), '../../mls-1');
+    assert.equal(realpathSync(join(draft, 'mls-1')), realpathSync(join(base, 'mls-1')));
+    assert.equal(existsSync(join(draft, 'mls-9')), false);
+
+    rmSync(realLib, { recursive: true, force: true });
+    linkSharedProjects(base, 's', 9);
+    assert.equal(readlinkSync(join(draft, 'mls-1')), '../../mls-1');
+    assert.equal(readlinkSync(join(draft, 'mls-2')), '../../mls-2');
+    assert.equal(realpathSync(join(draft, 'mls-2')), realpathSync(join(base, 'mls-2')));
+    assert.equal(existsSync(join(draft, 'mls-9')), false);
+
+    const warnCount = warns.length;
+    linkSharedProjects(base, 's', 9);
+    assert.equal(readlinkSync(join(draft, 'mls-1')), '../../mls-1');
+    assert.equal(readlinkSync(join(draft, 'mls-2')), '../../mls-2');
+    assert.equal(warns.length, warnCount);
+  } finally {
+    console.warn = origWarn;
     rmSync(base, { recursive: true, force: true });
   }
 });
