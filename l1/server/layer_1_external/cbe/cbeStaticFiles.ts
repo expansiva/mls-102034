@@ -111,7 +111,20 @@ const SW_MISS_ORIGINAL = `    totalNotFound += 1;
 const SW_MISS_PATCHED = `    totalNotFound += 1;
     try {
       const networkResponse = await fetch(event.request);
-      if (networkResponse && networkResponse.ok) return networkResponse;
+      if (networkResponse && networkResponse.ok) {
+        if (url.startsWith('/local/') || url.startsWith('/_')) {
+          try {
+            const cache = await caches.open(CACHE_NAME);
+            await cache.put(url, networkResponse.clone());
+          } catch (err) {
+            if (!self.__cbeWarnedCachePut) {
+              self.__cbeWarnedCachePut = true;
+              console.warn('[ServiceWorker] cache.put failed', err);
+            }
+          }
+        }
+        return networkResponse;
+      }
     } catch { /* offline — fall through to the 404 below */ }
     return new Response(null, {
       status: 404,`;

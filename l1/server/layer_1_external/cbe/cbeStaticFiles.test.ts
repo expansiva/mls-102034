@@ -43,7 +43,21 @@ test('bundle real: CACHE_NAME ganha -r<id> e o patch do miss continua', () => {
   const out = patchServiceWorkerForRuntime(Buffer.from(BUNDLE, 'utf8'), '20261009120000').toString('utf8');
   assert.match(out, /var CACHE_NAME = "mls-v2-r20261009120000";/u);
   assert.match(out, /const networkResponse = await fetch\(event\.request\);/u);
+  assert.match(out, /await cache\.put\(url, networkResponse\.clone\(\)\);/u);
   assert.equal(out.includes('var MLSSERVICEWORKERVERSION = 12;'), true);
+});
+
+test('miss grava a resposta ok sob a mesma url, só /local/ ou /_', () => {
+  resetPatchServiceWorkerWarnings();
+  const out = patchServiceWorkerForRuntime(Buffer.from(BUNDLE, 'utf8'), '20261009120000').toString('utf8');
+  assert.match(out, /caches\.open\(CACHE_NAME\)/u);
+  assert.match(out, /url\.startsWith\('\/local\/'\) \|\| url\.startsWith\('\/_'\)/u);
+  assert.match(out, /await cache\.put\(url, networkResponse\.clone\(\)\);/u);
+  assert.match(out, /console\.warn\('\[ServiceWorker\] cache\.put failed', err\);/u);
+  assert.equal(out.includes('return networkResponse;'), true);
+  const putAt = out.indexOf('cache.put');
+  const returnAt = out.indexOf('return networkResponse;');
+  assert.equal(putAt > 0 && putAt < returnAt, true);
 });
 
 test('duas releases: bytes e ETag diferentes; a mesma release, o mesmo ETag', () => {
@@ -86,7 +100,7 @@ test('sem linha CACHE_NAME: serve, com o aviso', () => {
   const src = `var MLSSERVICEWORKERVERSION = 12;\n${MISS_BLOCK}\n    });`;
   const warns = captureWarns(() => {
     const out = patchServiceWorkerForRuntime(Buffer.from(src, 'utf8'), '20261009120000').toString('utf8');
-    assert.equal(out.includes('CACHE_NAME'), false);
+    assert.equal(/CACHE_NAME\s*=/u.test(out), false);
     assert.match(out, /const networkResponse = await fetch\(event\.request\);/u);
   });
   assert.equal(warns.some((l) => l.includes('CACHE_NAME assignment not found')), true);
