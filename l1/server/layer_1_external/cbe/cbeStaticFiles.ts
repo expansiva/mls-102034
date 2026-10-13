@@ -130,24 +130,16 @@ const SW_MISS_PATCHED = `    totalNotFound += 1;
       status: 404,`;
 
 const CACHE_NAME_ASSIGN = /(\bCACHE_NAME\s*=\s*)(["'])([^"']+)\2/u;
-const RELEASE_ID_OK = /^[A-Za-z0-9_-]{1,64}$/u;
 
-let warnedUnscopedReleaseId = false;
 let warnedMissingCacheName = false;
 
 /** Tests reset the once-per-process warnings. */
 export function resetPatchServiceWorkerWarnings(): void {
-  warnedUnscopedReleaseId = false;
   warnedMissingCacheName = false;
 }
 
-function warnUnscopedReleaseId(reason: string): void {
-  if (warnedUnscopedReleaseId) return;
-  warnedUnscopedReleaseId = true;
-  console.warn(`[cbe] mlsServiceWorker.js: ${reason}`);
-}
-
 export function patchServiceWorkerForRuntime(content: Buffer, releaseId: string | null, draftSlug?: string | null): Buffer {
+  void releaseId;
   let source = content.toString('utf8');
   if (!source.includes(SW_MISS_ORIGINAL)) {
     console.warn('[cbe] mlsServiceWorker.js: miss-404 block not found — serving UNPATCHED (cold-cache module loads may 404; check upstream SW changes)');
@@ -155,14 +147,8 @@ export function patchServiceWorkerForRuntime(content: Buffer, releaseId: string 
     source = source.replace(SW_MISS_ORIGINAL, SW_MISS_PATCHED);
   }
 
+  // Release no longer scopes the cache (rt65). A draft still gets its own name.
   let cacheSuffix = '';
-  if (releaseId == null) {
-    warnUnscopedReleaseId('no running release (dev checkout) — serving without release-scoped cache');
-  } else if (!RELEASE_ID_OK.test(releaseId)) {
-    warnUnscopedReleaseId('release id rejected — serving without release-scoped cache');
-  } else {
-    cacheSuffix += `-r${releaseId}`;
-  }
   if (draftSlug) cacheSuffix += `-d${draftSlug}`;
 
   if (cacheSuffix) {

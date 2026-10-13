@@ -265,7 +265,7 @@ export function buildProjectSettings(
 // workspaceDependencies declared in each of those projects' l5/config.json
 // on the projects base. A folder that sits on the base but is outside that
 // closure is not this app's.
-function listServableProjectIds(): number[] {
+export function listServableProjectIds(): number[] {
   const ids = new Set<number>();
   const config = readProjectsConfig();
   const pending: number[] = [];

@@ -38,10 +38,11 @@ function captureWarns(fn: () => void): string[] {
   return lines;
 }
 
-test('bundle real: CACHE_NAME ganha -r<id> e o patch do miss continua', () => {
+test('bundle real: CACHE_NAME fica mls-v2 sem release e o patch do miss continua', () => {
   resetPatchServiceWorkerWarnings();
   const out = patchServiceWorkerForRuntime(Buffer.from(BUNDLE, 'utf8'), '20261009120000').toString('utf8');
-  assert.match(out, /var CACHE_NAME = "mls-v2-r20261009120000";/u);
+  assert.match(out, /var CACHE_NAME = "mls-v2";/u);
+  assert.doesNotMatch(out, /mls-v2-r/u);
   assert.match(out, /const networkResponse = await fetch\(event\.request\);/u);
   assert.match(out, /await cache\.put\(url, networkResponse\.clone\(\)\);/u);
   assert.equal(out.includes('var MLSSERVICEWORKERVERSION = 12;'), true);
@@ -60,29 +61,25 @@ test('miss grava a resposta ok sob a mesma url, só /local/ ou /_', () => {
   assert.equal(putAt > 0 && putAt < returnAt, true);
 });
 
-test('duas releases: bytes e ETag diferentes; a mesma release, o mesmo ETag', () => {
+test('duas releases: os mesmos bytes e o mesmo ETag', () => {
   resetPatchServiceWorkerWarnings();
   const a = patchServiceWorkerForRuntime(Buffer.from(BUNDLE, 'utf8'), '20261009120000');
   const b = patchServiceWorkerForRuntime(Buffer.from(BUNDLE, 'utf8'), '20261009120001');
   const a2 = patchServiceWorkerForRuntime(Buffer.from(BUNDLE, 'utf8'), '20261009120000');
-  assert.notEqual(a.toString('utf8'), b.toString('utf8'));
-  assert.notEqual(etag(a), etag(b));
+  assert.equal(a.toString('utf8'), b.toString('utf8'));
+  assert.equal(etag(a), etag(b));
   assert.equal(a.equals(a2), true);
   assert.equal(etag(a), etag(a2));
 });
 
-test('null deixa CACHE_NAME intacto e avisa uma vez', () => {
+test('null deixa CACHE_NAME intacto e não avisa por release', () => {
   resetPatchServiceWorkerWarnings();
   const first = captureWarns(() => {
     const out = patchServiceWorkerForRuntime(Buffer.from(BUNDLE, 'utf8'), null).toString('utf8');
     assert.match(out, /var CACHE_NAME = "mls-v2";/u);
     assert.doesNotMatch(out, /-r/u);
   });
-  const second = captureWarns(() => {
-    patchServiceWorkerForRuntime(Buffer.from(BUNDLE, 'utf8'), null);
-  });
-  assert.equal(first.some((l) => l.includes('serving without release-scoped cache')), true);
-  assert.equal(second.length, 0);
+  assert.equal(first.some((l) => l.includes('release-scoped cache')), false);
 });
 
 test('id com aspas ou ponto-e-vírgula não entra', () => {
@@ -99,7 +96,7 @@ test('sem linha CACHE_NAME: serve, com o aviso', () => {
   resetPatchServiceWorkerWarnings();
   const src = `var MLSSERVICEWORKERVERSION = 12;\n${MISS_BLOCK}\n    });`;
   const warns = captureWarns(() => {
-    const out = patchServiceWorkerForRuntime(Buffer.from(src, 'utf8'), '20261009120000').toString('utf8');
+    const out = patchServiceWorkerForRuntime(Buffer.from(src, 'utf8'), '20261009120000', 'team-102047').toString('utf8');
     assert.equal(/CACHE_NAME\s*=/u.test(out), false);
     assert.match(out, /const networkResponse = await fetch\(event\.request\);/u);
   });
@@ -112,17 +109,19 @@ test('MLSSERVICEWORKERVERSION sai igual ao de entrada', () => {
   assert.match(out, /var MLSSERVICEWORKERVERSION = 12;/u);
 });
 
-test('sem slug: CACHE_NAME fica só com -r<release>', () => {
+test('sem slug: CACHE_NAME fica mls-v2, sem release', () => {
   resetPatchServiceWorkerWarnings();
   const out = patchServiceWorkerForRuntime(Buffer.from(BUNDLE, 'utf8'), '20261009120000', null).toString('utf8');
-  assert.match(out, /var CACHE_NAME = "mls-v2-r20261009120000";/u);
+  assert.match(out, /var CACHE_NAME = "mls-v2";/u);
+  assert.doesNotMatch(out, /mls-v2-r/u);
   assert.doesNotMatch(out, /-d/u);
 });
 
-test('com slug: CACHE_NAME ganha -r<release>-d<slug>', () => {
+test('com slug: CACHE_NAME ganha -d<slug> e não a release', () => {
   resetPatchServiceWorkerWarnings();
   const out = patchServiceWorkerForRuntime(Buffer.from(BUNDLE, 'utf8'), '20261009120000', 'team-102047').toString('utf8');
-  assert.match(out, /var CACHE_NAME = "mls-v2-r20261009120000-dteam-102047";/u);
+  assert.match(out, /var CACHE_NAME = "mls-v2-dteam-102047";/u);
+  assert.doesNotMatch(out, /mls-v2-r/u);
 });
 
 test('com slug e sem release: CACHE_NAME ganha -d<slug>', () => {

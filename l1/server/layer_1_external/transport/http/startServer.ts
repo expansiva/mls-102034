@@ -21,7 +21,8 @@ import {
 } from '/_102034_/l1/server/layer_1_external/auth/authorityOverride.js';
 import { registerCbeRoutes } from '/_102034_/l1/server/layer_1_external/cbe/cbeRoutes.js';
 import { resolveClientProjectId } from '/_102034_/l1/server/layer_1_external/cbe/cbeDesenv.js';
-import { getProjectsBaseDir } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
+import { getCompiledProject, getProjectsBaseDir } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
+import { listServableProjectIds } from '/_102034_/l1/server/layer_1_external/cbe/cbeLogin.js';
 import { applyDraftExecBff } from '/_102034_/l1/server/layer_1_external/transport/http/draftProxy.js';
 import { getLatestJson, initCbeLatestJson } from '/_102034_/l1/server/layer_1_external/cbe/cbeLatestJson.js';
 import { getRunningRelease } from '/_102034_/l1/server/layer_1_external/cbe/cbeRelease.js';
@@ -141,7 +142,19 @@ function buildBootConfigScript(app: FrontendAppRegistration) {
   // latest.json — see cbeLatestJson): the client loads versioned libs with it.
   const latestJson = getLatestJson();
   const latestScript = latestJson ? `window.latest=${latestJson.replace(/</gu, '\\u003c')};` : '';
-  return `<script>window.collabBoot=${payload};${latestScript}</script>`;
+  const fechoScript = `window.collabFecho=${buildCollabFechoJson()};`;
+  return `<script>window.collabBoot=${payload};${latestScript}${fechoScript}</script>`;
+}
+
+// Closure of this app plus each project's lastModified, so the page can drop
+// only the cache entries of projects that changed. Same `<` escape as latest.
+function buildCollabFechoJson(): string {
+  const fecho: Record<string, string> = {};
+  for (const id of listServableProjectIds()) {
+    const lastModified = getCompiledProject(id)?.lastModified;
+    if (lastModified) fecho[String(id)] = lastModified;
+  }
+  return JSON.stringify(fecho).replace(/</gu, '\\u003c');
 }
 
 function injectBootConfig(html: string, app: FrontendAppRegistration) {
