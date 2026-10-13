@@ -654,7 +654,29 @@ export async function handleHttpRequest(
 const isMainModule = process.argv[1]?.endsWith('startServer.js') || process.argv[1]?.endsWith('startServer.ts') ||
                      process.argv[1]?.endsWith('ProcessContainerFork.js') || // pm2 cluster fork
                      process.argv[1]?.endsWith('ProcessContainer.js'); // pm2 cluster master
-console.log(`Starting server with isMainModule=${isMainModule}, argv[1]=${process.argv[1]}`);                      
+console.log(`Starting server with isMainModule=${isMainModule}, argv[1]=${process.argv[1]}`);
+
+/** Draft boot applies the draft schema before listen. Production (no COLLAB_DRAFT) only listens. */
+export interface BootStepsInput {
+  draft: boolean;
+  runMigrations: () => Promise<void>;
+  listen: () => Promise<void>;
+}
+
+export async function bootSteps(input: BootStepsInput): Promise<void> {
+  if (input.draft) {
+    try {
+      await input.runMigrations();
+    } catch (error) {
+      const cause = error instanceof Error ? error.message : String(error);
+      console.error(`[boot] draft migrations failed; refusing to listen: ${cause}`);
+      process.exit(1);
+      throw new Error(`[boot] process.exit(1) was ignored after: ${cause}`);
+    }
+  }
+  await input.listen();
+}
+
 if (isMainModule) {
   const env = readAppEnv();
   const server = buildHttpServer();
@@ -666,7 +688,13 @@ if (isMainModule) {
     runtimeMetricsCollector?.stop();
     moduleTickLoop?.stop();
   });
-  void getFrontendAppRegistrations().then((apps) => {
+  void bootSteps({
+    draft: Boolean(process.env.COLLAB_DRAFT),
+    runMigrations: async () => {
+      const { runMigrations } = await import('/_102034_/l1/scripts/migrate.js');
+      await runMigrations();
+    },
+    listen: () => getFrontendAppRegistrations().then((apps) => {
     // Logs the [alpha] line at boot when the VM switch is on (the check itself warns on every off→on flip).
     isAlphaAllAuthorities();
     // `return`: sem ele a promessa do listen fica ORFA e o `.catch` la embaixo nao a ve. Um
@@ -707,6 +735,7 @@ if (isMainModule) {
   });
   }).catch((error) => {
     failFrontendRegistryBoot(error);
+  }),
   });
 }
 
