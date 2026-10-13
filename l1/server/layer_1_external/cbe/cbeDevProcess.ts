@@ -601,6 +601,12 @@ export function ensureDevProcess(opts: EnsureDevProcessOpts): DevProcessInfo {
   return withLock(opts.base, opts.slug, () => ensureUnlocked(opts));
 }
 
+/** Stops the draft dev process. `dev.json` is removed, so the database name is not read from it. */
+export function stopDevProcess(base: string, slug: string): void {
+  assertSlug(slug);
+  withLock(base, slug, () => stopDevUnlocked(base, slug));
+}
+
 export function restartDevProcess(opts: EnsureDevProcessOpts): Promise<DevProcessInfo> {
   assertSlug(opts.slug);
   const key = draftKey(opts.base, opts.slug);

@@ -11,6 +11,7 @@
 import { closeSync, openSync, readFileSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { Pool } from 'pg';
 import { executeCbeLogin, readProjectFile } from '/_102034_/l1/server/layer_1_external/cbe/cbeLogin.js';
 import { getProjectsBaseDir } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
 import { getCbeStaticFile, logCbeStaticConfig } from '/_102034_/l1/server/layer_1_external/cbe/cbeStaticFiles.js';
@@ -30,13 +31,14 @@ import { CANDIDATE_BODY_LIMIT, candidateActionAllowed, candidateHubMode, candida
 import { handleCandidateRevision } from '/_102034_/l1/server/layer_1_external/candidate/candidateStore.js';
 import { ensureCandidateSchema, PostgresCandidatePersistence } from '/_102034_/l1/server/layer_1_external/candidate/candidatePostgres.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
+import { parseDatabaseUrl } from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
 import { getSharedPgPool } from '/_102034_/l1/server/layer_1_external/data/postgres/pg.js';
 import { readHistory, readHistoryContent } from '/_102034_/l1/server/layer_1_external/cbe/cbeGit.js';
 import { isRebuildInProgress, scheduleRebuildOnSave } from '/_102034_/l1/server/layer_1_external/cbe/cbeRebuildOnSave.js';
 import { authorFromSession, commitSavedSources } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitCommit.js';
 import { discardDraft, draftDiff, listDrafts, promoteDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitPromote.js';
 import { resolveRequestDraft, type RequestDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
-import { ensureDevReaper, restartDevProcess } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
+import { draftDatabaseUrl, ensureDevReaper, restartDevProcess, stopDevProcess } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
 import { desenvIo, handleDesenvEnter, handleDesenvExit } from '/_102034_/l1/server/layer_1_external/cbe/cbeDesenv.js';
 import { getRunningRelease } from '/_102034_/l1/server/layer_1_external/cbe/cbeRelease.js';
 import {
@@ -549,6 +551,82 @@ export const promoteRouteHooks = {
   now: (): number => Date.now(),
 };
 
+interface DraftDbDrop {
+  dropDatabase(adminUrl: string, name: string): Promise<void>;
+}
+
+const DRAFT_DATABASE_NAME = /^[a-z0-9_]+$/u;
+
+/** Route tests replace `dropDatabase` so a discard does not open Postgres. */
+export const draftDbHooks: DraftDbDrop = {
+  dropDatabase: dropDraftDatabase,
+};
+
+async function dropDraftDatabase(adminUrl: string, name: string): Promise<void> {
+  if (!DRAFT_DATABASE_NAME.test(name)) {
+    console.error(`[cbe] discard draft: invalid database name`);
+    throw new Error('invalid database name');
+  }
+  const admin = new Pool({ connectionString: adminUrl });
+  try {
+    await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+  } finally {
+    try {
+      await admin.end();
+    } catch (err) {
+      console.error(`[cbe] discard draft: closing admin connection failed: ${(err as Error).message}`);
+    }
+  }
+}
+
+interface DiscardedDraftBody {
+  statusCode: number;
+  status: 'discarded';
+  databaseDropped: boolean;
+  cause?: string;
+}
+
+function buildDiscardedDraftBody(
+  drop: { databaseDropped: true } | { databaseDropped: false; cause: string },
+): DiscardedDraftBody {
+  if (drop.databaseDropped) {
+    return { statusCode: CBE_HTTP_OK, status: 'discarded', databaseDropped: true };
+  }
+  return { statusCode: CBE_HTTP_OK, status: 'discarded', databaseDropped: false, cause: drop.cause };
+}
+
+async function discardDraftDatabase(
+  slug: string,
+): Promise<{ databaseDropped: true } | { databaseDropped: false; cause: string }> {
+  const testUrl = process.env.DATABASE_URL_TEST;
+  if (!testUrl) {
+    const cause = 'DATABASE_URL_TEST is not set';
+    console.error(`[cbe] discard draft ${slug}: ${cause}`);
+    return { databaseDropped: false, cause };
+  }
+  let parsed: { database: string; adminUrl: string } | null;
+  try {
+    parsed = parseDatabaseUrl(draftDatabaseUrl(testUrl, slug));
+  } catch (err) {
+    const cause = (err as Error).message || String(err);
+    console.error(`[cbe] discard draft ${slug}: ${cause}`);
+    return { databaseDropped: false, cause };
+  }
+  if (!parsed) {
+    const cause = 'invalid database url';
+    console.error(`[cbe] discard draft ${slug}: ${cause}`);
+    return { databaseDropped: false, cause };
+  }
+  try {
+    await draftDbHooks.dropDatabase(parsed.adminUrl, parsed.database);
+  } catch (err) {
+    const cause = (err as Error).message || String(err);
+    console.error(`[cbe] discard draft ${slug}: drop database ${parsed.database} failed: ${cause}`);
+    return { databaseDropped: false, cause };
+  }
+  return { databaseDropped: true };
+}
+
 function promoteInFlightPath(): string {
   return join(promoteRouteHooks.promoteStateDir(), PROMOTE_IN_FLIGHT_FILE);
 }
@@ -800,16 +878,20 @@ async function handlePromote(request: FastifyRequest, body: CbeRequestPromote, r
 async function handleDiscardDraft(request: FastifyRequest, body: CbeRequestDiscardDraft, reply: FastifyReply): Promise<void> {
   const project = await requireSourceProject(request, body, reply);
   if (!project) return;
-  const result = await discardDraft({
-    base: getProjectsBaseDir(),
-    projectId: project,
-    slug: typeof body.draft === 'string' ? body.draft : '',
-  });
+  const slug = typeof body.draft === 'string' ? body.draft : '';
+  const base = getProjectsBaseDir();
+  const result = await discardDraft({ base, projectId: project, slug });
   if (typeof result.status === 'number') {
     replyGitFailure(reply, result);
     return;
   }
-  reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, status: 'discarded' });
+  try {
+    stopDevProcess(base, slug);
+  } catch (err) {
+    console.error(`[cbe] discard draft ${slug}: stop dev process failed: ${(err as Error).message}`);
+  }
+  const drop = await discardDraftDatabase(slug);
+  reply.code(CBE_HTTP_OK).send(buildDiscardedDraftBody(drop));
 }
 
 async function handleListDrafts(request: FastifyRequest, body: CbeRequestListDrafts, reply: FastifyReply): Promise<void> {

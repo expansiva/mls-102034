@@ -6,11 +6,15 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify from 'fastify';
-import { promoteRouteHooks, registerCbeRoutes } from '/_102034_/l1/server/layer_1_external/cbe/cbeRoutes.js';
+import { draftDatabaseUrl } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
+import { parseDatabaseUrl } from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
+import { draftDbHooks, promoteRouteHooks, registerCbeRoutes } from '/_102034_/l1/server/layer_1_external/cbe/cbeRoutes.js';
 
 const PROJECT_ID = 102047;
 const SLUG = 'team-102047';
 const BRANCH = 'team/102047';
+const PARENT_TEST_URL = 'postgres://collab:secret@127.0.0.1:5432/collab_app_test';
+const DRAFT_DATABASE = 'collab_app_draft_team_102047';
 
 function git(cwd: string, args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
@@ -34,16 +38,21 @@ test('exec promote, discardDraft, listDrafts and draftDiff', async () => {
     dir: process.env.CBE_PROJECTS_DIR,
     rebuild: process.env.CBE_REBUILD_ON_SAVE,
     login: process.env.CBE_REQUIRE_LOGIN,
+    testDatabase: process.env.DATABASE_URL_TEST,
   };
   process.env.CBE_PROJECTS_DIR = base;
   process.env.CBE_REBUILD_ON_SAVE = 'never';
   process.env.CBE_REQUIRE_LOGIN = 'never';
+  process.env.DATABASE_URL_TEST = PARENT_TEST_URL;
 
   const scheduled: Array<number | undefined> = [];
   const origSchedule = promoteRouteHooks.scheduleRebuildOnSave;
   const origBusy = promoteRouteHooks.isRebuildInProgress;
   const origNow = promoteRouteHooks.now;
   const origStateDir = promoteRouteHooks.promoteStateDir;
+  const origDrop = draftDbHooks.dropDatabase;
+  const drops: Array<{ adminUrl: string; name: string }> = [];
+  let dropError: Error | null = null;
   let rebuildBusy = false;
   let nowMs = Date.parse('2026-10-12T15:00:00.000Z');
   promoteRouteHooks.scheduleRebuildOnSave = (project) => {
@@ -52,6 +61,10 @@ test('exec promote, discardDraft, listDrafts and draftDiff', async () => {
   promoteRouteHooks.isRebuildInProgress = () => rebuildBusy;
   promoteRouteHooks.promoteStateDir = () => base;
   promoteRouteHooks.now = () => nowMs;
+  draftDbHooks.dropDatabase = async (adminUrl, name) => {
+    drops.push({ adminUrl, name });
+    if (dropError) throw dropError;
+  };
 
   const app = Fastify();
   registerCbeRoutes(app);
@@ -218,6 +231,13 @@ test('exec promote, discardDraft, listDrafts and draftDiff', async () => {
     assert.equal(stale.json().code, 'DRAFT_CONFLICT');
     assert.equal(existsSync(inFlightPath(base)), false);
 
+    const devJson = join(base, 'drafts', SLUG, 'dev.json');
+    writeFileSync(devJson, JSON.stringify({
+      port: 4100, pid: 2147483646, startedAt: 0, lastRequestAt: 0, database: DRAFT_DATABASE,
+    }));
+    const expected = parseDatabaseUrl(draftDatabaseUrl(PARENT_TEST_URL, SLUG));
+    assert.ok(expected);
+    assert.equal(drops.length, 0);
     const discarded = await app.inject({
       method: 'POST',
       url: '/exec',
@@ -225,6 +245,9 @@ test('exec promote, discardDraft, listDrafts and draftDiff', async () => {
     });
     assert.equal(discarded.statusCode, 200, discarded.body);
     assert.equal(discarded.json().status, 'discarded');
+    assert.equal(discarded.json().databaseDropped, true);
+    assert.equal(existsSync(devJson), false);
+    assert.deepEqual(drops, [{ adminUrl: expected.adminUrl, name: DRAFT_DATABASE }]);
     assert.equal(git(draftRoot, ['rev-parse', 'HEAD']), git(projectRoot, ['rev-parse', 'HEAD']));
 
     writeFileSync(join(draftRoot, 'l2', 'ship.ts'), 'shipped\n');
@@ -245,6 +268,39 @@ test('exec promote, discardDraft, listDrafts and draftDiff', async () => {
     assert.equal(existsSync(inFlightPath(base)), false);
     rebuildBusy = false;
     assert.deepEqual(scheduled, [PROJECT_ID, PROJECT_ID]);
+    assert.deepEqual(drops, [{ adminUrl: expected.adminUrl, name: DRAFT_DATABASE }]);
+
+    dropError = new Error('drop refused');
+    writeFileSync(devJson, JSON.stringify({
+      port: 4100, pid: 2147483646, startedAt: 0, lastRequestAt: 0, database: DRAFT_DATABASE,
+    }));
+    const failedDrop = await app.inject({
+      method: 'POST',
+      url: '/exec',
+      payload: { action: 'discardDraft', project: PROJECT_ID, draft: SLUG },
+    });
+    assert.equal(failedDrop.statusCode, 200, failedDrop.body);
+    assert.equal(failedDrop.json().status, 'discarded');
+    assert.equal(failedDrop.json().databaseDropped, false);
+    assert.equal(failedDrop.json().cause, 'drop refused');
+    assert.equal(existsSync(devJson), false);
+    assert.equal(drops.length, 2);
+    assert.equal(drops[1].name, DRAFT_DATABASE);
+
+    delete process.env.DATABASE_URL_TEST;
+    writeFileSync(devJson, JSON.stringify({
+      port: 4100, pid: 2147483646, startedAt: 0, lastRequestAt: 0, database: DRAFT_DATABASE,
+    }));
+    const missingUrl = await app.inject({
+      method: 'POST',
+      url: '/exec',
+      payload: { action: 'discardDraft', project: PROJECT_ID, draft: SLUG },
+    });
+    assert.equal(missingUrl.statusCode, 200, missingUrl.body);
+    assert.equal(missingUrl.json().databaseDropped, false);
+    assert.equal(missingUrl.json().cause, 'DATABASE_URL_TEST is not set');
+    assert.equal(existsSync(devJson), false);
+    assert.equal(drops.length, 2);
 
     process.env.CBE_REQUIRE_LOGIN = 'always';
     for (const payload of [
@@ -263,6 +319,7 @@ test('exec promote, discardDraft, listDrafts and draftDiff', async () => {
     promoteRouteHooks.isRebuildInProgress = origBusy;
     promoteRouteHooks.now = origNow;
     promoteRouteHooks.promoteStateDir = origStateDir;
+    draftDbHooks.dropDatabase = origDrop;
     await app.close();
     if (prev.dir === undefined) delete process.env.CBE_PROJECTS_DIR;
     else process.env.CBE_PROJECTS_DIR = prev.dir;
@@ -270,6 +327,8 @@ test('exec promote, discardDraft, listDrafts and draftDiff', async () => {
     else process.env.CBE_REBUILD_ON_SAVE = prev.rebuild;
     if (prev.login === undefined) delete process.env.CBE_REQUIRE_LOGIN;
     else process.env.CBE_REQUIRE_LOGIN = prev.login;
+    if (prev.testDatabase === undefined) delete process.env.DATABASE_URL_TEST;
+    else process.env.DATABASE_URL_TEST = prev.testDatabase;
     rmSync(base, { recursive: true, force: true });
   }
 });
