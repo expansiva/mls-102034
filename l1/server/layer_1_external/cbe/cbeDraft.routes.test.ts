@@ -84,7 +84,8 @@ test('setContents: draft cookie commits on the draft branch and skips the releas
     assert.equal(git(draftRoot, ['log', '-1', '--format=%s']), 'draft save');
     assert.equal(head(projectRoot), mainAtStart);
     assert.ok(logs.some((line) => line === `[cbe] draft ${SLUG}: no release rebuild`));
-    assert.deepEqual(restarts, [{ base, slug: SLUG, clientProjectId: PROJECT_ID }]);
+    assert.ok(logs.some((line) => line === `[cbe] draft ${SLUG}: l2/l3 only, no restart`));
+    assert.deepEqual(restarts, []);
     assert.deepEqual(reaperBases, [base]);
 
     const readDraft = await app.inject({
@@ -140,7 +141,7 @@ test('setContents: draft cookie commits on the draft branch and skips the releas
     assert.equal(git(projectRoot, ['log', '-1', '--format=%s']), 'main save');
     assert.notEqual(head(projectRoot), mainAtStart);
     assert.equal(logs.some((line) => line.includes('no release rebuild')), false);
-    assert.deepEqual(restarts, [{ base, slug: SLUG, clientProjectId: PROJECT_ID }]);
+    assert.deepEqual(restarts, []);
     assert.deepEqual(reaperBases, [base]);
 
     const mainBeforeInvalid = head(projectRoot);
@@ -164,6 +165,39 @@ test('setContents: draft cookie commits on the draft branch and skips the releas
     assert.notEqual(head(projectRoot), mainBeforeInvalid);
     assert.equal(existsSync(join(base, 'drafts', 'nope')), false);
     assert.equal(logs.some((line) => line.includes('no release rebuild')), false);
+
+    const l1Save = await app.inject({
+      method: 'POST',
+      url: '/exec',
+      headers: { cookie: `collab-draft=${SLUG}` },
+      payload: {
+        action: 'setContents',
+        project: PROJECT_ID,
+        files: [{ shortPath: 'l1/usecase.ts', content: 'export const n = 42;\n', encoding: 'utf8' }],
+        comments: 'l1 save',
+      },
+    });
+    assert.equal(l1Save.statusCode, 200, l1Save.body);
+    assert.equal(readFileSync(join(draftRoot, 'l1/usecase.ts'), 'utf8'), 'export const n = 42;\n');
+    assert.deepEqual(restarts, [{ base, slug: SLUG, clientProjectId: PROJECT_ID }]);
+
+    const l1Delete = await app.inject({
+      method: 'POST',
+      url: '/exec',
+      headers: { cookie: `collab-draft=${SLUG}` },
+      payload: {
+        action: 'setContents',
+        project: PROJECT_ID,
+        deletes: ['l1/usecase.ts'],
+        comments: 'l1 delete',
+      },
+    });
+    assert.equal(l1Delete.statusCode, 200, l1Delete.body);
+    assert.equal(existsSync(join(draftRoot, 'l1/usecase.ts')), false);
+    assert.deepEqual(restarts, [
+      { base, slug: SLUG, clientProjectId: PROJECT_ID },
+      { base, slug: SLUG, clientProjectId: PROJECT_ID },
+    ]);
   } finally {
     draftDevHooks.restartDevProcess = origRestart;
     draftDevHooks.ensureDevReaper = origReaper;

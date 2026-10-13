@@ -408,18 +408,27 @@ async function handleSetContents(request: FastifyRequest, body: CbeRequestSetCon
     console.info(`[cbe] draft ${draft.slug}: no release rebuild`);
     const base = getProjectsBaseDir();
     draftDevHooks.ensureDevReaper(base);
-    // Fire-and-forget: the save responds before the debounced restart. A rejection
-    // (or a sync throw from an invalid slug) is logged and never fails this handler.
-    try {
-      void draftDevHooks.restartDevProcess({
-        base,
-        slug: draft.slug,
-        clientProjectId: project,
-      }).catch((err: unknown) => {
+    const files = body.files ?? [];
+    const deletes = body.deletes ?? [];
+    const l1Changed = files.some((file) => file.shortPath.startsWith('l1/'))
+      || deletes.some((shortPath) => shortPath.startsWith('l1/'));
+    // l2/l3 are served from the Studio cache; only an l1 change needs a new dev process.
+    if (!l1Changed) {
+      console.info(`[cbe] draft ${draft.slug}: l2/l3 only, no restart`);
+    } else {
+      // Fire-and-forget: the save responds before the debounced restart. A rejection
+      // (or a sync throw from an invalid slug) is logged and never fails this handler.
+      try {
+        void draftDevHooks.restartDevProcess({
+          base,
+          slug: draft.slug,
+          clientProjectId: project,
+        }).catch((err: unknown) => {
+          console.error(`[cbe] draft ${draft.slug}: dev restart failed: ${(err as Error).message}`);
+        });
+      } catch (err) {
         console.error(`[cbe] draft ${draft.slug}: dev restart failed: ${(err as Error).message}`);
-      });
-    } catch (err) {
-      console.error(`[cbe] draft ${draft.slug}: dev restart failed: ${(err as Error).message}`);
+      }
     }
   } else {
     scheduleRebuildOnSave(project);
