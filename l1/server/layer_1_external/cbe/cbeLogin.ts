@@ -146,24 +146,73 @@ export function resolveOrgInfo(projectIds: number[]): { slug: string; name: stri
   return { slug: org.slug, name: org.name, createdAt: org.createdAt };
 }
 
+function acceptProjectId(id: number, projectId: number): boolean {
+  return Number.isFinite(id) && id >= MIN_PROJECT_ID && id !== projectId;
+}
+
+// Same source order as scripts/buildCI/resolveDeps.mjs (readManifestDeps).
 function readProjectDependencies(projectId: number): number[] {
-  const configPath = resolveProjectSourcePath(projectId, 'l5/config.json');
-  if (!existsSync(configPath)) return [];
+  for (const relativePath of ['l5/config.json', 'config.json']) {
+    const ids = readWorkspaceDependencyIds(projectId, relativePath);
+    if (ids) return ids;
+  }
+  for (const relativePath of ['package.json', 'packagelib.json']) {
+    const ids = readGitManifestDependencyIds(projectId, relativePath);
+    if (ids) return ids;
+  }
+  return [];
+}
+
+function readWorkspaceDependencyIds(projectId: number, relativePath: string): number[] | null {
+  const configPath = resolveProjectSourcePath(projectId, relativePath);
+  if (!existsSync(configPath)) return null;
   try {
     const parsed = JSON.parse(readFileSync(configPath, 'utf8')) as {
       workspaceDependencies?: string[] | Record<string, unknown>;
     };
-    const declared = parsed.workspaceDependencies ?? [];
+    if (!parsed.workspaceDependencies) return null;
+    const declared = parsed.workspaceDependencies;
     // Today it is an ARRAY of ids (["102029","102033",...]). Object.keys on an array
     // yields its INDEXES, which silently produced project ids 1..8 — hence the map
     // over the array itself, with the object form kept for older configs.
     const ids = Array.isArray(declared) ? declared : Object.keys(declared);
-    return ids
-      .map((id) => Number(id))
-      .filter((id) => Number.isFinite(id) && id >= MIN_PROJECT_ID && id !== projectId);
+    return ids.map((id) => Number(id)).filter((id) => acceptProjectId(id, projectId));
   } catch (err) {
     console.error(
-      `[cbe] project ${projectId}: l5/config.json unreadable at ${configPath} — dependencies ignored: ${(err as Error).message}`,
+      `[cbe] project ${projectId}: ${relativePath} unreadable at ${configPath} — dependencies ignored: ${(err as Error).message}`,
+    );
+    return [];
+  }
+}
+
+function gitMlsIds(deps: Record<string, unknown> | undefined, projectId: number): number[] {
+  if (!deps) return [];
+  const ids: number[] = [];
+  for (const [name, spec] of Object.entries(deps)) {
+    const match = /^mls-(\d+)$/.exec(name);
+    if (!match || typeof spec !== 'string' || !spec.startsWith('git+https')) continue;
+    const id = Number(match[1]);
+    if (acceptProjectId(id, projectId)) ids.push(id);
+  }
+  return ids;
+}
+
+function readGitManifestDependencyIds(projectId: number, relativePath: string): number[] | null {
+  const manifestPath = resolveProjectSourcePath(projectId, relativePath);
+  if (!existsSync(manifestPath)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+      actionDependencies?: Record<string, unknown>;
+      dependencies?: Record<string, unknown>;
+    };
+    const fromAction = gitMlsIds(parsed.actionDependencies, projectId);
+    if (fromAction.length > 0) return fromAction;
+    const fromDependencies = gitMlsIds(parsed.dependencies, projectId);
+    if (fromDependencies.length > 0) return fromDependencies;
+    return null;
+  } catch (err) {
+    console.error(
+      `[cbe] project ${projectId}: ${relativePath} unreadable at ${manifestPath} — dependencies ignored: ${(err as Error).message}`,
     );
     return [];
   }

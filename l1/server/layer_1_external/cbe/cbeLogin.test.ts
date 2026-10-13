@@ -375,6 +375,107 @@ test('T15: login sends the declared closure — an alien folder stays out, a tra
   });
 });
 
+function writeAtProject(root: string, projectId: number, relativePath: string, body: object): void {
+  const file = join(root, `mls-${projectId}`, relativePath);
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, JSON.stringify(body));
+}
+
+function seedProjectsConfig(root: string, seed: number): void {
+  const frontend = allocProjectId();
+  const backend = allocProjectId();
+  writeFileSync(join(root, 'config.json'), JSON.stringify({
+    defaultProjectId: String(seed),
+    projects: {
+      [seed]: { type: 'client' },
+      [frontend]: { type: 'master frontend' },
+      [backend]: { type: 'master backend' },
+    },
+  }));
+}
+
+function loginProjectIds(root: string): number[] {
+  writeFileSync(join(root, 'runLogin.mts'), [
+    "import { writeFileSync } from 'node:fs';",
+    "import { executeCbeLogin } from '/_102034_/l1/server/layer_1_external/cbe/cbeLogin.ts';",
+    "const response = executeCbeLogin({ action: 'login', projectsLastModified: [] });",
+    'const org = Object.values(response.orgs)[0];',
+    "writeFileSync('ids.json', JSON.stringify(org.sett.projects.map((project) => project.id)));",
+  ].join('\n'));
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../../../..');
+  const result = spawnSync(
+    join(repoRoot, 'node_modules/.bin/tsx'),
+    ['--import', join(repoRoot, 'test/register-hooks.mjs'), join(root, 'runLogin.mts')],
+    { cwd: root, env: { ...process.env, CBE_PROJECTS_DIR: root }, encoding: 'utf8' },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  return JSON.parse(readFileSync(join(root, 'ids.json'), 'utf8')) as number[];
+}
+
+test('T16: package.json actionDependencies supplies the closure', () => {
+  withProjectsDir((root) => {
+    const seed = allocProjectId();
+    const dep = allocProjectId();
+    seedProjectsConfig(root, seed);
+    writeAtProject(root, seed, 'package.json', {
+      actionDependencies: { [`mls-${dep}`]: 'git+https://github.com/org/mls.git' },
+    });
+    writeCompiledZip(root, dep);
+    assert.deepEqual(loginProjectIds(root), [dep]);
+  });
+});
+
+test('T17: actionDependencies wins over dependencies in the same package.json', () => {
+  withProjectsDir((root) => {
+    const seed = allocProjectId();
+    const fromAction = allocProjectId();
+    const fromDependencies = allocProjectId();
+    seedProjectsConfig(root, seed);
+    writeAtProject(root, seed, 'package.json', {
+      actionDependencies: { [`mls-${fromAction}`]: 'git+https://github.com/org/mls.git' },
+      dependencies: { [`mls-${fromDependencies}`]: 'git+https://github.com/org/mls.git' },
+    });
+    writeCompiledZip(root, fromAction);
+    writeCompiledZip(root, fromDependencies);
+    assert.deepEqual(loginProjectIds(root), [fromAction]);
+  });
+});
+
+test('T18: l5/config.json workspaceDependencies wins over package.json', () => {
+  withProjectsDir((root) => {
+    const seed = allocProjectId();
+    const fromConfig = allocProjectId();
+    const fromPackage = allocProjectId();
+    seedProjectsConfig(root, seed);
+    writeJson(root, seed, 'config.json', { workspaceDependencies: [String(fromConfig)] });
+    writeAtProject(root, seed, 'package.json', {
+      actionDependencies: { [`mls-${fromPackage}`]: 'git+https://github.com/org/mls.git' },
+    });
+    writeCompiledZip(root, fromConfig);
+    writeCompiledZip(root, fromPackage);
+    assert.deepEqual(loginProjectIds(root), [fromConfig]);
+  });
+});
+
+test('T19: a key without git+https or outside mls-<n> is ignored', () => {
+  withProjectsDir((root) => {
+    const seed = allocProjectId();
+    const httpsOnly = allocProjectId();
+    const fromDependencies = allocProjectId();
+    seedProjectsConfig(root, seed);
+    writeAtProject(root, seed, 'package.json', {
+      actionDependencies: {
+        lodash: 'git+https://github.com/lodash/lodash.git',
+        [`mls-${httpsOnly}`]: 'https://github.com/org/mls.git',
+      },
+      dependencies: { [`mls-${fromDependencies}`]: 'git+https://github.com/org/mls.git' },
+    });
+    writeCompiledZip(root, httpsOnly);
+    writeCompiledZip(root, fromDependencies);
+    assert.deepEqual(loginProjectIds(root), [fromDependencies]);
+  });
+});
+
 test('T14: rewritten project file (new mtime) is re-read', () => {
   withProjectFilesDir((filesRoot) => {
     const id = allocProjectId();
