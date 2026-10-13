@@ -11,6 +11,13 @@ import {
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { parseDraftSlug } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
+import {
+  DEFAULT_PROJECT_MODE,
+  isProjectMode,
+  isTestMode,
+  parseDatabaseUrl,
+  type ProjectMode,
+} from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
 
 const IDLE_MS = 30 * 60 * 1000;
 const RESTART_DEBOUNCE_MS = 1000;
@@ -94,6 +101,58 @@ const EXTRA_ENV_KEYS = [
 
 export class AncestorDenoConfigError extends Error {}
 
+export class DraftDatabaseError extends Error {}
+
+const DRAFT_DATABASE_PREFIX = 'collab_app_draft_';
+const DRAFT_DATABASE_MAX = 40;
+
+function draftDatabaseName(slug: string): string {
+  const normalized = slug.toLowerCase().replace(/[^a-z0-9]/gu, '_');
+  return `${DRAFT_DATABASE_PREFIX}${normalized}`.slice(0, DRAFT_DATABASE_MAX);
+}
+
+/** Parent test URL with only the database name swapped for this draft. Invalid URL throws. */
+export function draftDatabaseUrl(testUrl: string, slug: string): string {
+  if (!parseDatabaseUrl(testUrl)) {
+    console.error('[cbe] dev database url is invalid');
+    throw new Error('invalid database url');
+  }
+  const url = new URL(testUrl);
+  url.pathname = `/${draftDatabaseName(slug)}`;
+  return url.toString();
+}
+
+function postgresHostPort(databaseUrl: string): string {
+  const url = new URL(databaseUrl);
+  if (!url.hostname) {
+    console.error('[cbe] dev database url has no host');
+    throw new Error('invalid database url');
+  }
+  return `${url.hostname}:${url.port || '5432'}`;
+}
+
+/** `appEnv` of the draft worktree. Absent or invalid falls back to `presentation`, same as `readProjectMode`. */
+function readDraftProjectMode(draftDir: string, clientProjectId: number): ProjectMode {
+  const path = join(draftDir, `mls-${clientProjectId}`, 'l5', 'project.json');
+  try {
+    if (!existsSync(path)) {
+      console.warn(`[cbe] dev project mode: l5/project.json not found at ${path}; assuming '${DEFAULT_PROJECT_MODE}'`);
+      return DEFAULT_PROJECT_MODE;
+    }
+    const value = (JSON.parse(readFileSync(path, 'utf8')) as { appEnv?: unknown }).appEnv;
+    if (isProjectMode(value)) return value;
+    if (value === undefined) {
+      console.warn(`[cbe] dev project mode: ${path} declares no appEnv; assuming '${DEFAULT_PROJECT_MODE}'`);
+    } else {
+      console.warn(`[cbe] dev project mode: ${path} declares appEnv='${String(value)}', which is not a project mode; assuming '${DEFAULT_PROJECT_MODE}'`);
+    }
+    return DEFAULT_PROJECT_MODE;
+  } catch (error) {
+    console.warn(`[cbe] dev project mode: could not read ${path} (${error instanceof Error ? error.message : String(error)}); assuming '${DEFAULT_PROJECT_MODE}'`);
+    return DEFAULT_PROJECT_MODE;
+  }
+}
+
 export function findAncestorDenoConfig(
   draftDir: string,
   exists: (path: string) => boolean = existsSync,
@@ -115,6 +174,8 @@ export interface DevProcessInfo {
   pid: number;
   startedAt: number;
   lastRequestAt: number;
+  /** Draft database name. Present on records written when the process starts. */
+  database?: string;
 }
 
 export interface DevSpawnOptions {
@@ -153,13 +214,15 @@ export function memoryModeAllowEnv(): string[] {
   return [...new Set(names)];
 }
 
-export function buildDenoArgs(base: string, slug: string, port: number): string[] {
+export function buildDenoArgs(base: string, slug: string, port: number, databaseUrl: string): string[] {
   const draftDir = draftDirOf(base, slug);
+  const allowEnv = memoryModeAllowEnv();
+  allowEnv.push('DATABASE_URL_TEST');
   return [
     'run',
     `--allow-read=${base},${draftDir}`,
-    `--allow-env=${memoryModeAllowEnv().join(',')}`,
-    `--allow-net=0.0.0.0:${port},127.0.0.1`,
+    `--allow-env=${allowEnv.join(',')}`,
+    `--allow-net=0.0.0.0:${port},127.0.0.1,${postgresHostPort(databaseUrl)}`,
     '--allow-sys=networkInterfaces',
     '--config',
     join(draftDir, 'deno.json'),
@@ -348,12 +411,13 @@ export function linkSharedProjects(base: string, slug: string, clientProjectId: 
   }
 }
 
-function childEnv(port: number, slug: string, clientProjectId: number): Record<string, string> {
+function childEnv(port: number, slug: string, clientProjectId: number, databaseUrlTest: string): Record<string, string> {
   return {
     PATH: process.env.PATH ?? '',
     APP_ENV: 'development',
     PORT: String(port),
-    COLLAB_RUNTIME_MODE: 'memory',
+    RUNTIME_MODE: 'postgres',
+    DATABASE_URL_TEST: databaseUrlTest,
     COLLAB_DRAFT: slug,
     COLLAB_PROJECT_ID: String(clientProjectId),
   };
@@ -476,24 +540,39 @@ function ensureUnlocked(opts: EnsureDevProcessOpts): DevProcessInfo {
   if (existing && isDevPidAlive(existing.pid)) return existing;
   if (existsSync(path)) rmSync(path, { force: true });
 
-  const ancestor = findAncestorDenoConfig(draftDirOf(base, slug));
+  const draftDir = draftDirOf(base, slug);
+  const ancestor = findAncestorDenoConfig(draftDir);
   if (ancestor) {
     const message = `ancestor deno config: ${ancestor}`;
     console.error(`[cbe] dev ${slug}: ${message}`);
     throw new AncestorDenoConfigError(message);
   }
 
+  const mode = readDraftProjectMode(draftDir, clientProjectId);
+  if (!isTestMode(mode)) {
+    const message = `project mode ${mode} is not a test mode`;
+    console.error(`[cbe] dev ${slug}: ${message}`);
+    throw new DraftDatabaseError(message);
+  }
+  const testUrl = process.env.DATABASE_URL_TEST;
+  if (!testUrl) {
+    const message = 'DATABASE_URL_TEST is not set';
+    console.error(`[cbe] dev ${slug}: ${message}`);
+    throw new DraftDatabaseError(message);
+  }
+  const databaseUrl = draftDatabaseUrl(testUrl, slug);
+  const database = new URL(databaseUrl).pathname.replace(/^\//u, '');
+
   const writeConfig = opts.writeConfig ?? defaultWriteConfig;
   writeConfig({ base, slug, clientProjectId });
 
   const port = choosePort(base, slug);
-  const cwd = draftDirOf(base, slug);
   const logPath = join(base, 'logs', `dev-${slug}.log`);
   mkdirSync(join(base, 'logs'), { recursive: true });
   const spawn = opts.spawn ?? defaultDevSpawn;
-  const spawned = spawn('deno', buildDenoArgs(base, slug, port), {
-    cwd,
-    env: childEnv(port, slug, clientProjectId),
+  const spawned = spawn('deno', buildDenoArgs(base, slug, port, databaseUrl), {
+    cwd: draftDir,
+    env: childEnv(port, slug, clientProjectId, databaseUrl),
     logPath,
   });
   if (!Number.isInteger(spawned.pid) || spawned.pid <= 0) {
@@ -505,6 +584,7 @@ function ensureUnlocked(opts: EnsureDevProcessOpts): DevProcessInfo {
     pid: spawned.pid,
     startedAt: now(),
     lastRequestAt: now(),
+    database,
   };
   try {
     writeFileSync(path, `${JSON.stringify(record)}\n`);

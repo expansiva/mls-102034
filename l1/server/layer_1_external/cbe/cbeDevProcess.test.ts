@@ -7,7 +7,9 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import {
   AncestorDenoConfigError,
+  DraftDatabaseError,
   buildDenoArgs,
+  draftDatabaseUrl,
   ensureDevProcess,
   ensureDevReaper,
   findAncestorDenoConfig,
@@ -24,6 +26,33 @@ import {
 
 const IDLE_MS = 30 * 60 * 1000;
 const SLUG = 'team-102047';
+const PARENT_TEST_URL = 'postgres://collab:secret@127.0.0.1:5432/collab_app_test';
+const DRAFT_DATABASE = 'collab_app_draft_team_102047';
+
+test('draftDatabaseUrl keeps the parent connection and swaps only the database name', () => {
+  const url = draftDatabaseUrl(PARENT_TEST_URL, SLUG);
+  const parsed = new URL(url);
+  assert.equal(parsed.username, 'collab');
+  assert.equal(parsed.password, 'secret');
+  assert.equal(parsed.hostname, '127.0.0.1');
+  assert.equal(parsed.port, '5432');
+  assert.equal(parsed.pathname, `/${DRAFT_DATABASE}`);
+  assert.equal(url, `postgres://collab:secret@127.0.0.1:5432/${DRAFT_DATABASE}`);
+  assert.notEqual(parsed.pathname, '/collab_app_test');
+
+  const mixed = new URL(draftDatabaseUrl(PARENT_TEST_URL, 'Team.A@b-9'));
+  assert.equal(mixed.pathname, '/collab_app_draft_team_a_b_9');
+  assert.equal(mixed.username, 'collab');
+  assert.equal(mixed.hostname, '127.0.0.1');
+  assert.equal(mixed.port, '5432');
+
+  const capped = new URL(draftDatabaseUrl(PARENT_TEST_URL, 'abcdefghijklmnopqrstuvwxyz')).pathname.slice(1);
+  assert.equal(capped.length, 40);
+  assert.equal(capped, 'collab_app_draft_abcdefghijklmnopqrstuvw');
+
+  assert.throws(() => draftDatabaseUrl('not a url', SLUG), /invalid database url/);
+  assert.throws(() => draftDatabaseUrl('postgres://collab:secret@127.0.0.1:5432', SLUG), /invalid database url/);
+});
 
 test('memoryModeAllowEnv contains the measured env names once', () => {
   const names = memoryModeAllowEnv();
@@ -69,8 +98,10 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
   const prevRange = process.env.COLLAB_DEV_PORT_RANGE;
   const prevMax = process.env.COLLAB_DEV_MAX;
   const prevDatabase = process.env.DATABASE_URL;
+  const prevTestDatabase = process.env.DATABASE_URL_TEST;
   process.env.COLLAB_DEV_PORT_RANGE = '4100-4199';
   process.env.DATABASE_URL = 'postgres://should-not-leak';
+  process.env.DATABASE_URL_TEST = PARENT_TEST_URL;
   t.after(() => {
     killPids(pids);
     if (prevRange === undefined) delete process.env.COLLAB_DEV_PORT_RANGE;
@@ -79,6 +110,8 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
     else process.env.COLLAB_DEV_MAX = prevMax;
     if (prevDatabase === undefined) delete process.env.DATABASE_URL;
     else process.env.DATABASE_URL = prevDatabase;
+    if (prevTestDatabase === undefined) delete process.env.DATABASE_URL_TEST;
+    else process.env.DATABASE_URL_TEST = prevTestDatabase;
   });
 
   await t.test('first ensure spawns once with the measured flags; second does not', () => {
@@ -92,17 +125,19 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
       };
       const now = () => 1_700_000_000_000;
       const writeConfig = () => {};
+      const draftUrl = draftDatabaseUrl(PARENT_TEST_URL, SLUG);
+      process.env.DATABASE_URL_TEST = PARENT_TEST_URL;
       const first = ensureDevProcess({ base, slug: SLUG, clientProjectId: 102047, spawn: spawnDev, now, writeConfig });
       const second = ensureDevProcess({ base, slug: SLUG, clientProjectId: 102047, spawn: spawnDev, now, writeConfig });
 
       assert.equal(calls.length, 1);
       assert.equal(calls[0].command, 'deno');
-      assert.deepEqual(calls[0].args, buildDenoArgs(base, SLUG, 4100));
+      assert.deepEqual(calls[0].args, buildDenoArgs(base, SLUG, 4100, draftUrl));
       assert.deepEqual(calls[0].args, [
         'run',
         `--allow-read=${base},${join(base, 'drafts', SLUG)}`,
-        `--allow-env=${memoryModeAllowEnv().join(',')}`,
-        '--allow-net=0.0.0.0:4100,127.0.0.1',
+        `--allow-env=${[...memoryModeAllowEnv(), 'DATABASE_URL_TEST'].join(',')}`,
+        '--allow-net=0.0.0.0:4100,127.0.0.1,127.0.0.1:5432',
         '--allow-sys=networkInterfaces',
         '--config',
         join(base, 'drafts', SLUG, 'deno.json'),
@@ -122,14 +157,17 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
       assert.equal(calls[0].options.cwd, join(base, 'drafts', SLUG));
       assert.equal(calls[0].options.env.PORT, '4100');
       assert.equal(calls[0].options.env.APP_ENV, 'development');
-      assert.equal(calls[0].options.env.COLLAB_RUNTIME_MODE, 'memory');
+      assert.equal(calls[0].options.env.RUNTIME_MODE, 'postgres');
+      assert.equal(calls[0].options.env.DATABASE_URL_TEST, draftUrl);
+      assert.equal(new URL(calls[0].options.env.DATABASE_URL_TEST).pathname, `/${DRAFT_DATABASE}`);
+      assert.equal(calls[0].options.env.COLLAB_RUNTIME_MODE, undefined);
       assert.equal(calls[0].options.env.COLLAB_DRAFT, SLUG);
       assert.equal(calls[0].options.env.COLLAB_PROJECT_ID, '102047');
       assert.equal(calls[0].options.env.DATABASE_URL, undefined);
       assert.equal(calls[0].options.logPath, join(base, 'logs', `dev-${SLUG}.log`));
       assert.equal(readFileSync(join(base, 'drafts', SLUG, 'config.json'), 'utf8'), '{"release":true}\n');
       const stored = JSON.parse(readFileSync(join(base, 'drafts', SLUG, 'dev.json'), 'utf8'));
-      assert.deepEqual(stored, { port: 4100, pid: first.pid, startedAt: now(), lastRequestAt: now() });
+      assert.deepEqual(stored, { port: 4100, pid: first.pid, startedAt: now(), lastRequestAt: now(), database: DRAFT_DATABASE });
       assert.equal(second.pid, first.pid);
       assert.equal(isDevPidAlive(first.pid), true);
     } finally {
@@ -431,11 +469,98 @@ test('ancestor deno.json blocks a new dev process; a live process skips the guar
   }
 });
 
+function writeProjectMode(base: string, slug: string, projectId: number, appEnv: string): void {
+  const dir = join(base, 'drafts', slug, `mls-${projectId}`, 'l5');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'project.json'), `${JSON.stringify({ appEnv })}\n`);
+}
+
+test('a non-test project mode or a missing DATABASE_URL_TEST refuses a new dev process', () => {
+  const base = mkdtempSync(join(tmpdir(), 'cbe-dev-mode-'));
+  const prevRange = process.env.COLLAB_DEV_PORT_RANGE;
+  const prevTestDatabase = process.env.DATABASE_URL_TEST;
+  process.env.COLLAB_DEV_PORT_RANGE = '4100-4199';
+  process.env.DATABASE_URL_TEST = PARENT_TEST_URL;
+  try {
+    writeFileSync(join(base, 'config.json'), '{"release":true}\n');
+    for (const mode of ['production', 'homologation'] as const) {
+      writeProjectMode(base, SLUG, 102047, mode);
+      const calls: string[] = [];
+      assert.throws(
+        () => ensureDevProcess({
+          base,
+          slug: SLUG,
+          clientProjectId: 102047,
+          spawn: () => {
+            calls.push('spawn');
+            return { pid: 1 };
+          },
+          writeConfig: () => { calls.push('config'); },
+        }),
+        (err: unknown) => {
+          assert.ok(err instanceof DraftDatabaseError);
+          assert.equal((err as DraftDatabaseError).message, `project mode ${mode} is not a test mode`);
+          return true;
+        },
+      );
+      assert.deepEqual(calls, []);
+      assert.equal(existsDev(base, SLUG), false);
+    }
+
+    writeDev(base, SLUG, { port: 4100, pid: process.pid, startedAt: 1, lastRequestAt: 2 });
+    const calls: string[] = [];
+    const live = ensureDevProcess({
+      base,
+      slug: SLUG,
+      clientProjectId: 102047,
+      spawn: () => {
+        calls.push('spawn');
+        return { pid: 1 };
+      },
+      writeConfig: () => { calls.push('config'); },
+    });
+    assert.equal(live.pid, process.pid);
+    assert.deepEqual(calls, []);
+    rmSync(join(base, 'drafts', SLUG, 'dev.json'), { force: true });
+
+    delete process.env.DATABASE_URL_TEST;
+    writeProjectMode(base, SLUG, 102047, 'development');
+    const missingCalls: string[] = [];
+    assert.throws(
+      () => ensureDevProcess({
+        base,
+        slug: SLUG,
+        clientProjectId: 102047,
+        spawn: () => {
+          missingCalls.push('spawn');
+          return { pid: 1 };
+        },
+        writeConfig: () => { missingCalls.push('config'); },
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof DraftDatabaseError);
+        assert.equal((err as DraftDatabaseError).message, 'DATABASE_URL_TEST is not set');
+        return true;
+      },
+    );
+    assert.deepEqual(missingCalls, []);
+    assert.equal(existsDev(base, SLUG), false);
+  } finally {
+    if (prevRange === undefined) delete process.env.COLLAB_DEV_PORT_RANGE;
+    else process.env.COLLAB_DEV_PORT_RANGE = prevRange;
+    if (prevTestDatabase === undefined) delete process.env.DATABASE_URL_TEST;
+    else process.env.DATABASE_URL_TEST = prevTestDatabase;
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test('ensureDevProcess spawns when no ancestor deno config exists', () => {
   const pids: number[] = [];
   const base = mkdtempSync(join(tmpdir(), 'cbe-dev-clean-'));
   const prevRange = process.env.COLLAB_DEV_PORT_RANGE;
+  const prevTestDatabase = process.env.DATABASE_URL_TEST;
   process.env.COLLAB_DEV_PORT_RANGE = '4100-4199';
+  process.env.DATABASE_URL_TEST = PARENT_TEST_URL;
   try {
     writeFileSync(join(base, 'config.json'), '{"release":true}\n');
     const calls: Array<{ command: string; args: string[] }> = [];
@@ -459,6 +584,8 @@ test('ensureDevProcess spawns when no ancestor deno config exists', () => {
     killPids(pids);
     if (prevRange === undefined) delete process.env.COLLAB_DEV_PORT_RANGE;
     else process.env.COLLAB_DEV_PORT_RANGE = prevRange;
+    if (prevTestDatabase === undefined) delete process.env.DATABASE_URL_TEST;
+    else process.env.DATABASE_URL_TEST = prevTestDatabase;
     rmSync(base, { recursive: true, force: true });
   }
 });
