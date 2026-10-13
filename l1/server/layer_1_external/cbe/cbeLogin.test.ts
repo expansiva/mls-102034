@@ -1,9 +1,11 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/cbe/cbeLogin.test.ts" enhancement="_blank" />
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import AdmZip from 'adm-zip';
 import { announcedProjectDriver, buildProjectSettings, readProjectFile, readProjectSettings, resolveOrgInfo } from '/_102034_/l1/server/layer_1_external/cbe/cbeLogin.js';
 import type { ProjectsConfig } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
@@ -327,6 +329,49 @@ test('T13: schema 2 with an extra field is read as v1', () => {
     assert.ok(file);
     assert.equal(file?.org.slug, 'charlie');
     assert.equal(file?.schema, 2);
+  });
+});
+
+test('T15: login sends the declared closure — an alien folder stays out, a transitive dep comes in, a cycle returns', () => {
+  withProjectsDir((root) => {
+    const seed = allocProjectId();
+    const frontend = allocProjectId();
+    const backend = allocProjectId();
+    const mid = allocProjectId();
+    const leaf = allocProjectId();
+    const alien = allocProjectId();
+    writeFileSync(join(root, 'config.json'), JSON.stringify({
+      defaultProjectId: String(seed),
+      projects: {
+        [seed]: { type: 'client' },
+        [frontend]: { type: 'master frontend' },
+        [backend]: { type: 'master backend' },
+      },
+    }));
+    writeJson(root, seed, 'config.json', { workspaceDependencies: [String(mid)] });
+    writeJson(root, mid, 'config.json', { workspaceDependencies: [String(leaf)] });
+    writeJson(root, leaf, 'config.json', { workspaceDependencies: [String(seed), String(mid)] });
+    writeCompiledZip(root, leaf);
+    writeCompiledZip(root, alien);
+    writeFileSync(join(root, 'runLogin.mts'), [
+      "import { writeFileSync } from 'node:fs';",
+      "import { executeCbeLogin } from '/_102034_/l1/server/layer_1_external/cbe/cbeLogin.ts';",
+      "const response = executeCbeLogin({ action: 'login', projectsLastModified: [] });",
+      'const org = Object.values(response.orgs)[0];',
+      "writeFileSync('ids.json', JSON.stringify(org.sett.projects.map((project) => project.id)));",
+    ].join('\n'));
+
+    const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../../../..');
+    const result = spawnSync(
+      join(repoRoot, 'node_modules/.bin/tsx'),
+      ['--import', join(repoRoot, 'test/register-hooks.mjs'), join(root, 'runLogin.mts')],
+      { cwd: root, env: { ...process.env, CBE_PROJECTS_DIR: root }, encoding: 'utf8' },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const ids = JSON.parse(readFileSync(join(root, 'ids.json'), 'utf8')) as number[];
+    assert.deepEqual(ids, [leaf]);
+    assert.equal(ids.includes(alien), false);
+    assert.equal(ids.includes(mid), false);
   });
 });
 

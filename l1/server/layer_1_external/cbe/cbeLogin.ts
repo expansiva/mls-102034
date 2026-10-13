@@ -9,10 +9,10 @@
 // session (cauth cookie + JWKS validation) plugs in here later without changing
 // the response shape.
 
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { readProjectsConfig } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
-import { getFilesIfNewer, getProjectsBaseDir, hasCompiledZip, resolveProjectSourcePath } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
+import { getFilesIfNewer, hasCompiledZip, resolveProjectSourcePath } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
 import {
   CBE_HTTP_OK,
   type CbeOrgInfo,
@@ -261,26 +261,25 @@ export function buildProjectSettings(
   };
 }
 
-// All projects the VM can serve: the runtime config set PLUS every mls-<id>
-// folder present at the projects base with an obj/compiled.zip. This is what
-// makes the studio projects (mls-100554 etc.) — synced by the publish and
-// compiled ON the VM (scripts/runtime/buildProjectsObj.mjs) — reach the
-// browser, instead of only the runtime workspace of config.json.
+// Projects this app may serve: the runtime config set, plus the transitive
+// workspaceDependencies declared in each of those projects' l5/config.json
+// on the projects base. A folder that sits on the base but is outside that
+// closure is not this app's.
 function listServableProjectIds(): number[] {
   const ids = new Set<number>();
   const config = readProjectsConfig();
+  const pending: number[] = [];
   for (const id of Object.keys(config.projects)) {
     const numeric = Number(id);
-    if (Number.isFinite(numeric)) ids.add(numeric);
+    if (Number.isFinite(numeric)) pending.push(numeric);
   }
-  try {
-    for (const entry of readdirSync(getProjectsBaseDir(), { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const match = /^mls-(\d+)$/u.exec(entry.name);
-      if (match) ids.add(Number(match[1]));
+  while (pending.length > 0) {
+    const id = pending.pop();
+    if (id === undefined || ids.has(id)) continue;
+    ids.add(id);
+    for (const dep of readProjectDependencies(id)) {
+      if (!ids.has(dep)) pending.push(dep);
     }
-  } catch (err) {
-    console.warn(`[cbe] projects base scan failed: ${(err as Error).message}`);
   }
   return [...ids].sort((a, b) => a - b);
 }
