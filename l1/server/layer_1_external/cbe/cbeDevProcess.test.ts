@@ -85,13 +85,24 @@ function envNamesReadInL1(): Set<string> {
   return names;
 }
 
+function allowEnvCovers(allowNames: ReadonlySet<string>, name: string): boolean {
+  if (allowNames.has(name)) return true;
+  for (const pattern of allowNames) {
+    if (pattern.endsWith('*') && pattern.length > 1 && name.startsWith(pattern.slice(0, -1))) return true;
+  }
+  return false;
+}
+
 test('dev --allow-env covers every l1 env read except DATABASE_URL', () => {
   const allow = buildDenoArgs('/tmp/base', SLUG, 4100, draftDatabaseUrl(PARENT_TEST_URL, SLUG))
     .find((arg) => arg.startsWith('--allow-env='));
   assert.ok(allow);
   const allowNames = new Set(allow.slice('--allow-env='.length).split(','));
+  assert.equal(allowNames.has('PG*'), true);
+  assert.equal(allowNames.has('USERNAME'), true);
   assert.equal(allowNames.has('DATABASE_URL'), false);
-  const missing = [...envNamesReadInL1()].filter((name) => name !== 'DATABASE_URL' && !allowNames.has(name));
+  assert.equal(allowEnvCovers(allowNames, 'PGBINARY'), true);
+  const missing = [...envNamesReadInL1()].filter((name) => name !== 'DATABASE_URL' && !allowEnvCovers(allowNames, name));
   assert.deepEqual(missing, []);
 });
 
@@ -169,7 +180,7 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
       assert.deepEqual(calls[0].args, [
         'run',
         `--allow-read=${base},${join(base, 'drafts', SLUG)}`,
-        `--allow-env=${[...memoryModeAllowEnv(), 'DATABASE_URL_TEST'].join(',')}`,
+        `--allow-env=${[...memoryModeAllowEnv(), 'DATABASE_URL_TEST', 'PG*', 'USERNAME'].join(',')}`,
         '--allow-net=0.0.0.0:4100,127.0.0.1,127.0.0.1:5432',
         '--allow-sys=networkInterfaces',
         '--config',

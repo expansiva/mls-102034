@@ -240,7 +240,8 @@ export function memoryModeAllowEnv(): string[] {
 export function buildDenoArgs(base: string, slug: string, port: number, databaseUrl: string): string[] {
   const draftDir = draftDirOf(base, slug);
   const allowEnv = memoryModeAllowEnv();
-  allowEnv.push('DATABASE_URL_TEST');
+  // pg reads `process.env['PG' + key]` (PGBINARY, PGSSLMODE, …) plus USERNAME. Deno ≥ 2.1 accepts the suffix `*`.
+  allowEnv.push('DATABASE_URL_TEST', 'PG*', 'USERNAME');
   return [
     'run',
     `--allow-read=${base},${draftDir}`,
