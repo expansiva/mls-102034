@@ -1,9 +1,10 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.test.ts" enhancement="_blank" />
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import {
   AncestorDenoConfigError,
@@ -60,6 +61,38 @@ test('memoryModeAllowEnv contains the measured env names once', () => {
   assert.equal(names.includes('APP_ENV'), true);
   assert.equal(names.includes('DATABASE_URL'), false);
   assert.equal(new Set(names).size, names.length);
+});
+
+function envNamesReadInL1(): Set<string> {
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+  const dot = /process\.env\.([A-Za-z_][A-Za-z0-9_]*)/gu;
+  const bracket = /process\.env\[\s*['"]([A-Za-z0-9_]+)['"]\s*\]/gu;
+  const names = new Set<string>();
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        if (entry.name === 'scripts') continue;
+        walk(join(dir, entry.name));
+        continue;
+      }
+      if (!entry.name.endsWith('.ts') || entry.name.endsWith('.test.ts')) continue;
+      const text = readFileSync(join(dir, entry.name), 'utf8');
+      for (const match of text.matchAll(dot)) names.add(match[1]);
+      for (const match of text.matchAll(bracket)) names.add(match[1]);
+    }
+  };
+  walk(root);
+  return names;
+}
+
+test('dev --allow-env covers every l1 env read except DATABASE_URL', () => {
+  const allow = buildDenoArgs('/tmp/base', SLUG, 4100, draftDatabaseUrl(PARENT_TEST_URL, SLUG))
+    .find((arg) => arg.startsWith('--allow-env='));
+  assert.ok(allow);
+  const allowNames = new Set(allow.slice('--allow-env='.length).split(','));
+  assert.equal(allowNames.has('DATABASE_URL'), false);
+  const missing = [...envNamesReadInL1()].filter((name) => name !== 'DATABASE_URL' && !allowNames.has(name));
+  assert.deepEqual(missing, []);
 });
 
 function dummyPid(pids: number[]): number {
