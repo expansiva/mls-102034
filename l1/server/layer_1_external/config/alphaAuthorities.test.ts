@@ -51,3 +51,20 @@ test('moduleActorRefs: mapa com caixa/garcom devolve os dois; sem mapa, []', asy
   rmSync(resolveProjectDistPath('_990011_'), { recursive: true, force: true });
   rmSync(resolveProjectDistPath('_990012_'), { recursive: true, force: true });
 });
+
+// 13/10/2026: the generated L1 keeps its controllers one level deeper (layer_1_external/adapters/http/controllers)
+// and the map in layer_1_external/auth/. Only `../../auth/` was tried, so every current module got [] and the
+// alpha super user added no actor (reembolsoDespesas answered FORBIDDEN_ACTOR).
+test('moduleActorRefs: the current L1 layout (adapters/http/controllers → layer_1_external/auth) is found too', async () => {
+  resetAlphaAuthoritiesCache();
+  const controllers = '_990013_/l1/modC/layer_1_external/adapters/http/controllers';
+  const mapPath = resolveProjectDistPath('_990013_/l1/modC/layer_1_external/auth/authorityMap.js');
+  mkdirSync(dirname(mapPath), { recursive: true });
+  writeFileSync(mapPath, 'export const entries = [{ grantId: "a", actorRef: "colaborador" }, { grantId: "b", actorRef: "gestorEquipe" }, { grantId: "c", actorRef: "financeiro" }];\n');
+  try {
+    assert.deepEqual(await moduleActorRefs(controllers), ['colaborador', 'gestorEquipe', 'financeiro']);
+    assert.deepEqual(await moduleActorRefs(`${controllers}/`), ['colaborador', 'gestorEquipe', 'financeiro'], 'a trailing slash changes nothing');
+  } finally {
+    rmSync(resolveProjectDistPath('_990013_'), { recursive: true, force: true });
+  }
+});

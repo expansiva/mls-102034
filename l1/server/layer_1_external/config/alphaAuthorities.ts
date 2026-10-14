@@ -31,9 +31,20 @@ export function moduleActorRefs(controllersDir: string): Promise<string[]> {
   return pending;
 }
 
+/**
+ * Where a module's authority map sits relative to its controllers, one per L1 layout:
+ * - `<module>/layer_1_external/adapters/http/controllers` → `<module>/layer_1_external/auth/` (the current
+ *   generated L1: comandaRestaurante, agendaClinica, reembolsoDespesas);
+ * - `<module>/layer_2_controllers` → `<module>/auth/` (the earlier layout).
+ * Only `../../auth/` was tried until 13/10/2026, so the current layout always got [] and the alpha super user
+ * added no actor: every generated controller answered FORBIDDEN_ACTOR.
+ */
+const AUTHORITY_MAP_CANDIDATES = ['../../../auth/authorityMap.js', '../../auth/authorityMap.js'] as const;
+
 async function loadActorRefs(controllersDir: string): Promise<string[]> {
-  const relativePath = `${controllersDir.replace(/\/$/u, '')}/../../auth/authorityMap.js`;
-  if (!existsSync(resolveProjectDistPath(relativePath))) {
+  const base = controllersDir.replace(/\/$/u, '');
+  const relativePath = AUTHORITY_MAP_CANDIDATES.map(candidate => `${base}/${candidate}`).find(path => existsSync(resolveProjectDistPath(path)));
+  if (!relativePath) {
     return [];
   }
   const mod = await import(resolveProjectModuleImportUrl(relativePath));
