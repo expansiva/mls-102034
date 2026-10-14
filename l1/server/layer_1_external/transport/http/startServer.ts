@@ -5,7 +5,7 @@ import { extname, join, normalize, resolve } from 'node:path';
 import { getFrontendAppByBasePath, getFrontendAppRegistrations, getAppPublicRootDir, getAppAssetRootDirs } from '/_102034_/l1/server/layer_1_external/frontend/appRegistry.js';
 import { injectFaviconLink, resolveAppFaviconHref } from '/_102034_/l1/server/layer_1_external/frontend/faviconHtml.js';
 import { readProjectsConfig, resolveWebDistPath } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
-import { classifyProjectAssetUrl } from '/_102034_/l1/server/layer_1_external/transport/http/classifyProjectAssetUrl.js';
+import { classifyProjectAssetUrl, HASHED_SHARED_JS_PATH } from '/_102034_/l1/server/layer_1_external/transport/http/classifyProjectAssetUrl.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { createDefaultRequestContext, execBff } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
 import { AppError } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
@@ -549,12 +549,15 @@ export async function handleHttpRequest(
 
     const staticAsset = tryReadProjectAsset(url);
     if (staticAsset) {
+      const pathname = url.replace(/\?.*$/u, '');
       return {
         statusCode: 200,
         body: staticAsset.body,
         headers: {
           'content-type': staticAsset.contentType,
-          'cache-control': 'no-cache',
+          'cache-control': HASHED_SHARED_JS_PATH.test(pathname)
+            ? 'public, max-age=31536000, immutable'
+            : 'no-cache',
         },
       };
     }

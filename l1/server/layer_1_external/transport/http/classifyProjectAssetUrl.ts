@@ -4,6 +4,9 @@ export type ProjectAssetKind = 'module' | 'static' | 'libs';
 const QUERY_RE = /\?.*$/u;
 const PROJECT_PATH_RE = /^\/_\d+_\/(l2|l3|l4)\/(.+)$/u;
 
+/** Pathname of an esbuild Lit chunk (`chunkNames: 'shared-[hash]'`, 8 chars). No query. */
+export const HASHED_SHARED_JS_PATH = /^\/_libs\/lit\/shared-[A-Z0-9]{8}\.js$/u;
+
 function remainderEscapesRoot(remainder: string): boolean {
   return remainder.split('/').includes('..');
 }
