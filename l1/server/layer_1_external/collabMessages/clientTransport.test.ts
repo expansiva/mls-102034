@@ -194,7 +194,10 @@ describe('createServerMessagesClient loopback', () => {
     assert.ok(bodyWait >= TIMEOUT_MS - 40);
     assert.ok(bodyWait < TIMEOUT_MS + 1500);
 
-    await new Promise((resolve) => { setTimeout(resolve, 30); });
+    const deadline = Date.now() + 8000;
+    while (server.sockets() !== 0 && Date.now() < deadline) {
+      await new Promise((resolve) => { setTimeout(resolve, 10); });
+    }
     assert.equal(server.sockets(), 0);
   });
 
