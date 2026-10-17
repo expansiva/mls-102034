@@ -276,14 +276,31 @@ function createPostgresRuntimeWithExecutor(env: AppEnv, executor: PgExecutor): I
     },
   };
 
-  runtime.runInTransaction = async <TValue>(callback: (data: IDataRuntime) => Promise<TValue>) => {
+  runtime.runInTransaction = async <TValue>(
+    callback: (data: IDataRuntime) => Promise<TValue>,
+    options?: { lockKey: string },
+  ) => {
     if ('release' in executor) {
+      if (options?.lockKey) {
+        throw new AppError(
+          'NESTED_KEYED_TRANSACTION',
+          'Keyed transaction cannot nest inside an existing transaction',
+          500,
+        );
+      }
       return callback(runtime);
     }
 
-    return withPgTransaction(executor, async (client) =>
-      callback(createPostgresRuntimeWithExecutor(env, client)),
-    );
+    return withPgTransaction(executor, async (client) => {
+      if (options?.lockKey) {
+        await queryRows(
+          client,
+          'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+          [options.lockKey],
+        );
+      }
+      return callback(createPostgresRuntimeWithExecutor(env, client));
+    });
   };
 
   return runtime;
