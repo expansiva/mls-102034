@@ -30,7 +30,15 @@ import { getRunningRelease } from '/_102034_/l1/server/layer_1_external/cbe/cbeR
 import { registerMsgProxy } from '/_102034_/l1/server/layer_1_external/transport/http/msgProxy.js';
 import { registerGitRoutes } from '/_102034_/l1/server/layer_1_external/transport/http/gitHttp.js';
 import { registerSessionRegistrationRoutes } from '/_102034_/l1/server/layer_1_external/transport/http/sessionRegistration.js';
-import { readOnboardingConfig } from '/_102034_/l1/server/layer_1_external/config/onboardingConfig.js';
+import { OnboardingConfigError, readOnboardingConfig, resolveOrganizationBinding } from '/_102034_/l1/server/layer_1_external/config/onboardingConfig.js';
+import { getResolvedOrganizationCompanyId } from '/_102034_/l1/mdm/layer_3_usecases/organizationBootstrap.js';
+import { isPersonAccessComplete } from '/_102034_/l1/mdm/layer_3_usecases/mdmSupport.js';
+import { normalizeRegistrationEmail } from '/_102034_/l1/mdm/layer_3_usecases/registrationCandidates.js';
+import { readRegistrationStore } from '/_102034_/l1/mdm/layer_3_usecases/registrationStore.js';
+import {
+  isAccessRequest, isRequestIndex, personByLogin, requestIndexKey, requestRecordKey,
+} from '/_102034_/l1/mdm/layer_3_usecases/selfRegistration.js';
+import type { ProjectOnboardingConfig } from '/_102029_/l2/runtimeConfigTypes.js';
 import { buildNewReleaseQaHtml, canServeNewReleaseQa, extractNewReleaseQaLitImportMap, newReleaseQaProjectHint } from '/_102034_/l1/server/layer_1_external/transport/http/newReleaseQaRoute.js';
 import {
   handleAttachmentHttp, isAttachmentHttpPath,
@@ -48,6 +56,54 @@ import type { BffRequest, FrontendAppRegistration, RequestContext } from '/_1020
 
 /** Session JSON projection. The IdP `sub` stays `userId`; this is only the MDM person. */
 export type SessionInfoPerson = { mdmId: string };
+
+export type SessionOnboardingStatus = 'ready' | 'incomplete' | 'pending' | 'unregistered' | 'unavailable';
+
+export type SessionInfoOnboarding = {
+  status: SessionOnboardingStatus;
+  entryPath: string;
+  moduleBasePath: string;
+  requestId?: string;
+};
+
+export type SessionInfoCompany = { mdmId: string };
+
+/** Entry already checked against the client module. `organizationKey` null means the index cannot be read. */
+export type SessionOnboardingSource = {
+  entry: { entryPath: string; moduleBasePath: string };
+  organizationKey: string | null;
+  companyMdmId?: string | null;
+};
+
+type ClientModuleRoutes = Pick<FrontendAppRegistration, 'projectId' | 'appId' | 'basePath' | 'routes'>;
+
+/**
+ * Entry of the configured client module. Throws a readable error for an external URL,
+ * a missing module, or a path that is not a route or alias of that module.
+ */
+export function resolveClientOnboardingEntry(
+  onboarding: Pick<ProjectOnboardingConfig, 'moduleId' | 'entryPath'>,
+  clientProjectId: string,
+  apps: readonly ClientModuleRoutes[],
+): { entryPath: string; moduleBasePath: string } {
+  const entryPath = onboarding.entryPath;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(entryPath) || entryPath.includes('//') || !entryPath.startsWith('/')) {
+    throw new OnboardingConfigError(`onboarding.entryPath rejects an external origin: ${entryPath}`);
+  }
+  const module = apps.find((app) => app.projectId === clientProjectId && app.appId === onboarding.moduleId);
+  if (!module) {
+    throw new OnboardingConfigError(
+      `onboarding.moduleId '${onboarding.moduleId}' is not a registered module of client ${clientProjectId}`,
+    );
+  }
+  const paths = module.routes.flatMap((route) => [route.path, ...(route.aliases ?? [])]);
+  if (!paths.includes(entryPath)) {
+    throw new OnboardingConfigError(
+      `onboarding.entryPath '${entryPath}' is not a route of client module '${onboarding.moduleId}'`,
+    );
+  }
+  return { entryPath, moduleBasePath: module.basePath };
+}
 
 const WRITE_BEHIND_INTERVAL_MS = 5000;
 
@@ -113,9 +169,24 @@ function readStaticFile(filePath: string) {
   };
 }
 
-function buildBootConfigScript(app: FrontendAppRegistration) {
+async function buildBootConfigScript(app: FrontendAppRegistration) {
   if (!app.routes.length) {
     return '';
+  }
+
+  let onboarding: { entryPath: string; moduleBasePath: string } | undefined;
+  try {
+    const projects = readProjectsConfig();
+    const onboardingConfig = readOnboardingConfig(projects);
+    if (onboardingConfig) {
+      onboarding = resolveClientOnboardingEntry(
+        onboardingConfig,
+        projects.defaultProjectId,
+        await getFrontendAppRegistrations(),
+      );
+    }
+  } catch (error) {
+    if (error instanceof OnboardingConfigError) throw error;
   }
 
   const payload = JSON.stringify({
@@ -142,6 +213,7 @@ function buildBootConfigScript(app: FrontendAppRegistration) {
     // The mode the SERVER resolved. The client only shows the badge with it — it never decides the mode
     // (that is deployment config, read from the project's l5/project.json at boot).
     appEnv: readProjectMode(app.projectId),
+    ...(onboarding ? { onboarding } : {}),
   }).replace(/</gu, '\\u003c');
 
   // window.latest mirrors the studio index.html (versions from the central
@@ -163,10 +235,10 @@ function buildCollabFechoJson(): string {
   return JSON.stringify(fecho).replace(/</gu, '\\u003c');
 }
 
-function injectBootConfig(html: string, app: FrontendAppRegistration) {
+async function injectBootConfig(html: string, app: FrontendAppRegistration) {
   const faviconHref = app.faviconHref ?? resolveAppFaviconHref(undefined).href;
   const withIcon = injectFaviconLink(html, faviconHref);
-  const bootScript = buildBootConfigScript(app);
+  const bootScript = await buildBootConfigScript(app);
   if (!bootScript) {
     return withIcon;
   }
@@ -182,9 +254,9 @@ function injectBootConfig(html: string, app: FrontendAppRegistration) {
   return `${bootScript}\n${withIcon}`;
 }
 
-function readAppHtml(filePath: string, app: FrontendAppRegistration) {
+async function readAppHtml(filePath: string, app: FrontendAppRegistration) {
   return {
-    body: Buffer.from(injectBootConfig(readFileSync(filePath, 'utf8'), app), 'utf8'),
+    body: Buffer.from(await injectBootConfig(readFileSync(filePath, 'utf8'), app), 'utf8'),
     contentType: 'text/html; charset=utf-8',
   };
 }
@@ -240,7 +312,7 @@ async function tryReadAppFile(urlPath: string) {
       const filePath = normalize(join(root, relativePath));
       // Containment check: `relativePath` comes from the URL, so `..` must never escape the root.
       if (!filePath.startsWith(root) || !existsSync(filePath)) continue;
-      return extname(filePath) === '.html' ? readAppHtml(filePath, app) : readStaticFile(filePath);
+      return extname(filePath) === '.html' ? await readAppHtml(filePath, app) : readStaticFile(filePath);
     }
   }
 
@@ -263,6 +335,7 @@ export function sessionInfoBody(
   mode: ProjectMode,
   override: AuthorityOverride | null,
   person: SessionInfoPerson | null = null,
+  gate?: { company: SessionInfoCompany | null; onboarding: SessionInfoOnboarding },
 ) {
   const real = claimAuthorities(session.claims);
   const effective = effectiveAuthorities(real, override);
@@ -283,7 +356,45 @@ export function sessionInfoBody(
     expiresAt: typeof session.claims?.exp === 'number' ? new Date(session.claims.exp * 1000).toISOString() : null,
     enforcement: { authentication: isBffAuthEnforced(), actors: isActorEnforcementOn() },
     reason: session.reason,
+    ...(gate ? { company: gate.company, onboarding: gate.onboarding } : {}),
   };
+}
+
+async function loadLiveOnboarding(): Promise<SessionOnboardingSource | null> {
+  let projects;
+  try {
+    projects = readProjectsConfig();
+  } catch {
+    return null;
+  }
+  const onboarding = readOnboardingConfig(projects);
+  if (!onboarding) return null;
+  const entry = resolveClientOnboardingEntry(
+    onboarding,
+    projects.defaultProjectId,
+    await getFrontendAppRegistrations(),
+  );
+  let organizationKey: string | null = null;
+  try {
+    organizationKey = resolveOrganizationBinding(projects)?.key ?? null;
+  } catch {
+    console.error('session/info organization unresolved: lookup-failed');
+    organizationKey = null;
+  }
+  return { entry, organizationKey };
+}
+
+/** Read the caller's request index. Missing index is null. A broken index throws. */
+async function readOwnRequestId(ctx: RequestContext, organizationKey: string, email: string): Promise<string | null> {
+  const normalized = normalizeRegistrationEmail(email);
+  const indexed = await readRegistrationStore(ctx, requestIndexKey(organizationKey, normalized));
+  if (!indexed) return null;
+  const requestId = isRequestIndex(indexed, organizationKey, normalized);
+  const stored = await readRegistrationStore(ctx, requestRecordKey(requestId));
+  if (!stored) {
+    throw new AppError('ACCESS_REQUEST_INVALID', 'access request index points at a missing record', 500, { requestId });
+  }
+  return isAccessRequest(stored, requestId, organizationKey, normalized).requestId;
 }
 
 /**
@@ -295,9 +406,11 @@ export async function resolveSessionInfoBody(
   session: BffAuthOutcome,
   mode: ProjectMode,
   override: AuthorityOverride | null,
+  gate?: SessionOnboardingSource | null,
 ) {
   const email = session.claims?.email;
   let person: SessionInfoPerson | null = null;
+  let lookupFailed = false;
   if (email) {
     try {
       const resolved = await applyVerifiedEmailToSession(ctx, ctx.sessionContext, email);
@@ -306,9 +419,62 @@ export async function resolveSessionInfoBody(
       const code = error instanceof AppError ? error.code : 'lookup-failed';
       console.error(`session/info person unresolved: ${code}`);
       person = null;
+      lookupFailed = true;
     }
   }
-  return sessionInfoBody(session, mode, override, person);
+  const live = gate === undefined ? await loadLiveOnboarding() : gate;
+  if (!live || !session.claims) return sessionInfoBody(session, mode, override, person);
+
+  let status: SessionOnboardingStatus;
+  let requestId: string | undefined;
+  if (lookupFailed) {
+    person = null;
+    status = 'unavailable';
+  } else if (person && email) {
+    try {
+      const detail = await personByLogin(ctx, email);
+      if (!detail || detail.mdmId !== person.mdmId) {
+        person = null;
+        status = 'unavailable';
+        console.error('session/info person unresolved: lookup-failed');
+      } else {
+        status = isPersonAccessComplete(detail) ? 'ready' : 'incomplete';
+      }
+    } catch (error) {
+      const code = error instanceof AppError ? error.code : 'lookup-failed';
+      console.error(`session/info person unresolved: ${code}`);
+      person = null;
+      status = 'unavailable';
+    }
+  } else if (!email || !live.organizationKey) {
+    status = email ? 'unavailable' : 'unregistered';
+  } else {
+    try {
+      const found = await readOwnRequestId(ctx, live.organizationKey, email);
+      if (found) {
+        status = 'pending';
+        requestId = found;
+      } else {
+        status = 'unregistered';
+      }
+    } catch (error) {
+      const code = error instanceof AppError ? error.code : 'lookup-failed';
+      console.error(`session/info person unresolved: ${code}`);
+      status = 'unavailable';
+    }
+  }
+
+  const companyId = live.companyMdmId !== undefined ? live.companyMdmId : getResolvedOrganizationCompanyId();
+  const onboarding: SessionInfoOnboarding = {
+    status,
+    entryPath: live.entry.entryPath,
+    moduleBasePath: live.entry.moduleBasePath,
+  };
+  if (requestId) onboarding.requestId = requestId;
+  return sessionInfoBody(session, mode, override, person, {
+    company: companyId ? { mdmId: companyId } : null,
+    onboarding,
+  });
 }
 
 export function buildHttpServer() {

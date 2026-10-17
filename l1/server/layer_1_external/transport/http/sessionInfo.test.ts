@@ -5,9 +5,22 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { resetProjectsConfigCache } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
+import { resetResolvedTableDefinitionsCache } from '/_102034_/l1/server/layer_1_external/persistence/registry.js';
 import { claimAuthorities } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
-import { resolveSessionInfoBody, sessionInfoBody } from '/_102034_/l1/server/layer_1_external/transport/http/startServer.js';
+import { OnboardingConfigError } from '/_102034_/l1/server/layer_1_external/config/onboardingConfig.js';
+import { openOrRecoverAccessRequest } from '/_102034_/l1/mdm/layer_3_usecases/selfRegistration.js';
+import { normalizeRegistrationEmail } from '/_102034_/l1/mdm/layer_3_usecases/registrationCandidates.js';
+import {
+  resolveClientOnboardingEntry,
+  resolveSessionInfoBody,
+  sessionInfoBody,
+  type SessionOnboardingSource,
+} from '/_102034_/l1/server/layer_1_external/transport/http/startServer.js';
 import type { CollabAuthClaims } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
 import { applyVerifiedEmailToSession, createRequestContext } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
 
@@ -237,4 +250,215 @@ test('resolveSessionInfoBody returns person null when the MDM read fails and kee
   } finally {
     console.error = original;
   }
+});
+
+const entry = { entryPath: '/mod/pessoa', moduleBasePath: '/mod' };
+const orgKey = 'org:rt83';
+
+function enabledGate(companyMdmId?: string | null): SessionOnboardingSource {
+  return { entry, organizationKey: orgKey, companyMdmId };
+}
+
+function page(path: string, aliases?: string[]) {
+  return { path, entrypoint: '/page.js', tag: 'x-page', title: path, aliases };
+}
+
+function forbidWrites(ctx: ReturnType<typeof createRequestContext>): void {
+  const refuse = async () => {
+    throw new Error('GET /session/info wrote');
+  };
+  ctx.mdm.entity.create = refuse as typeof ctx.mdm.entity.create;
+  ctx.mdm.entity.update = refuse as typeof ctx.mdm.entity.update;
+  ctx.mdm.entity.link = refuse as typeof ctx.mdm.entity.link;
+  ctx.mdm.identity.setLogin = refuse as typeof ctx.mdm.identity.setLogin;
+  const getTable = ctx.data.moduleData.getTable.bind(ctx.data.moduleData);
+  ctx.data.moduleData.getTable = (async (name: string) => {
+    const table = await getTable(name);
+    return new Proxy(table, {
+      get(target, prop, receiver) {
+        if (prop === 'upsert' || prop === 'insert' || prop === 'update' || prop === 'delete' || prop === 'save') {
+          return refuse;
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+  }) as typeof ctx.data.moduleData.getTable;
+}
+
+test('resolveClientOnboardingEntry uses the client module route or alias and rejects a foreign module', () => {
+  const apps = [
+    { projectId: '100554', appId: 'inicio', basePath: '/master', routes: [page('/inicio/pessoa')] },
+    {
+      projectId: '102047',
+      appId: 'inicio',
+      basePath: '/inicio',
+      routes: [page('/inicio/inicio_pessoa', ['/inicio', '/inicio/index.html'])],
+    },
+  ];
+  assert.deepEqual(
+    resolveClientOnboardingEntry({ moduleId: 'inicio', entryPath: '/inicio/inicio_pessoa' }, '102047', apps),
+    { entryPath: '/inicio/inicio_pessoa', moduleBasePath: '/inicio' },
+  );
+  assert.equal(
+    resolveClientOnboardingEntry({ moduleId: 'inicio', entryPath: '/inicio' }, '102047', apps).moduleBasePath,
+    '/inicio',
+  );
+  assert.throws(
+    () => resolveClientOnboardingEntry({ moduleId: 'inicio', entryPath: 'https://evil.test/inicio' }, '102047', apps),
+    OnboardingConfigError,
+  );
+  assert.throws(
+    () => resolveClientOnboardingEntry({ moduleId: 'ausente', entryPath: '/inicio' }, '102047', apps),
+    /not a registered module/,
+  );
+  assert.throws(
+    () => resolveClientOnboardingEntry({ moduleId: 'inicio', entryPath: '/outro' }, '102047', apps),
+    /not a route of client module/,
+  );
+});
+
+function useMdmWorkspace(): () => void {
+  const previousCwd = process.cwd();
+  const workspace = mkdtempSync(join(tmpdir(), 'rt83-s1-'));
+  symlinkSync(fileURLToPath(new URL('../../../../../', import.meta.url)), join(workspace, 'mls-102034'));
+  writeFileSync(join(workspace, 'config.json'), JSON.stringify({
+    defaultProjectId: '102099',
+    projects: {
+      '102099': {
+        root: './client',
+        type: 'client',
+        persistenceModules: [{ moduleId: 'mdm', persistenceEntrypoint: './_102034_/l1/mdm/persistence.js' }],
+      },
+      '102029': { root: './fe', type: 'master frontend' },
+      '102034': { root: './be', type: 'master backend' },
+    },
+  }));
+  process.chdir(workspace);
+  resetProjectsConfigCache();
+  resetResolvedTableDefinitionsCache();
+  return () => {
+    process.chdir(previousCwd);
+    resetProjectsConfigCache();
+    resetResolvedTableDefinitionsCache();
+    rmSync(workspace, { recursive: true, force: true });
+  };
+}
+
+test('onboarding session states come from the person predicate and the request index, without writes', async () => {
+  const restore = useMdmWorkspace();
+  try {
+  const ctx = createRequestContext();
+  const ready = await ctx.mdm.entity.create({
+    details: { subtype: 'Person', name: 'Completa', status: 'Active', countryCode: 'US' },
+  });
+  await ctx.mdm.identity.setLogin(ready.mdmId, 'pronta@academia.test');
+  const incomplete = await ctx.mdm.entity.create({
+    details: { subtype: 'Person', name: 'Incompleta', status: 'Active', countryCode: 'BR' },
+  });
+  await ctx.mdm.identity.setLogin(incomplete.mdmId, 'incompleta@academia.test');
+  const company = await ctx.mdm.entity.create({
+    details: { subtype: 'Company', name: 'Org sem pais', legalName: 'Org sem pais', status: 'Active' },
+  });
+  const pendingEmail = normalizeRegistrationEmail('pendente@academia.test');
+  const opened = await openOrRecoverAccessRequest(ctx, {
+    organizationKey: orgKey,
+    email: pendingEmail,
+    name: 'Pendente',
+    candidateMdmIds: [incomplete.mdmId],
+  });
+  forbidWrites(ctx);
+
+  const readyBody = await resolveSessionInfoBody(
+    ctx,
+    { claims: claimsFor('sub-pronta', 'pronta@academia.test'), reject: false, reason: 'ok' },
+    'development',
+    null,
+    enabledGate(company.mdmId),
+  );
+  assert.equal(readyBody.onboarding?.status, 'ready');
+  assert.deepEqual(readyBody.person, { mdmId: ready.mdmId });
+  assert.deepEqual(readyBody.company, { mdmId: company.mdmId });
+  assert.equal(readyBody.userId, 'sub-pronta');
+  assert.equal(readyBody.picture, 'https://idp.example/a.png');
+  assert.equal(readyBody.onboarding?.entryPath, entry.entryPath);
+  assert.equal(readyBody.onboarding?.requestId, undefined);
+
+  const incompleteBody = await resolveSessionInfoBody(
+    ctx,
+    { claims: claimsFor('sub-inc', 'incompleta@academia.test'), reject: false, reason: 'ok' },
+    'development',
+    null,
+    enabledGate(company.mdmId),
+  );
+  assert.equal(incompleteBody.onboarding?.status, 'incomplete');
+  assert.deepEqual(incompleteBody.person, { mdmId: incomplete.mdmId });
+  assert.deepEqual(incompleteBody.company, { mdmId: company.mdmId });
+
+  const pendingBody = await resolveSessionInfoBody(
+    ctx,
+    { claims: claimsFor('sub-pend', pendingEmail), reject: false, reason: 'ok' },
+    'development',
+    null,
+    enabledGate(null),
+  );
+  assert.equal(pendingBody.person, null);
+  assert.equal(pendingBody.company, null);
+  assert.equal(pendingBody.onboarding?.status, 'pending');
+  assert.equal(pendingBody.onboarding?.requestId, opened.requestId);
+
+  const unregistered = await resolveSessionInfoBody(
+    ctx,
+    { claims: claimsFor('sub-nova', 'nova@academia.test'), reject: false, reason: 'ok' },
+    'development',
+    null,
+    enabledGate(null),
+  );
+  assert.equal(unregistered.person, null);
+  assert.equal(unregistered.onboarding?.status, 'unregistered');
+  assert.equal(unregistered.onboarding?.requestId, undefined);
+
+  const anonymous = await resolveSessionInfoBody(
+    ctx,
+    { reject: false, reason: 'missing-token' },
+    'development',
+    null,
+    enabledGate(company.mdmId),
+  );
+  assert.equal(anonymous.authenticated, false);
+  assert.equal(anonymous.userId, null);
+  assert.equal('onboarding' in anonymous, false);
+  assert.equal('company' in anonymous, false);
+
+  const legacy = await resolveSessionInfoBody(
+    ctx,
+    { claims: claimsFor('sub-pronta', 'pronta@academia.test'), reject: false, reason: 'ok' },
+    'development',
+    null,
+    null,
+  );
+  assert.equal(legacy.person?.mdmId, ready.mdmId);
+  assert.equal('onboarding' in legacy, false);
+  assert.equal('company' in legacy, false);
+  } finally {
+    restore();
+  }
+});
+
+test('a failed registration read is unavailable and is not unregistered', async () => {
+  const ctx = createRequestContext();
+  ctx.cache.get = async () => {
+    throw new Error('mdm read failed');
+  };
+  const body = await resolveSessionInfoBody(
+    ctx,
+    { claims: claimsFor('sub-erro', 'erro@academia.test'), reject: false, reason: 'ok' },
+    'development',
+    null,
+    enabledGate(null),
+  );
+  assert.equal(body.person, null);
+  assert.equal(body.onboarding?.status, 'unavailable');
+  assert.equal(body.onboarding?.requestId, undefined);
+  assert.equal(body.userId, 'sub-erro');
 });
