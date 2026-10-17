@@ -138,7 +138,7 @@ export const mdm = {
         "photoUrl": { "type": "string" },
         "privacyConsent": { "type": "object", "of": "PrivacyConsent", "description": "Required for residents of Brazil (LGPD) and the EU (GDPR)." }
       },
-      "capabilities": ["locate.byLogin", "invite.login", "export.personalData", "anonymize"],
+      "capabilities": ["locate.byLogin", "invite.login", "register.self", "accessRequest.read", "accessRequest.resolve", "export.personalData", "anonymize"],
       "rules": ["rule-person-ssn-unique-for-us", "rule-person-privacy-consent-required-br-eu"]
     },
     "Company": {
@@ -344,6 +344,9 @@ export const mdm = {
     "statusHistory.read": "Shows when the record changed status and who changed it · mdm_status_history · the record screen · platform: partial",
     "audit": "Says who changed what, and when · mdm_audit_log, insert only · an administrator · platform: partial",
     "invite.login": "Gives the person a login so they can see their own data · identity.invite writes the mdm_tag login row and calls collab-auth · whoever maintains the record · platform: ready",
+    "register.self": "Links the signed-in account to one Person, or opens an access request when the e-mail already belongs to candidate contacts · POST /session/register reads the e-mail and the name from the resolved session, never from the body, and does not send an invite · the signed-in account · platform: ready",
+    "accessRequest.read": "Reads the requester's own request by id, or the organization's follow-up list of reserved candidate tokens · GET /session/registration/request?id= and GET /session/registration/requests; the list exists only while alpha authorities are on in this round · the requester for their own id, and the organization follow-up while alpha is on · platform: ready",
+    "accessRequest.resolve": "Resolves one pending request by requestId, expectedVersion and either a reserved candidate token or create-new with no target · POST /session/registration/resolve accepts no e-mail, mdmId, name or organizationKey, sends no invite, and exists only while alpha authorities are on in this round · the organization follow-up while alpha is on · platform: ready",
     "export.personalData": "Hands the subject their own data on request (LGPD art. 18, GDPR art. 15) · would need the document, the links and the attachments in a single export · an administrator · platform: missing",
     "anonymize": "Erases the personal data while keeping the record for statistics · would pseudonymize the identification keeping the mdmId · an administrator · platform: missing"
   },
@@ -389,7 +392,8 @@ export const mdm = {
     "platform-detail-keys-copy": "The list of platform keys exists twice, in mdmFacade.ts and integration.ts, with different contents.",
     "emergency-contact-type": "There is no EmergencyContactOf type; a Family link with role emergency carries that meaning.",
     "subtype-enum-narrowed": "identification.subtype is declared here with the 13 values; the engine narrows it per subtype, so a Person record only ever carries \"Person\".",
-    "index-only-columns": "The index table also has searchVector and dynamoPk, which are engine internals and no field of the document; one of the 9 indexes is on dynamoPk, which is why indexedColumns lists 8."
+    "index-only-columns": "The index table also has searchVector and dynamoPk, which are engine internals and no field of the document; one of the 9 indexes is on dynamoPk, which is why indexedColumns lists 8.",
+    "registration-draft": "register.self and the organization bootstrap may store a Person while the name or the country is still unknown, and a Company while the legal name is still unknown. The engine marks that case with registrationDraft. That marker is not a form field and is not written into the module namespace. A normal create still requires the name, the country and, for a company, the legal name."
   }
 } as const satisfies MdmOntology;
 
