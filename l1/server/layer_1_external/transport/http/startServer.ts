@@ -7,7 +7,7 @@ import { injectFaviconLink, resolveAppFaviconHref } from '/_102034_/l1/server/la
 import { readProjectsConfig, resolveWebDistPath } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import { classifyProjectAssetUrl, HASHED_SHARED_JS_PATH } from '/_102034_/l1/server/layer_1_external/transport/http/classifyProjectAssetUrl.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
-import { createDefaultRequestContext, execBff } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
+import { applyVerifiedEmailToSession, createDefaultRequestContext, execBff } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
 import { AppError } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import {
   claimAuthorities, isActorEnforcementOn, isBffAuthEnforced, moduleAuthorities, resolveBffSession, verifyAccessToken,
@@ -42,6 +42,9 @@ import {
   parseRuntimeMetricsQuery,
 } from '/_102034_/l1/monitor/layer_3_usecases/runtimeMetricsUsecases.js';
 import type { BffRequest, FrontendAppRegistration, RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
+
+/** Session JSON projection. The IdP `sub` stays `userId`; this is only the MDM person. */
+export type SessionInfoPerson = { mdmId: string };
 
 const WRITE_BEHIND_INTERVAL_MS = 5000;
 
@@ -256,6 +259,7 @@ export function sessionInfoBody(
   session: BffAuthOutcome,
   mode: ProjectMode,
   override: AuthorityOverride | null,
+  person: SessionInfoPerson | null = null,
 ) {
   const real = claimAuthorities(session.claims);
   const effective = effectiveAuthorities(real, override);
@@ -267,6 +271,7 @@ export function sessionInfoBody(
     name: (session.claims as { name?: unknown } | undefined)?.name ?? null,
     picture: (session.claims as { picture?: unknown } | undefined)?.picture ?? null,
     userId: session.claims?.sub ?? null,
+    person,
     allAuthorities: effective.authorities,
     realAuthorities: effective.real,
     overridden: effective.overridden,
@@ -276,6 +281,31 @@ export function sessionInfoBody(
     enforcement: { authentication: isBffAuthEnforced(), actors: isActorEnforcementOn() },
     reason: session.reason,
   };
+}
+
+/**
+ * Same MDM resolution the BFF uses (`applyVerifiedEmailToSession` on the verified e-mail only).
+ * A failed read keeps the rest of the session and reports no person — never the IdP sub.
+ */
+export async function resolveSessionInfoBody(
+  ctx: RequestContext,
+  session: BffAuthOutcome,
+  mode: ProjectMode,
+  override: AuthorityOverride | null,
+) {
+  const email = session.claims?.email;
+  let person: SessionInfoPerson | null = null;
+  if (email) {
+    try {
+      const resolved = await applyVerifiedEmailToSession(ctx, ctx.sessionContext, email);
+      if (resolved.person?.mdmId) person = { mdmId: resolved.person.mdmId };
+    } catch (error) {
+      const code = error instanceof AppError ? error.code : 'lookup-failed';
+      console.error(`session/info person unresolved: ${code}`);
+      person = null;
+    }
+  }
+  return sessionInfoBody(session, mode, override, person);
 }
 
 export function buildHttpServer() {
@@ -372,10 +402,11 @@ export function buildHttpServer() {
     reply.header('cache-control', 'no-store');
     if (session.newAccessToken) reply.header('set-cookie', refreshedAuthCookie(session.newAccessToken));
     const mode = readProjectMode(readAppEnv().projectId);
+    const ctx = createDefaultRequestContext();
     const override = session.claims && !refuseOverride(mode)
-      ? await readAuthorityOverride(createDefaultRequestContext(), session.claims.sub)
+      ? await readAuthorityOverride(ctx, session.claims.sub)
       : null;
-    return sessionInfoBody(session, mode, override);
+    return resolveSessionInfoBody(ctx, session, mode, override);
   });
   /**
    * Act as another authority ("presentation mode"), or clear it with an empty list.

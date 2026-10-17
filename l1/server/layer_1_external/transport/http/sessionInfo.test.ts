@@ -7,8 +7,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { claimAuthorities } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
-import { sessionInfoBody } from '/_102034_/l1/server/layer_1_external/transport/http/startServer.js';
+import { resolveSessionInfoBody, sessionInfoBody } from '/_102034_/l1/server/layer_1_external/transport/http/startServer.js';
 import type { CollabAuthClaims } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
+import { applyVerifiedEmailToSession, createRequestContext } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
 
 const activeOrgOnly: CollabAuthClaims = {
   sub: 'u1',
@@ -99,6 +100,141 @@ test('/session/info handler uses claimAuthorities and does not emit authorities'
   const end = source.indexOf("app.post('/session/authority-override'");
   assert.ok(start >= 0 && end > start);
   const handler = source.slice(start, end);
-  assert.match(handler, /sessionInfoBody\(session, mode, override\)/);
+  assert.match(handler, /const ctx = createDefaultRequestContext\(\)/);
+  assert.match(handler, /readAuthorityOverride\(ctx, session\.claims\.sub\)/);
+  assert.match(handler, /resolveSessionInfoBody\(ctx, session, mode, override\)/);
+  assert.doesNotMatch(handler, /sessionInfoBody\(session, mode, override\)/);
   assert.doesNotMatch(handler, /\bauthorities:/);
+  assert.doesNotMatch(handler, /request\.(query|body)|meta\.userId/);
+});
+
+async function personWithLogin(
+  ctx: ReturnType<typeof createRequestContext>,
+  name: string,
+  email: string,
+) {
+  const person = await ctx.mdm.entity.create({
+    details: { subtype: 'Person', name, status: 'Active' },
+  });
+  await ctx.mdm.identity.setLogin(person.mdmId, email);
+  return person;
+}
+
+function claimsFor(sub: string, email?: string): CollabAuthClaims {
+  const claims = { sub, name: 'Oidc Name', picture: 'https://idp.example/a.png' };
+  return (email ? { ...claims, email } : claims) as CollabAuthClaims;
+}
+
+test('resolveSessionInfoBody projects the MDM person of a linked login and keeps the IdP sub', async () => {
+  const ctx = createRequestContext();
+  const aluno = await personWithLogin(ctx, 'Aluno Sessao', 'sessao@academia.test');
+  const session = { claims: claimsFor('auth-sub-aluno', 'sessao@academia.test'), reject: false, reason: 'ok' as const };
+  const body = await resolveSessionInfoBody(ctx, session, 'presentation', {
+    userId: 'auth-sub-aluno',
+    authorities: ['petShop:admin'],
+    setAt: 'now',
+  });
+  const viaBff = await applyVerifiedEmailToSession(ctx, ctx.sessionContext, 'sessao@academia.test');
+  assert.deepEqual(body.person, { mdmId: aluno.mdmId });
+  assert.equal(body.person?.mdmId, viaBff.person?.mdmId);
+  assert.equal(body.userId, 'auth-sub-aluno');
+  assert.equal(body.authenticated, true);
+  assert.equal(body.email, 'sessao@academia.test');
+  assert.equal(body.name, 'Oidc Name');
+  assert.equal(body.picture, 'https://idp.example/a.png');
+  assert.deepEqual(body.allAuthorities, ['petShop:admin']);
+  assert.equal(body.overridden, true);
+  assert.equal(JSON.stringify(body).includes('auth-token'), false);
+  assert.deepEqual(Object.keys(body.person ?? {}), ['mdmId']);
+});
+
+test('resolveSessionInfoBody returns person null without a login row, without an e-mail, and when anonymous', async () => {
+  const ctx = createRequestContext();
+  const unbound = await resolveSessionInfoBody(
+    ctx,
+    { claims: claimsFor('sub-sem-vinculo', 'sem-login@academia.test'), reject: false, reason: 'ok' },
+    'development',
+    null,
+  );
+  const viaBff = await applyVerifiedEmailToSession(ctx, ctx.sessionContext, 'sem-login@academia.test');
+  assert.equal(unbound.person, null);
+  assert.equal(viaBff.person, undefined);
+  assert.equal(unbound.userId, 'sub-sem-vinculo');
+  assert.equal(unbound.authenticated, true);
+
+  const noEmail = await resolveSessionInfoBody(
+    ctx,
+    { claims: claimsFor('sub-sem-email'), reject: false, reason: 'ok' },
+    'development',
+    null,
+  );
+  assert.equal(noEmail.person, null);
+  assert.equal(noEmail.userId, 'sub-sem-email');
+
+  const anonymous = await resolveSessionInfoBody(
+    ctx,
+    { reject: false, reason: 'missing-token' },
+    'development',
+    null,
+  );
+  assert.equal(anonymous.person, null);
+  assert.equal(anonymous.authenticated, false);
+  assert.equal(anonymous.userId, null);
+});
+
+test('resolveSessionInfoBody keeps two e-mails on two different people', async () => {
+  const ctx = createRequestContext();
+  const a = await personWithLogin(ctx, 'Pessoa A', 'a@academia.test');
+  const b = await personWithLogin(ctx, 'Pessoa B', 'b@academia.test');
+  const bodyA = await resolveSessionInfoBody(
+    ctx,
+    { claims: claimsFor('sub-a', 'a@academia.test'), reject: false, reason: 'ok' },
+    'development',
+    null,
+  );
+  const bodyB = await resolveSessionInfoBody(
+    ctx,
+    { claims: claimsFor('sub-b', 'b@academia.test'), reject: false, reason: 'ok' },
+    'development',
+    null,
+  );
+  const viaA = await applyVerifiedEmailToSession(ctx, ctx.sessionContext, 'a@academia.test');
+  const viaB = await applyVerifiedEmailToSession(ctx, ctx.sessionContext, 'b@academia.test');
+  assert.equal(bodyA.person?.mdmId, a.mdmId);
+  assert.equal(bodyB.person?.mdmId, b.mdmId);
+  assert.equal(bodyA.person?.mdmId, viaA.person?.mdmId);
+  assert.equal(bodyB.person?.mdmId, viaB.person?.mdmId);
+  assert.notEqual(bodyA.person?.mdmId, bodyB.person?.mdmId);
+  assert.equal(bodyA.userId, 'sub-a');
+  assert.equal(bodyB.userId, 'sub-b');
+});
+
+test('resolveSessionInfoBody returns person null when the MDM read fails and keeps the session fields', async () => {
+  const ctx = createRequestContext();
+  const aluno = await personWithLogin(ctx, 'Aluno Falha', 'falha@academia.test');
+  ctx.cache.get = async () => {
+    throw new Error('mdm read failed');
+  };
+  const errors: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => {
+    errors.push(args.map(String).join(' '));
+  };
+  try {
+    const body = await resolveSessionInfoBody(
+      ctx,
+      { claims: claimsFor('sub-falha', 'falha@academia.test'), reject: false, reason: 'ok' },
+      'development',
+      null,
+    );
+    assert.equal(body.person, null);
+    assert.equal(body.userId, 'sub-falha');
+    assert.equal(body.authenticated, true);
+    assert.equal(body.email, 'falha@academia.test');
+    assert.equal(JSON.stringify(body).includes(aluno.mdmId), false);
+    assert.equal(errors.some((line) => line.includes('falha@academia.test') || line.includes(aluno.mdmId)), false);
+    assert.equal(errors.some((line) => line.includes('lookup-failed')), true);
+  } finally {
+    console.error = original;
+  }
 });
