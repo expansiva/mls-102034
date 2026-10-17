@@ -6,6 +6,7 @@ import {
 } from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
 import { bootstrapSchema } from '/_102034_/l1/server/layer_1_external/persistence/schemaBootstrap.js';
 import { formatMigrationReport } from '/_102034_/l1/server/layer_1_external/persistence/schemaModulePlan.js';
+import { initializeOrganizationForProcess } from '/_102034_/l1/mdm/layer_3_usecases/organizationBootstrap.js';
 
 /** Database name only — never host, user or password. */
 function databaseNameForLog(env: AppEnv): string {
@@ -60,6 +61,7 @@ export async function runMigrations(): Promise<void> {
     recordSnapshotLog: false,
   });
   console.info(formatMigrationReport(result.report));
+  await initializeOrganizationForProcess();
 }
 
 const isMainModule = process.argv[1]?.endsWith('/migrate.js');
