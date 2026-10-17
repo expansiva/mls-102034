@@ -4,7 +4,7 @@
 
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { parseCookies } from '/_102034_/l1/server/layer_1_external/cbe/cbeAuthJwt.js';
-import { parseDraftSlug } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
+import { parseDraftSlug, resolveRequestDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
 import {
   ensureDevProcess,
   touchDevProcess,
@@ -35,6 +35,7 @@ export interface DraftExecDeps {
   ensureDevProcessImpl?: (opts: EnsureDevProcessOpts) => DevProcessInfo;
   touchDevProcessImpl?: (base: string, slug: string, now: number) => void;
   waitForDevReadyImpl?: (port: number) => Promise<boolean>;
+  resolveRequestDraftImpl?: typeof resolveRequestDraft;
 }
 
 export function draftDownBody(): { ok: false; data: null; error: { code: 'DRAFT_DOWN'; message: string } } {
@@ -104,7 +105,21 @@ export async function proxyExecBff(args: {
   const touch = args.touchDevProcessImpl ?? touchDevProcess;
   const doFetch = args.fetchImpl ?? fetch;
   const waitReady = args.waitForDevReadyImpl ?? ((port: number) => waitForDevReady(port));
+  const resolve = args.resolveRequestDraftImpl ?? resolveRequestDraft;
   const url = (port: number) => `http://127.0.0.1:${port}/execBff`;
+
+  try {
+    const draft = await resolve(args.request.headers.cookie, args.base, args.clientProjectId);
+    if (draft === null) {
+      console.error(`[draftProxy] draft ${args.slug} worktree failed: cookie has no valid draft`);
+      args.reply.code(503).send(draftDownBody());
+      return;
+    }
+  } catch (err) {
+    console.error(`[draftProxy] draft ${args.slug} worktree failed: ${(err as Error).message}`);
+    args.reply.code(503).send(draftDownBody());
+    return;
+  }
 
   let info: DevProcessInfo;
   try {
@@ -199,6 +214,7 @@ export async function applyDraftExecBff(args: {
     ensureDevProcessImpl: args.ensureDevProcessImpl,
     touchDevProcessImpl: args.touchDevProcessImpl,
     waitForDevReadyImpl: args.waitForDevReadyImpl,
+    resolveRequestDraftImpl: args.resolveRequestDraftImpl,
   });
   return { handled: true };
 }

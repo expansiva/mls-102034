@@ -53,6 +53,14 @@ function devInfo() {
   return { port: PORT, pid: 7, startedAt: 1, lastRequestAt: 1 };
 }
 
+function readyDraft() {
+  return {
+    slug: SLUG,
+    branch: 'team/102047',
+    sourceRoot: `${BASE}/drafts/${SLUG}/mls-102047`,
+  };
+}
+
 test('draftSlugForProxy reads collab-draft and stays null inside the dev process or without a valid cookie', () => {
   const previous = process.env.COLLAB_DRAFT;
   delete process.env.COLLAB_DRAFT;
@@ -91,6 +99,7 @@ test('a valid draft cookie with an accepted session proxies /execBff to the dev 
     clientProjectId: '102047',
     resolveSession: async (): Promise<DraftSessionView> => ({ reject: false, newAccessToken: 'renewed' }),
     refreshedAuthCookie: (token) => `cauth=${token}; Path=/; HttpOnly`,
+    resolveRequestDraftImpl: async () => readyDraft(),
     ensureDevProcessImpl: (opts) => {
       assert.deepEqual(opts, { base: BASE, slug: SLUG, clientProjectId: 102047 });
       return devInfo();
@@ -151,6 +160,7 @@ test('a connection error probes the dev port and retries /execBff once', async (
     clientProjectId: '102047',
     resolveSession: async () => ({ reject: false }),
     refreshedAuthCookie: (token) => token,
+    resolveRequestDraftImpl: async () => readyDraft(),
     ensureDevProcessImpl: () => devInfo(),
     touchDevProcessImpl: () => {},
     waitForDevReadyImpl: async (port) => {
@@ -190,6 +200,7 @@ test('a TimeoutError answers 503 DRAFT_DOWN without probing', async () => {
     clientProjectId: '102047',
     resolveSession: async () => ({ reject: false }),
     refreshedAuthCookie: (token) => token,
+    resolveRequestDraftImpl: async () => readyDraft(),
     ensureDevProcessImpl: () => devInfo(),
     touchDevProcessImpl: () => {},
     waitForDevReadyImpl: async () => {
@@ -219,6 +230,7 @@ test('a connection error with a down port answers 503 DRAFT_DOWN', async () => {
     clientProjectId: '102047',
     resolveSession: async () => ({ reject: false }),
     refreshedAuthCookie: (token) => token,
+    resolveRequestDraftImpl: async () => readyDraft(),
     ensureDevProcessImpl: () => devInfo(),
     touchDevProcessImpl: () => {},
     waitForDevReadyImpl: async () => {
@@ -249,6 +261,7 @@ test('a rejected session is 401 and does not call the dev process', async () => 
     clientProjectId: '102047',
     resolveSession: async () => ({ reject: true }),
     refreshedAuthCookie: (token) => token,
+    resolveRequestDraftImpl: async () => readyDraft(),
     ensureDevProcessImpl: () => {
       devCalls += 1;
       return devInfo();
@@ -265,4 +278,71 @@ test('a rejected session is 401 and does not call the dev process', async () => 
   assert.deepEqual(result, { handled: false, statusCode: 401 });
   assert.equal(devCalls, 0);
   assert.equal(reply.statusCode, 0);
+});
+
+test('a valid draft cookie prepares the worktree before starting the dev process', async () => {
+  delete process.env.COLLAB_DRAFT;
+  const order: string[] = [];
+  const reply = fakeReply();
+  const result = await applyDraftExecBff({
+    request: fakeRequest({ routine: 'x.y.z' }, { cookie: `collab-draft=${SLUG}` }),
+    reply,
+    base: BASE,
+    clientProjectId: '102047',
+    resolveSession: async () => ({ reject: false }),
+    refreshedAuthCookie: (token) => token,
+    resolveRequestDraftImpl: async (cookieHeader, base, projectId) => {
+      order.push('resolve');
+      assert.equal(cookieHeader, `collab-draft=${SLUG}`);
+      assert.equal(base, BASE);
+      assert.equal(projectId, 102047);
+      return readyDraft();
+    },
+    ensureDevProcessImpl: () => {
+      order.push('ensure');
+      return devInfo();
+    },
+    touchDevProcessImpl: () => {},
+    fetchImpl: async () => new Response(JSON.stringify({ ok: true, data: null, error: null }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  });
+
+  assert.equal(result.handled, true);
+  assert.deepEqual(order, ['resolve', 'ensure']);
+  assert.equal(reply.statusCode, 200);
+});
+
+test('a worktree failure answers 503 DRAFT_DOWN and does not start the dev process', async () => {
+  delete process.env.COLLAB_DRAFT;
+  const reply = fakeReply();
+  let ensured = 0;
+  const result = await applyDraftExecBff({
+    request: fakeRequest({ routine: 'x.y.z' }, { cookie: `collab-draft=${SLUG}` }),
+    reply,
+    base: BASE,
+    clientProjectId: '102047',
+    resolveSession: async () => ({ reject: false }),
+    refreshedAuthCookie: (token) => token,
+    resolveRequestDraftImpl: async () => {
+      throw new Error('worktree missing');
+    },
+    ensureDevProcessImpl: () => {
+      ensured += 1;
+      return devInfo();
+    },
+    touchDevProcessImpl: () => {
+      ensured += 1;
+    },
+    fetchImpl: async () => {
+      ensured += 1;
+      return new Response('no');
+    },
+  });
+
+  assert.equal(result.handled, true);
+  assert.equal(ensured, 0);
+  assert.equal(reply.statusCode, 503);
+  assert.deepEqual(reply.sent, draftDownBody());
 });
