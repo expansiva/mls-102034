@@ -353,22 +353,7 @@ test('T15: login sends the declared closure — an alien folder stays out, a tra
     writeJson(root, leaf, 'config.json', { workspaceDependencies: [String(seed), String(mid)] });
     writeCompiledZip(root, leaf);
     writeCompiledZip(root, alien);
-    writeFileSync(join(root, 'runLogin.mts'), [
-      "import { writeFileSync } from 'node:fs';",
-      "import { executeCbeLogin } from '/_102034_/l1/server/layer_1_external/cbe/cbeLogin.ts';",
-      "const response = executeCbeLogin({ action: 'login', projectsLastModified: [] });",
-      'const org = Object.values(response.orgs)[0];',
-      "writeFileSync('ids.json', JSON.stringify(org.sett.projects.map((project) => project.id)));",
-    ].join('\n'));
-
-    const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../../../..');
-    const result = spawnSync(
-      join(repoRoot, 'node_modules/.bin/tsx'),
-      ['--import', join(repoRoot, 'test/register-hooks.mjs'), join(root, 'runLogin.mts')],
-      { cwd: root, env: { ...process.env, CBE_PROJECTS_DIR: root }, encoding: 'utf8' },
-    );
-    assert.equal(result.status, 0, result.stderr);
-    const ids = JSON.parse(readFileSync(join(root, 'ids.json'), 'utf8')) as number[];
+    const ids = loginProjectIds(root);
     assert.deepEqual(ids, [leaf]);
     assert.equal(ids.includes(alien), false);
     assert.equal(ids.includes(mid), false);
@@ -395,9 +380,12 @@ function seedProjectsConfig(root: string, seed: number): void {
 }
 
 function loginProjectIds(root: string): number[] {
-  writeFileSync(join(root, 'runLogin.mts'), [
-    "import { writeFileSync } from 'node:fs';",
-    "import { executeCbeLogin } from '/_102034_/l1/server/layer_1_external/cbe/cbeLogin.ts';",
+  writeFileSync(join(root, 'runLogin.cts'), [
+    "import { createRequire } from 'node:module';",
+    'const require = createRequire(import.meta.url);',
+    "const { writeFileSync } = require('node:fs');",
+    "const cbeLogin = require('/_102034_/l1/server/layer_1_external/cbe/cbeLogin.ts');",
+    'const executeCbeLogin = cbeLogin.executeCbeLogin ?? cbeLogin.default.executeCbeLogin;',
     "const response = executeCbeLogin({ action: 'login', projectsLastModified: [] });",
     'const org = Object.values(response.orgs)[0];',
     "writeFileSync('ids.json', JSON.stringify(org.sett.projects.map((project) => project.id)));",
@@ -405,7 +393,7 @@ function loginProjectIds(root: string): number[] {
   const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../../../..');
   const result = spawnSync(
     join(repoRoot, 'node_modules/.bin/tsx'),
-    ['--import', join(repoRoot, 'test/register-hooks.mjs'), join(root, 'runLogin.mts')],
+    ['--import', join(repoRoot, 'test/register-hooks.mjs'), join(root, 'runLogin.cts')],
     { cwd: root, env: { ...process.env, CBE_PROJECTS_DIR: root }, encoding: 'utf8' },
   );
   assert.equal(result.status, 0, result.stderr);
