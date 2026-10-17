@@ -64,5 +64,8 @@ export interface IDataRuntime {
   mdmOutbox: ITableRuntime<MdmOutboxRecord>;
   pgQueue: IQueueRuntime;
   moduleData: IModuleDataRuntime;
-  runInTransaction<TValue>(callback: (runtime: IDataRuntime) => Promise<TValue>): Promise<TValue>;
+  runInTransaction<TValue>(
+    callback: (runtime: IDataRuntime) => Promise<TValue>,
+    options?: { lockKey: string },
+  ): Promise<TValue>;
 }

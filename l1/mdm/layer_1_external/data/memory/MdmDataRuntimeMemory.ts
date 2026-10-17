@@ -215,8 +215,52 @@ class QueueRuntimeMemory implements IQueueRuntime {
   }
 }
 
+async function runExclusiveByKey<TValue>(
+  tails: Map<string, Promise<void>>,
+  lockKey: string,
+  work: () => Promise<TValue>,
+): Promise<TValue> {
+  const previous = tails.get(lockKey) ?? Promise.resolve();
+  let releaseCurrent: () => void = () => undefined;
+  const current = new Promise<void>((resolve) => {
+    releaseCurrent = resolve;
+  });
+  const chained = previous.then(() => current);
+  tails.set(lockKey, chained);
+  try {
+    await previous.catch(() => undefined);
+    return await work();
+  } finally {
+    releaseCurrent();
+    if (tails.get(lockKey) === chained) {
+      tails.delete(lockKey);
+    }
+  }
+}
+
+function bindTransactionRuntime(runtime: IDataRuntime): IDataRuntime {
+  const bound: IDataRuntime = {
+    ...runtime,
+    async runInTransaction<TValue>(
+      callback: (data: IDataRuntime) => Promise<TValue>,
+      options?: { lockKey: string },
+    ) {
+      if (options?.lockKey) {
+        throw new AppError(
+          'NESTED_KEYED_TRANSACTION',
+          'Keyed transaction cannot nest inside an existing transaction',
+          500,
+        );
+      }
+      return callback(bound);
+    },
+  };
+  return bound;
+}
+
 export function createMemoryDataRuntime(): IDataRuntime {
   const env = readAppEnv();
+  const keyedTails = new Map<string, Promise<void>>();
   const runtime: IDataRuntime = {
     mode: 'memory',
     mdmDocument: new DocumentRuntimeMemory(() => loadSeedRows<MdmDocumentRecord>(env, 'mdmDocumentCache')),
@@ -235,8 +279,15 @@ export function createMemoryDataRuntime(): IDataRuntime {
     mdmOutbox: new TableRuntimeMemory<MdmOutboxRecord>(),
     pgQueue: new QueueRuntimeMemory(),
     moduleData: createMemoryModuleDataRuntime(env),
-    async runInTransaction<TValue>(callback: (data: IDataRuntime) => Promise<TValue>) {
-      return callback(runtime);
+    async runInTransaction<TValue>(
+      callback: (data: IDataRuntime) => Promise<TValue>,
+      options?: { lockKey: string },
+    ) {
+      const runBound = () => callback(bindTransactionRuntime(runtime));
+      if (!options?.lockKey) {
+        return runBound();
+      }
+      return runExclusiveByKey(keyedTails, options.lockKey, runBound);
     },
   };
 
