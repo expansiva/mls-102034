@@ -38,17 +38,22 @@ function throwIfFault(phase: SelfRegistrationFault): void {
   throw new Error(`self registration fault: ${phase}`);
 }
 
+/** Same fault points as self-registration, for a decision that resumes the reserved person. */
+export function checkSelfRegistrationFault(phase: SelfRegistrationFault): void {
+  throwIfFault(phase);
+}
+
 function loginReservationKey(email: string): string {
   const digest = createHash('sha256').update(email).digest('hex');
   return `${REGISTRATION_STORE_PREFIX}login/${digest}`;
 }
 
-function requestIndexKey(organizationKey: string, email: string): string {
+export function requestIndexKey(organizationKey: string, email: string): string {
   const digest = createHash('sha256').update(JSON.stringify([organizationKey, email])).digest('hex');
   return `${REGISTRATION_STORE_PREFIX}access-request/index/${digest}`;
 }
 
-function requestRecordKey(requestId: string): string {
+export function requestRecordKey(requestId: string): string {
   return `${REGISTRATION_STORE_PREFIX}access-request/${requestId}`;
 }
 
@@ -64,7 +69,7 @@ function roleTag(moduleId: string, personType: string): string {
   return trimmed.includes('.') ? trimmed : `${moduleId}.${trimmed}`;
 }
 
-async function requireCompany(ctx: RequestContext, binding: OrganizationBinding): Promise<string> {
+export async function requireCompany(ctx: RequestContext, binding: OrganizationBinding): Promise<string> {
   if (!binding?.key) {
     throw new AppError('VALIDATION_ERROR', 'organization binding is required', 400, { field: 'binding' });
   }
@@ -104,7 +109,7 @@ function isLoginReservation(value: Record<string, unknown>, email: string): stri
   return value.personMdmId;
 }
 
-function isRequestIndex(value: Record<string, unknown>, organizationKey: string, email: string): string {
+export function isRequestIndex(value: Record<string, unknown>, organizationKey: string, email: string): string {
   if (value.kind !== 'access-request-index' || value.organizationKey !== organizationKey || value.email !== email) {
     throw invalid('ACCESS_REQUEST_INVALID', 'access request index does not match the organization e-mail', {
       organizationKey,
@@ -116,7 +121,7 @@ function isRequestIndex(value: Record<string, unknown>, organizationKey: string,
   return value.requestId;
 }
 
-function isAccessRequest(value: Record<string, unknown>, requestId: string, organizationKey: string, email: string): AccessRequestRecord {
+export function isAccessRequest(value: Record<string, unknown>, requestId: string, organizationKey: string, email: string): AccessRequestRecord {
   const candidates = value.candidates;
   const status = value.status;
   if (
@@ -232,22 +237,28 @@ async function reconcileAccessRequest(
   return requestId;
 }
 
-async function reserveLoginPerson(ctx: RequestContext, email: string): Promise<string> {
+export async function reserveLoginPerson(ctx: RequestContext, email: string, personMdmId?: string): Promise<string> {
   const key = loginReservationKey(email);
   const stored = await readRegistrationStore(ctx, key);
-  if (stored) return isLoginReservation(stored, email);
-  const personMdmId = ctx.idGenerator.newId();
+  if (stored) {
+    const reserved = isLoginReservation(stored, email);
+    if (personMdmId && reserved !== personMdmId) {
+      throw invalid('LOGIN_RESERVATION_INVALID', 'login reservation points at another person', { personMdmId });
+    }
+    return reserved;
+  }
+  const reservedId = personMdmId && personMdmId.length > 0 ? personMdmId : ctx.idGenerator.newId();
   await writeRegistrationStore(ctx, key, {
     schema: 1,
     kind: 'login-reservation',
     email,
-    personMdmId,
+    personMdmId: reservedId,
   });
   throwIfFault('after-reserve');
-  return personMdmId;
+  return reservedId;
 }
 
-async function ensureDraftPerson(ctx: RequestContext, personMdmId: string, name: string): Promise<void> {
+export async function ensureDraftPerson(ctx: RequestContext, personMdmId: string, name: string): Promise<void> {
   const existing = await loadPersonOrCompany(ctx, personMdmId);
   if (existing) {
     if (existing.subtype !== 'Person') {
@@ -303,7 +314,7 @@ export async function attachPersonMembership(
   }
 }
 
-async function personByLogin(ctx: RequestContext, email: string): Promise<MdmDetailRecord | null> {
+export async function personByLogin(ctx: RequestContext, email: string): Promise<MdmDetailRecord | null> {
   const mdmId = await ctx.mdm.identity.findByLogin(email);
   if (!mdmId) return null;
   const detail = await loadPersonOrCompany(ctx, mdmId);
