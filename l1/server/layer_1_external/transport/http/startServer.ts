@@ -29,6 +29,8 @@ import { getLatestJson, initCbeLatestJson } from '/_102034_/l1/server/layer_1_ex
 import { getRunningRelease } from '/_102034_/l1/server/layer_1_external/cbe/cbeRelease.js';
 import { registerMsgProxy } from '/_102034_/l1/server/layer_1_external/transport/http/msgProxy.js';
 import { registerGitRoutes } from '/_102034_/l1/server/layer_1_external/transport/http/gitHttp.js';
+import { registerSessionRegistrationRoutes } from '/_102034_/l1/server/layer_1_external/transport/http/sessionRegistration.js';
+import { readOnboardingConfig } from '/_102034_/l1/server/layer_1_external/config/onboardingConfig.js';
 import { buildNewReleaseQaHtml, canServeNewReleaseQa, extractNewReleaseQaLitImportMap, newReleaseQaProjectHint } from '/_102034_/l1/server/layer_1_external/transport/http/newReleaseQaRoute.js';
 import {
   handleAttachmentHttp, isAttachmentHttpPath,
@@ -448,6 +450,11 @@ export function buildHttpServer() {
       };
     }
   });
+  // Optional platform doors. They compose the session `/session/info` already resolved.
+  // Registered before the catch-all so a missing page is not the SPA shell.
+  if (readOnboardingConfig(readProjectsConfig())) {
+    registerSessionRegistrationRoutes(app, { refreshedAuthCookie });
+  }
   app.get('/*', async (request, reply) => {
     const result = await handleHttpRequest('GET', request.url);
     const etag = result.headers?.etag;
