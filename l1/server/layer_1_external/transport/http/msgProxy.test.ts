@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  msgProxyStartupLog, serviceIdentityHeaders,
+  msgProxyStartupLog, msgProxyTarget, serviceIdentityHeaders,
 } from '/_102034_/l1/server/layer_1_external/transport/http/msgProxy.js';
 
 const TOKEN = 'rt39-service-token-must-not-leak';
@@ -39,6 +39,21 @@ test('a token without a user is an error and injects nothing', () => {
   assert.deepEqual(serviceIdentityHeaders({ MSG_PROXY_TOKEN: TOKEN, MSG_PROXY_USER_ID: '  ' }), {
     error: 'MSG_PROXY_TOKEN is set but MSG_PROXY_USER_ID is empty — service identity not injected',
   });
+});
+
+test('the default target is loopback 8180', () => {
+  assert.equal(msgProxyTarget({}), 'http://127.0.0.1:8180');
+});
+
+test('trailing slashes are stripped from the target', () => {
+  assert.equal(msgProxyTarget({ MSG_PROXY_TARGET: 'http://127.0.0.1:8180///' }), 'http://127.0.0.1:8180');
+});
+
+test('an https target keeps its path prefix', () => {
+  assert.equal(
+    msgProxyTarget({ MSG_PROXY_TARGET: 'https://cm.example/messages/' }),
+    'https://cm.example/messages',
+  );
 });
 
 test('the startup log names the user and never the token', () => {

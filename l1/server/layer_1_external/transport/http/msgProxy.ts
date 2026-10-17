@@ -53,12 +53,12 @@ const HOP_BY_HOP = new Set([
   'te', 'trailers', 'transfer-encoding', 'upgrade', 'host', 'content-length',
 ]);
 
-function getTarget(): string {
-  return (process.env.MSG_PROXY_TARGET ?? DEFAULT_TARGET).replace(/\/+$/u, '');
+export function msgProxyTarget(env: NodeJS.ProcessEnv = process.env): string {
+  return (env.MSG_PROXY_TARGET ?? DEFAULT_TARGET).replace(/\/+$/u, '');
 }
 
 async function forward(request: FastifyRequest, reply: FastifyReply): Promise<void> {
-  const url = `${getTarget()}${request.raw.url ?? '/msg'}`;
+  const url = `${msgProxyTarget()}${request.raw.url ?? '/msg'}`;
   const headers: Record<string, string> = {};
   for (const [name, value] of Object.entries(request.headers)) {
     if (HOP_BY_HOP.has(name.toLowerCase()) || value === undefined) continue;
@@ -114,5 +114,5 @@ export function registerMsgProxy(app: FastifyInstance): void {
   // browser to see exactly what the current cauth/loginMsg cookies resolve to
   // (missing token / invalid or expired / bound identity).
   app.all('/whoami', forward);
-  console.info(msgProxyStartupLog(getTarget(), identity));
+  console.info(msgProxyStartupLog(msgProxyTarget(), identity));
 }
