@@ -9,6 +9,7 @@ import test from 'node:test';
 import {
   AncestorDenoConfigError,
   DraftDatabaseError,
+  DraftWorktreeMissingError,
   buildDenoArgs,
   draftDatabaseUrl,
   ensureDevProcess,
@@ -162,6 +163,7 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
     const base = mkdtempSync(join(tmpdir(), 'cbe-dev-'));
     try {
       writeFileSync(join(base, 'config.json'), '{"release":true}\n');
+      mkdirSync(join(base, 'drafts', SLUG, 'mls-102047'), { recursive: true });
       const calls: Array<{ command: string; args: string[]; options: DevSpawnOptions }> = [];
       const spawnDev: DevSpawn = (command, args, options) => {
         calls.push({ command, args, options });
@@ -223,6 +225,7 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
     const base = mkdtempSync(join(tmpdir(), 'cbe-dev-'));
     try {
       writeFileSync(join(base, 'config.json'), '{"release":true}\n');
+      mkdirSync(join(base, 'drafts', SLUG, 'mls-102047'), { recursive: true });
       const calls: number[] = [];
       const spawnDev: DevSpawn = () => {
         const pid = dummyPid(pids);
@@ -250,6 +253,7 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
     const base = mkdtempSync(join(tmpdir(), 'cbe-dev-'));
     try {
       writeFileSync(join(base, 'config.json'), '{"release":true}\n');
+      mkdirSync(join(base, 'drafts', SLUG, 'mls-102047'), { recursive: true });
       writeDev(base, SLUG, { port: 4100, pid: 2_147_483_646, startedAt: 1, lastRequestAt: 1 });
       let spawned = 0;
       const info = await restartDevProcess({
@@ -275,6 +279,7 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
     const base = mkdtempSync(join(tmpdir(), 'cbe-dev-'));
     try {
       writeFileSync(join(base, 'config.json'), '{"release":true}\n');
+      mkdirSync(join(base, 'drafts', SLUG, 'mls-102047'), { recursive: true });
       const order: string[] = [];
       const now = () => 1_700_000_000_000;
       const writeConfig = () => { order.push('write'); };
@@ -287,6 +292,7 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
       assert.deepEqual(order, ['write', 'spawn']);
 
       const other = 'team-102048';
+      mkdirSync(join(base, 'drafts', other, 'mls-102047'), { recursive: true });
       let spawned = 0;
       assert.throws(() => ensureDevProcess({
         base,
@@ -482,6 +488,7 @@ test('ancestor deno.json blocks a new dev process; a live process skips the guar
   try {
     writeFileSync(join(base, 'config.json'), '{"release":true}\n');
     writeFileSync(join(base, 'deno.json'), '{}\n');
+    mkdirSync(join(base, 'drafts', SLUG, 'mls-102047'), { recursive: true });
     const calls: string[] = [];
     const spawnDev: DevSpawn = () => {
       calls.push('spawn');
@@ -598,6 +605,38 @@ test('a non-test project mode or a missing DATABASE_URL_TEST refuses a new dev p
   }
 });
 
+test('ensureDevProcess refuses to start when the draft worktree is missing', () => {
+  const base = mkdtempSync(join(tmpdir(), 'cbe-dev-missing-'));
+  try {
+    writeFileSync(join(base, 'config.json'), '{"release":true}\n');
+    let spawned = 0;
+    assert.throws(
+      () => ensureDevProcess({
+        base,
+        slug: SLUG,
+        clientProjectId: 102047,
+        spawn: () => {
+          spawned += 1;
+          return { pid: 1 };
+        },
+        writeConfig: () => {},
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof DraftWorktreeMissingError);
+        assert.equal(
+          (err as DraftWorktreeMissingError).message,
+          `draft worktree missing: ${join(base, 'drafts', SLUG, 'mls-102047')}`,
+        );
+        return true;
+      },
+    );
+    assert.equal(spawned, 0);
+    assert.equal(existsSync(join(base, 'drafts', SLUG, 'config.json')), false);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test('ensureDevProcess spawns when no ancestor deno config exists', () => {
   const pids: number[] = [];
   const base = mkdtempSync(join(tmpdir(), 'cbe-dev-clean-'));
@@ -607,6 +646,7 @@ test('ensureDevProcess spawns when no ancestor deno config exists', () => {
   process.env.DATABASE_URL_TEST = PARENT_TEST_URL;
   try {
     writeFileSync(join(base, 'config.json'), '{"release":true}\n');
+    mkdirSync(join(base, 'drafts', SLUG, 'mls-102047'), { recursive: true });
     const calls: Array<{ command: string; args: string[] }> = [];
     const spawnDev: DevSpawn = (command, args) => {
       calls.push({ command, args });

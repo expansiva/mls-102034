@@ -10,7 +10,7 @@ import {
   readFileSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { parseDraftSlug } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
+import { draftSourceRoot, parseDraftSlug } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
 import {
   DEFAULT_PROJECT_MODE,
   isProjectMode,
@@ -125,6 +125,8 @@ const EXTRA_ENV_KEYS = [
 export class AncestorDenoConfigError extends Error {}
 
 export class DraftDatabaseError extends Error {}
+
+export class DraftWorktreeMissingError extends Error {}
 
 const DRAFT_DATABASE_PREFIX = 'collab_app_draft_';
 const DRAFT_DATABASE_MAX = 40;
@@ -556,6 +558,12 @@ function stopDevUnlocked(base: string, slug: string): void {
 
 function ensureUnlocked(opts: EnsureDevProcessOpts): DevProcessInfo {
   const { base, slug, clientProjectId } = opts;
+  const source = draftSourceRoot(base, slug, clientProjectId);
+  if (!existsSync(source)) {
+    const message = `draft worktree missing: ${source}`;
+    console.error(`[cbe] dev ${slug}: ${message}`);
+    throw new DraftWorktreeMissingError(message);
+  }
   const now = opts.now ?? (() => Date.now());
   copyReleaseConfig(base, slug);
   linkSharedProjects(base, slug, clientProjectId);
