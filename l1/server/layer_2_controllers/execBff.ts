@@ -19,6 +19,7 @@ import { loadModuleRouter, resolveRoutineResolution } from '/_102034_/l1/server/
 import { createMemoryDataRuntime } from '/_102034_/l1/mdm/layer_1_external/data/memory/MdmDataRuntimeMemory.js';
 import { getSharedDataRuntime } from '/_102034_/l1/mdm/layer_1_external/data/runtimeFactory.js';
 import { createMdmFacade } from '/_102034_/l1/mdm/layer_3_usecases/mdmFacade.js';
+import { getResolvedOrganizationCompanyId } from '/_102034_/l1/mdm/layer_3_usecases/organizationBootstrap.js';
 import { resolveSessionPerson } from '/_102034_/l1/mdm/layer_3_usecases/identityUsecases.js';
 import { CacheRuntimeMemory } from '/_102034_/l1/server/layer_1_external/cache/CacheRuntimeMemory.js';
 import {
@@ -92,7 +93,11 @@ export function createRequestContext(
 }
 
 export function createDefaultRequestContext(): RequestContext {
-  return createRequestContext(getSharedDataRuntime(), { cache: getSharedIdentityCache() });
+  const companyMdmId = getResolvedOrganizationCompanyId();
+  return createRequestContext(getSharedDataRuntime(), {
+    cache: getSharedIdentityCache(),
+    ...(companyMdmId ? { sessionContext: { activeCompanyId: companyMdmId } } : {}),
+  });
 }
 
 /**

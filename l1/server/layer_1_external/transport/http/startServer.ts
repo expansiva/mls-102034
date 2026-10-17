@@ -8,6 +8,7 @@ import { readProjectsConfig, resolveWebDistPath } from '/_102034_/l1/server/laye
 import { classifyProjectAssetUrl, HASHED_SHARED_JS_PATH } from '/_102034_/l1/server/layer_1_external/transport/http/classifyProjectAssetUrl.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { applyVerifiedEmailToSession, createDefaultRequestContext, execBff } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
+import { initializeOrganizationForProcess } from '/_102034_/l1/mdm/layer_3_usecases/organizationBootstrap.js';
 import { AppError } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import {
   claimAuthorities, isActorEnforcementOn, isBffAuthEnforced, moduleAuthorities, resolveBffSession, verifyAccessToken,
@@ -707,6 +708,7 @@ console.log(`Starting server with isMainModule=${isMainModule}, argv[1]=${proces
 export interface BootStepsInput {
   draft: boolean;
   runMigrations: () => Promise<void>;
+  initializeOrganization?: () => Promise<void>;
   listen: () => Promise<void>;
 }
 
@@ -717,6 +719,16 @@ export async function bootSteps(input: BootStepsInput): Promise<void> {
     } catch (error) {
       const cause = error instanceof Error ? error.message : String(error);
       console.error(`[boot] draft migrations failed; refusing to listen: ${cause}`);
+      process.exit(1);
+      throw new Error(`[boot] process.exit(1) was ignored after: ${cause}`);
+    }
+  }
+  if (input.initializeOrganization) {
+    try {
+      await input.initializeOrganization();
+    } catch (error) {
+      const cause = error instanceof Error ? error.message : String(error);
+      console.error(`[boot] organization bootstrap failed; refusing to listen: ${cause}`);
       process.exit(1);
       throw new Error(`[boot] process.exit(1) was ignored after: ${cause}`);
     }
@@ -741,6 +753,7 @@ if (isMainModule) {
       const { runMigrations } = await import('/_102034_/l1/scripts/migrate.js');
       await runMigrations();
     },
+    initializeOrganization: () => initializeOrganizationForProcess(),
     listen: () => getFrontendAppRegistrations().then((apps) => {
     // Logs the [alpha] line at boot when the VM switch is on (the check itself warns on every off→on flip).
     isAlphaAllAuthorities();

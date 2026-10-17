@@ -22,8 +22,20 @@ export type OrganizationBootstrapFault = 'after-reserve' | 'before-return';
 
 let bootstrapFault: OrganizationBootstrapFault | null = null;
 
+/** Company id resolved for this process. The KV/MDM reservation remains the source of truth. */
+let resolvedCompanyMdmId: string | undefined;
+
 export function setOrganizationBootstrapFault(next: OrganizationBootstrapFault | null): void {
   bootstrapFault = next;
+}
+
+/** Synchronous. Does not read config, the database, or process.env. */
+export function getResolvedOrganizationCompanyId(): string | undefined {
+  return resolvedCompanyMdmId;
+}
+
+export function resetResolvedOrganizationCompanyId(): void {
+  resolvedCompanyMdmId = undefined;
 }
 
 function throwIfFault(phase: OrganizationBootstrapFault): void {
@@ -128,4 +140,21 @@ export async function ensureOrganizationCompany(
     throwIfFault('before-return');
     return { companyMdmId };
   });
+}
+
+/**
+ * Boot/migrate entry. Disabled onboarding returns without a context or a Company.
+ * The id is published only after ensureOrganizationCompany returns.
+ */
+export async function initializeOrganizationForProcess(): Promise<void> {
+  const { readProjectsConfig } = await import('/_102034_/l1/server/layer_1_external/config/projectConfig.js');
+  const { readOnboardingConfig, resolveOrganizationBinding } = await import('/_102034_/l1/server/layer_1_external/config/onboardingConfig.js');
+  const projects = readProjectsConfig();
+  const onboarding = readOnboardingConfig(projects);
+  if (!onboarding) return;
+  const binding = resolveOrganizationBinding(projects);
+  if (!binding) return;
+  const { createDefaultRequestContext } = await import('/_102034_/l1/server/layer_2_controllers/execBff.js');
+  const ensured = await ensureOrganizationCompany(createDefaultRequestContext(), binding, onboarding);
+  resolvedCompanyMdmId = ensured.companyMdmId;
 }
