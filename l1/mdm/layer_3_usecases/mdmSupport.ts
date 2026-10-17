@@ -317,6 +317,76 @@ export function normalizeCountryCode(countryCode?: string | null): string {
   return countryCode?.trim().toUpperCase() || 'US';
 }
 
+function isTwoLetterCountry(countryCode: string): boolean {
+  return /^[A-Z]{2}$/.test(countryCode);
+}
+
+function explicitCountryCode(value: unknown, draft: boolean): string {
+  const text = typeof value === 'string' ? value.trim().toUpperCase() : '';
+  if (!text) {
+    return draft ? '' : normalizeCountryCode(null);
+  }
+  if (draft && !isTwoLetterCountry(text)) {
+    throw new AppError('VALIDATION_ERROR', 'countryCode must be a two-letter catalog code', 400, {
+      field: 'countryCode',
+    });
+  }
+  return draft ? text : normalizeCountryCode(typeof value === 'string' ? value : null);
+}
+
+function isValidPrivacyConsent(consent: PrivacyConsentValue | null | undefined): boolean {
+  if (!consent || consent.revokedAt) {
+    return false;
+  }
+  if (!String(consent.consentVersion ?? '').trim() || !String(consent.channel ?? '').trim()) {
+    return false;
+  }
+  return Number.isFinite(Date.parse(consent.consentedAt));
+}
+
+/** Name, country and, in a protected country, a valid consent. Ignores registrationDraft. */
+export function isPersonAccessComplete(detail: {
+  name?: string | null;
+  countryCode?: string | null;
+  privacyConsent?: PrivacyConsentValue | null;
+}): boolean {
+  const countryCode = typeof detail.countryCode === 'string' ? detail.countryCode.trim().toUpperCase() : '';
+  if (!detail.name?.trim() || !isTwoLetterCountry(countryCode)) {
+    return false;
+  }
+  if (isProtectedPrivacyCountry(countryCode) && !isValidPrivacyConsent(detail.privacyConsent)) {
+    return false;
+  }
+  return true;
+}
+
+function isCompanyRegistrationComplete(detail: MdmDetailRecord): boolean {
+  const countryCode = detail.countryCode.trim().toUpperCase();
+  return Boolean(
+    detail.name?.trim()
+    && isTwoLetterCountry(countryCode)
+    && String(detail.legalName ?? '').trim(),
+  );
+}
+
+function registrationDataComplete(detail: MdmDetailRecord): boolean {
+  if (detail.subtype === 'Person') {
+    return isPersonAccessComplete(detail);
+  }
+  if (detail.subtype === 'Company') {
+    return isCompanyRegistrationComplete(detail);
+  }
+  return false;
+}
+
+function applyRegistrationMarker(detail: MdmDetailRecord, draft: boolean): void {
+  const mutable = detail as MdmDetailRecord & Record<string, unknown>;
+  delete mutable.registrationDraft;
+  if (draft && !registrationDataComplete(detail)) {
+    mutable.registrationDraft = true;
+  }
+}
+
 export function normalizeDocumentId(docId?: string | null): string | null {
   if (!docId) {
     return null;
@@ -342,12 +412,23 @@ export function normalizeDetailInput(
   input: CreateRecordParams['detail'],
   ctx: RequestContext,
   mdmId: string,
+  options?: { registrationDraft?: true },
 ): MdmDetailRecord {
   const rawInput = input as Record<string, unknown>;
+  const draft = options?.registrationDraft === true;
+  if (!draft && Object.prototype.hasOwnProperty.call(rawInput, 'registrationDraft')) {
+    throw new AppError('VALIDATION_ERROR', 'registrationDraft is only set by registration bootstrap', 400, {
+      field: 'registrationDraft',
+    });
+  }
+  if (draft && rawInput.subtype !== 'Person' && rawInput.subtype !== 'Company') {
+    throw new AppError('VALIDATION_ERROR', 'registration draft is only for Person or Company', 400, {
+      field: 'subtype',
+    });
+  }
   const nowIso = ctx.clock.nowIso();
-  const countryCode = normalizeCountryCode(
-    typeof rawInput.countryCode === 'string' ? rawInput.countryCode : null,
-  );
+  const countryCode = explicitCountryCode(rawInput.countryCode, draft);
+  const name = typeof rawInput.name === 'string' ? rawInput.name : (draft ? '' : String(rawInput.name));
   const docId = normalizeDocumentId(
     typeof rawInput.docId === 'string' ? rawInput.docId : null,
   );
@@ -357,7 +438,7 @@ export function normalizeDetailInput(
   const detail: MdmDetailRecord = {
     mdmId,
     subtype: rawInput.subtype as MdmSubtype,
-    name: String(rawInput.name),
+    name,
     status: rawInput.status as MdmStatus | MdmProspectStatus,
     moduleTypes: normalizeStringList(rawInput.moduleTypes),
     docType: (rawInput.docType as DocType | null | undefined) ?? null,
@@ -370,7 +451,9 @@ export function normalizeDetailInput(
     ttlExpiresAt:
       typeof rawInput.ttlExpiresAt === 'string' ? rawInput.ttlExpiresAt : null,
     privacyConsent: (rawInput.privacyConsent as PrivacyConsentValue | null | undefined) ?? null,
-    legalName: typeof rawInput.legalName === 'string' ? rawInput.legalName : undefined,
+    legalName: typeof rawInput.legalName === 'string'
+      ? rawInput.legalName
+      : (draft && rawInput.subtype === 'Company' ? '' : undefined),
     companyKind:
       typeof rawInput.companyKind === 'string'
         ? (rawInput.companyKind as CompanyKind)
@@ -416,7 +499,12 @@ export function normalizeDetailInput(
   } else {
     delete mutableDetail.moduleTypes;
   }
+  delete mutableDetail.registrationDraft;
+  mutableDetail.name = name;
   mutableDetail.countryCode = countryCode;
+  if (draft && rawInput.subtype === 'Company' && typeof mutableDetail.legalName !== 'string') {
+    mutableDetail.legalName = '';
+  }
   mutableDetail.docId = docId;
   mutableDetail.value = value ?? undefined;
   mutableDetail.tags = Array.isArray(rawInput.tags) ? [...(rawInput.tags as string[])] : [];
@@ -434,6 +522,7 @@ export function normalizeDetailInput(
   mutableDetail.createdAt = nowIso;
   mutableDetail.updatedAt = nowIso;
   detail.status = normalizeStatus(detail);
+  applyRegistrationMarker(detail, draft);
   validateDetail(detail);
   return detail;
 }
@@ -459,10 +548,17 @@ export function applyPatchToDetail(
     );
   }
 
+  const draft = currentDetail.registrationDraft === true;
+  const { registrationDraft: _ignoredDraft, ...patchWithoutMarker } = patch;
+  const countryWasInformed = Object.prototype.hasOwnProperty.call(patchRecord, 'countryCode')
+    && patchRecord.countryCode != null
+    && String(patchRecord.countryCode).trim() !== '';
   const nextDetail: MdmDetailRecord = {
     ...currentDetail,
-    ...patch,
-    countryCode: normalizeCountryCode(patch.countryCode ?? currentDetail.countryCode),
+    ...patchWithoutMarker,
+    countryCode: countryWasInformed
+      ? explicitCountryCode(patchRecord.countryCode, draft)
+      : (draft ? currentDetail.countryCode : normalizeCountryCode(currentDetail.countryCode)),
     docId: normalizeDocumentId(
       (patch.docId as string | undefined) ?? (currentDetail.docId as string | undefined),
     ),
@@ -485,6 +581,7 @@ export function applyPatchToDetail(
   }
 
   nextDetail.status = normalizeStatus(nextDetail);
+  applyRegistrationMarker(nextDetail, draft);
   validateDetail(nextDetail);
   return nextDetail;
 }
@@ -514,11 +611,13 @@ export function normalizeStatus(detail: MdmDetailRecord): MdmStatus | MdmProspec
 }
 
 export function validateDetail(detail: MdmDetailRecord): void {
-  if (!detail.name?.trim()) {
+  const draftPersonOrCompany = detail.registrationDraft === true
+    && (detail.subtype === 'Person' || detail.subtype === 'Company');
+  if (!draftPersonOrCompany && !detail.name?.trim()) {
     throw new AppError('VALIDATION_ERROR', 'Name is required', 400, { field: 'name' });
   }
 
-  if (detail.subtype === 'Company' && !String(detail.legalName ?? '').trim()) {
+  if (!draftPersonOrCompany && detail.subtype === 'Company' && !String(detail.legalName ?? '').trim()) {
     throw new AppError('VALIDATION_ERROR', 'legalName is required for Company', 400, {
       field: 'legalName',
     });

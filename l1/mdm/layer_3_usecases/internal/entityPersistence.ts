@@ -25,6 +25,7 @@ import {
 } from '/_102034_/l1/mdm/layer_3_usecases/core/mdmEntityDefs.js';
 import type {
   CreateRecordParams,
+  CreateRegistrationEntityParams,
   ListRecordsParams,
   MergeEntityParams,
   MdmDocumentRecord,
@@ -123,6 +124,22 @@ async function getExistingDuplicate(
   return null;
 }
 
+async function persistNewEntity(
+  ctx: RequestContext,
+  detail: ReturnType<typeof normalizeDetailInput>,
+) {
+  await DataRecordService.create(ctx, mdmEntityDef, {
+    after: detail,
+    afterPersist: async (runtime, state) => {
+      await enqueueWriteBehind(ctx, runtime, state.document);
+    },
+    meta: {
+      module: 'mdm',
+      routine: 'mdm.entity.create',
+    },
+  });
+}
+
 export async function createEntity(
   ctx: RequestContext,
   params: CreateRecordParams,
@@ -144,21 +161,46 @@ export async function createEntity(
     };
   }
 
-  const document = toDocumentRecord(detail, 1);
-  await DataRecordService.create(ctx, mdmEntityDef, {
-    after: detail,
-    afterPersist: async (runtime, state) => {
-      await enqueueWriteBehind(ctx, runtime, state.document);
-    },
-    meta: {
-      module: 'mdm',
-      routine: 'mdm.entity.create',
-    },
-  });
+  await persistNewEntity(ctx, detail);
 
   return {
     alreadyExists: false,
     mdmId,
+    version: 1,
+  };
+}
+
+export async function createRegistrationEntity(
+  ctx: RequestContext,
+  params: CreateRegistrationEntityParams,
+) {
+  if (params.detail.subtype !== 'Person' && params.detail.subtype !== 'Company') {
+    throw new AppError('VALIDATION_ERROR', 'registration draft is only for Person or Company', 400, {
+      field: 'subtype',
+    });
+  }
+  const detail = normalizeDetailInput(
+    {
+      ...params.detail,
+      status: (params.detail.status as CreateRecordParams['detail']['status']) ?? 'Active',
+    },
+    ctx,
+    params.mdmId,
+    { registrationDraft: true },
+  );
+  const duplicate = await getExistingDuplicate(ctx, detail);
+  if (duplicate) {
+    return {
+      alreadyExists: true as const,
+      mdmId: duplicate.mdmId,
+    };
+  }
+
+  await persistNewEntity(ctx, detail);
+
+  return {
+    alreadyExists: false as const,
+    mdmId: params.mdmId,
     version: 1,
   };
 }

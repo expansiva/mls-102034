@@ -140,6 +140,8 @@ export interface BaseMdmDetailRecord {
   relationshipRefs: CompactRelationshipRefs;
   addresses: AddressValue[];
   mergedInto?: string | null;
+  /** Platform bootstrap marker. Absent once the type's minimum data is stored. Not a role. */
+  registrationDraft?: true;
   createdAt: string;
   updatedAt: string;
   general?: MdmGeneralNamespace;
@@ -573,6 +575,11 @@ export interface MdmOutboxRecord {
 
 export interface CreateRecordParams<TDetail extends CreateableMdmDetailInput = CreateableMdmDetailInput> {
   detail: TDetail;
+}
+
+export interface CreateRegistrationEntityParams {
+  mdmId: string;
+  detail: CreateableMdmDetailInput;
 }
 
 export interface UpdateRecordParams {
