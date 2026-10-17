@@ -249,7 +249,7 @@ export interface MdmFacade {
 const MDM_PLATFORM_DETAIL_KEYS = new Set<string>([
   'mdmId', 'subtype', 'name', 'status', 'moduleTypes', 'docType', 'docId',
   'countryCode', 'tags', 'aliases', 'contacts', 'relationshipRefs', 'addresses',
-  'mergedInto', 'createdAt', 'updatedAt',
+  'mergedInto', 'registrationDraft', 'createdAt', 'updatedAt',
   'privacyConsent', 'birthDate', 'gender', 'nationality', 'occupation', 'photoUrl', 'notes',
   'companyKind', 'parentCompanyId', 'externalCode', 'legalName', 'tradeName', 'legalType',
   'foundingDate', 'taxRegime', 'industryCode', 'website',

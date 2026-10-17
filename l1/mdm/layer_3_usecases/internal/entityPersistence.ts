@@ -24,8 +24,8 @@ import {
   mdmProspectDef,
 } from '/_102034_/l1/mdm/layer_3_usecases/core/mdmEntityDefs.js';
 import type {
+  CreateableMdmDetailInput,
   CreateRecordParams,
-  CreateRegistrationEntityParams,
   ListRecordsParams,
   MergeEntityParams,
   MdmDocumentRecord,
@@ -170,9 +170,13 @@ export async function createEntity(
   };
 }
 
+type RegistrationDraftDetailInput = Partial<CreateableMdmDetailInput> & {
+  subtype: 'Person' | 'Company';
+};
+
 export async function createRegistrationEntity(
   ctx: RequestContext,
-  params: CreateRegistrationEntityParams,
+  params: { mdmId: string; detail: RegistrationDraftDetailInput },
 ) {
   if (params.detail.subtype !== 'Person' && params.detail.subtype !== 'Company') {
     throw new AppError('VALIDATION_ERROR', 'registration draft is only for Person or Company', 400, {
@@ -182,6 +186,7 @@ export async function createRegistrationEntity(
   const detail = normalizeDetailInput(
     {
       ...params.detail,
+      name: typeof params.detail.name === 'string' ? params.detail.name : '',
       status: (params.detail.status as CreateRecordParams['detail']['status']) ?? 'Active',
     },
     ctx,
