@@ -20,9 +20,12 @@ import { MDM_LOGIN_NAMESPACE } from '/_102034_/l1/mdm/layer_3_usecases/identityU
 import {
   listOrganizationAccessRequests,
   openAccessRequest,
+  readOrganizationAccessRequest,
   readOwnAccessRequest,
   resolveAccessRequest,
 } from '/_102034_/l1/mdm/layer_3_usecases/registrationRequests.js';
+import { readRegistrationStore, writeRegistrationStore } from '/_102034_/l1/mdm/layer_3_usecases/registrationStore.js';
+import { requestRecordKey } from '/_102034_/l1/mdm/layer_3_usecases/selfRegistration.js';
 import { setSelfRegistrationFault } from '/_102034_/l1/mdm/layer_3_usecases/selfRegistration.js';
 
 const previousCwd = process.cwd();
@@ -308,4 +311,63 @@ test('an existing login is not overwritten by create-new', async () => {
     organizationKey: 'org-a',
     email: 'ada@example.com',
   })).status, 'pending');
+});
+
+test('organization read returns the stored projection and does not write', async () => {
+  const ctx = ctxAt('2026-10-17');
+  await seedAmbiguous(ctx, 'ada@example.com');
+  const opened = await openAccessRequest(ctx, binding('org-a'), { email: 'ada@example.com', name: 'Ada' });
+  const storedBefore = await readRegistrationStore(ctx, requestRecordKey(opened.requestId));
+  const pending = await readOrganizationAccessRequest(ctx, 'org-a', opened.requestId);
+  const listed = await listOrganizationAccessRequests(ctx, 'org-a');
+  assert.deepEqual(pending, listed[0]);
+  assert.equal(pending.status, 'pending');
+  assert.equal(pending.version, 1);
+  assert.equal(pending.decision, undefined);
+  assert.equal(pending.resolvedMdmId, undefined);
+  assert.deepEqual(await readRegistrationStore(ctx, requestRecordKey(opened.requestId)), storedBefore);
+
+  const resolved = await resolveAccessRequest(ctx, binding('org-a'), config('mod-a'), { email: 'resolver', name: 'Resolver' }, {
+    requestId: opened.requestId,
+    expectedVersion: 1,
+    decision: 'create-new',
+  });
+  const storedResolved = await readRegistrationStore(ctx, requestRecordKey(opened.requestId));
+  const followUp = await readOrganizationAccessRequest(ctx, 'org-a', opened.requestId);
+  assert.equal(followUp.status, 'resolved');
+  assert.equal(followUp.version, resolved.version);
+  assert.equal(followUp.decision, 'create-new');
+  assert.equal(followUp.resolvedMdmId, resolved.person.mdmId);
+  assert.deepEqual(await readRegistrationStore(ctx, requestRecordKey(opened.requestId)), storedResolved);
+  assert.equal((await listOrganizationAccessRequests(ctx, 'org-a'))[0]?.resolvedMdmId, resolved.person.mdmId);
+
+  await assert.rejects(
+    () => readOrganizationAccessRequest(ctx, 'org-b', opened.requestId),
+    (error: unknown) => error instanceof AppError && error.code === 'NOT_FOUND' && error.statusCode === 404
+      && JSON.stringify(error.details) === JSON.stringify({ requestId: opened.requestId }),
+  );
+  await assert.rejects(
+    () => readOrganizationAccessRequest(ctx, 'org-a', 'missing-request'),
+    (error: unknown) => error instanceof AppError && error.code === 'NOT_FOUND',
+  );
+  await assert.rejects(
+    () => readOrganizationAccessRequest(ctx, '', opened.requestId),
+    (error: unknown) => error instanceof AppError && error.code === 'VALIDATION_ERROR',
+  );
+  await assert.rejects(
+    () => readOrganizationAccessRequest(ctx, 'org-a', ''),
+    (error: unknown) => error instanceof AppError && error.code === 'VALIDATION_ERROR',
+  );
+
+  await writeRegistrationStore(ctx, requestRecordKey('broken-request'), {
+    schema: 1,
+    kind: 'access-request',
+    requestId: 'broken-request',
+    organizationKey: 'org-a',
+    email: 'ada@example.com',
+  });
+  await assert.rejects(
+    () => readOrganizationAccessRequest(ctx, 'org-a', 'broken-request'),
+    (error: unknown) => error instanceof AppError && error.code === 'ACCESS_REQUEST_INVALID',
+  );
 });

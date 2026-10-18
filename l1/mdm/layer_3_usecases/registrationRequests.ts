@@ -208,6 +208,25 @@ export async function readOwnAccessRequest(
   return ownProjection(record);
 }
 
+/**
+ * Direct store read for one organization. Missing id, a missing record, or another
+ * organization is refused. The caller does not learn who owns the record.
+ */
+export async function readOrganizationAccessRequest(
+  ctx: RequestContext,
+  organizationKey: string,
+  requestId: string,
+): Promise<OrganizationAccessRequestProjection> {
+  if (typeof organizationKey !== 'string' || organizationKey.length === 0) {
+    throw new AppError('VALIDATION_ERROR', 'organizationKey is required', 400, { field: 'organizationKey' });
+  }
+  const record = await readById(ctx, requestId);
+  if (!record || record.organizationKey !== organizationKey) {
+    throw new AppError('NOT_FOUND', 'access request not found', 404, { requestId });
+  }
+  return organizationProjection(record);
+}
+
 /** Follow-up list for one organization. Requests of other organizations are omitted. */
 export async function listOrganizationAccessRequests(
   ctx: RequestContext,
