@@ -39,7 +39,7 @@ import { getSharedPgPool } from '/_102034_/l1/server/layer_1_external/data/postg
 import { readHistory, readHistoryContent } from '/_102034_/l1/server/layer_1_external/cbe/cbeGit.js';
 import { isRebuildInProgress, scheduleRebuildOnSave } from '/_102034_/l1/server/layer_1_external/cbe/cbeRebuildOnSave.js';
 import { authorFromSession, commitSavedSources } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitCommit.js';
-import { discardDraft, draftDiff, listDrafts, promoteDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitPromote.js';
+import { discardDraft, draftDiff, fastForwardDraft, listDrafts, mergeMainIntoDraft, promoteDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitPromote.js';
 import { resolveRequestDraft, type RequestDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
 import { draftDatabaseUrl, ensureDevReaper, restartDevProcess, stopDevProcess } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
 import { desenvIo, handleDesenvEnter, handleDesenvExit } from '/_102034_/l1/server/layer_1_external/cbe/cbeDesenv.js';
@@ -55,6 +55,7 @@ import {
   type CbeRequestBase,
   type CbeRequestDiscardDraft,
   type CbeRequestDraftDiff,
+  type CbeRequestDraftSync,
   type CbeRequestGetContents,
   type CbeRequestGetHistory,
   type CbeRequestGetHistoryContent,
@@ -68,7 +69,7 @@ import {
 // Bump on every change to the cbe module. Exposed via the x-cbe-version
 // response header and the {action:'ping'} probe so a deploy can be verified:
 //   curl -s localhost:3000/exec -H 'Content-Type: application/json' -d '{"action":"ping"}'
-export const CBE_MODULE_VERSION = '1.8.3';
+export const CBE_MODULE_VERSION = '1.8.4';
 
 // no-cache = always revalidate with the ETag (304 when unchanged). The server
 // is local to the VM, so revalidation is cheap — and a publish always lands
@@ -387,6 +388,26 @@ export const draftDevHooks = {
   restartDevProcess,
   ensureDevReaper,
 };
+
+/** Route tests replace these so a promote or draftSync does not touch git. */
+export const draftSyncHooks = {
+  fastForwardDraft,
+  mergeMainIntoDraft,
+};
+
+function scheduleDraftDevRestart(base: string, slug: string, clientProjectId: number): void {
+  try {
+    void draftDevHooks.restartDevProcess({
+      base,
+      slug,
+      clientProjectId,
+    }).catch((err: unknown) => {
+      console.error(`[cbe] draft ${slug}: dev restart failed: ${(err as Error).message}`);
+    });
+  } catch (err) {
+    console.error(`[cbe] draft ${slug}: dev restart failed: ${(err as Error).message}`);
+  }
+}
 
 async function handleSetContents(request: FastifyRequest, body: CbeRequestSetContents, reply: FastifyReply): Promise<void> {
   if (!await isSourceRequestAllowed(request)) {
@@ -891,11 +912,25 @@ async function handlePromote(request: FastifyRequest, body: CbeRequestPromote, r
 
   if (result.status === 'merged') {
     promoteRouteHooks.scheduleRebuildOnSave(project);
+    const base = getProjectsBaseDir();
+    let draftSync = 'failed';
+    try {
+      const synced = await draftSyncHooks.fastForwardDraft({
+        base,
+        projectId: project,
+        slug,
+      });
+      draftSync = typeof synced.status === 'number' ? synced.code : synced.status;
+      if (synced.status === 'fast_forwarded') scheduleDraftDevRestart(base, slug, project);
+    } catch (err) {
+      console.error(`[cbe] promote project ${project}: draft sync failed: ${(err as Error).message}`);
+    }
     reply.code(CBE_HTTP_OK).send({
       statusCode: CBE_HTTP_OK,
       status: 'merged',
       ref: result.ref,
       release: 'scheduled',
+      draftSync,
     });
     return;
   }
@@ -923,6 +958,34 @@ async function handleDiscardDraft(request: FastifyRequest, body: CbeRequestDisca
   }
   const drop = await discardDraftDatabase(slug);
   reply.code(CBE_HTTP_OK).send(buildDiscardedDraftBody(drop));
+}
+
+async function handleDraftSync(request: FastifyRequest, body: CbeRequestDraftSync, reply: FastifyReply): Promise<void> {
+  const project = await requireSourceProject(request, body, reply);
+  if (!project) return;
+  const slug = typeof body.draft === 'string' ? body.draft : '';
+  const session = await resolveSession(request);
+  const base = getProjectsBaseDir();
+  const result = await draftSyncHooks.mergeMainIntoDraft({
+    base,
+    projectId: project,
+    slug,
+    author: authorFromSession(session.email),
+  });
+  if (typeof result.status === 'number') {
+    replyGitFailure(reply, result);
+    return;
+  }
+  if (result.status === 'fast_forwarded' || result.status === 'merged') {
+    scheduleDraftDevRestart(base, slug, project);
+    reply.code(CBE_HTTP_OK).send({
+      statusCode: CBE_HTTP_OK,
+      status: result.status,
+      ref: result.ref,
+    });
+    return;
+  }
+  reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, status: result.status });
 }
 
 async function handleListDrafts(request: FastifyRequest, body: CbeRequestListDrafts, reply: FastifyReply): Promise<void> {
@@ -1013,6 +1076,9 @@ async function handleExec(request: FastifyRequest, reply: FastifyReply): Promise
         return;
       case 'draftDiff':
         await handleDraftDiff(request, body as CbeRequestDraftDiff, reply);
+        return;
+      case 'draftSync':
+        await handleDraftSync(request, body as CbeRequestDraftSync, reply);
         return;
       case 'login': {
         const start = Date.now();
@@ -1119,7 +1185,7 @@ export function registerCbeRoutes(app: FastifyInstance): void {
   app.get('/libs/*', handleStatic);
   app.get('/monaco/*', handleStatic);
   app.get('/mlsServiceWorker.js', handleStatic);
-  console.info(`[cbe] v${CBE_MODULE_VERSION} routes registered: POST /exec (login/authSession/authLogout/getContents/setContents/loadFilesInfo/getHistory/getHistoryContent/promote/discardDraft/listDrafts/draftDiff), GET /exec/logout, POST /exec/candidate, GET /desenv, GET /desenv/sair, GET /cbe/source, GET /libs/*, GET /monaco/*, GET /mlsServiceWorker.js`);
+  console.info(`[cbe] v${CBE_MODULE_VERSION} routes registered: POST /exec (login/authSession/authLogout/getContents/setContents/loadFilesInfo/getHistory/getHistoryContent/promote/discardDraft/listDrafts/draftDiff/draftSync), GET /exec/logout, POST /exec/candidate, GET /desenv, GET /desenv/sair, GET /cbe/source, GET /libs/*, GET /monaco/*, GET /mlsServiceWorker.js`);
   if (candidateHubMode() === 'local') {
     if (!candidateSchemaStarted) {
       candidateSchemaStarted = true;

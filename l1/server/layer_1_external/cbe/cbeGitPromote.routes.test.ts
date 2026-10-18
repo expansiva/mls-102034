@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import Fastify from 'fastify';
 import { draftDatabaseUrl } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
 import { parseDatabaseUrl } from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
-import { draftDbHooks, promoteRouteHooks, registerCbeRoutes } from '/_102034_/l1/server/layer_1_external/cbe/cbeRoutes.js';
+import { draftDbHooks, draftDevHooks, draftSyncHooks, promoteRouteHooks, registerCbeRoutes } from '/_102034_/l1/server/layer_1_external/cbe/cbeRoutes.js';
 
 const PROJECT_ID = 102047;
 const SLUG = 'team-102047';
@@ -51,7 +51,12 @@ test('exec promote, discardDraft, listDrafts and draftDiff', async () => {
   const origNow = promoteRouteHooks.now;
   const origStateDir = promoteRouteHooks.promoteStateDir;
   const origDrop = draftDbHooks.dropDatabase;
+  const origRestart = draftDevHooks.restartDevProcess;
+  const origFastForward = draftSyncHooks.fastForwardDraft;
+  const origMergeMain = draftSyncHooks.mergeMainIntoDraft;
   const drops: Array<{ adminUrl: string; name: string }> = [];
+  const restarts: Array<{ base: string; slug: string; clientProjectId: number }> = [];
+  let ffCalls = 0;
   let dropError: Error | null = null;
   let rebuildBusy = false;
   let nowMs = Date.parse('2026-10-12T15:00:00.000Z');
@@ -64,6 +69,14 @@ test('exec promote, discardDraft, listDrafts and draftDiff', async () => {
   draftDbHooks.dropDatabase = async (adminUrl, name) => {
     drops.push({ adminUrl, name });
     if (dropError) throw dropError;
+  };
+  draftSyncHooks.fastForwardDraft = async (opts) => {
+    ffCalls += 1;
+    return origFastForward(opts);
+  };
+  draftDevHooks.restartDevProcess = async (opts) => {
+    restarts.push({ base: opts.base, slug: opts.slug, clientProjectId: opts.clientProjectId });
+    return { port: 1, pid: 1, startedAt: 0, lastRequestAt: 0 };
   };
 
   const app = Fastify();
@@ -155,7 +168,13 @@ test('exec promote, discardDraft, listDrafts and draftDiff', async () => {
     assert.equal(merged.statusCode, 200, merged.body);
     assert.equal(merged.json().status, 'merged');
     assert.equal(merged.json().release, 'scheduled');
+    assert.equal(merged.json().draftSync, 'fast_forwarded');
     assert.equal(merged.json().ref, git(projectRoot, ['rev-parse', 'HEAD']));
+    assert.equal(ffCalls, 1);
+    assert.equal(restarts.length, 1);
+    assert.equal(restarts[0].slug, SLUG);
+    assert.equal(restarts[0].clientProjectId, PROJECT_ID);
+    assert.equal(git(draftRoot, ['rev-parse', 'HEAD']), merged.json().ref);
     assert.equal(git(projectRoot, ['log', '-1', '--format=%s']), `promote ${BRANCH}: ship it`);
     assert.equal(git(projectRoot, ['show', 'HEAD:l2/note.ts']), 'draft');
     assert.deepEqual(scheduled, [PROJECT_ID]);
@@ -196,6 +215,8 @@ test('exec promote, discardDraft, listDrafts and draftDiff', async () => {
     assert.equal(nothing.json().status, 'nothing_to_promote');
     assert.equal(existsSync(inFlightPath(base)), false);
     assert.deepEqual(scheduled, [PROJECT_ID]);
+    assert.equal(ffCalls, 1);
+    assert.equal(restarts.length, 1);
 
     writeFileSync(join(projectRoot, 'l2', 'note.ts'), 'main-edit\n');
     git(projectRoot, ['add', 'l2/note.ts']);
@@ -260,6 +281,9 @@ test('exec promote, discardDraft, listDrafts and draftDiff', async () => {
     });
     assert.equal(shipped.statusCode, 200, shipped.body);
     assert.equal(shipped.json().status, 'merged');
+    assert.equal(shipped.json().draftSync, 'fast_forwarded');
+    assert.equal(ffCalls, 2);
+    assert.equal(restarts.length, 2);
     assert.ok(readInFlight(base));
     rebuildBusy = true;
     const assumed = await app.inject({ method: 'POST', url: '/exec', payload: { action: 'ping' } });
@@ -302,6 +326,82 @@ test('exec promote, discardDraft, listDrafts and draftDiff', async () => {
     assert.equal(existsSync(devJson), false);
     assert.equal(drops.length, 2);
 
+    writeFileSync(join(draftRoot, 'l2', 'syncfail.ts'), 'fail\n');
+    git(draftRoot, ['add', 'l2/syncfail.ts']);
+    git(draftRoot, ['commit', '--no-verify', '-m', 'sync fail']);
+    const restartsBeforeFail = restarts.length;
+    draftSyncHooks.fastForwardDraft = async () => {
+      ffCalls += 1;
+      throw new Error('sync blew up');
+    };
+    const failedSync = await app.inject({
+      method: 'POST',
+      url: '/exec',
+      payload: { action: 'promote', project: PROJECT_ID, draft: SLUG, target: 'production', comment: 'sync fails' },
+    });
+    assert.equal(failedSync.statusCode, 200, failedSync.body);
+    assert.equal(failedSync.json().status, 'merged');
+    assert.equal(failedSync.json().draftSync, 'failed');
+    assert.equal(ffCalls, 3);
+    assert.equal(restarts.length, restartsBeforeFail);
+    nowMs += 31_000;
+
+    writeFileSync(join(draftRoot, 'l2', 'syncstay.ts'), 'stay\n');
+    git(draftRoot, ['add', 'l2/syncstay.ts']);
+    git(draftRoot, ['commit', '--no-verify', '-m', 'sync stay']);
+    draftSyncHooks.fastForwardDraft = async () => {
+      ffCalls += 1;
+      return { status: 'up_to_date' };
+    };
+    const stayed = await app.inject({
+      method: 'POST',
+      url: '/exec',
+      payload: { action: 'promote', project: PROJECT_ID, draft: SLUG, target: 'production', comment: 'sync stays' },
+    });
+    assert.equal(stayed.statusCode, 200, stayed.body);
+    assert.equal(stayed.json().status, 'merged');
+    assert.equal(stayed.json().draftSync, 'up_to_date');
+    assert.equal(ffCalls, 4);
+    assert.equal(restarts.length, restartsBeforeFail);
+    nowMs += 31_000;
+
+    let mergeResult:
+      | { status: 'merged'; ref: string }
+      | { status: 'up_to_date' }
+      | { status: 409; code: 'DRAFT_CONFLICT'; files: string[] } = { status: 'merged', ref: 'abc123' };
+    draftSyncHooks.mergeMainIntoDraft = async () => mergeResult;
+    const synced = await app.inject({
+      method: 'POST',
+      url: '/exec',
+      payload: { action: 'draftSync', project: PROJECT_ID, draft: SLUG },
+    });
+    assert.equal(synced.statusCode, 200, synced.body);
+    assert.equal(synced.json().status, 'merged');
+    assert.equal(synced.json().ref, 'abc123');
+    assert.equal(restarts.length, restartsBeforeFail + 1);
+
+    mergeResult = { status: 409, code: 'DRAFT_CONFLICT', files: ['l2/note.ts'] };
+    const conflictSync = await app.inject({
+      method: 'POST',
+      url: '/exec',
+      payload: { action: 'draftSync', project: PROJECT_ID, draft: SLUG },
+    });
+    assert.equal(conflictSync.statusCode, 409, conflictSync.body);
+    assert.equal(conflictSync.json().code, 'DRAFT_CONFLICT');
+    assert.deepEqual(conflictSync.json().files, ['l2/note.ts']);
+    assert.equal(restarts.length, restartsBeforeFail + 1);
+
+    mergeResult = { status: 'up_to_date' };
+    const currentSync = await app.inject({
+      method: 'POST',
+      url: '/exec',
+      payload: { action: 'draftSync', project: PROJECT_ID, draft: SLUG },
+    });
+    assert.equal(currentSync.statusCode, 200, currentSync.body);
+    assert.equal(currentSync.json().status, 'up_to_date');
+    assert.equal(currentSync.json().ref, undefined);
+    assert.equal(restarts.length, restartsBeforeFail + 1);
+
     process.env.CBE_REQUIRE_LOGIN = 'always';
     for (const payload of [
       { action: 'promote', project: PROJECT_ID, draft: SLUG, target: 'production' },
@@ -313,13 +413,16 @@ test('exec promote, discardDraft, listDrafts and draftDiff', async () => {
       assert.equal(denied.statusCode, 401, `${payload.action} ${denied.body}`);
       assert.equal(denied.json().msg, 'login required');
     }
-    assert.deepEqual(scheduled, [PROJECT_ID, PROJECT_ID]);
+    assert.deepEqual(scheduled, [PROJECT_ID, PROJECT_ID, PROJECT_ID, PROJECT_ID]);
   } finally {
     promoteRouteHooks.scheduleRebuildOnSave = origSchedule;
     promoteRouteHooks.isRebuildInProgress = origBusy;
     promoteRouteHooks.now = origNow;
     promoteRouteHooks.promoteStateDir = origStateDir;
     draftDbHooks.dropDatabase = origDrop;
+    draftDevHooks.restartDevProcess = origRestart;
+    draftSyncHooks.fastForwardDraft = origFastForward;
+    draftSyncHooks.mergeMainIntoDraft = origMergeMain;
     await app.close();
     if (prev.dir === undefined) delete process.env.CBE_PROJECTS_DIR;
     else process.env.CBE_PROJECTS_DIR = prev.dir;

@@ -119,6 +119,12 @@ export interface CbeRequestDiscardDraft extends CbeRequestBase {
   draft?: string;
 }
 
+export interface CbeRequestDraftSync extends CbeRequestBase {
+  action: 'draftSync';
+  project?: number;
+  draft?: string;
+}
+
 export interface CbeRequestListDrafts extends CbeRequestBase {
   action: 'listDrafts';
   project?: number;
