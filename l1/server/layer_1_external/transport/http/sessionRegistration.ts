@@ -3,12 +3,8 @@ import type { FastifyInstance } from 'fastify';
 import type { ProjectOnboardingConfig } from '/_102029_/l2/runtimeConfigTypes.js';
 import { resolveBffSession, type BffAuthOutcome } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
 import { isAlphaAllAuthorities } from '/_102034_/l1/server/layer_1_external/config/alphaAuthorities.js';
-import {
-  readOnboardingConfig,
-  resolveOrganizationBinding,
-  type OrganizationBinding,
-} from '/_102034_/l1/server/layer_1_external/config/onboardingConfig.js';
-import { readProjectsConfig } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
+import type { OrganizationBinding } from '/_102034_/l1/server/layer_1_external/config/onboardingConfig.js';
+import { loadRegistrationScope } from '/_102034_/l1/server/layer_1_external/config/registrationScope.js';
 import { AppError, fail, ok, type RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import { createDefaultRequestContext } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
 import type { RegistrationActor } from '/_102034_/l1/mdm/layer_3_usecases/registrationContracts.js';
@@ -18,6 +14,8 @@ import {
   resolveAccessRequest,
 } from '/_102034_/l1/mdm/layer_3_usecases/registrationRequests.js';
 import { ensureSelfRegistration } from '/_102034_/l1/mdm/layer_3_usecases/selfRegistration.js';
+
+export { loadRegistrationScope };
 
 const RESOLVE_FIELDS = new Set(['requestId', 'expectedVersion', 'decision', 'candidateId']);
 const REJECTED_FIELDS = ['email', 'mdmId', 'name', 'organizationKey'];
@@ -183,16 +181,6 @@ export async function handleSessionRegistration(
   } catch (error) {
     return httpError(error);
   }
-}
-
-export function loadRegistrationScope(): SessionRegistrationScope {
-  const projects = readProjectsConfig();
-  const config = readOnboardingConfig(projects);
-  const binding = config ? resolveOrganizationBinding(projects) : null;
-  if (!config || !binding) {
-    throw new AppError('NOT_AVAILABLE', 'onboarding is not enabled', 404);
-  }
-  return { binding, config };
 }
 
 function queryId(query: unknown): string {

@@ -9,8 +9,11 @@ import Fastify from 'fastify';
 
 import type { ProjectOnboardingConfig } from '/_102029_/l2/runtimeConfigTypes.js';
 import type { BffAuthOutcome } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
+import { mintLocalTestCookie, setLocalTestConfigLoaderForTests } from '/_102034_/l1/server/layer_1_external/auth/localTestSession.js';
+import type { LocalTestConfig } from '/_102034_/l1/server/layer_1_external/config/localTestConfig.js';
 import type { OrganizationBinding } from '/_102034_/l1/server/layer_1_external/config/onboardingConfig.js';
 import { resetProjectsConfigCache } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
+import { loadRegistrationScope as sharedLoadRegistrationScope } from '/_102034_/l1/server/layer_1_external/config/registrationScope.js';
 import { resetResolvedTableDefinitionsCache } from '/_102034_/l1/server/layer_1_external/persistence/registry.js';
 import type { RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import { createRequestContext } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
@@ -19,6 +22,7 @@ import { MDM_LOGIN_NAMESPACE } from '/_102034_/l1/mdm/layer_3_usecases/identityU
 import { ensureOrganizationCompany } from '/_102034_/l1/mdm/layer_3_usecases/organizationBootstrap.js';
 import {
   handleSessionRegistration,
+  loadRegistrationScope,
   registerSessionRegistrationRoutes,
   type SessionRegistrationScope,
 } from '/_102034_/l1/server/layer_1_external/transport/http/sessionRegistration.js';
@@ -317,6 +321,76 @@ test('missing claims are 401 and anonymous Fastify routes ignore a body identity
   assert.equal(await personCount(ctx), 0);
   assert.equal(await loginCount(ctx, 'ada@example.com'), 0);
   await app.close();
+});
+
+test('route default loader runs when loadScope is omitted and reports missing onboarding', async () => {
+  const projectId = '102099';
+  const origin = 'http://localhost:2099';
+  const bench: LocalTestConfig = {
+    enabled: true,
+    projectId,
+    organizationKey: 'org-bench',
+    companyMdmId: 'company-1',
+    cmOrgId: `runtime-test:${projectId}`,
+    cmTarget: 'http://127.0.0.1:8180',
+    storagePrefix: 'desenv_',
+    allowedOrigins: [origin],
+    cookieKey: 'k'.repeat(32),
+    personas: {
+      responsavel: {
+        alias: 'responsavel',
+        email: 'ada@example.com',
+        name: 'Ada',
+        sub: `local-test:${projectId}:responsavel`,
+        personMdmId: 'person-1',
+        cmUserId: 'cm-1',
+      },
+      membro: {
+        alias: 'membro',
+        email: 'membro@example.com',
+        name: 'Membro',
+        sub: `local-test:${projectId}:membro`,
+        personMdmId: 'person-2',
+        cmUserId: 'cm-2',
+      },
+    },
+  };
+  setLocalTestConfigLoaderForTests(() => bench);
+  const ctx = ctxAt('2026-10-18');
+  const app = Fastify({ logger: false });
+  registerSessionRegistrationRoutes(app, {
+    refreshedAuthCookie: (token) => `cauth=${token}`,
+    createContext: () => ctx,
+  });
+  try {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/session/register',
+      headers: {
+        host: 'localhost:2099',
+        origin,
+        cookie: `collab_local_test_${projectId}=${mintLocalTestCookie('responsavel', bench)}`,
+      },
+      payload: { email: 'mallory@example.com' },
+    });
+    assert.equal(response.statusCode, 404);
+    assert.equal(response.headers['cache-control'], 'no-store');
+    assert.equal(response.json().error.code, 'NOT_AVAILABLE');
+    assert.equal(await personCount(ctx), 0);
+  } finally {
+    setLocalTestConfigLoaderForTests();
+    await app.close();
+  }
+});
+
+test('HTTP reexports the shared loader and old injections omit projectId', () => {
+  assert.equal(loadRegistrationScope, sharedLoadRegistrationScope);
+  const injected: SessionRegistrationScope = scope('org-a', 'mod-a');
+  assert.equal('projectId' in injected, false);
+  assert.throws(
+    () => loadRegistrationScope(),
+    (error: { code?: string }) => error?.code === 'NOT_AVAILABLE',
+  );
 });
 
 test('startServer registers the doors only with onboarding and before the catch-all', () => {
