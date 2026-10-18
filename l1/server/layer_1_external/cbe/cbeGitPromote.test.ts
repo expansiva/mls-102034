@@ -10,7 +10,9 @@ import {
   captureGit,
   discardDraft,
   draftDiff,
+  fastForwardDraft,
   listDrafts,
+  mergeMainIntoDraft,
   promoteDraft,
   type GitCapture,
   type PromoteGit,
@@ -184,6 +186,140 @@ test('discardDraft resets the draft worktree onto main', async () => {
   assert.equal(calls.length, 1);
   assert.equal(calls[0].cwd, worktree);
   assert.deepEqual(innerArgs(calls[0].args), ['reset', '--hard', 'main']);
+});
+
+test('fastForwardDraft and mergeMainIntoDraft refuse an invalid slug without calling git', async () => {
+  const { git, calls } = promoteGit(() => {
+    throw new Error('git must not be called');
+  });
+  assert.deepEqual(
+    await fastForwardDraft({ base, projectId, slug: 'nope', git }),
+    { status: 400, code: 'BAD_DRAFT' },
+  );
+  assert.deepEqual(
+    await mergeMainIntoDraft({ base, projectId, slug: '../team-102047', author, git }),
+    { status: 400, code: 'BAD_DRAFT' },
+  );
+  assert.equal(calls.length, 0);
+});
+
+test('fastForwardDraft refuses a dirty draft worktree', async () => {
+  const worktree = resolve(draftSourceRoot(base, slug, projectId));
+  const { git, calls } = scriptedGit((cmd) => {
+    if (cmd[0] === 'status') return { stdout: ' M l2/a.ts\n', code: 0 };
+    throw new Error(`unexpected git ${cmd.join(' ')}`);
+  });
+
+  const result = await fastForwardDraft({ base, projectId, slug, git });
+
+  assert.deepEqual(result, { status: 409, code: 'DRAFT_DIRTY' });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].cwd, worktree);
+  assert.deepEqual(innerArgs(calls[0].args), ['status', '--porcelain']);
+});
+
+test('fastForwardDraft is up_to_date when the draft is not behind main', async () => {
+  const worktree = resolve(draftSourceRoot(base, slug, projectId));
+  const { git, calls } = scriptedGit((cmd) => {
+    if (cmd[0] === 'status') return { stdout: '', code: 0 };
+    if (cmd[0] === 'rev-list') return { stdout: '0\t2\n', code: 0 };
+    throw new Error(`unexpected git ${cmd.join(' ')}`);
+  });
+
+  const result = await fastForwardDraft({ base, projectId, slug, git });
+
+  assert.deepEqual(result, { status: 'up_to_date' });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].cwd, worktree);
+  assert.deepEqual(innerArgs(calls[1].args), ['rev-list', '--left-right', '--count', 'main...HEAD']);
+});
+
+test('fastForwardDraft fast-forwards when the draft has no own commits', async () => {
+  const worktree = resolve(draftSourceRoot(base, slug, projectId));
+  const { git, calls } = scriptedGit((cmd) => {
+    if (cmd[0] === 'status') return { stdout: '', code: 0 };
+    if (cmd[0] === 'rev-list') return { stdout: '3\t0\n', code: 0 };
+    if (cmd[0] === 'merge') return { stdout: '', code: 0 };
+    if (cmd[0] === 'rev-parse' && cmd[1] === 'HEAD') return { stdout: 'cafe123\n', code: 0 };
+    throw new Error(`unexpected git ${cmd.join(' ')}`);
+  });
+
+  const result = await fastForwardDraft({ base, projectId, slug, git });
+
+  assert.deepEqual(result, { status: 'fast_forwarded', ref: 'cafe123' });
+  assert.equal(calls.length, 4);
+  assert.equal(calls[0].cwd, worktree);
+  assert.deepEqual(innerArgs(calls[2].args), ['merge', '--ff-only', 'main']);
+  assert.deepEqual(innerArgs(calls[3].args), ['rev-parse', 'HEAD']);
+});
+
+test('fastForwardDraft reports diverged and does not merge when the draft has own commits', async () => {
+  const { git, calls } = scriptedGit((cmd) => {
+    if (cmd[0] === 'status') return { stdout: '', code: 0 };
+    if (cmd[0] === 'rev-list') return { stdout: '2\t1\n', code: 0 };
+    throw new Error(`unexpected git ${cmd.join(' ')}`);
+  });
+
+  const result = await fastForwardDraft({ base, projectId, slug, git });
+
+  assert.deepEqual(result, { status: 'diverged', ahead: 1, behind: 2 });
+  assert.equal(calls.length, 2);
+  assert.equal(calls.some((call) => innerArgs(call.args)[0] === 'merge'), false);
+});
+
+test('mergeMainIntoDraft merges main with the author when the draft has diverged', async () => {
+  const worktree = resolve(draftSourceRoot(base, slug, projectId));
+  const { git, calls } = scriptedGit((cmd) => {
+    if (cmd[0] === 'status') return { stdout: '', code: 0 };
+    if (cmd[0] === 'rev-list') return { stdout: '2\t1\n', code: 0 };
+    if (cmd[0] === '-c') return { stdout: '', code: 0 };
+    if (cmd[0] === 'rev-parse' && cmd[1] === 'HEAD') return { stdout: 'beef456\n', code: 0 };
+    throw new Error(`unexpected git ${cmd.join(' ')}`);
+  });
+
+  const result = await mergeMainIntoDraft({ base, projectId, slug, author, git });
+
+  assert.deepEqual(result, { status: 'merged', ref: 'beef456' });
+  assert.equal(calls.length, 4);
+  assert.equal(calls[0].cwd, worktree);
+  assert.deepEqual(innerArgs(calls[2].args), [
+    '-c', 'user.name=ana',
+    '-c', 'user.email=ana@collab.codes',
+    'merge', '--no-ff',
+    '-m', `sync main into ${branch}`,
+    'main',
+  ]);
+  assert.deepEqual(innerArgs(calls[3].args), ['rev-parse', 'HEAD']);
+});
+
+test('mergeMainIntoDraft reports the conflict, then aborts the merge', async () => {
+  const { git, calls } = scriptedGit((cmd) => {
+    if (cmd[0] === 'status') return { stdout: '', code: 0 };
+    if (cmd[0] === 'rev-list') return { stdout: '1\t1\n', code: 0 };
+    if (cmd[0] === '-c') return { stdout: '', code: 1 };
+    if (cmd[0] === 'diff') return { stdout: 'l2/a.ts\n', code: 0 };
+    if (cmd[0] === 'merge' && cmd[1] === '--abort') return { stdout: '', code: 0 };
+    throw new Error(`unexpected git ${cmd.join(' ')}`);
+  });
+
+  const result = await mergeMainIntoDraft({ base, projectId, slug, author, git });
+
+  assert.deepEqual(result, { status: 409, code: 'DRAFT_CONFLICT', files: ['l2/a.ts'] });
+  assert.deepEqual(innerArgs(calls[3].args), ['diff', '--name-only', '--diff-filter=U']);
+  assert.deepEqual(innerArgs(calls[4].args), ['merge', '--abort']);
+  assert.equal(calls.length, 5);
+});
+
+test('fastForwardDraft returns GIT_ERROR when git fails unexpectedly', async () => {
+  const { git, calls } = scriptedGit((cmd) => {
+    if (cmd[0] === 'status') return { stdout: '', stderr: 'index.lock', code: 128 };
+    throw new Error(`unexpected git ${cmd.join(' ')}`);
+  });
+
+  const result = await fastForwardDraft({ base, projectId, slug, git });
+
+  assert.deepEqual(result, { status: 500, code: 'GIT_ERROR' });
+  assert.equal(calls.length, 1);
 });
 
 test('listDrafts returns ahead/behind, the last commit and the touched files', async () => {

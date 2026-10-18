@@ -1,5 +1,6 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/cbe/cbeGitPromote.ts" enhancement="_blank" />
-// Promote a studio draft onto the main worktree, or discard / list / diff it.
+// Promote a studio draft onto the main worktree, discard / list / diff it,
+// or bring main into the draft (fast-forward when the draft has no own commits).
 //
 // The injected git returns the exit code and never throws: a conflicted merge
 // exits 1, and that is a 409, not an exception. captureGit is the real
@@ -65,6 +66,16 @@ export type DraftDiffResult =
   | { status: 400; code: 'BAD_DRAFT' }
   | { status: 400; code: 'BAD_PATH' }
   | { status: 'diff'; text: string }
+  | { status: 500; code: 'GIT_ERROR' };
+
+export type SyncDraftResult =
+  | { status: 400; code: 'BAD_DRAFT' }
+  | { status: 409; code: 'DRAFT_DIRTY' }
+  | { status: 'up_to_date' }
+  | { status: 'fast_forwarded'; ref: string }
+  | { status: 'diverged'; ahead: number; behind: number }
+  | { status: 'merged'; ref: string }
+  | { status: 409; code: 'DRAFT_CONFLICT'; files: string[] }
   | { status: 500; code: 'GIT_ERROR' };
 
 interface ExecFailure {
@@ -214,6 +225,109 @@ export async function discardDraft(opts: {
     return { status: 500, code: 'GIT_ERROR' };
   }
   return { status: 'discarded' };
+}
+
+type SyncDraftOpts = {
+  base: string;
+  projectId: number;
+  slug: string;
+  git?: PromoteGit;
+} & ({ mode: 'ff-only' } | { mode: 'merge'; author: GitCommitAuthor });
+
+function parseAheadBehind(stdout: string): { behind: number; ahead: number } | undefined {
+  const [behindText, aheadText] = stdout.trim().split(/\s+/u);
+  const behind = Number(behindText);
+  const ahead = Number(aheadText);
+  if (!Number.isInteger(behind) || !Number.isInteger(ahead)) return undefined;
+  return { behind, ahead };
+}
+
+async function syncDraft(opts: SyncDraftOpts): Promise<SyncDraftResult> {
+  const parsed = parseDraftSlug(opts.slug);
+  if (!parsed) return { status: 400, code: 'BAD_DRAFT' };
+
+  const cwd = resolve(draftSourceRoot(opts.base, parsed.slug, opts.projectId));
+  const run = withSafeDirectory(opts.git ?? captureGit, cwd);
+  const where = opts.mode === 'ff-only'
+    ? `fastForwardDraft (${parsed.branch})`
+    : `mergeMainIntoDraft (${parsed.branch})`;
+
+  const porcelain = await run(['status', '--porcelain']);
+  if (porcelain.code !== 0) {
+    logGitFailure(`${where} status`, porcelain);
+    return { status: 500, code: 'GIT_ERROR' };
+  }
+  if (porcelain.stdout.trim() !== '') return { status: 409, code: 'DRAFT_DIRTY' };
+
+  const counts = await run(['rev-list', '--left-right', '--count', 'main...HEAD']);
+  if (counts.code !== 0) {
+    logGitFailure(`${where} rev-list`, counts);
+    return { status: 500, code: 'GIT_ERROR' };
+  }
+  const aheadBehind = parseAheadBehind(counts.stdout);
+  if (!aheadBehind) {
+    console.error(`[cbe] ${where}: unexpected ahead/behind: ${counts.stdout.trim()}`);
+    return { status: 500, code: 'GIT_ERROR' };
+  }
+  const { behind, ahead } = aheadBehind;
+  if (behind === 0) return { status: 'up_to_date' };
+
+  if (ahead === 0) {
+    const forwarded = await run(['merge', '--ff-only', 'main']);
+    if (forwarded.code !== 0) {
+      logGitFailure(`${where} merge --ff-only`, forwarded);
+      return { status: 500, code: 'GIT_ERROR' };
+    }
+    const ref = await run(['rev-parse', 'HEAD']);
+    if (ref.code !== 0) {
+      logGitFailure(`${where} HEAD after ff`, ref);
+      return { status: 500, code: 'GIT_ERROR' };
+    }
+    return { status: 'fast_forwarded', ref: ref.stdout.trim() };
+  }
+
+  if (opts.mode === 'ff-only') return { status: 'diverged', ahead, behind };
+
+  const merged = await run([
+    '-c', `user.name=${opts.author.name}`,
+    '-c', `user.email=${opts.author.email}`,
+    'merge', '--no-ff',
+    '-m', `sync main into ${parsed.branch}`,
+    'main',
+  ]);
+  if (merged.code !== 0) {
+    const listed = await run(['diff', '--name-only', '--diff-filter=U']);
+    if (listed.code !== 0) logGitFailure(`${where} unmerged`, listed);
+    const aborted = await run(['merge', '--abort']);
+    if (aborted.code !== 0) logGitFailure(`${where} merge --abort`, aborted);
+    return { status: 409, code: 'DRAFT_CONFLICT', files: linesOf(listed.stdout) };
+  }
+
+  const ref = await run(['rev-parse', 'HEAD']);
+  if (ref.code !== 0) {
+    logGitFailure(`${where} HEAD after merge`, ref);
+    return { status: 500, code: 'GIT_ERROR' };
+  }
+  return { status: 'merged', ref: ref.stdout.trim() };
+}
+
+export async function fastForwardDraft(opts: {
+  base: string;
+  projectId: number;
+  slug: string;
+  git?: PromoteGit;
+}): Promise<SyncDraftResult> {
+  return syncDraft({ ...opts, mode: 'ff-only' });
+}
+
+export async function mergeMainIntoDraft(opts: {
+  base: string;
+  projectId: number;
+  slug: string;
+  author: GitCommitAuthor;
+  git?: PromoteGit;
+}): Promise<SyncDraftResult> {
+  return syncDraft({ ...opts, mode: 'merge' });
 }
 
 export async function listDrafts(opts: {

@@ -7,7 +7,14 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { discardDraft, draftDiff, listDrafts, promoteDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitPromote.js';
+import {
+  discardDraft,
+  draftDiff,
+  fastForwardDraft,
+  listDrafts,
+  mergeMainIntoDraft,
+  promoteDraft,
+} from '/_102034_/l1/server/layer_1_external/cbe/cbeGitPromote.js';
 import { ensureDraftWorktree } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
 
 function g(cwd: string, ...args: string[]): string {
@@ -69,4 +76,56 @@ test('promote, list, diff and discard against a real repository', async () => {
 
   assert.deepEqual(await discardDraft({ base, projectId: 1, slug }), { status: 'discarded' });
   assert.equal(g(wt, 'rev-parse', 'HEAD'), g(repo, 'rev-parse', 'main'));
+});
+
+test('fastForwardDraft and mergeMainIntoDraft against a real draft worktree', async () => {
+  const base = mkdtempSync(join(tmpdir(), 'sync-'));
+  const repo = join(base, 'mls-1');
+  mkdirSync(repo, { recursive: true });
+  g(repo, 'init', '-b', 'main');
+  writeFileSync(join(repo, 'a.txt'), '1\n');
+  g(repo, 'add', '.');
+  g(repo, 'commit', '-m', 'init');
+
+  const slug = 'team-1';
+  const wt = await ensureDraftWorktree({ base, projectId: 1, slug, branch: 'team/1' });
+  const author = { name: 'ana', email: 'ana@x.com' };
+
+  writeFileSync(join(repo, 'c.txt'), 'from-main\n');
+  g(repo, 'add', '.');
+  g(repo, 'commit', '-m', 'main moved');
+  const forwarded = await fastForwardDraft({ base, projectId: 1, slug });
+  assert.equal(forwarded.status, 'fast_forwarded');
+  assert.equal(g(wt, 'rev-parse', 'HEAD'), g(repo, 'rev-parse', 'main'));
+
+  writeFileSync(join(wt, 'd.txt'), 'draft\n');
+  g(wt, 'add', '.');
+  g(wt, 'commit', '-m', 'draft own');
+  writeFileSync(join(repo, 'e.txt'), 'main2\n');
+  g(repo, 'add', '.');
+  g(repo, 'commit', '-m', 'main other file');
+  const diverged = await fastForwardDraft({ base, projectId: 1, slug });
+  assert.equal(diverged.status, 'diverged');
+  if (diverged.status === 'diverged') {
+    assert.equal(diverged.ahead, 1);
+    assert.equal(diverged.behind, 1);
+  }
+  const merged = await mergeMainIntoDraft({ base, projectId: 1, slug, author });
+  assert.equal(merged.status, 'merged');
+  const afterMerge = g(wt, 'rev-list', '--left-right', '--count', 'main...HEAD');
+  assert.equal(afterMerge.split(/\s+/u)[0], '0');
+
+  writeFileSync(join(wt, 'a.txt'), 'draft-line\n');
+  g(wt, 'add', '.');
+  g(wt, 'commit', '-m', 'draft a');
+  writeFileSync(join(repo, 'a.txt'), 'main-line\n');
+  g(repo, 'add', '.');
+  g(repo, 'commit', '-m', 'main a');
+  const headBefore = g(wt, 'rev-parse', 'HEAD');
+  assert.deepEqual(
+    await mergeMainIntoDraft({ base, projectId: 1, slug, author }),
+    { status: 409, code: 'DRAFT_CONFLICT', files: ['a.txt'] },
+  );
+  assert.equal(g(wt, 'status', '--porcelain'), '');
+  assert.equal(g(wt, 'rev-parse', 'HEAD'), headBefore);
 });
