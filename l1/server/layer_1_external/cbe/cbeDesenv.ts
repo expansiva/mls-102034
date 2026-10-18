@@ -137,8 +137,10 @@ export async function runDesenvEnter(input: {
   return { status: HTTP_FOUND, location, setCookie: draftCookie(parsed.slug) };
 }
 
-export function runDesenvExit(): DesenvResult {
-  return { status: HTTP_FOUND, location: '/', setCookie: clearDraftCookie() };
+export function runDesenvExit(input: { to: string | undefined }): DesenvResult {
+  const location = draftReturnPath(input.to);
+  if (!location) return jsonResult(CBE_HTTP_BAD_REQUEST, 'invalid redirect');
+  return { status: HTTP_FOUND, location, setCookie: clearDraftCookie() };
 }
 
 function sendDesenv(reply: FastifyReply, result: DesenvResult): void {
@@ -161,6 +163,6 @@ export async function handleDesenvEnter(request: FastifyRequest, reply: FastifyR
   sendDesenv(reply, result);
 }
 
-export async function handleDesenvExit(_request: FastifyRequest, reply: FastifyReply): Promise<void> {
-  sendDesenv(reply, runDesenvExit());
+export async function handleDesenvExit(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+  sendDesenv(reply, runDesenvExit({ to: queryValue(request.query, 'to') }));
 }

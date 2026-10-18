@@ -100,6 +100,33 @@ test('GET /desenv sets the draft cookie; GET /desenv/sair clears it', async () =
     assert.equal(left.statusCode, 302);
     assert.equal(headerValue(left.headers.location), '/');
     assert.equal(headerValue(left.headers['set-cookie']), clearDraftCookie());
+
+    const leftTo = await app.inject({
+      method: 'GET',
+      url: '/desenv/sair?to=' + encodeURIComponent('/agendaClinica?x=1'),
+      headers: { host: REAL_HOST },
+    });
+    assert.equal(leftTo.statusCode, 302);
+    assert.equal(headerValue(leftTo.headers.location), '/agendaClinica?x=1');
+    assert.equal(headerValue(leftTo.headers['set-cookie']), clearDraftCookie());
+
+    const protocolRelative = await app.inject({
+      method: 'GET',
+      url: '/desenv/sair?to=' + encodeURIComponent('//evil.com'),
+      headers: { host: REAL_HOST },
+    });
+    assert.equal(protocolRelative.statusCode, 400);
+    assert.equal(protocolRelative.json().msg, 'invalid redirect');
+    assert.equal(headerValue(protocolRelative.headers['set-cookie']), '');
+
+    const absolute = await app.inject({
+      method: 'GET',
+      url: '/desenv/sair?to=' + encodeURIComponent('https://x'),
+      headers: { host: REAL_HOST },
+    });
+    assert.equal(absolute.statusCode, 400);
+    assert.equal(absolute.json().msg, 'invalid redirect');
+    assert.equal(headerValue(absolute.headers['set-cookie']), '');
   } finally {
     desenvIo.ensureDraftWorktree = origWorktree;
     desenvIo.fastForwardDraft = origFastForward;
