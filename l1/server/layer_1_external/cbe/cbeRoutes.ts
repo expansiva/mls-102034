@@ -31,6 +31,8 @@ import { CANDIDATE_BODY_LIMIT, candidateActionAllowed, candidateHubMode, candida
 import { handleCandidateRevision } from '/_102034_/l1/server/layer_1_external/candidate/candidateStore.js';
 import { ensureCandidateSchema, PostgresCandidatePersistence } from '/_102034_/l1/server/layer_1_external/candidate/candidatePostgres.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
+import { getLocalTestConfig } from '/_102034_/l1/server/layer_1_external/config/localTestConfig.js';
+import { expiredLocalTestCookie } from '/_102034_/l1/server/layer_1_external/transport/http/localTestSessionHttp.js';
 import { parseDatabaseUrl } from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
 import { getSharedPgPool } from '/_102034_/l1/server/layer_1_external/data/postgres/pg.js';
 import { readHistory, readHistoryContent } from '/_102034_/l1/server/layer_1_external/cbe/cbeGit.js';
@@ -132,7 +134,18 @@ async function completeLogout(
   console.info(`[cbe] logout (${who})`);
   const cookies = parseCookies(request.headers.cookie as string | undefined);
   await revokeCrefresh(cookies.crefresh, fetchImpl);
-  reply.header('set-cookie', logoutCookies());
+  const setCookies = logoutCookies();
+  try {
+    const state = getLocalTestConfig();
+    if (state.enabled) {
+      setCookies.push(expiredLocalTestCookie(state.projectId, request.protocol === 'https'));
+    }
+  } catch {
+    console.warn('[cbe] local test session config failed during logout');
+    const projectId = readAppEnv().projectId;
+    if (projectId) setCookies.push(expiredLocalTestCookie(projectId, request.protocol === 'https'));
+  }
+  reply.header('set-cookie', setCookies);
   reply.header('Cache-Control', 'no-store');
   if (mode === 'redirect') {
     reply.code(303).header('Location', '/').send();

@@ -30,6 +30,7 @@ import { getRunningRelease } from '/_102034_/l1/server/layer_1_external/cbe/cbeR
 import { registerMsgProxy } from '/_102034_/l1/server/layer_1_external/transport/http/msgProxy.js';
 import { registerGitRoutes } from '/_102034_/l1/server/layer_1_external/transport/http/gitHttp.js';
 import { registerSessionRegistrationRoutes } from '/_102034_/l1/server/layer_1_external/transport/http/sessionRegistration.js';
+import { registerLocalTestSessionRoutes } from '/_102034_/l1/server/layer_1_external/transport/http/localTestSessionHttp.js';
 import { OnboardingConfigError, readOnboardingConfig, resolveOrganizationBinding } from '/_102034_/l1/server/layer_1_external/config/onboardingConfig.js';
 import { isPersonAccessComplete } from '/_102034_/l1/mdm/layer_3_usecases/mdmSupport.js';
 import { normalizeRegistrationEmail } from '/_102034_/l1/mdm/layer_3_usecases/registrationCandidates.js';
@@ -356,6 +357,7 @@ export function sessionInfoBody(
     expiresAt: typeof session.claims?.exp === 'number' ? new Date(session.claims.exp * 1000).toISOString() : null,
     enforcement: { authentication: isBffAuthEnforced(), actors: isActorEnforcementOn() },
     reason: session.reason,
+    ...(session.source === 'local-test' ? { sessionSource: 'local-test' as const } : {}),
     ...(gate && Object.prototype.hasOwnProperty.call(gate, 'company') ? { company: gate.company } : {}),
     ...(gate?.onboarding ? { onboarding: gate.onboarding } : {}),
   };
@@ -626,6 +628,9 @@ export function buildHttpServer() {
   if (readOnboardingConfig(readProjectsConfig())) {
     registerSessionRegistrationRoutes(app, { refreshedAuthCookie });
   }
+  // Lima bench selector. The handler answers 404 when the bench is off or the host is not local,
+  // and it is registered before the SPA catch-all so that 404 is real.
+  registerLocalTestSessionRoutes(app);
   app.get('/*', async (request, reply) => {
     const result = await handleHttpRequest('GET', request.url);
     const etag = result.headers?.etag;
