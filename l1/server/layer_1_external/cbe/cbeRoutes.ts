@@ -1002,14 +1002,20 @@ async function handleListDrafts(request: FastifyRequest, body: CbeRequestListDra
 async function handleDraftDiff(request: FastifyRequest, body: CbeRequestDraftDiff, reply: FastifyReply): Promise<void> {
   const project = await requireSourceProject(request, body, reply);
   if (!project) return;
+  const askNames = (body as CbeRequestDraftDiff & { names?: boolean }).names === true;
   const result = await draftDiff({
     base: getProjectsBaseDir(),
     projectId: project,
     slug: typeof body.draft === 'string' ? body.draft : '',
     shortPath: typeof body.shortPath === 'string' ? body.shortPath : undefined,
+    names: askNames,
   });
   if (typeof result.status === 'number') {
     replyGitFailure(reply, result);
+    return;
+  }
+  if (result.status === 'files') {
+    reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, status: 'files', head: result.head, files: result.files });
     return;
   }
   reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, status: 'diff', text: result.text });

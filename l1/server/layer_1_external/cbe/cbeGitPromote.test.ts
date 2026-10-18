@@ -394,6 +394,33 @@ test('draftDiff is the whole branch, or one contained path', async () => {
   assert.equal(escaped.calls.length, 0);
 });
 
+test('draftDiff with names lists each file and the draft head', async () => {
+  const head = 'abc123def\n';
+  const { git, calls } = promoteGit((cmd) => {
+    if (cmd[0] === 'diff' && cmd[1] === '--name-status') {
+      return { stdout: 'M\tl2/a.ts\nA\tl2/b.ts\nD\tl1/c.ts\nR100\tl2/old.ts\tl2/new.ts\n', code: 0 };
+    }
+    if (cmd[0] === 'rev-parse' && cmd[1] === branch) return { stdout: head, code: 0 };
+    throw new Error(`unexpected git ${cmd.join(' ')}`);
+  });
+
+  const result = await draftDiff({ base, projectId, slug, names: true, git });
+
+  assert.deepEqual(result, {
+    status: 'files',
+    head: head.trim(),
+    files: [
+      { status: 'M', path: 'l2/a.ts' },
+      { status: 'A', path: 'l2/b.ts' },
+      { status: 'D', path: 'l1/c.ts' },
+      { status: 'R', path: 'l2/new.ts' },
+    ],
+  });
+  assert.deepEqual(innerArgs(calls[0].args), ['diff', '--name-status', `main...${branch}`]);
+  assert.deepEqual(innerArgs(calls[1].args), ['rev-parse', branch]);
+  assert.equal(calls[0].cwd, repo);
+});
+
 test('captureGit returns a non-zero exit instead of throwing', async () => {
   const root = mkdtempSync(join(tmpdir(), 'cbe-promote-'));
   try {

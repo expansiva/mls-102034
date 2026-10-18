@@ -62,10 +62,16 @@ export type ListDraftsResult =
   | { status: 'listed'; drafts: ListedDraft[] }
   | { status: 500; code: 'GIT_ERROR' };
 
+export interface DraftDiffFile {
+  status: 'A' | 'M' | 'D' | 'R';
+  path: string;
+}
+
 export type DraftDiffResult =
   | { status: 400; code: 'BAD_DRAFT' }
   | { status: 400; code: 'BAD_PATH' }
   | { status: 'diff'; text: string }
+  | { status: 'files'; head: string; files: DraftDiffFile[] }
   | { status: 500; code: 'GIT_ERROR' };
 
 export type SyncDraftResult =
@@ -385,18 +391,36 @@ export async function listDrafts(opts: {
   return { status: 'listed', drafts };
 }
 
+function parseNameStatus(stdout: string): DraftDiffFile[] {
+  const files: DraftDiffFile[] = [];
+  for (const line of linesOf(stdout)) {
+    const parts = line.split('\t');
+    const raw = parts[0] ?? '';
+    const letter = raw.charAt(0);
+    if ((letter === 'A' || letter === 'M' || letter === 'D') && raw.length === 1 && parts[1]) {
+      files.push({ status: letter, path: parts[1] });
+    } else if (letter === 'R' && /^R\d*$/u.test(raw) && parts.length >= 3 && parts[parts.length - 1]) {
+      files.push({ status: 'R', path: parts[parts.length - 1] });
+    }
+  }
+  return files;
+}
+
 export async function draftDiff(opts: {
   base: string;
   projectId: number;
   slug: string;
   shortPath?: string;
+  names?: boolean;
   git?: PromoteGit;
 }): Promise<DraftDiffResult> {
   const parsed = parseDraftSlug(opts.slug);
   if (!parsed) return { status: 400, code: 'BAD_DRAFT' };
 
   const cwd = mainWorktree(opts.base, opts.projectId);
-  const args = ['diff', `main...${parsed.branch}`];
+  const args = opts.names === true
+    ? ['diff', '--name-status', `main...${parsed.branch}`]
+    : ['diff', `main...${parsed.branch}`];
   if (opts.shortPath !== undefined) {
     // Same containment as getContents: a browser path never becomes a git path
     // until it resolves inside the main worktree.
@@ -414,5 +438,12 @@ export async function draftDiff(opts: {
     logGitFailure(`draftDiff (${parsed.branch})`, diff);
     return { status: 500, code: 'GIT_ERROR' };
   }
-  return { status: 'diff', text: diff.stdout };
+  if (opts.names !== true) return { status: 'diff', text: diff.stdout };
+
+  const head = await run(['rev-parse', parsed.branch]);
+  if (head.code !== 0) {
+    logGitFailure(`draftDiff rev-parse (${parsed.branch})`, head);
+    return { status: 500, code: 'GIT_ERROR' };
+  }
+  return { status: 'files', head: head.stdout.trim(), files: parseNameStatus(diff.stdout) };
 }
