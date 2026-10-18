@@ -107,6 +107,20 @@ test('dev --allow-env covers every l1 env read except DATABASE_URL', () => {
   assert.deepEqual(missing, []);
 });
 
+test('dev --allow-read ends with CBE_PROJECT_FILES_DIR', () => {
+  const previous = process.env.CBE_PROJECT_FILES_DIR;
+  process.env.CBE_PROJECT_FILES_DIR = '/x/projects';
+  try {
+    const allow = buildDenoArgs('/tmp/base', SLUG, 4100, draftDatabaseUrl(PARENT_TEST_URL, SLUG))
+      .find((arg) => arg.startsWith('--allow-read='));
+    assert.ok(allow);
+    assert.equal(allow.endsWith(',/x/projects'), true);
+  } finally {
+    if (previous === undefined) delete process.env.CBE_PROJECT_FILES_DIR;
+    else process.env.CBE_PROJECT_FILES_DIR = previous;
+  }
+});
+
 function dummyPid(pids: number[]): number {
   const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
     detached: true,
@@ -181,7 +195,7 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
       assert.deepEqual(calls[0].args, buildDenoArgs(base, SLUG, 4100, draftUrl));
       assert.deepEqual(calls[0].args, [
         'run',
-        `--allow-read=${base},${join(base, 'drafts', SLUG)}`,
+        `--allow-read=${base},${join(base, 'drafts', SLUG)},${process.env.CBE_PROJECT_FILES_DIR ?? '/etc/collab/projects'}`,
         `--allow-env=${[...memoryModeAllowEnv(), 'DATABASE_URL_TEST', 'PG*', 'USERNAME'].join(',')}`,
         '--allow-net=0.0.0.0:4100,127.0.0.1,127.0.0.1:5432',
         '--allow-sys=networkInterfaces',
