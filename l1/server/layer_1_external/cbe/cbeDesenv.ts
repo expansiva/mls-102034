@@ -4,7 +4,8 @@
 
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { parseDraftSlug, ensureDraftWorktree } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
-import { AncestorDenoConfigError, DraftDatabaseError, DraftWorktreeMissingError, ensureDevProcess, waitForDevReady } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
+import { AncestorDenoConfigError, DraftDatabaseError, DraftWorktreeMissingError, ensureDevProcess, stopDevProcess, waitForDevReady } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
+import { fastForwardDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitPromote.js';
 import { getProjectsBaseDir } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
 import { readProjectsConfig } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import {
@@ -33,11 +34,13 @@ export function resolveClientProjectId(): string {
   return client?.[0] ?? config.defaultProjectId;
 }
 
-/** Tests replace the ensure calls so /desenv does not create a worktree or spawn Deno. */
+/** Tests replace these calls so /desenv does not create a worktree, sync git, or spawn Deno. */
 export const desenvIo = {
   resolveClientProjectId,
   getProjectsBaseDir,
   ensureDraftWorktree,
+  fastForwardDraft,
+  stopDevProcess,
   ensureDevProcess,
   waitForDevReady,
   isAllowed: async (_request: FastifyRequest): Promise<boolean> => {
@@ -103,6 +106,19 @@ export async function runDesenvEnter(input: {
   let port: number;
   try {
     await desenvIo.ensureDraftWorktree({ base, projectId, slug: parsed.slug, branch: parsed.branch });
+    try {
+      const sync = await desenvIo.fastForwardDraft({ base, projectId, slug: parsed.slug });
+      if (sync.status === 'fast_forwarded') {
+        desenvIo.stopDevProcess(base, parsed.slug);
+        console.info(`[cbe] /desenv: draft ${parsed.slug} fast-forwarded to ${sync.ref}`);
+      } else if (sync.status !== 'up_to_date' && sync.status !== 'diverged') {
+        const code = typeof sync.status === 'number' ? sync.code : sync.status;
+        console.warn(`[cbe] /desenv: draft ${parsed.slug} not synced: ${code}`);
+      }
+    } catch (err) {
+      const code = err instanceof Error ? err.message : String(err);
+      console.warn(`[cbe] /desenv: draft ${parsed.slug} not synced: ${code}`);
+    }
     port = desenvIo.ensureDevProcess({ base, slug: parsed.slug, clientProjectId: projectId }).port;
   } catch (err) {
     console.error(`[cbe] /desenv: draft ${parsed.slug} failed: ${(err as Error).message}`);

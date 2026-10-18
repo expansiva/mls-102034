@@ -27,11 +27,13 @@ test('GET /desenv sets the draft cookie; GET /desenv/sair clears it', async () =
   const worktrees: Array<{ base: string; projectId: number; slug: string; branch: string }> = [];
   const devs: Array<{ base: string; slug: string; clientProjectId: number }> = [];
   const origWorktree = desenvIo.ensureDraftWorktree;
+  const origFastForward = desenvIo.fastForwardDraft;
   const origDev = desenvIo.ensureDevProcess;
   const origReady = desenvIo.waitForDevReady;
   const origProject = desenvIo.resolveClientProjectId;
   desenvIo.resolveClientProjectId = () => String(PROJECT_ID);
   desenvIo.waitForDevReady = async () => true;
+  desenvIo.fastForwardDraft = async () => ({ status: 'up_to_date' });
   desenvIo.ensureDraftWorktree = async (opts) => {
     worktrees.push({ base: opts.base, projectId: opts.projectId, slug: opts.slug, branch: opts.branch });
     return '/tmp/draft';
@@ -100,6 +102,7 @@ test('GET /desenv sets the draft cookie; GET /desenv/sair clears it', async () =
     assert.equal(headerValue(left.headers['set-cookie']), clearDraftCookie());
   } finally {
     desenvIo.ensureDraftWorktree = origWorktree;
+    desenvIo.fastForwardDraft = origFastForward;
     desenvIo.ensureDevProcess = origDev;
     desenvIo.waitForDevReady = origReady;
     desenvIo.resolveClientProjectId = origProject;
@@ -114,10 +117,12 @@ test('GET /desenv answers 503 without a cookie when the dev port is not ready', 
   delete process.env.CBE_REQUIRE_LOGIN;
 
   const origWorktree = desenvIo.ensureDraftWorktree;
+  const origFastForward = desenvIo.fastForwardDraft;
   const origDev = desenvIo.ensureDevProcess;
   const origReady = desenvIo.waitForDevReady;
   const origProject = desenvIo.resolveClientProjectId;
   desenvIo.resolveClientProjectId = () => String(PROJECT_ID);
+  desenvIo.fastForwardDraft = async () => ({ status: 'up_to_date' });
   desenvIo.ensureDraftWorktree = async () => '/tmp/draft';
   desenvIo.ensureDevProcess = () => ({ port: 4100, pid: 1, startedAt: 0, lastRequestAt: 0 });
   let waited: number | undefined;
@@ -141,6 +146,7 @@ test('GET /desenv answers 503 without a cookie when the dev port is not ready', 
     assert.equal(waited, 4100);
   } finally {
     desenvIo.ensureDraftWorktree = origWorktree;
+    desenvIo.fastForwardDraft = origFastForward;
     desenvIo.ensureDevProcess = origDev;
     desenvIo.waitForDevReady = origReady;
     desenvIo.resolveClientProjectId = origProject;
@@ -155,10 +161,12 @@ test('GET /desenv answers 503 without a cookie when an ancestor deno config bloc
   delete process.env.CBE_REQUIRE_LOGIN;
 
   const origWorktree = desenvIo.ensureDraftWorktree;
+  const origFastForward = desenvIo.fastForwardDraft;
   const origDev = desenvIo.ensureDevProcess;
   const origReady = desenvIo.waitForDevReady;
   const origProject = desenvIo.resolveClientProjectId;
   desenvIo.resolveClientProjectId = () => String(PROJECT_ID);
+  desenvIo.fastForwardDraft = async () => ({ status: 'up_to_date' });
   desenvIo.ensureDraftWorktree = async () => '/tmp/draft';
   desenvIo.ensureDevProcess = () => {
     throw new AncestorDenoConfigError('ancestor deno config: /data/mls-base/deno.json');
@@ -187,6 +195,7 @@ test('GET /desenv answers 503 without a cookie when an ancestor deno config bloc
     assert.equal(waited, false);
   } finally {
     desenvIo.ensureDraftWorktree = origWorktree;
+    desenvIo.fastForwardDraft = origFastForward;
     desenvIo.ensureDevProcess = origDev;
     desenvIo.waitForDevReady = origReady;
     desenvIo.resolveClientProjectId = origProject;
@@ -201,10 +210,12 @@ test('GET /desenv answers 503 without a cookie when the draft database is refuse
   delete process.env.CBE_REQUIRE_LOGIN;
 
   const origWorktree = desenvIo.ensureDraftWorktree;
+  const origFastForward = desenvIo.fastForwardDraft;
   const origDev = desenvIo.ensureDevProcess;
   const origReady = desenvIo.waitForDevReady;
   const origProject = desenvIo.resolveClientProjectId;
   desenvIo.resolveClientProjectId = () => String(PROJECT_ID);
+  desenvIo.fastForwardDraft = async () => ({ status: 'up_to_date' });
   desenvIo.ensureDraftWorktree = async () => '/tmp/draft';
   desenvIo.ensureDevProcess = () => {
     throw new DraftDatabaseError('project mode production is not a test mode');
@@ -233,6 +244,204 @@ test('GET /desenv answers 503 without a cookie when the draft database is refuse
     assert.equal(waited, false);
   } finally {
     desenvIo.ensureDraftWorktree = origWorktree;
+    desenvIo.fastForwardDraft = origFastForward;
+    desenvIo.ensureDevProcess = origDev;
+    desenvIo.waitForDevReady = origReady;
+    desenvIo.resolveClientProjectId = origProject;
+    if (prevLogin === undefined) delete process.env.CBE_REQUIRE_LOGIN;
+    else process.env.CBE_REQUIRE_LOGIN = prevLogin;
+    await app.close();
+  }
+});
+
+test('GET /desenv fast-forwards a draft with no own commits before the dev process starts', async () => {
+  const prevLogin = process.env.CBE_REQUIRE_LOGIN;
+  delete process.env.CBE_REQUIRE_LOGIN;
+
+  const order: string[] = [];
+  const stops: Array<{ base: string; slug: string }> = [];
+  const syncs: Array<{ base: string; projectId: number; slug: string }> = [];
+  const infos: string[] = [];
+  const origWorktree = desenvIo.ensureDraftWorktree;
+  const origFastForward = desenvIo.fastForwardDraft;
+  const origStop = desenvIo.stopDevProcess;
+  const origDev = desenvIo.ensureDevProcess;
+  const origReady = desenvIo.waitForDevReady;
+  const origProject = desenvIo.resolveClientProjectId;
+  const origInfo = console.info;
+  desenvIo.resolveClientProjectId = () => String(PROJECT_ID);
+  desenvIo.ensureDraftWorktree = async () => {
+    order.push('worktree');
+    return '/tmp/draft';
+  };
+  desenvIo.fastForwardDraft = async (opts) => {
+    order.push('fastForward');
+    syncs.push({ base: opts.base, projectId: opts.projectId, slug: opts.slug });
+    return { status: 'fast_forwarded', ref: 'abc123' };
+  };
+  desenvIo.stopDevProcess = (base, slug) => {
+    order.push('stop');
+    stops.push({ base, slug });
+  };
+  desenvIo.ensureDevProcess = () => {
+    order.push('ensureDev');
+    return { port: 4100, pid: 1, startedAt: 0, lastRequestAt: 0 };
+  };
+  desenvIo.waitForDevReady = async () => {
+    order.push('ready');
+    return true;
+  };
+
+  const app = Fastify();
+  registerCbeRoutes(app);
+  const base = getProjectsBaseDir();
+  console.info = (...args: unknown[]) => {
+    infos.push(args.map((arg) => String(arg)).join(' '));
+  };
+  try {
+    const entered = await app.inject({
+      method: 'GET',
+      url: `/desenv?draft=${SLUG}`,
+      headers: { host: 'localhost' },
+    });
+    assert.equal(entered.statusCode, 302);
+    assert.equal(headerValue(entered.headers['set-cookie']), draftCookie(SLUG));
+    assert.deepEqual(order, ['worktree', 'fastForward', 'stop', 'ensureDev', 'ready']);
+    assert.deepEqual(syncs, [{ base, projectId: PROJECT_ID, slug: SLUG }]);
+    assert.deepEqual(stops, [{ base, slug: SLUG }]);
+    assert.deepEqual(infos, [`[cbe] /desenv: draft ${SLUG} fast-forwarded to abc123`]);
+  } finally {
+    console.info = origInfo;
+    desenvIo.ensureDraftWorktree = origWorktree;
+    desenvIo.fastForwardDraft = origFastForward;
+    desenvIo.stopDevProcess = origStop;
+    desenvIo.ensureDevProcess = origDev;
+    desenvIo.waitForDevReady = origReady;
+    desenvIo.resolveClientProjectId = origProject;
+    if (prevLogin === undefined) delete process.env.CBE_REQUIRE_LOGIN;
+    else process.env.CBE_REQUIRE_LOGIN = prevLogin;
+    await app.close();
+  }
+});
+
+test('GET /desenv does not stop the dev process when the draft has diverged', async () => {
+  const prevLogin = process.env.CBE_REQUIRE_LOGIN;
+  delete process.env.CBE_REQUIRE_LOGIN;
+
+  const order: string[] = [];
+  let stopped = false;
+  const origWorktree = desenvIo.ensureDraftWorktree;
+  const origFastForward = desenvIo.fastForwardDraft;
+  const origStop = desenvIo.stopDevProcess;
+  const origDev = desenvIo.ensureDevProcess;
+  const origReady = desenvIo.waitForDevReady;
+  const origProject = desenvIo.resolveClientProjectId;
+  desenvIo.resolveClientProjectId = () => String(PROJECT_ID);
+  desenvIo.ensureDraftWorktree = async () => {
+    order.push('worktree');
+    return '/tmp/draft';
+  };
+  desenvIo.fastForwardDraft = async () => {
+    order.push('fastForward');
+    return { status: 'diverged', ahead: 1, behind: 2 };
+  };
+  desenvIo.stopDevProcess = () => {
+    stopped = true;
+  };
+  desenvIo.ensureDevProcess = () => {
+    order.push('ensureDev');
+    return { port: 4100, pid: 1, startedAt: 0, lastRequestAt: 0 };
+  };
+  desenvIo.waitForDevReady = async () => {
+    order.push('ready');
+    return true;
+  };
+
+  const app = Fastify();
+  registerCbeRoutes(app);
+  try {
+    const entered = await app.inject({
+      method: 'GET',
+      url: `/desenv?draft=${SLUG}`,
+      headers: { host: 'localhost' },
+    });
+    assert.equal(entered.statusCode, 302);
+    assert.equal(headerValue(entered.headers['set-cookie']), draftCookie(SLUG));
+    assert.equal(stopped, false);
+    assert.deepEqual(order, ['worktree', 'fastForward', 'ensureDev', 'ready']);
+  } finally {
+    desenvIo.ensureDraftWorktree = origWorktree;
+    desenvIo.fastForwardDraft = origFastForward;
+    desenvIo.stopDevProcess = origStop;
+    desenvIo.ensureDevProcess = origDev;
+    desenvIo.waitForDevReady = origReady;
+    desenvIo.resolveClientProjectId = origProject;
+    if (prevLogin === undefined) delete process.env.CBE_REQUIRE_LOGIN;
+    else process.env.CBE_REQUIRE_LOGIN = prevLogin;
+    await app.close();
+  }
+});
+
+test('GET /desenv still enters when fast-forward fails', async () => {
+  const prevLogin = process.env.CBE_REQUIRE_LOGIN;
+  delete process.env.CBE_REQUIRE_LOGIN;
+
+  const warns: string[] = [];
+  let stopped = false;
+  let mode: 'dirty' | 'throw' = 'dirty';
+  const origWorktree = desenvIo.ensureDraftWorktree;
+  const origFastForward = desenvIo.fastForwardDraft;
+  const origStop = desenvIo.stopDevProcess;
+  const origDev = desenvIo.ensureDevProcess;
+  const origReady = desenvIo.waitForDevReady;
+  const origProject = desenvIo.resolveClientProjectId;
+  const origWarn = console.warn;
+  desenvIo.resolveClientProjectId = () => String(PROJECT_ID);
+  desenvIo.ensureDraftWorktree = async () => '/tmp/draft';
+  desenvIo.fastForwardDraft = async () => {
+    if (mode === 'throw') throw new Error('git exploded');
+    return { status: 409, code: 'DRAFT_DIRTY' };
+  };
+  desenvIo.stopDevProcess = () => {
+    stopped = true;
+  };
+  desenvIo.ensureDevProcess = () => ({ port: 4100, pid: 1, startedAt: 0, lastRequestAt: 0 });
+  desenvIo.waitForDevReady = async () => true;
+  console.warn = (...args: unknown[]) => {
+    warns.push(args.map((arg) => String(arg)).join(' '));
+  };
+
+  const app = Fastify();
+  registerCbeRoutes(app);
+  try {
+    const dirty = await app.inject({
+      method: 'GET',
+      url: `/desenv?draft=${SLUG}`,
+      headers: { host: 'localhost' },
+    });
+    assert.equal(dirty.statusCode, 302);
+    assert.equal(headerValue(dirty.headers['set-cookie']), draftCookie(SLUG));
+    assert.equal(stopped, false);
+    assert.deepEqual(warns, [`[cbe] /desenv: draft ${SLUG} not synced: DRAFT_DIRTY`]);
+
+    mode = 'throw';
+    const thrown = await app.inject({
+      method: 'GET',
+      url: `/desenv?draft=${SLUG}`,
+      headers: { host: 'localhost' },
+    });
+    assert.equal(thrown.statusCode, 302);
+    assert.equal(headerValue(thrown.headers['set-cookie']), draftCookie(SLUG));
+    assert.equal(stopped, false);
+    assert.deepEqual(warns, [
+      `[cbe] /desenv: draft ${SLUG} not synced: DRAFT_DIRTY`,
+      `[cbe] /desenv: draft ${SLUG} not synced: git exploded`,
+    ]);
+  } finally {
+    console.warn = origWarn;
+    desenvIo.ensureDraftWorktree = origWorktree;
+    desenvIo.fastForwardDraft = origFastForward;
+    desenvIo.stopDevProcess = origStop;
     desenvIo.ensureDevProcess = origDev;
     desenvIo.waitForDevReady = origReady;
     desenvIo.resolveClientProjectId = origProject;
