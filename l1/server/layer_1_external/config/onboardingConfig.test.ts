@@ -181,6 +181,34 @@ test('placeholder, nome vazio e fonte não suportada não geram id', () => {
   );
 });
 
+test('redirect ausente equivale a true; true e false são conservados; inválido falha', () => {
+  const base = {
+    moduleId: 'inicio',
+    entryPath,
+    personType: 'inicio.pessoa',
+    companyType: 'inicio.empresa',
+  };
+  const absent = readOnboardingConfig({ onboarding: base });
+  assert.equal(absent?.redirect, undefined);
+  const asTrue = readOnboardingConfig({ onboarding: { ...base, redirect: true } });
+  assert.equal(asTrue?.redirect, true);
+  const asFalse = readOnboardingConfig({ onboarding: { ...base, redirect: false } });
+  assert.equal(asFalse?.redirect, false);
+  assert.ok(asFalse);
+  const withFalse = config({ onboarding: { ...base, redirect: false, organizationSource: 'development-project' } });
+  const binding = resolveOrganizationBinding(withFalse, io({
+    readProjectMode: () => 'development',
+    readL5Project: () => ({ orgName: 'Oficina Lima' }),
+  }));
+  assert.equal(binding?.key, 'development-org:oficina lima');
+  assert.throws(
+    () => readOnboardingConfig({
+      onboarding: { ...base, redirect: 'no' as unknown as boolean },
+    }),
+    (error: unknown) => error instanceof OnboardingConfigError && /redirect must be a boolean/.test(error.message),
+  );
+});
+
 test('bloco incompleto, tags do módulo e entryPath rejeitam origem externa', () => {
   assert.throws(() => readOnboardingConfig({
     onboarding: { moduleId: 'inicio', entryPath, personType: '  ', companyType: 'inicio.empresa' },

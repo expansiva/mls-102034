@@ -68,7 +68,14 @@ export function readOnboardingConfig(config: Pick<ProjectsConfig, 'onboarding'> 
     }
     organizationSource = raw.organizationSource;
   }
-  return { moduleId, entryPath, personType, companyType, organizationSource };
+  let redirect: boolean | undefined;
+  if (raw.redirect !== undefined) {
+    if (typeof raw.redirect !== 'boolean') {
+      throw new OnboardingConfigError('onboarding.redirect must be a boolean');
+    }
+    redirect = raw.redirect;
+  }
+  return { moduleId, entryPath, personType, companyType, organizationSource, redirect };
 }
 
 function readL5Project(projectId: string): { orgName?: unknown } {
