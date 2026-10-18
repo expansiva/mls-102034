@@ -31,6 +31,7 @@ import { CANDIDATE_BODY_LIMIT, candidateActionAllowed, candidateHubMode, candida
 import { handleCandidateRevision } from '/_102034_/l1/server/layer_1_external/candidate/candidateStore.js';
 import { ensureCandidateSchema, PostgresCandidatePersistence } from '/_102034_/l1/server/layer_1_external/candidate/candidatePostgres.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
+import { localTestSessionFromHeaders } from '/_102034_/l1/server/layer_1_external/auth/localTestSession.js';
 import { getLocalTestConfig } from '/_102034_/l1/server/layer_1_external/config/localTestConfig.js';
 import { expiredLocalTestCookie } from '/_102034_/l1/server/layer_1_external/transport/http/localTestSessionHttp.js';
 import { parseDatabaseUrl } from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
@@ -177,6 +178,14 @@ async function resolveSession(request: FastifyRequest): Promise<JwtSession & { t
 
 function headerString(value: string | string[] | undefined): string {
   return Array.isArray(value) ? value[0] ?? '' : value ?? '';
+}
+
+function requestHeaderRecord(headers: FastifyRequest['headers']): Record<string, string | string[] | undefined> {
+  const record: Record<string, string | string[] | undefined> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (typeof value === 'string' || Array.isArray(value) || value === undefined) record[key] = value;
+  }
+  return record;
 }
 
 let candidateSchemaStarted = false;
@@ -1009,9 +1018,15 @@ async function handleExec(request: FastifyRequest, reply: FastifyReply): Promise
         const start = Date.now();
         const session = await resolveSession(request);
         const mustLogin = requiresLogin(request);
+        // A verified JWT stays on the existing path. Otherwise a valid local-test
+        // cookie names the person; a rejected cookie is anonymous and must not
+        // fall through to CBE_TEST_LOGIN_USER (that user writes a fake cauth).
+        const localTest = session.email ? undefined : localTestSessionFromHeaders(requestHeaderRecord(request.headers));
+        const localOk = localTest?.kind === 'ok' ? localTest : undefined;
+        const testUser = localTest?.kind === 'reject' ? undefined : session.testUser;
         // The .env test user is a localhost convenience — on a real domain
         // ONLY a valid collab-auth JWT authenticates.
-        const authenticated = Boolean(session.email || (!mustLogin && session.testUser));
+        const authenticated = Boolean(session.email || (!mustLogin && testUser));
         if (mustLogin && !authenticated) {
           // Real domain without a JWT session: answer the login shape the cfe
           // expects, but with NO orgs/sources — the studio stays locked until
@@ -1028,9 +1043,26 @@ async function handleExec(request: FastifyRequest, reply: FastifyReply): Promise
           });
           return;
         }
-        const rc = executeCbeLogin(body as CbeRequestLogin, session.email ?? session.testUser, session.picture);
-        console.info(`[cbe] /exec action:login (${session.email ?? session.testUser ?? 'anonymous'}) -> ${rc.statusCode} in ${Date.now() - start}ms`);
-        reply.header('set-cookie', buildLoginCookies(session));
+        if (localOk) {
+          const email = localOk.claims.email;
+          const rc = executeCbeLogin(body as CbeRequestLogin, email, session.picture);
+          console.info(`[cbe] /exec action:login (${email}) -> ${rc.statusCode} in ${Date.now() - start}ms`);
+          reply.header('set-cookie', [
+            sessionCookie('loginUser', email),
+            sessionCookie('cauth', '', { httpOnly: true, expire: true }),
+            sessionCookie('loginMsg', '', { httpOnly: true, expire: true }),
+          ]);
+          reply
+            .code(rc.statusCode)
+            .header('Content-Type', 'text/json; charset=utf-8')
+            .header('Cache-Control', 'no-cache')
+            .send(rc);
+          return;
+        }
+        const loginSession = session.email ? session : { ...session, testUser };
+        const rc = executeCbeLogin(body as CbeRequestLogin, session.email ?? testUser, session.picture);
+        console.info(`[cbe] /exec action:login (${session.email ?? testUser ?? 'anonymous'}) -> ${rc.statusCode} in ${Date.now() - start}ms`);
+        reply.header('set-cookie', buildLoginCookies(loginSession));
         reply
           .code(rc.statusCode)
           .header('Content-Type', 'text/json; charset=utf-8')
