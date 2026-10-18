@@ -13,6 +13,7 @@
 
 import { createRemoteJWKSet, jwtVerify, errors as joseErrors, decodeJwt, type JWTPayload } from 'jose';
 import { activeOrganizationId, parseCookies, resolveJwtSession } from '/_102034_/l1/server/layer_1_external/cbe/cbeAuthJwt.js';
+import { localTestSessionFromHeaders } from '/_102034_/l1/server/layer_1_external/auth/localTestSession.js';
 
 export interface CollabAuthClaims extends JWTPayload {
   sub: string;
@@ -153,6 +154,8 @@ export interface BffAuthOutcome {
   reject: boolean;
   reason: 'ok' | 'missing-token' | 'invalid-token';
   newAccessToken?: string;
+  /** Set only when the identity came from the lima bench cookie, not from collab-auth. */
+  source?: 'local-test';
 }
 
 /**
@@ -163,7 +166,12 @@ export async function resolveBffSession(
   headers: Record<string, string | string[] | undefined> | undefined,
 ): Promise<BffAuthOutcome> {
   const token = tokenFromRequest(headers);
-  if (!token) return { reject: isBffAuthEnforced(), reason: 'missing-token' };
+  if (!token) {
+    const local = localTestSessionFromHeaders(headers);
+    if (local.kind === 'reject') return { reject: true, reason: 'invalid-token' };
+    if (local.kind === 'ok') return { claims: local.claims, reject: false, reason: 'ok', source: local.source };
+    return { reject: isBffAuthEnforced(), reason: 'missing-token' };
+  }
   try {
     const claims = await verifyAccessToken(token);
     if (!activeOrganizationId(claims)) throw new Error('organization selection required');
