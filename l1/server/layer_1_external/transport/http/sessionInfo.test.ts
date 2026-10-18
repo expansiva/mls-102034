@@ -255,8 +255,8 @@ test('resolveSessionInfoBody returns person null when the MDM read fails and kee
 const entry = { entryPath: '/mod/pessoa', moduleBasePath: '/mod' };
 const orgKey = 'org:rt83';
 
-function enabledGate(companyMdmId?: string | null): SessionOnboardingSource {
-  return { entry, organizationKey: orgKey, companyMdmId };
+function enabledGate(): SessionOnboardingSource {
+  return { entry, organizationKey: orgKey, companyMdmId: 'gate-does-not-replace-context' };
 }
 
 function page(path: string, aliases?: string[]) {
@@ -360,6 +360,7 @@ test('onboarding session states come from the person predicate and the request i
   const company = await ctx.mdm.entity.create({
     details: { subtype: 'Company', name: 'Org sem pais', legalName: 'Org sem pais', status: 'Active' },
   });
+  ctx.sessionContext.activeCompanyId = company.mdmId;
   const pendingEmail = normalizeRegistrationEmail('pendente@academia.test');
   const opened = await openOrRecoverAccessRequest(ctx, {
     organizationKey: orgKey,
@@ -374,7 +375,7 @@ test('onboarding session states come from the person predicate and the request i
     { claims: claimsFor('sub-pronta', 'pronta@academia.test'), reject: false, reason: 'ok' },
     'development',
     null,
-    enabledGate(company.mdmId),
+    enabledGate(),
   );
   assert.equal(readyBody.onboarding?.status, 'ready');
   assert.deepEqual(readyBody.person, { mdmId: ready.mdmId });
@@ -389,7 +390,7 @@ test('onboarding session states come from the person predicate and the request i
     { claims: claimsFor('sub-inc', 'incompleta@academia.test'), reject: false, reason: 'ok' },
     'development',
     null,
-    enabledGate(company.mdmId),
+    enabledGate(),
   );
   assert.equal(incompleteBody.onboarding?.status, 'incomplete');
   assert.deepEqual(incompleteBody.person, { mdmId: incomplete.mdmId });
@@ -400,10 +401,10 @@ test('onboarding session states come from the person predicate and the request i
     { claims: claimsFor('sub-pend', pendingEmail), reject: false, reason: 'ok' },
     'development',
     null,
-    enabledGate(null),
+    enabledGate(),
   );
   assert.equal(pendingBody.person, null);
-  assert.equal(pendingBody.company, null);
+  assert.deepEqual(pendingBody.company, { mdmId: company.mdmId });
   assert.equal(pendingBody.onboarding?.status, 'pending');
   assert.equal(pendingBody.onboarding?.requestId, opened.requestId);
 
@@ -412,9 +413,10 @@ test('onboarding session states come from the person predicate and the request i
     { claims: claimsFor('sub-nova', 'nova@academia.test'), reject: false, reason: 'ok' },
     'development',
     null,
-    enabledGate(null),
+    enabledGate(),
   );
   assert.equal(unregistered.person, null);
+  assert.deepEqual(unregistered.company, { mdmId: company.mdmId });
   assert.equal(unregistered.onboarding?.status, 'unregistered');
   assert.equal(unregistered.onboarding?.requestId, undefined);
 
@@ -423,7 +425,7 @@ test('onboarding session states come from the person predicate and the request i
     { reject: false, reason: 'missing-token' },
     'development',
     null,
-    enabledGate(company.mdmId),
+    enabledGate(),
   );
   assert.equal(anonymous.authenticated, false);
   assert.equal(anonymous.userId, null);
@@ -439,7 +441,18 @@ test('onboarding session states come from the person predicate and the request i
   );
   assert.equal(legacy.person?.mdmId, ready.mdmId);
   assert.equal('onboarding' in legacy, false);
-  assert.equal('company' in legacy, false);
+  assert.deepEqual(legacy.company, { mdmId: company.mdmId });
+
+  const withoutId = createRequestContext();
+  const legacyWithoutId = await resolveSessionInfoBody(
+    withoutId,
+    { claims: claimsFor('sub-pronta', 'pronta@academia.test'), reject: false, reason: 'ok' },
+    'development',
+    null,
+    null,
+  );
+  assert.equal('onboarding' in legacyWithoutId, false);
+  assert.equal('company' in legacyWithoutId, false);
   } finally {
     restore();
   }
@@ -455,9 +468,10 @@ test('a failed registration read is unavailable and is not unregistered', async 
     { claims: claimsFor('sub-erro', 'erro@academia.test'), reject: false, reason: 'ok' },
     'development',
     null,
-    enabledGate(null),
+    enabledGate(),
   );
   assert.equal(body.person, null);
+  assert.equal(body.company, null);
   assert.equal(body.onboarding?.status, 'unavailable');
   assert.equal(body.onboarding?.requestId, undefined);
   assert.equal(body.userId, 'sub-erro');

@@ -31,7 +31,6 @@ import { registerMsgProxy } from '/_102034_/l1/server/layer_1_external/transport
 import { registerGitRoutes } from '/_102034_/l1/server/layer_1_external/transport/http/gitHttp.js';
 import { registerSessionRegistrationRoutes } from '/_102034_/l1/server/layer_1_external/transport/http/sessionRegistration.js';
 import { OnboardingConfigError, readOnboardingConfig, resolveOrganizationBinding } from '/_102034_/l1/server/layer_1_external/config/onboardingConfig.js';
-import { getResolvedOrganizationCompanyId } from '/_102034_/l1/mdm/layer_3_usecases/organizationBootstrap.js';
 import { isPersonAccessComplete } from '/_102034_/l1/mdm/layer_3_usecases/mdmSupport.js';
 import { normalizeRegistrationEmail } from '/_102034_/l1/mdm/layer_3_usecases/registrationCandidates.js';
 import { readRegistrationStore } from '/_102034_/l1/mdm/layer_3_usecases/registrationStore.js';
@@ -178,7 +177,8 @@ async function buildBootConfigScript(app: FrontendAppRegistration) {
   try {
     const projects = readProjectsConfig();
     const onboardingConfig = readOnboardingConfig(projects);
-    if (onboardingConfig) {
+    // redirect false keeps provisioning and session state, and does not arm the entry script.
+    if (onboardingConfig && onboardingConfig.redirect !== false) {
       onboarding = resolveClientOnboardingEntry(
         onboardingConfig,
         projects.defaultProjectId,
@@ -335,7 +335,7 @@ export function sessionInfoBody(
   mode: ProjectMode,
   override: AuthorityOverride | null,
   person: SessionInfoPerson | null = null,
-  gate?: { company: SessionInfoCompany | null; onboarding: SessionInfoOnboarding },
+  gate?: { company?: SessionInfoCompany | null; onboarding?: SessionInfoOnboarding },
 ) {
   const real = claimAuthorities(session.claims);
   const effective = effectiveAuthorities(real, override);
@@ -356,7 +356,8 @@ export function sessionInfoBody(
     expiresAt: typeof session.claims?.exp === 'number' ? new Date(session.claims.exp * 1000).toISOString() : null,
     enforcement: { authentication: isBffAuthEnforced(), actors: isActorEnforcementOn() },
     reason: session.reason,
-    ...(gate ? { company: gate.company, onboarding: gate.onboarding } : {}),
+    ...(gate && Object.prototype.hasOwnProperty.call(gate, 'company') ? { company: gate.company } : {}),
+    ...(gate?.onboarding ? { onboarding: gate.onboarding } : {}),
   };
 }
 
@@ -409,6 +410,7 @@ export async function resolveSessionInfoBody(
   gate?: SessionOnboardingSource | null,
 ) {
   const email = session.claims?.email;
+  const companyId = ctx.sessionContext.activeCompanyId || null;
   let person: SessionInfoPerson | null = null;
   let lookupFailed = false;
   if (email) {
@@ -423,7 +425,11 @@ export async function resolveSessionInfoBody(
     }
   }
   const live = gate === undefined ? await loadLiveOnboarding() : gate;
-  if (!live || !session.claims) return sessionInfoBody(session, mode, override, person);
+  if (!session.claims) return sessionInfoBody(session, mode, override, person);
+  if (!live) {
+    if (!companyId) return sessionInfoBody(session, mode, override, person);
+    return sessionInfoBody(session, mode, override, person, { company: { mdmId: companyId } });
+  }
 
   let status: SessionOnboardingStatus;
   let requestId: string | undefined;
@@ -464,7 +470,6 @@ export async function resolveSessionInfoBody(
     }
   }
 
-  const companyId = live.companyMdmId !== undefined ? live.companyMdmId : getResolvedOrganizationCompanyId();
   const onboarding: SessionInfoOnboarding = {
     status,
     entryPath: live.entry.entryPath,
