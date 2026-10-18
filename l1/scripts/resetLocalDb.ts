@@ -86,6 +86,41 @@ export function assertResetTarget(input: {
   return { database: parsed.database };
 }
 
+const SEED_TABLE_LINE = /seeding (?:platform table )?"([^"]+)"/u;
+
+export const RESET_LOCAL_DB_MARK = '##resetLocalDb ';
+
+/** Uma linha para o preparador. Módulos vêm do relatório; tabelas, do que o bootstrap declarou semear. */
+export function resetLocalDbSummary(
+  report: SchemaBootstrapResult['report'],
+  database: string,
+  seededTables: string[],
+): string {
+  const body = {
+    modules: report.rebuilt.map((module) => ({
+      moduleId: module.moduleId,
+      tables: module.tables,
+      seedRows: module.seedRows,
+    })),
+    seededTables,
+    database,
+  };
+  return `${RESET_LOCAL_DB_MARK}${JSON.stringify(body)}`;
+}
+
+function collectSeededTables(write: (...args: unknown[]) => void): { write: (...args: unknown[]) => void; tables: string[] } {
+  const tables: string[] = [];
+  return {
+    tables,
+    write(...args: unknown[]) {
+      const text = args.map((part) => String(part)).join(' ');
+      const match = SEED_TABLE_LINE.exec(text);
+      if (match?.[1] && !tables.includes(match[1])) tables.push(match[1]);
+      write(...args);
+    },
+  };
+}
+
 export async function resetLocalDb(options: ResetLocalDbOptions = {}): Promise<SchemaBootstrapResult> {
   const env = options.env ?? readAppEnv();
   const databaseUrlTest = options.env ? options.databaseUrlTest : (options.databaseUrlTest ?? process.env.DATABASE_URL_TEST);
@@ -104,15 +139,24 @@ export async function resetLocalDb(options: ResetLocalDbOptions = {}): Promise<S
     declared: hasDeclared(env.projectId),
   });
   const bootstrap = options.bootstrap ?? bootstrapSchema;
-  const result = await bootstrap(env, {
-    ensureDynamo: false,
-    recordSnapshotLog: false,
-    forceRebuild: true,
-  });
+  const captured = collectSeededTables(console.info.bind(console));
+  const previousInfo = console.info;
+  console.info = captured.write as typeof console.info;
+  let result: SchemaBootstrapResult;
+  try {
+    result = await bootstrap(env, {
+      ensureDynamo: false,
+      recordSnapshotLog: false,
+      forceRebuild: true,
+    });
+  } finally {
+    console.info = previousInfo;
+  }
   const initializeOrganization = options.initializeOrganization ?? initializeOrganizationForProcess;
   await initializeOrganization();
   console.info(`[resetLocalDb] projeto ${env.projectId}, banco ${target.database}, mode=${result.report.mode}`);
   console.info(formatMigrationReport(result.report));
+  console.info(resetLocalDbSummary(result.report, target.database, captured.tables));
   return result;
 }
 

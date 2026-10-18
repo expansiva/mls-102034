@@ -4,7 +4,7 @@ import test from 'node:test';
 import type { AppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import type { ProjectMode } from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
 import type { SchemaBootstrapResult } from '/_102034_/l1/server/layer_1_external/persistence/schemaBootstrap.js';
-import { resetLocalDb } from '/_102034_/l1/scripts/resetLocalDb.js';
+import { RESET_LOCAL_DB_MARK, resetLocalDb } from '/_102034_/l1/scripts/resetLocalDb.js';
 
 const LOCAL_TEST = 'postgresql://tester@127.0.0.1:5432/collab_app_test';
 const OTHER_DB = 'postgresql://tester@127.0.0.1:5432/collab_prod';
@@ -96,13 +96,45 @@ test('refuses each invalid target before bootstrap', async () => {
 });
 
 test('force-rebuilds an identical snapshot once, then initializes the organization', async () => {
-  const { result, calls, org } = await run({ databaseUrlTest: LOCAL_TEST, databaseUrl: OTHER_DB });
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0]?.forceRebuild, true);
-  assert.equal(org, 1);
-  assert.equal(result.report.mode, 'full');
-  assert.equal(result.snapshotId, 'snap-same');
-  assert.deepEqual(result.report.rebuilt.map((module) => module.moduleId), ['tarefas']);
+  const lines: string[] = [];
+  const previous = console.info;
+  console.info = (...args: unknown[]) => {
+    lines.push(args.map((part) => String(part)).join(' '));
+  };
+  try {
+    const seen: Array<{ forceRebuild?: boolean }> = [];
+    const { result, org } = await run({
+      databaseUrlTest: LOCAL_TEST,
+      databaseUrl: OTHER_DB,
+      bootstrap: async (_env, options) => {
+        seen.push({ forceRebuild: options?.forceRebuild });
+        console.info('[bootstrapSchema] seeding "mdm_company" (project appEnv=\'development\')');
+        console.info('[bootstrapSchema] seeding platform table "mdm_org" (server appEnv=\'development\')');
+        return report('full');
+      },
+    });
+    const calls = seen;
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.forceRebuild, true);
+    assert.equal(org, 1);
+    assert.equal(result.report.mode, 'full');
+    assert.equal(result.snapshotId, 'snap-same');
+    assert.deepEqual(result.report.rebuilt.map((module) => module.moduleId), ['tarefas']);
+    const marked = lines.filter((line) => line.startsWith(RESET_LOCAL_DB_MARK));
+    assert.equal(marked.length, 1);
+    const summary = JSON.parse(marked[0]!.slice(RESET_LOCAL_DB_MARK.length)) as {
+      modules: Array<{ moduleId: string; tables: number; seedRows: number }>;
+      seededTables: string[];
+      database: string;
+    };
+    assert.deepEqual(summary.modules, [{ moduleId: 'tarefas', tables: 1, seedRows: 0 }]);
+    assert.deepEqual(summary.seededTables, ['mdm_company', 'mdm_org']);
+    assert.equal(summary.database, 'collab_app_test');
+    assert.equal(marked[0]!.includes('postgresql://'), false);
+    assert.equal(marked[0]!.includes('tester@'), false);
+  } finally {
+    console.info = previous;
+  }
 });
 
 test('a partial bootstrap or organization error propagates and is not rebuilt twice', async () => {
