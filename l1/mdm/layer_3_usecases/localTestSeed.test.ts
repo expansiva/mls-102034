@@ -59,7 +59,7 @@ function binding(): OrganizationBinding {
   return { key: 'org-bench', name: 'Bench Org', source: 'project-file' };
 }
 
-function projectsConfig(projectId = '102047'): ProjectsConfig {
+function projectsConfig(projectId = '102047', moduleIds: string[] = []): ProjectsConfig {
   return {
     defaultProjectId: projectId,
     onboarding: {
@@ -68,7 +68,13 @@ function projectsConfig(projectId = '102047'): ProjectsConfig {
       personType: 'Member',
       companyType: 'mod-bench.Company',
     },
-    projects: {},
+    projects: moduleIds.length === 0 ? {} : {
+      [projectId]: {
+        root: './client',
+        type: 'client',
+        modules: moduleIds.map((moduleId) => ({ moduleId, basePath: '/', shellMode: 'spa' as const })),
+      },
+    },
   } as ProjectsConfig;
 }
 
@@ -220,4 +226,76 @@ test('the cli refuses before a write when mode or url is missing', () => {
     databaseUrl: prodUrl,
   });
   assert.equal(allowed.database, 'mdm_test');
+});
+
+test('member roles tag both people and a repeat does not change the version', async () => {
+  const ctx = ctxAt('2026-10-18');
+  const config = projectsConfig('102047', ['tarefas']);
+  const first = await ensureLocalTestPair(ctx, config, binding(), ['tarefas.MembroEquipe']);
+  const versions = new Map<string, number>();
+  for (const persona of first.personas) {
+    const person = await ctx.mdm.entity.get({ mdmId: persona.personMdmId });
+    assert.equal(person.details.tags.includes('tarefas.MembroEquipe'), true);
+    assert.equal(person.details.status, 'Active');
+    const links = await ctx.data.mdmRelationship.findMany({ where: { fromId: persona.personMdmId, type: 'AssignedTo' } });
+    assert.equal(links.length, 1);
+    assert.equal(links[0].toId, first.companyMdmId);
+    assert.equal(links[0].role, 'member');
+    assert.equal(links[0].status, 'Active');
+    versions.set(persona.personMdmId, person.version);
+  }
+  const second = await ensureLocalTestPair(ctx, config, binding(), ['tarefas.MembroEquipe']);
+  assert.deepEqual(
+    second.personas.map((persona) => persona.personMdmId),
+    first.personas.map((persona) => persona.personMdmId),
+  );
+  for (const persona of second.personas) {
+    const person = await ctx.mdm.entity.get({ mdmId: persona.personMdmId });
+    assert.equal(person.version, versions.get(persona.personMdmId));
+    assert.equal(person.details.tags.filter((tag) => tag === 'tarefas.MembroEquipe').length, 1);
+  }
+  const people = await ctx.data.mdmEntityIndex.findMany({ where: { subtype: 'Person' } });
+  assert.equal(people.length, 2);
+});
+
+test('a module outside the project config is refused before any write', async () => {
+  const ctx = ctxAt('2026-10-18');
+  await assert.rejects(
+    ensureLocalTestPair(ctx, projectsConfig(), binding(), ['tarefas.MembroEquipe']),
+    /not in the project config/,
+  );
+  const people = await ctx.data.mdmEntityIndex.findMany({ where: { subtype: 'Person' } });
+  assert.equal(people.length, 0);
+  const companies = await ctx.data.mdmEntityIndex.findMany({ where: { subtype: 'Company' } });
+  assert.equal(companies.length, 0);
+});
+
+test('a person that is not Active is refused and left inactive', async () => {
+  const ctx = ctxAt('2026-10-18');
+  const config = projectsConfig('102047', ['tarefas']);
+  const seeded = await ensureLocalTestPair(ctx, config, binding());
+  for (const persona of seeded.personas) {
+    const person = await ctx.mdm.entity.get({ mdmId: persona.personMdmId });
+    await ctx.mdm.entity.inactivate({ mdmId: persona.personMdmId, expectedVersion: person.version });
+  }
+  await assert.rejects(
+    ensureLocalTestPair(ctx, config, binding(), ['tarefas.MembroEquipe']),
+    /not Active/,
+  );
+  for (const persona of seeded.personas) {
+    const person = await ctx.mdm.entity.get({ mdmId: persona.personMdmId });
+    assert.equal(person.details.status, 'Inactive');
+  }
+});
+
+test('omitting member roles leaves the bench without a module role', async () => {
+  const ctx = ctxAt('2026-10-18');
+  const config = projectsConfig('102047', ['tarefas']);
+  const seeded = await ensureLocalTestPair(ctx, config, binding());
+  const again = await ensureLocalTestPair(ctx, config, binding(), []);
+  assert.deepEqual(again.personas, seeded.personas);
+  for (const persona of again.personas) {
+    const person = await ctx.mdm.entity.get({ mdmId: persona.personMdmId });
+    assert.equal(person.details.tags.includes('tarefas.MembroEquipe'), false);
+  }
 });

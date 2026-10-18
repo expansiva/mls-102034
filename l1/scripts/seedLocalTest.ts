@@ -74,7 +74,22 @@ export async function runLocalTestSeed(): Promise<LocalTestSeedResult> {
   if (!binding) {
     throw new Error('onboarding organization binding is missing');
   }
-  return ensureLocalTestPair(createDefaultRequestContext(), projects, binding);
+  return ensureLocalTestPair(createDefaultRequestContext(), projects, binding, readMemberRoles(process.argv.slice(2)));
+}
+
+/** Repeatable `--member-role <moduleId>.<Tipo>`. */
+export function readMemberRoles(argv: readonly string[]): string[] {
+  const roles: string[] = [];
+  for (let i = 0; i < argv.length; i += 1) {
+    if (argv[i] !== '--member-role') continue;
+    const value = argv[i + 1];
+    if (!value || value.startsWith('--')) {
+      throw new Error('--member-role requires <moduleId>.<Tipo>');
+    }
+    roles.push(value);
+    i += 1;
+  }
+  return roles;
 }
 
 const isMainModule = process.argv[1]?.endsWith('/seedLocalTest.js');

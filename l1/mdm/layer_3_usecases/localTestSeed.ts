@@ -3,7 +3,11 @@ import type { ProjectOnboardingConfig, ProjectsConfig } from '/_102029_/l2/runti
 import { readOnboardingConfig, type OrganizationBinding } from '/_102034_/l1/server/layer_1_external/config/onboardingConfig.js';
 import { AppError, type RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import { ensureOrganizationCompany } from '/_102034_/l1/mdm/layer_3_usecases/organizationBootstrap.js';
-import { ensureSelfRegistration, personByLogin } from '/_102034_/l1/mdm/layer_3_usecases/selfRegistration.js';
+import {
+  attachPersonMembership,
+  ensureSelfRegistration,
+  personByLogin,
+} from '/_102034_/l1/mdm/layer_3_usecases/selfRegistration.js';
 
 /** Bench profiles. They are not role grants; both people keep the alpha super user. */
 export const LOCAL_TEST_ALIASES = ['responsavel', 'membro'] as const;
@@ -53,16 +57,46 @@ function onboardingFrom(config: ProjectsConfig): ProjectOnboardingConfig {
   return onboarding;
 }
 
+const MEMBER_ROLE = /^([A-Za-z][A-Za-z0-9]*)\.([A-Z][A-Za-z0-9]*)$/;
+
+/** `<moduleId>.<Tipo>` checked against the project config. No writes. */
+export function parseMemberRoles(config: ProjectsConfig, memberRoles: readonly string[]): { moduleId: string; personType: string; tag: string }[] {
+  const projectId = projectIdFrom(config);
+  const known = new Set(
+    (config.projects?.[projectId]?.modules ?? []).map((module) => module.moduleId).filter((id) => typeof id === 'string' && id.length > 0),
+  );
+  return memberRoles.map((role) => {
+    const match = MEMBER_ROLE.exec(role);
+    if (!match) {
+      throw new AppError('VALIDATION_ERROR', `member role '${role}' is not <moduleId>.<Tipo>`, 400, { role });
+    }
+    const moduleId = match[1];
+    const personType = match[2];
+    if (!known.has(moduleId)) {
+      throw new AppError(
+        'VALIDATION_ERROR',
+        `module ${moduleId} is not in the project config`,
+        400,
+        { moduleId, projectId },
+      );
+    }
+    return { moduleId, personType, tag: `${moduleId}.${personType}` };
+  });
+}
+
 /**
  * Company plus two bench people. Repeated calls keep the same ids and do not
  * overwrite a name, country, link or version the tester already stored.
  * A pending match or a link to another company is an error; nothing is released.
+ * `memberRoles` attaches existing module roles; an empty list keeps the previous behavior.
  */
 export async function ensureLocalTestPair(
   ctx: RequestContext,
   config: ProjectsConfig,
   binding: OrganizationBinding,
+  memberRoles: readonly string[] = [],
 ): Promise<LocalTestSeedResult> {
+  const roles = parseMemberRoles(config, memberRoles);
   const projectId = projectIdFrom(config);
   const onboarding = onboardingFrom(config);
   const company = await ensureOrganizationCompany(ctx, binding, onboarding);
@@ -114,12 +148,37 @@ export async function ensureLocalTestPair(
     if (sub === person.mdmId) {
       throw new AppError('LOCAL_TEST_LINK_INVALID', 'local test sub collided with a person id', 409, { sub });
     }
+    for (const role of roles) {
+      await attachPersonMembership(ctx, {
+        personMdmId: person.mdmId,
+        companyMdmId: company.companyMdmId,
+        moduleId: role.moduleId,
+        personType: role.personType,
+      });
+      const attached = await ctx.mdm.entity.get({ mdmId: person.mdmId });
+      if (!attached.details.tags.includes(role.tag)) {
+        throw new AppError('LOCAL_TEST_ROLE_MISSING', `member role ${role.tag} was not attached`, 409, {
+          personMdmId: person.mdmId,
+          role: role.tag,
+        });
+      }
+      if (attached.details.status !== 'Active') {
+        throw new AppError(
+          'LOCAL_TEST_PERSON_INACTIVE',
+          `local test person ${email} is not Active`,
+          409,
+          { personMdmId: person.mdmId, status: attached.details.status },
+        );
+      }
+    }
+
+    const stored = roles.length > 0 ? await ctx.mdm.entity.get({ mdmId: person.mdmId }) : person;
     personas.push({
       alias,
       email,
-      name: person.details.name,
+      name: stored.details.name,
       sub,
-      personMdmId: person.mdmId,
+      personMdmId: stored.mdmId,
     });
   }
 
