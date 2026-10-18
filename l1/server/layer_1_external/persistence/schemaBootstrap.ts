@@ -3,6 +3,7 @@ import type { Pool } from 'pg';
 import { getSharedPgPool } from '/_102034_/l1/server/layer_1_external/data/postgres/pg.js';
 import type { AppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import {
+  hasDeclaredProjectMode,
   isTestMode,
   readProjectMode,
   type ProjectMode,
@@ -149,6 +150,43 @@ export interface SchemaBootstrapResult {
   postgresTableCount: number;
   dynamoTableCount: number;
   report: SchemaBootstrapReport;
+}
+
+/**
+ * `forceRebuild` is an internal reset. It is allowed only when the app declared a test mode.
+ * Production, homologation, and an undeclared mode stop here, before any schema write.
+ */
+export function forceRebuildBlockReason(mode: ProjectMode, declared: boolean): string | null {
+  if (!declared) {
+    return '[bootstrapSchema] forceRebuild refused before schema write: appEnv is not declared';
+  }
+  if (!isTestMode(mode)) {
+    return `[bootstrapSchema] forceRebuild refused before schema write: appEnv='${mode}' is not development or presentation`;
+  }
+  return null;
+}
+
+/** Equal snapshot keeps the incremental plan. Force selects a full rebuild of the registry modules. */
+export function selectModuleRebuildPlan<T extends {
+  mode: ModuleRebuildMode;
+  rebuild: string[];
+  untouched: string[];
+  removed: string[];
+}>(input: {
+  forceRebuild: boolean;
+  incremental: T;
+  registryModuleIds: string[];
+}): T {
+  if (!input.forceRebuild) {
+    return input.incremental;
+  }
+  return {
+    ...input.incremental,
+    mode: 'full',
+    rebuild: [...new Set(input.registryModuleIds)].sort((left, right) => left.localeCompare(right)),
+    untouched: [],
+    removed: [],
+  };
 }
 
 /** Unprefixed physical name ⇒ platform/shared table (mdm_*, monitor_*, _schema_migrations). */
@@ -568,7 +606,7 @@ async function writeModuleState(pool: Pool, hashes: Map<string, string>, ownProj
   }
 }
 
-function rebuiltSummary(
+export function rebuiltSummary(
   env: AppEnv,
   definitions: ResolvedTableDefinition[],
   rebuildModules: string[],
@@ -623,11 +661,20 @@ export async function bootstrapSchema(
   input?: {
     ensureDynamo?: boolean;
     recordSnapshotLog?: boolean;
+    forceRebuild?: boolean;
   },
 ): Promise<SchemaBootstrapResult> {
   if (env.runtimeMode === 'memory') {
     console.info('[bootstrapSchema] Skipped — memory mode');
     return { snapshotId: 'memory', postgresTableCount: 0, dynamoTableCount: 0, report: emptyReport('none') };
+  }
+
+  const forceRebuild = input?.forceRebuild === true;
+  if (forceRebuild) {
+    const block = forceRebuildBlockReason(readProjectMode(env.projectId), hasDeclaredProjectMode(env.projectId));
+    if (block) {
+      throw new Error(block);
+    }
   }
 
   const definitions = await loadResolvedTableDefinitions(env);
@@ -639,12 +686,17 @@ export async function bootstrapSchema(
   const lastSnapshotId = await readLastAppliedSnapshotId(pool);
   const currentHashes = await moduleHashes(snapshot.tables);
   const appliedHashes = await readAppliedModuleHashes(pool, ownProjects);
-  const plan = planModuleRebuild({
+  const incremental = planModuleRebuild({
     current: currentHashes,
     applied: appliedHashes,
     lastSnapshotId,
     currentSnapshotId: snapshot.id,
     ownProjects,
+  });
+  const plan = selectModuleRebuildPlan({
+    forceRebuild,
+    incremental,
+    registryModuleIds: definedModules.map((module) => module.moduleId),
   });
 
   let orphans: string[] = [];
@@ -655,7 +707,9 @@ export async function bootstrapSchema(
     await writeModuleState(pool, currentHashes, ownProjects);
   } else {
     if (plan.mode === 'full') {
-      if (lastSnapshotId && lastSnapshotId !== snapshot.id) {
+      if (forceRebuild) {
+        console.info(`[bootstrapSchema] forceRebuild: rebuilding own scope (${plan.rebuild.join(', ') || '—'})`);
+      } else if (lastSnapshotId && lastSnapshotId !== snapshot.id) {
         console.info(`[bootstrapSchema] schema changed (${lastSnapshotId} → ${snapshot.id}); rebuilding`);
       } else if (!lastSnapshotId) {
         console.info(`[bootstrapSchema] no applied snapshot; rebuilding (${snapshot.id})`);
@@ -670,7 +724,7 @@ export async function bootstrapSchema(
       mode: plan.mode === 'full' ? 'full' : 'modules',
       rebuildModules: plan.rebuild,
       removedModules: plan.removed,
-      insertSnapshot: lastSnapshotId !== snapshot.id,
+      insertSnapshot: forceRebuild || lastSnapshotId !== snapshot.id,
     });
     orphans = rebuilt.orphans;
     if (plan.rebuild.length > 0 || plan.removed.length > 0) {

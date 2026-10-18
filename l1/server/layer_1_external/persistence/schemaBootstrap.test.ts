@@ -2,13 +2,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  bootstrapSchema,
+  forceRebuildBlockReason,
   isPlatformOwnedTable,
   orphanNames,
   ownedNamesFor,
+  rebuiltSummary,
+  selectModuleRebuildPlan,
   tablesToCreate,
   sanitizeDefinitionIndexes,
   shouldApplySeedRows,
 } from '/_102034_/l1/server/layer_1_external/persistence/schemaBootstrap.js';
+import type { AppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
+import type { ResolvedTableDefinition } from '/_102034_/l1/server/layer_1_external/persistence/contracts.js';
 import { formatMigrationReport } from '/_102034_/l1/server/layer_1_external/persistence/schemaModulePlan.js';
 import type { TableIndexDefinition } from '/_102034_/l1/server/layer_1_external/persistence/contracts.js';
 
@@ -23,6 +29,31 @@ function def(input: {
 
 function names(definition: { indexes?: TableIndexDefinition[] }): string[] {
   return (definition.indexes ?? []).map((index) => index.name);
+}
+
+function resolvedDef(input: {
+  moduleId: string;
+  tableName: string;
+  logicalTableName: string;
+  seedRows: Array<Record<string, unknown>>;
+}): ResolvedTableDefinition {
+  return {
+    moduleId: input.moduleId,
+    repositoryName: input.tableName,
+    tableName: input.tableName,
+    purpose: 'cadastro',
+    description: 'rt89 fixture',
+    backupHot: false,
+    storageProfile: 'postgres',
+    writeMode: 'sync',
+    columns: [{ name: 'id', postgresType: 'text' }],
+    primaryKey: ['id'],
+    version: 1,
+    seedRows: input.seedRows,
+    projectId: 'rt89-seed',
+    logicalTableName: input.logicalTableName,
+    dynamoResolvedTableName: null,
+  };
 }
 
 test('sanitizeDefinitionIndexes discards an index named <table>_pkey', () => {
@@ -282,5 +313,68 @@ test('formatMigrationReport includes orphans when provided', () => {
       '[migrate] órfãs (não apagadas): mls102047_item',
       '[migrate] migração real (preservar dados ao mudar esquema): ainda não existe',
     ].join('\n'),
+  );
+});
+
+test('equal snapshot without force keeps the incremental plan', () => {
+  const incremental = { mode: 'none' as const, rebuild: [] as string[], untouched: ['controleEstoque'], removed: [] as string[] };
+  const plan = selectModuleRebuildPlan({
+    forceRebuild: false,
+    incremental,
+    registryModuleIds: ['controleEstoque', 'mdm'],
+  });
+  assert.equal(plan, incremental);
+  assert.deepEqual(plan.rebuild, []);
+});
+
+test('force rebuilds the registry scope and the report counts seeds', () => {
+  const plan = selectModuleRebuildPlan({
+    forceRebuild: true,
+    incremental: { mode: 'none' as const, rebuild: [], untouched: ['controleEstoque'], removed: [] },
+    registryModuleIds: ['mdm', 'controleEstoque', 'controleEstoque'],
+  });
+  assert.equal(plan.mode, 'full');
+  assert.deepEqual(plan.rebuild, ['controleEstoque', 'mdm']);
+  assert.deepEqual(plan.untouched, []);
+  assert.deepEqual(plan.removed, []);
+  const report = rebuiltSummary(
+    { projectId: 'rt89-seed' } as AppEnv,
+    [
+      resolvedDef({
+        moduleId: 'controleEstoque',
+        tableName: 'mls_item',
+        logicalTableName: 'item',
+        seedRows: [{ item_id: '1' }, { item_id: '2' }],
+      }),
+      resolvedDef({
+        moduleId: 'mdm',
+        tableName: 'mdm_documents',
+        logicalTableName: 'mdm_documents',
+        seedRows: [{ document_id: 'a' }],
+      }),
+    ],
+    plan.rebuild,
+  );
+  assert.deepEqual(report, [
+    { moduleId: 'controleEstoque', tables: 1, seedRows: 2 },
+    { moduleId: 'mdm', tables: 1, seedRows: 1 },
+  ]);
+});
+
+test('forceRebuild refuses production, homologation, and an undeclared mode', () => {
+  assert.match(forceRebuildBlockReason('production', true) ?? '', /appEnv='production'/u);
+  assert.match(forceRebuildBlockReason('homologation', true) ?? '', /appEnv='homologation'/u);
+  assert.match(forceRebuildBlockReason('presentation', false) ?? '', /not declared/u);
+  assert.equal(forceRebuildBlockReason('development', true), null);
+  assert.equal(forceRebuildBlockReason('presentation', true), null);
+});
+
+test('forceRebuild on an undeclared app refuses before any schema write', async () => {
+  await assert.rejects(
+    () => bootstrapSchema(
+      { runtimeMode: 'postgres', projectId: 'rt89-undeclared' } as AppEnv,
+      { forceRebuild: true },
+    ),
+    /forceRebuild refused before schema write: appEnv is not declared/u,
   );
 });
