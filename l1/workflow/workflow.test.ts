@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import type { RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
+import { AppError, type RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import { createRequestContext } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
 import { resetRunningReleaseCache } from '/_102034_/l1/server/layer_1_external/cbe/cbeRelease.js';
 import { ownerOf as ownerOfEngine } from '/_102034_/l1/workflow/engine.js';
@@ -16,7 +16,14 @@ import {
   occurrenceRecordId,
   ownerOf,
   prepareWorkflowPlan,
+  type OccurrenceKey,
   type OccurrencePort,
+  type TaskOccurrenceAdvanceCommand,
+  type TaskOccurrencePort,
+  type TaskOccurrenceSnapshot,
+  type TaskWorkflowAdvance,
+  type TaskWorkflowEngine,
+  type TaskWorkflowOpen,
   type WorkflowEngine,
   type WorkflowPlan,
   type WorkflowPlanInput,
@@ -481,5 +488,254 @@ test('public composition loads under an incompatible topology and every engine o
       avisoDiario: null,
       liberacaoAcessoPessoa: null,
     });
+  }
+});
+
+/**
+ * Composition through the public import. The port only records commands and
+ * returns the snapshot it was given. It does not implement revision, lock,
+ * scheduling or delivery, and it is not a cm integration or a running app.
+ */
+const taskKey: OccurrenceKey = {
+  project: '10',
+  module: 'tarefas',
+  processId: 'ciclo',
+  entity: 'Tarefa',
+  recordId: 'public-1',
+};
+
+const storedPlanInput: WorkflowPlanInput = {
+  processId: 'ciclo',
+  title: 'Process title',
+  moduleTitle: 'Module title',
+  steps: [
+    {
+      stepId: 'H',
+      kind: 'human',
+      title: 'Pessoa',
+      next: ['M'],
+      conditions: 'when the prose stays exactly',
+      params: { note: 'keep me' },
+    },
+    { stepId: 'M', kind: 'mechanical', title: 'Módulo', functionRef: 'fn-close', next: [] },
+  ],
+};
+
+const templateRows: WorkflowPlanInput[] = [
+  {
+    processId: 'ciclo',
+    title: 'Process B',
+    moduleTitle: 'Module B',
+    steps: [
+      { stepId: 'H', kind: 'wait', title: 'Clock B', next: ['Q'], conditions: 'later', params: { note: 'drop me' } },
+      { stepId: 'Q', kind: 'llm', title: 'Agent B', next: [], journeyRef: 'journey-b', functionRef: 'fn-b' },
+    ],
+  },
+  {
+    processId: 'ciclo',
+    title: 'Process C',
+    moduleTitle: 'Module C',
+    steps: [
+      { stepId: 'S', kind: 'alert', title: 'Alert C', next: ['Z'], conditions: 'other prose', params: { lane: 'c' } },
+      { stepId: 'Z', kind: 'mechanical', title: 'Module C step', next: ['S'], functionRef: 'fn-c' },
+    ],
+  },
+];
+
+function taskOpen(plan: WorkflowPlanInput): TaskWorkflowOpen {
+  return {
+    key: taskKey,
+    plan,
+    title: 'Occurrence title',
+    firstStep: plan.steps[0]!.stepId,
+    actorNow: 'person-1',
+    owner: 'owner-1',
+    origin: { kind: 'screen', by: 'person-1' },
+    executor: { kind: 'person', mdmId: 'person-1' },
+    room: { mode: 'exclusive' },
+  };
+}
+
+function storedSnapshot(plan: WorkflowPlan): TaskOccurrenceSnapshot {
+  return {
+    ref: { ...taskKey, workflowVersion: 'rel-a' },
+    step: 'H',
+    actorNow: 'person-1',
+    done: false,
+    history: [{
+      at: '2026-10-19T12:00:00.000Z',
+      by: 'person-1',
+      from: null,
+      step: 'H',
+      actorNow: 'person-1',
+      done: false,
+      commandId: 'open-1',
+      executor: { kind: 'person', mdmId: 'person-1' },
+    }],
+    plan,
+    title: 'Occurrence title',
+    taskId: 'task-public',
+    revision: 4,
+    status: 'in progress',
+    owner: 'owner-1',
+    origin: { kind: 'channel', by: 'person-1' },
+    room: { mode: 'person' },
+    roomId: 'room-public',
+    pass: 1,
+  };
+}
+
+function publicTaskEngine(taskPort: TaskOccurrencePort): TaskWorkflowEngine {
+  const engine = createWorkflowEngine(taskPort);
+  const legacy: WorkflowEngine = createWorkflowEngine(createMemoryOccurrencePort());
+  assert.equal(typeof legacy.find, 'function');
+  // @ts-expect-error kind:'task' does not select the legacy engine
+  const asLegacy: WorkflowEngine = createWorkflowEngine(taskPort);
+  void asLegacy;
+  return engine;
+}
+
+function taskAdvanceRejectsTable(engine: TaskWorkflowEngine, command: TaskWorkflowAdvance): void {
+  // @ts-expect-error a task advance does not take the current template table
+  void engine.advance(requestCtx(), taskKey, command, table);
+}
+
+test('public task engine keeps plan A across instances while a new open receives template B', async () => {
+  const planA = prepareWorkflowPlan(storedPlanInput);
+  const pending = { state: 'pending' as const, threadId: 'th-public' };
+  for (const templateB of templateRows) {
+    const stored = storedSnapshot(planA);
+    const advances: TaskOccurrenceAdvanceCommand[] = [];
+    const port: TaskOccurrencePort = {
+      kind: 'task',
+      async find() {
+        return stored;
+      },
+      async open() {
+        throw new Error('an existing task must not be opened again');
+      },
+      async advance(_ctx, _key, command) {
+        advances.push(command);
+        return { outcome: 'advanced', occurrence: stored, moduleMessage: pending };
+      },
+    };
+    void taskAdvanceRejectsTable;
+    const first = publicTaskEngine(port);
+    const kept = await first.open(requestCtx(), taskOpen(templateB));
+    assert.equal(kept.outcome, 'existing');
+    assert.equal(kept.occurrence.plan, planA);
+    assert.equal(kept.occurrence.title, 'Occurrence title');
+    assert.equal(kept.occurrence.plan.title, 'Process title');
+    assert.equal(kept.occurrence.plan.moduleTitle, 'Module title');
+    assert.equal(kept.occurrence.plan.steps[0]?.next[0], 'M');
+
+    const second = createWorkflowEngine(port);
+    const moved = await second.advance(requestCtx(), taskKey, {
+      commandId: 'cmd-public',
+      expectedRevision: 2,
+      from: 'H',
+      to: 'M',
+      actorNow: null,
+      executor: { kind: 'routine', name: 'ciclo.H' },
+    });
+    assert.equal(moved.moduleMessage?.state, 'pending');
+    assert.equal(advances[0]?.expectedRevision, 2);
+    assert.equal(advances[0]?.to, 'M');
+    assert.deepEqual(advances[0]?.executor, { kind: 'routine', name: 'ciclo.H' });
+    await assert.rejects(
+      () => second.advance(requestCtx(), taskKey, {
+        commandId: 'cmd-foreign',
+        expectedRevision: 9,
+        from: 'H',
+        to: templateB.steps[0]!.next[0]!,
+        actorNow: null,
+        executor: { kind: 'routine', name: 'ciclo.H' },
+      }),
+      (error: unknown) => error instanceof AppError && error.code === 'UNKNOWN_STEP',
+    );
+    assert.equal(advances.length, 1);
+    assert.equal(stored.revision, 4);
+
+    const freshAdvances: TaskOccurrenceAdvanceCommand[] = [];
+    const box: { plan: WorkflowPlan | null; occurrence: TaskOccurrenceSnapshot | null } = {
+      plan: null,
+      occurrence: null,
+    };
+    const fresh: TaskOccurrencePort = {
+      kind: 'task',
+      async find() {
+        return box.occurrence;
+      },
+      async open(_ctx, command) {
+        box.plan = command.plan;
+        box.occurrence = storedSnapshot(command.plan);
+        box.occurrence.step = command.firstStep;
+        return {
+          outcome: 'created',
+          occurrence: box.occurrence,
+          moduleMessage: pending,
+        };
+      },
+      async advance(_ctx, _key, command) {
+        freshAdvances.push(command);
+        return { outcome: 'unchanged', occurrence: storedSnapshot(box.plan ?? planA) };
+      },
+    };
+    const created = await createWorkflowEngine(fresh).open(requestCtx(), taskOpen(templateB));
+    assert.equal(created.outcome, 'created');
+    assert.equal(created.moduleMessage?.state, 'pending');
+    assert.ok(box.plan);
+    assert.deepEqual(box.plan, prepareWorkflowPlan(templateB));
+    assert.notDeepEqual(box.plan.steps.map(step => step.stepId), planA.steps.map(step => step.stepId));
+    const wakeCases: TaskWorkflowAdvance[] = [
+      {
+        commandId: 'wake-enter',
+        expectedRevision: 2,
+        from: templateB.steps[0]!.stepId,
+        to: templateB.steps[0]!.next[0]!,
+        actorNow: null,
+        executor: { kind: 'routine', name: 'ciclo.H' },
+        wake: { everyMinutes: 5, routine: 'ciclo.next' },
+      },
+      {
+        commandId: 'wake-move',
+        expectedRevision: 2,
+        from: templateB.steps[0]!.stepId,
+        to: templateB.steps[0]!.next[0]!,
+        actorNow: null,
+        executor: { kind: 'routine', name: 'ciclo.H' },
+      },
+      {
+        commandId: 'wake-transfer',
+        expectedRevision: 2,
+        from: templateB.steps[0]!.stepId,
+        to: templateB.steps[0]!.stepId,
+        actorNow: 'person-9',
+        executor: { kind: 'person', mdmId: 'person-9' },
+      },
+      {
+        commandId: 'wake-close',
+        expectedRevision: 2,
+        from: templateB.steps[0]!.stepId,
+        to: 'end',
+        actorNow: null,
+        executor: { kind: 'routine', name: 'ciclo.H' },
+        wake: { everyMinutes: 5, routine: 'ciclo.H' },
+      },
+    ];
+    const born = createWorkflowEngine(fresh);
+    for (const command of wakeCases) {
+      freshAdvances.length = 0;
+      await born.advance(requestCtx(), taskKey, command);
+      const sent = freshAdvances[0]!;
+      assert.notEqual(sent.to, 'end');
+      assert.equal(sent.expectedRevision, 2);
+      assert.equal(sent.executor.kind === 'person' ? sent.executor.mdmId : sent.executor.name, command.executor.kind === 'person' ? command.executor.mdmId : command.executor.name);
+      assert.equal(Object.hasOwn(sent, 'wake'), command.wake !== undefined);
+      if (command.to === 'end') {
+        assert.equal(sent.done, true);
+        assert.equal(sent.to, command.from);
+      }
+    }
   }
 });

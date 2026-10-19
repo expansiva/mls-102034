@@ -33,6 +33,9 @@ export {
   type WorkflowAdvance,
   type WorkflowEngine,
   type WorkflowEngineContext,
+  type TaskWorkflowEngine,
+  type TaskWorkflowOpen,
+  type TaskWorkflowAdvance,
 } from '/_102034_/l1/workflow/engine.js';
 export { createMemoryOccurrencePort } from '/_102034_/l1/workflow/memoryOccurrence.js';
 export { createOccurrenceContext, occurrenceRecordId } from '/_102034_/l1/workflow/occurrenceRecordId.js';

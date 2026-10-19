@@ -21,10 +21,10 @@ import type {
 import type { WorkflowPlan, WorkflowPlanInput } from '/_102034_/l1/workflow/plan.js';
 import {
   createWorkflowEngine,
+  prepareWorkflowPlan,
   type TaskWorkflowAdvance,
   type TaskWorkflowOpen,
-} from '/_102034_/l1/workflow/engine.js';
-import { prepareWorkflowPlan } from '/_102034_/l1/workflow/plan.js';
+} from '/_102034_/l1/workflow/index.js';
 
 const OCCURRENCE_TITLE = 'Occurrence title';
 const PROCESS_TITLE = 'Process title';
