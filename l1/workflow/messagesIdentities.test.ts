@@ -280,3 +280,33 @@ test('a second context or app does not reuse the other binding', async () => {
   );
   assert.deepEqual(calls, ['app:app-a', 'app:app-a', 'app:app-b']);
 });
+
+test('an inconsistent record is an incomplete link in both directions, and identity_too_large keeps its status', async () => {
+  const ctx = ctxOf('app-a');
+  const mdmId = await person(ctx, 'inconsistente@academia.test');
+  let links = 0;
+  const inconsistent = routed((call) => {
+    if (call.method === 'link') links += 1;
+    if (call.input.cmUserIds !== undefined) return ok({ people: [{ mdmId: 'mdm-outro', cmUserId: 'cm-x', state: 'inconsistent' }] });
+    return ok({ people: [{ mdmId, cmUserId: 'cm-x', state: 'inconsistent' }] });
+  });
+  const identities = createMessagesWorkflowIdentities({ projectId: 'app-a', client: inconsistent });
+  await assert.rejects(
+    () => identities.toCmUserId(ctx, mdmId),
+    (error: unknown) => error instanceof AppError && error.code === 'WORKFLOW_IDENTITY_INCOMPLETE' && error.statusCode === 503,
+  );
+  await assert.rejects(
+    () => identities.toMdmId(ctx, 'cm-x'),
+    (error: unknown) => error instanceof AppError && error.code === 'WORKFLOW_IDENTITY_INCOMPLETE' && error.statusCode === 503,
+  );
+  assert.equal(links, 0);
+
+  const tooLarge = routed((call) => {
+    if (call.method === 'link') return { httpStatus: 507, body: { statusCode: 507, msg: 'identity_too_large' } };
+    return ok({ people: [{ mdmId, state: 'unlinked' }] });
+  });
+  await assert.rejects(
+    () => createMessagesWorkflowIdentities({ projectId: 'app-a', client: tooLarge }).toCmUserId(ctx, mdmId),
+    (error: unknown) => error instanceof AppError && error.statusCode === 507 && !error.message.includes('@'),
+  );
+});

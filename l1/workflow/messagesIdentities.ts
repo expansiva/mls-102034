@@ -24,7 +24,7 @@ const UNLINKED = 'Identity is not linked.';
 const REMOVED = 'Identity was removed.';
 const INCOMPLETE = 'Identity link is incomplete.';
 const REMOTE = 'Identity could not be resolved.';
-const RECOGNIZED_STATUS = new Set([400, 404, 409, 503]);
+const RECOGNIZED_STATUS = new Set([400, 404, 409, 503, 507]);
 
 function protocol(): never {
   throw new AppError('WORKFLOW_CM_PROTOCOL_ERROR', PROTOCOL, 502);
@@ -77,7 +77,7 @@ function assertRemoteSuccess(result: { httpStatus: number; body: { statusCode?: 
 function personOf(value: unknown): Person {
   if (!isRecord(value)) protocol();
   const state = value.state;
-  if (state !== 'linked' && state !== 'unlinked' && state !== 'removed') protocol();
+  if (state !== 'linked' && state !== 'unlinked' && state !== 'removed' && state !== 'inconsistent') protocol();
   const mdmId = value.mdmId === undefined ? undefined : idText(value.mdmId);
   const cmUserId = value.cmUserId === undefined ? undefined : idText(value.cmUserId);
   if (value.mdmId !== undefined && mdmId === undefined) protocol();
@@ -133,6 +133,8 @@ export function createMessagesWorkflowIdentities(options: MessagesWorkflowIdenti
     const people = peopleOf(result);
     if (people.length !== 2) incomplete();
     const [byMdm, byCm] = people;
+    // The producer reports a record whose two sides disagree as `inconsistent`, never as linked.
+    if (byMdm.state === 'inconsistent' || byCm.state === 'inconsistent') incomplete();
     if (byMdm.mdmId !== mdmId || byCm.cmUserId !== cmUserId || !samePair(byMdm, byCm)) incomplete();
     if (direction === 'historical') {
       if (byMdm.state !== 'linked' && byMdm.state !== 'removed') incomplete();
@@ -146,6 +148,7 @@ export function createMessagesWorkflowIdentities(options: MessagesWorkflowIdenti
     assertContext(ctx);
     if (idText(mdmId) === undefined) protocol();
     const person = await resolveOne({ mdmIds: [mdmId] }, { mdmId });
+    if (person.state === 'inconsistent') incomplete();
     if (person.state === 'removed') {
       if (person.cmUserId === undefined) protocol();
       removed();
@@ -163,6 +166,7 @@ export function createMessagesWorkflowIdentities(options: MessagesWorkflowIdenti
     const cmUserId = idText(linked.body.cmUserId);
     if ((linked.body.outcome !== 'linked' && linked.body.outcome !== 'existing') || cmUserId === undefined) protocol();
     const again = await resolveOne({ mdmIds: [mdmId] }, { mdmId });
+    if (again.state === 'inconsistent') incomplete();
     if (again.state === 'removed') removed();
     if (again.state !== 'linked' || again.cmUserId !== cmUserId) incomplete();
     await confirmPair(mdmId, cmUserId, 'forward');
@@ -173,6 +177,7 @@ export function createMessagesWorkflowIdentities(options: MessagesWorkflowIdenti
     assertContext(ctx);
     if (idText(userId) === undefined) protocol();
     const person = await resolveOne({ cmUserIds: [userId] }, { cmUserId: userId });
+    if (person.state === 'inconsistent') incomplete();
     if (person.state === 'unlinked') unlinked();
     if (person.mdmId === undefined || person.cmUserId === undefined) protocol();
     await confirmPair(person.mdmId, person.cmUserId, person.state === 'removed' ? 'historical' : 'forward');
