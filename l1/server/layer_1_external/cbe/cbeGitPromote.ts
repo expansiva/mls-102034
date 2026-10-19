@@ -67,6 +67,8 @@ export interface DraftDiffFile {
   path: string;
   /** Blob on the draft. Null when the draft deleted the file. */
   sha: string | null;
+  /** Previous path. Present only on a rename. */
+  from?: string;
 }
 
 export type DraftDiffResult =
@@ -407,8 +409,8 @@ function parseNameStatus(stdout: string): DraftDiffFile[] {
       files.push({ status: letter, path: parts[1], sha: newBlob });
     } else if (letter === 'D' && raw.length === 1 && parts[1]) {
       files.push({ status: 'D', path: parts[1], sha: null });
-    } else if (letter === 'R' && /^R\d*$/u.test(raw) && parts.length >= 3 && parts[parts.length - 1]) {
-      files.push({ status: 'R', path: parts[parts.length - 1], sha: newBlob });
+    } else if (letter === 'R' && /^R\d*$/u.test(raw) && parts.length >= 3 && parts[1] && parts[parts.length - 1]) {
+      files.push({ status: 'R', path: parts[parts.length - 1], sha: newBlob, from: parts[1] });
     }
   }
   return files;

@@ -429,7 +429,7 @@ test('draftDiff with names lists each file and the draft head', async () => {
       { status: 'M', path: 'l2/a.ts', sha: shaM },
       { status: 'A', path: 'l2/b.ts', sha: shaA },
       { status: 'D', path: 'l1/c.ts', sha: null },
-      { status: 'R', path: 'l2/new.ts', sha: shaR },
+      { status: 'R', path: 'l2/new.ts', sha: shaR, from: 'l2/old.ts' },
     ],
   });
   assert.deepEqual(innerArgs(calls[0].args), ['diff', '--raw', '--no-abbrev', `main...${branch}`]);
