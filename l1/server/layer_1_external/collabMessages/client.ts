@@ -10,8 +10,10 @@ import type {
   RequestEnsureModuleThread,
   RequestGetModuleTask,
   RequestGetTaskUpdate,
+  RequestLinkModulePerson,
   RequestListModuleTasks,
   RequestOpenModuleTask,
+  RequestResolveModulePeople,
   ResponseAddMessage,
   ResponseAddUserInThread,
   ResponseApplyIntents,
@@ -19,8 +21,10 @@ import type {
   ResponseEnsureModuleThread,
   ResponseGetModuleTask,
   ResponseGetTaskUpdate,
+  ResponseLinkModulePerson,
   ResponseListModuleTasks,
   ResponseOpenModuleTask,
+  ResponseResolveModulePeople,
 } from '/_102036_/l2/shared/interfaces.js';
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -35,7 +39,9 @@ type ActionName =
   | 'applyIntents'
   | 'getTaskUpdate'
   | 'addMessage'
-  | 'addUserInThread';
+  | 'addUserInThread'
+  | 'linkModulePerson'
+  | 'resolveModulePeople';
 
 export type MessagesCallResult<T> = {
   httpStatus: number;
@@ -87,6 +93,14 @@ export type ServerMessagesClient = {
     asUserId: string,
     input: Omit<RequestAddUserInThread, 'action' | 'userId'>,
   ): Promise<MessagesCallResult<ResponseAddUserInThread>>;
+  linkModulePerson(
+    asUserId: string,
+    input: Omit<RequestLinkModulePerson, 'action' | 'userId'>,
+  ): Promise<MessagesCallResult<ResponseLinkModulePerson>>;
+  resolveModulePeople(
+    asUserId: string,
+    input: Omit<RequestResolveModulePeople, 'action' | 'userId'>,
+  ): Promise<MessagesCallResult<ResponseResolveModulePeople>>;
 };
 
 function timeoutMsOf(timeoutMs: number | undefined): number {
@@ -294,5 +308,7 @@ export function createServerMessagesClient(options: ServerMessagesClientOptions 
     getTaskUpdate: (asUserId, input) => call('getTaskUpdate', asUserId, input, 'common'),
     addMessage: (asUserId, input) => call('addMessage', asUserId, input, 'common'),
     addUserInThread: (asUserId, input) => call('addUserInThread', asUserId, input, 'common'),
+    linkModulePerson: (asUserId, input) => call('linkModulePerson', asUserId, input, 'module', options.projectId),
+    resolveModulePeople: (asUserId, input) => call('resolveModulePeople', asUserId, input, 'module', options.projectId),
   };
 }

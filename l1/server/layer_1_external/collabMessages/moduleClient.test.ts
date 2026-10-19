@@ -30,8 +30,11 @@ const EXPECTED_MODULE_METHODS = [
   'advanceModuleTask',
   'ensureModuleThread',
   'getModuleTask',
+  // Identity actions: their matrix lives in moduleIdentityClient.test.ts and moduleIdentityTransport.test.ts.
+  'linkModulePerson',
   'listModuleTasks',
   'openModuleTask',
+  'resolveModulePeople',
 ] as const;
 
 type Seen = {
