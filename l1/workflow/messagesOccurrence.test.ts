@@ -200,17 +200,18 @@ test('find turns only the structured not_found into null', async () => {
 });
 
 test('find does not treat other failures as absence', async () => {
-  const cases: Array<{ httpStatus: number; body: { statusCode: number; msg?: string } }> = [
+  const rejected: Array<{ httpStatus: number; body: { statusCode: number; msg?: string } }> = [
     { httpStatus: 404, body: { statusCode: 404, msg: 'missing' } },
     { httpStatus: 401, body: { statusCode: 401, msg: 'not_found' } },
     { httpStatus: 403, body: { statusCode: 403, msg: 'denied' } },
     { httpStatus: 409, body: { statusCode: 409, msg: 'legacy_module_task' } },
-    { httpStatus: 500, body: { statusCode: 200, msg: 'ok' } },
   ];
-  for (const item of cases) {
+  for (const item of rejected) {
     const routed = scripted(async () => envelope(item.httpStatus, item.body));
-    await assert.rejects(() => port(routed.client).find(ctx(), KEY), (error: unknown) => error instanceof AppError && error.code === 'WORKFLOW_CM_PROTOCOL_ERROR');
+    await assert.rejects(() => port(routed.client).find(ctx(), KEY), (error: unknown) => error instanceof AppError && error.code === 'WORKFLOW_CM_REJECTED' && error.statusCode === item.body.statusCode && error.message === 'Module task was rejected.');
   }
+  const contradictory = scripted(async () => envelope(500, { statusCode: 200, msg: 'ok' }));
+  await assert.rejects(() => port(contradictory.client).find(ctx(), KEY), (error: unknown) => error instanceof AppError && error.code === 'WORKFLOW_CM_PROTOCOL_ERROR');
   const routed = scripted(async () => { throw new AppError('MSG_SERVICE_TIMEOUT', 'timed out', 504); });
   await assert.rejects(() => port(routed.client).find(ctx(), KEY), (error: unknown) => error instanceof AppError && error.code === 'MSG_SERVICE_TIMEOUT');
   assert.equal(routed.calls.length, 1);
@@ -363,7 +364,7 @@ test('canonical conflict and pause use the returned task; other 409 and http-200
     if (call.name === 'get') return envelope(200, { statusCode: 200, task: task(), room: room() });
     return envelope(409, { statusCode: 409, msg: 'legacy_module_task', task: task() });
   });
-  await assert.rejects(() => port(other.client).advance(ctx(), KEY, advanceCommand()), (error: unknown) => error instanceof AppError && error.code === 'WORKFLOW_CM_PROTOCOL_ERROR');
+  await assert.rejects(() => port(other.client).advance(ctx(), KEY, advanceCommand()), (error: unknown) => error instanceof AppError && error.code === 'WORKFLOW_CM_REJECTED' && error.statusCode === 409);
   const successMask = scripted(async (call) => {
     if (call.name === 'get') return envelope(200, { statusCode: 200, task: task(), room: room() });
     return envelope(409, { statusCode: 200, msg: 'ok', task: task(), moduleAdvance: { commandId: 'cmd-2', outcome: 'applied' } });
@@ -396,6 +397,59 @@ test('a new port reads only from the client', async () => {
   assert.equal(first?.title, 'T1');
   assert.equal(second?.title, 'T2');
   assert.equal(routed.calls.length, 2);
+});
+
+test('recoverable get failures stay distinct and do not open, repair or advance', async () => {
+  const secret = 'task#secret-99';
+  const token = 'raw-token-value';
+  const degraded: Array<{ httpStatus: number; body: ResponseBase & Record<string, unknown>; code: string; statusCode: number }> = [
+    { httpStatus: 200, body: { statusCode: 503, msg: 'busy' }, code: 'WORKFLOW_CM_BUSY', statusCode: 503 },
+    { httpStatus: 503, body: { statusCode: 503, msg: 'busy' }, code: 'WORKFLOW_CM_BUSY', statusCode: 503 },
+    { httpStatus: 200, body: { statusCode: 503, msg: 'module_task_incomplete', taskId: secret }, code: 'WORKFLOW_CM_TASK_INCOMPLETE', statusCode: 503 },
+    { httpStatus: 503, body: { statusCode: 503, msg: 'module_task_incomplete', taskId: secret }, code: 'WORKFLOW_CM_TASK_INCOMPLETE', statusCode: 503 },
+    { httpStatus: 200, body: { statusCode: 200, created: false, task: task(), room: null, roomIssue: 'not_linked' }, code: 'WORKFLOW_CM_ROOM_UNAVAILABLE', statusCode: 503 },
+    { httpStatus: 200, body: { statusCode: 200, created: false, task: task(), room: null, roomIssue: 'missing' }, code: 'WORKFLOW_CM_ROOM_UNAVAILABLE', statusCode: 503 },
+  ];
+  for (const item of degraded) {
+    for (const op of ['find', 'open', 'advance'] as const) {
+      const routed = scripted(async () => envelope(item.httpStatus, item.body));
+      const occurrence = port(routed.client);
+      const run = op === 'find'
+        ? occurrence.find(ctx(), KEY)
+        : op === 'open'
+          ? occurrence.open(ctx(), openCommand())
+          : occurrence.advance(ctx(), KEY, advanceCommand());
+      await assert.rejects(run, (error: unknown) => {
+        assert.ok(error instanceof AppError);
+        assert.equal(error.code, item.code);
+        assert.equal(error.statusCode, item.statusCode);
+        assert.equal(error.message.includes(secret), false);
+        assert.equal(error.message.includes(token), false);
+        assert.equal(error.details, undefined);
+        return true;
+      });
+      assert.deepEqual(routed.calls.map((call) => call.name), [op === 'open' ? 'open' : 'get']);
+    }
+  }
+  const protocolCases: Array<{ httpStatus: number; body: ResponseBase & Record<string, unknown> }> = [
+    { httpStatus: 200, body: { statusCode: 503, msg: 'module_task_incomplete' } },
+    { httpStatus: 503, body: { statusCode: 503, msg: 'module_task_incomplete', taskId: ' ' } },
+    { httpStatus: 200, body: { statusCode: 200, task: task(), room: null } },
+    { httpStatus: 200, body: { statusCode: 200, task: task(), room: { threadId: 'room-2' } as Thread, roomIssue: 'missing' } },
+    { httpStatus: 200, body: { statusCode: 200, task: task(), room: { threadId: 'room-2' } as Thread } },
+    { httpStatus: 503, body: { statusCode: 200, msg: 'busy', task: task(), room: room() } },
+    { httpStatus: 403, body: { statusCode: 401, msg: token } },
+  ];
+  for (const item of protocolCases) {
+    const routed = scripted(async () => envelope(item.httpStatus, item.body));
+    await assert.rejects(() => port(routed.client).find(ctx(), KEY), (error: unknown) => error instanceof AppError && error.code === 'WORKFLOW_CM_PROTOCOL_ERROR' && error.message.includes(secret) === false);
+    assert.deepEqual(routed.calls.map((call) => call.name), ['get']);
+  }
+  const tokenRejected = scripted(async () => envelope(403, { statusCode: 403, msg: token }));
+  await assert.rejects(() => port(tokenRejected.client).find(ctx(), KEY), (error: unknown) => error instanceof AppError && error.code === 'WORKFLOW_CM_REJECTED' && error.statusCode === 403 && error.message.includes(token) === false);
+  const legacy = scripted(async () => envelope(409, { statusCode: 409, msg: 'legacy_module_task' }));
+  await assert.rejects(() => port(legacy.client).advance(ctx(), KEY, advanceCommand()), (error: unknown) => error instanceof AppError && error.code === 'WORKFLOW_CM_REJECTED' && error.statusCode === 409);
+  assert.deepEqual(legacy.calls.map((call) => call.name), ['get']);
 });
 
 test('factory rejects an empty binding', () => {

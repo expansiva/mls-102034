@@ -38,9 +38,30 @@ export interface MessagesTaskOccurrencePortOptions {
 }
 
 const PROTOCOL = 'Module task payload is not valid.';
+const REJECTED = 'Module task was rejected.';
+const BUSY = 'Module task is busy.';
+const INCOMPLETE = 'Module task is incomplete.';
+const ROOM_UNAVAILABLE = 'Module task room is unavailable.';
+const REMOTE_STATUS = new Set([400, 401, 403, 404, 409, 507]);
 
 function protocol(): never {
   throw new AppError('WORKFLOW_CM_PROTOCOL_ERROR', PROTOCOL, 502);
+}
+
+function rejected(statusCode: number): never {
+  throw new AppError('WORKFLOW_CM_REJECTED', REJECTED, statusCode);
+}
+
+function busy(): never {
+  throw new AppError('WORKFLOW_CM_BUSY', BUSY, 503);
+}
+
+function incomplete(): never {
+  throw new AppError('WORKFLOW_CM_TASK_INCOMPLETE', INCOMPLETE, 503);
+}
+
+function roomUnavailable(): never {
+  throw new AppError('WORKFLOW_CM_ROOM_UNAVAILABLE', ROOM_UNAVAILABLE, 503);
 }
 
 function mismatch(): never {
@@ -58,12 +79,70 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function confirmedAbsent(httpStatus: number, statusCode: number, msg: string | undefined): boolean {
-  return (httpStatus === 200 || httpStatus === 404) && statusCode === 404 && msg === 'not_found';
+type EnvelopeBody = {
+  statusCode: number;
+  msg?: string;
+  taskId?: unknown;
+};
+
+type EnvelopeVerdict =
+  | { kind: 'absent' }
+  | { kind: 'ok' }
+  | { kind: 'busy' }
+  | { kind: 'incomplete' }
+  | { kind: 'rejected'; statusCode: number }
+  | { kind: 'stop'; msg: 'conflict' | 'paused' }
+  | { kind: 'protocol' };
+
+function validTaskId(value: unknown): boolean {
+  return typeof value === 'string' && value.length > 0 && value.trim() === value;
 }
 
-function accepted(httpStatus: number, statusCode: number): boolean {
-  return httpStatus === 200 && statusCode === 200;
+function readTaskId(body: object): unknown {
+  if (!('taskId' in body)) return undefined;
+  const value = (body as { taskId?: unknown }).taskId;
+  return value;
+}
+
+function classifyEnvelope(httpStatus: number, body: EnvelopeBody): EnvelopeVerdict {
+  const statusCode = body.statusCode;
+  if (typeof httpStatus !== 'number' || typeof statusCode !== 'number') return { kind: 'protocol' };
+  const httpOk = httpStatus === 200;
+  if (!httpOk && (statusCode === 200 || httpStatus !== statusCode)) return { kind: 'protocol' };
+  if ((httpOk || httpStatus === 404) && statusCode === 404 && body.msg === 'not_found') return { kind: 'absent' };
+  if (statusCode === 409 && (body.msg === 'conflict' || body.msg === 'paused')) return { kind: 'stop', msg: body.msg };
+  if (statusCode === 503 && body.msg === 'busy') return { kind: 'busy' };
+  if (statusCode === 503 && body.msg === 'module_task_incomplete') {
+    return validTaskId(body.taskId) ? { kind: 'incomplete' } : { kind: 'protocol' };
+  }
+  if (httpOk && statusCode === 200) return { kind: 'ok' };
+  if (REMOTE_STATUS.has(statusCode)) return { kind: 'rejected', statusCode };
+  return { kind: 'protocol' };
+}
+
+function readRoomIssue(body: object): unknown {
+  if (!('roomIssue' in body)) return undefined;
+  return (body as { roomIssue?: unknown }).roomIssue;
+}
+
+function raiseEnvelope(verdict: Exclude<EnvelopeVerdict, { kind: 'ok' }>): never {
+  if (verdict.kind === 'busy') busy();
+  if (verdict.kind === 'incomplete') incomplete();
+  if (verdict.kind === 'rejected' || verdict.kind === 'stop') rejected(verdict.kind === 'stop' ? 409 : verdict.statusCode);
+  if (verdict.kind === 'absent') rejected(404);
+  protocol();
+}
+
+function usableThread(task: TaskData, room: { threadId?: unknown } | null | undefined, roomIssue: unknown): string {
+  if (room === null) {
+    if (roomIssue === 'not_linked' || roomIssue === 'missing') roomUnavailable();
+    protocol();
+  }
+  if (room === undefined || roomIssue !== undefined) protocol();
+  const threadId = room.threadId;
+  if (typeof threadId !== 'string' || threadId.length === 0 || threadId.trim() !== threadId) protocol();
+  if (threadId !== task.taskRoom?.threadId) protocol();
+  return threadId;
 }
 
 function sameRef(task: TaskData | undefined, key: OccurrenceKey): boolean {
@@ -108,9 +187,12 @@ export function createMessagesTaskOccurrencePort(options: MessagesTaskOccurrence
         processId: key.processId,
       },
     });
-    if (confirmedAbsent(result.httpStatus, result.body.statusCode, result.body.msg)) return null;
-    if (!accepted(result.httpStatus, result.body.statusCode) || result.body.task === undefined) protocol();
-    return decodeTaskSnapshot(ctx, identities, result.body.task, key, result.body.room?.threadId);
+    const verdict = classifyEnvelope(result.httpStatus, { statusCode: result.body.statusCode, msg: result.body.msg, taskId: readTaskId(result.body) });
+    if (verdict.kind === 'absent') return null;
+    if (verdict.kind !== 'ok') raiseEnvelope(verdict);
+    if (result.body.task === undefined) protocol();
+    const threadId = usableThread(result.body.task, result.body.room, readRoomIssue(result.body));
+    return decodeTaskSnapshot(ctx, identities, result.body.task, key, threadId);
   }
 
   async function view(
@@ -135,10 +217,11 @@ export function createMessagesTaskOccurrencePort(options: MessagesTaskOccurrence
       const encoded = await encodeOpenModuleTask(ctx, identities, command);
       const { action: _action, ...input } = encoded;
       const result = await client.openModuleTask(asUserId, input);
-      if (!accepted(result.httpStatus, result.body.statusCode) || typeof result.body.created !== 'boolean' || result.body.task === undefined) {
-        protocol();
-      }
-      const occurrence = await view(ctx, command.ref, result.body.task, result.body.room?.threadId);
+      const verdict = classifyEnvelope(result.httpStatus, { statusCode: result.body.statusCode, msg: result.body.msg, taskId: readTaskId(result.body) });
+      if (verdict.kind !== 'ok') raiseEnvelope(verdict);
+      if (typeof result.body.created !== 'boolean' || result.body.task === undefined) protocol();
+      const threadId = usableThread(result.body.task, result.body.room, readRoomIssue(result.body));
+      const occurrence = await view(ctx, command.ref, result.body.task, threadId);
       const outcome = result.body.created ? 'created' : 'existing';
       const returned = projectMessage(result.body.moduleMessage);
       const opening = occurrence.history.find((entry) => entry.from === null)?.message;
@@ -158,9 +241,13 @@ export function createMessagesTaskOccurrencePort(options: MessagesTaskOccurrence
           processId: key.processId,
         },
       });
-      if (confirmedAbsent(current.httpStatus, current.body.statusCode, current.body.msg)) mismatch();
-      if (!accepted(current.httpStatus, current.body.statusCode) || !sameRef(current.body.task, key)) protocol();
-      if (current.body.task?.PK !== command.taskId) mismatch();
+      const verdict = classifyEnvelope(current.httpStatus, { statusCode: current.body.statusCode, msg: current.body.msg, taskId: readTaskId(current.body) });
+      if (verdict.kind === 'absent') mismatch();
+      if (verdict.kind !== 'ok') raiseEnvelope(verdict);
+      const currentTask = current.body.task;
+      if (currentTask === undefined || !sameRef(currentTask, key)) protocol();
+      if (currentTask.PK !== command.taskId) mismatch();
+      usableThread(currentTask, current.body.room, readRoomIssue(current.body));
       const intent: AgentIntentModuleAdvance = {
         type: 'module-advance',
         taskId: command.taskId,
@@ -189,13 +276,12 @@ async function finishAdvance(
   result: MessagesCallResult<{ task?: TaskData; moduleAdvance?: { commandId: string; outcome: 'applied' | 'unchanged' }; moduleMessage?: unknown }>,
 ): Promise<TaskOccurrenceAdvanceResult> {
   const body = result.body;
-  const stop = body.msg === 'conflict' || body.msg === 'paused';
-  const signaled409 = result.httpStatus === 409 || body.statusCode === 409;
-  if (signaled409 && stop) {
+  const verdict = classifyEnvelope(result.httpStatus, { statusCode: body.statusCode, msg: body.msg, taskId: readTaskId(body) });
+  if (verdict.kind === 'stop') {
     if (body.task === undefined || !sameRef(body.task, key) || body.task.PK !== command.taskId) protocol();
-    return pack(ctx, identities, key, command, body.msg === 'paused' ? 'paused' : 'conflict', body.task, body.moduleMessage);
+    return pack(ctx, identities, key, command, verdict.msg === 'paused' ? 'paused' : 'conflict', body.task, body.moduleMessage);
   }
-  if (signaled409 || !accepted(result.httpStatus, body.statusCode)) protocol();
+  if (verdict.kind !== 'ok') raiseEnvelope(verdict);
   const advance = body.moduleAdvance;
   if (advance === undefined || advance.commandId !== command.commandId) protocol();
   if (advance.outcome !== 'applied' && advance.outcome !== 'unchanged') protocol();
