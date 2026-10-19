@@ -9,9 +9,55 @@ import type { OccurrenceContext, OccurrenceRef } from '/_102034_/l1/workflow/con
 import { createMemoryOccurrencePort } from '/_102034_/l1/workflow/memoryOccurrence.js';
 
 const probing = process.env.MEMORY_TOPOLOGY_PROBE === '1';
+const portOperations = ['advance', 'find', 'open'] as const;
+
+type ProbeRejection = {
+  ok: false;
+  code: string;
+  statusCode?: number;
+  workerCount?: unknown;
+  nodeAppInstance?: unknown;
+};
+
+type ProbeReport = {
+  constructed?: boolean;
+  methods?: string[];
+  ok?: boolean;
+  code?: string;
+  workerCount?: unknown;
+  operations?: Record<string, { ok: true } | ProbeRejection>;
+  noAccess?: {
+    refused: ProbeRejection[];
+    readsDuringRefusal: number;
+    restoredStep: string | null;
+    restoredHistory: number | null;
+  };
+};
 
 function declare(name: string, fn: () => Promise<void> | void): void {
   if (!probing) test(name, fn);
+}
+
+function rejectionOf(error: unknown): ProbeRejection {
+  if (!(error instanceof AppError)) return { ok: false, code: 'THROWN' };
+  const details = error.details;
+  const record = details && typeof details === 'object' ? details as Record<string, unknown> : undefined;
+  return {
+    ok: false,
+    code: error.code,
+    statusCode: error.statusCode,
+    ...(record && 'workerCount' in record ? { workerCount: record.workerCount } : {}),
+    ...(record && 'nodeAppInstance' in record ? { nodeAppInstance: record.nodeAppInstance } : {}),
+  };
+}
+
+function watched<T extends object>(value: T, reads: { n: number }): T {
+  return new Proxy(value, {
+    get(target, prop, receiver) {
+      reads.n += 1;
+      return Reflect.get(target, prop, receiver);
+    },
+  });
 }
 
 if (probing) {
@@ -20,33 +66,93 @@ if (probing) {
     worker.on('exit', (code) => process.exit(code ?? 1));
   } else {
     void (async () => {
+      const mode = process.env.PROBE_MODE ?? 'construct';
+      const port = createMemoryOccurrencePort();
+      const report: ProbeReport = {
+        constructed: true,
+        methods: Object.keys(port).sort(),
+      };
+      const sampleRef = {
+        project: '10',
+        module: 'tarefas',
+        processId: 'ciclo',
+        entity: 'Tarefa',
+        recordId: 'r1',
+        workflowVersion: 'rel-1',
+      };
+      const clock = { nowIso: () => '2026-10-18T00:00:00.000Z' };
       try {
-        const port = createMemoryOccurrencePort();
-        if (process.env.PROBE_MODE === 'use') {
-          await port.open(
-            { clock: { nowIso: () => '2026-10-18T00:00:00.000Z' } },
-            {
-              project: '10',
-              module: 'tarefas',
-              processId: 'ciclo',
-              entity: 'Tarefa',
-              recordId: 'r1',
-              workflowVersion: 'rel-1',
-            },
-            'S',
-            'A',
-            null,
-          );
+        if (mode === 'use') {
+          await port.open({ clock }, sampleRef, 'S', 'A', null);
+          report.ok = true;
+        } else if (mode === 'operations' || mode === 'cluster-worker') {
+          const operations: NonNullable<ProbeReport['operations']> = {};
+          for (const name of portOperations) {
+            try {
+              if (name === 'open') await port.open({ clock }, sampleRef, 'S', 'A', null);
+              else if (name === 'find') await port.find({ clock }, sampleRef);
+              else {
+                await port.advance({ clock }, sampleRef, {
+                  from: 'S', to: 'A', actorNow: 'A', done: false, by: null,
+                });
+              }
+              operations[name] = { ok: true };
+            } catch (error) {
+              operations[name] = rejectionOf(error);
+            }
+          }
+          report.operations = operations;
+        } else if (mode === 'no-access') {
+          const seeded = await port.open({ clock }, sampleRef, 'S', 'A', null);
+          const birth = seeded.occurrence.history.length;
+          process.env.COLLAB_WORKER_COUNT = '2';
+          const reads = { n: 0 };
+          const refused: ProbeRejection[] = [];
+          const attempts: Array<() => Promise<unknown>> = [
+            () => port.find(watched({ clock }, reads), watched({ ...sampleRef, recordId: 'missing' }, reads)),
+            () => port.open(watched({ clock }, reads), watched({ ...sampleRef }, reads), 'Z', 'B', 'x'),
+            () => port.advance(
+              watched({ clock }, reads),
+              watched({ ...sampleRef }, reads),
+              watched({ from: 'OTHER', to: 'S', actorNow: 'A', done: false, by: 'ignored' }, reads),
+            ),
+          ];
+          try {
+            for (const attempt of attempts) {
+              try {
+                await attempt();
+                refused.push({ ok: false, code: 'ALLOWED' });
+              } catch (error) {
+                refused.push(rejectionOf(error));
+              }
+              try {
+                await attempt();
+                refused.push({ ok: false, code: 'ALLOWED' });
+              } catch (error) {
+                refused.push(rejectionOf(error));
+              }
+            }
+          } finally {
+            delete process.env.COLLAB_WORKER_COUNT;
+          }
+          const restored = await port.find({ clock }, sampleRef);
+          report.noAccess = {
+            refused,
+            readsDuringRefusal: reads.n,
+            restoredStep: restored?.step ?? null,
+            restoredHistory: restored?.history.length ?? null,
+          };
+          report.ok = birth === 1;
+        } else {
+          report.ok = true;
         }
-        process.stdout.write(JSON.stringify({ ok: true }));
       } catch (error) {
-        const code = error instanceof AppError ? error.code : 'THROWN';
-        const details = error instanceof AppError ? error.details : undefined;
-        const workerCount = details && typeof details === 'object' && 'workerCount' in details
-          ? details.workerCount
-          : undefined;
-        process.stdout.write(JSON.stringify({ ok: false, code, workerCount }));
+        const rejected = rejectionOf(error);
+        report.ok = false;
+        report.code = rejected.code;
+        report.workerCount = rejected.workerCount;
       }
+      process.stdout.write(JSON.stringify(report));
       process.exit(0);
     })();
   }
@@ -232,7 +338,7 @@ declare('returned snapshots cannot mutate the stored ref or history', async () =
   assert.equal(again?.history[0]?.note, undefined);
 });
 
-function probe(env: Record<string, string | undefined>): Promise<{ ok?: boolean, code?: string, workerCount?: unknown }> {
+function probe(env: Record<string, string | undefined>): Promise<ProbeReport> {
   const childEnv: NodeJS.ProcessEnv = { ...process.env, MEMORY_TOPOLOGY_PROBE: '1' };
   delete childEnv.COLLAB_WORKER_COUNT;
   delete childEnv.NODE_APP_INSTANCE;
@@ -262,43 +368,66 @@ function probe(env: Record<string, string | undefined>): Promise<{ ok?: boolean,
     child.on('exit', (status) => {
       clearTimeout(timer);
       if (status !== 0) reject(new Error(`probe status ${status}: ${stderr || stdout}`));
-      else resolve(JSON.parse(stdout.trim()) as { ok?: boolean, code?: string, workerCount?: unknown });
+      else resolve(JSON.parse(stdout.trim()) as ProbeReport);
     });
   });
 }
 
+function refused(
+  code: string,
+  details: { workerCount?: unknown, nodeAppInstance?: unknown },
+): ProbeRejection {
+  return { ok: false, code, statusCode: 500, ...details };
+}
+
 declare('announced worker counts 1, 2, 0 and invalid', async () => {
-  assert.deepEqual(await probe({ COLLAB_WORKER_COUNT: '1', PROBE_MODE: 'use' }), { ok: true });
-  assert.deepEqual(await probe({ COLLAB_WORKER_COUNT: '2' }), {
-    ok: false,
-    code: 'WORKFLOW_MEMORY_REQUIRES_SINGLE_WORKER',
-    workerCount: '2',
-  });
-  assert.deepEqual(await probe({ COLLAB_WORKER_COUNT: '0' }), {
-    ok: false,
-    code: 'WORKFLOW_RUNTIME_TOPOLOGY_INVALID',
-    workerCount: '0',
-  });
-  assert.deepEqual(await probe({ COLLAB_WORKER_COUNT: '' }), {
-    ok: false,
-    code: 'WORKFLOW_RUNTIME_TOPOLOGY_INVALID',
-    workerCount: '',
-  });
-  assert.deepEqual(await probe({ COLLAB_WORKER_COUNT: 'nope' }), {
-    ok: false,
-    code: 'WORKFLOW_RUNTIME_TOPOLOGY_INVALID',
-    workerCount: 'nope',
-  });
+  const allowed = await probe({ COLLAB_WORKER_COUNT: '1', PROBE_MODE: 'use' });
+  assert.equal(allowed.constructed, true);
+  assert.equal(allowed.ok, true);
+  assert.deepEqual(allowed.methods, [...portOperations]);
+  const cases: Array<{ count: string, code: string }> = [
+    { count: '2', code: 'WORKFLOW_MEMORY_REQUIRES_SINGLE_WORKER' },
+    { count: '0', code: 'WORKFLOW_RUNTIME_TOPOLOGY_INVALID' },
+    { count: '', code: 'WORKFLOW_RUNTIME_TOPOLOGY_INVALID' },
+    { count: 'nope', code: 'WORKFLOW_RUNTIME_TOPOLOGY_INVALID' },
+  ];
+  for (const entry of cases) {
+    const report = await probe({ COLLAB_WORKER_COUNT: entry.count, PROBE_MODE: 'operations' });
+    assert.equal(report.constructed, true);
+    assert.deepEqual(report.methods, [...portOperations]);
+    for (const name of portOperations) {
+      assert.deepEqual(report.operations?.[name], refused(entry.code, { workerCount: entry.count }));
+    }
+  }
 });
 
 declare('NODE_APP_INSTANCE=0 without a total is refused, and an isolated node is allowed', async () => {
-  assert.deepEqual(await probe({ NODE_APP_INSTANCE: '0' }), {
-    ok: false,
-    code: 'WORKFLOW_RUNTIME_TOPOLOGY_INVALID',
-  });
-  assert.deepEqual(await probe({}), { ok: true });
-  assert.deepEqual(await probe({ PROBE_MODE: 'cluster-worker' }), {
-    ok: false,
-    code: 'WORKFLOW_RUNTIME_TOPOLOGY_INVALID',
-  });
+  const managed = await probe({ NODE_APP_INSTANCE: '0', PROBE_MODE: 'operations' });
+  assert.equal(managed.constructed, true);
+  for (const name of portOperations) {
+    assert.deepEqual(managed.operations?.[name], refused('WORKFLOW_RUNTIME_TOPOLOGY_INVALID', { nodeAppInstance: '0' }));
+  }
+  const isolated = await probe({});
+  assert.equal(isolated.constructed, true);
+  assert.equal(isolated.ok, true);
+  const clusterWorker = await probe({ PROBE_MODE: 'cluster-worker' });
+  assert.equal(clusterWorker.constructed, true);
+  for (const name of portOperations) {
+    assert.deepEqual(
+      clusterWorker.operations?.[name],
+      refused('WORKFLOW_RUNTIME_TOPOLOGY_INVALID', { nodeAppInstance: null }),
+    );
+  }
+});
+
+declare('incompatible topology refuses before observable access and keeps the seeded occurrence', async () => {
+  const report = await probe({ PROBE_MODE: 'no-access' });
+  assert.equal(report.constructed, true);
+  assert.equal(report.noAccess?.readsDuringRefusal, 0);
+  assert.equal(report.noAccess?.restoredStep, 'S');
+  assert.equal(report.noAccess?.restoredHistory, 1);
+  assert.equal(report.noAccess?.refused.length, portOperations.length * 2);
+  for (const rejection of report.noAccess?.refused ?? []) {
+    assert.deepEqual(rejection, refused('WORKFLOW_MEMORY_REQUIRES_SINGLE_WORKER', { workerCount: '2' }));
+  }
 });

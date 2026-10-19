@@ -37,6 +37,8 @@ function samePassage(current: OccurrenceSnapshot, command: AdvanceOccurrenceComm
  * is atomic on a single process. This is not a stand-in for the cm adapter.
  * A launcher that announces COLLAB_WORKER_COUNT may use this port only for
  * a single worker. A managed worker with no announced total is refused.
+ * Construction does not consult the topology. open, find and advance do,
+ * on every call, before key, map, clock or any return.
  */
 function assertSingleWorkerTopology(): void {
   const announced = process.env.COLLAB_WORKER_COUNT;
@@ -70,11 +72,11 @@ function assertSingleWorkerTopology(): void {
 }
 
 export function createMemoryOccurrencePort(): OccurrencePort {
-  assertSingleWorkerTopology();
   const records = new Map<string, OccurrenceSnapshot>();
 
   return {
     async open(ctx, ref, step, actorNow, by): Promise<OpenOccurrenceResult> {
+      assertSingleWorkerTopology();
       const id = occurrenceKey(ref);
       const existing = records.get(id);
       if (existing) return { outcome: 'existing', occurrence: copySnapshot(existing) };
@@ -97,11 +99,13 @@ export function createMemoryOccurrencePort(): OccurrencePort {
     },
 
     async find(_ctx, key): Promise<OccurrenceSnapshot | null> {
+      assertSingleWorkerTopology();
       const found = records.get(occurrenceKey(key));
       return found ? copySnapshot(found) : null;
     },
 
     async advance(ctx, key, command): Promise<AdvanceOccurrenceResult> {
+      assertSingleWorkerTopology();
       const current = records.get(occurrenceKey(key));
       if (!current) {
         throw new AppError('OCCURRENCE_NOT_FOUND', 'Occurrence was never opened.', 404);
