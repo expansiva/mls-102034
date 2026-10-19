@@ -137,6 +137,7 @@ function openInput(project: string): Omit<RequestOpenModuleTask, 'action' | 'use
     actorNow: null,
     title: 't',
     room: { mode: 'exclusive' },
+    executor: { kind: 'routine', name: 'nightly' },
     message: { content: 'opened' },
   };
 }

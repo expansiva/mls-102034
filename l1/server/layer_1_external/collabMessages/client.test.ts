@@ -81,6 +81,7 @@ function openInput(project = PROJECT_ID): Omit<RequestOpenModuleTask, 'action' |
     actorNow: null,
     title: 't',
     room: { mode: 'exclusive' },
+    executor: { kind: 'routine', name: 'nightly' },
   };
 }
 
