@@ -212,13 +212,7 @@ describe('createServerMessagesClient loopback', () => {
     });
     const client = clientFor(front.port, 10_000);
     await assert.rejects(
-      () => client.openModuleTask('user-a', {
-        threadId: 'th',
-        title: 't',
-        content: 'c',
-        ref: { moduleId: 'm' },
-        step: 's',
-      } as never),
+      () => client.addMessage('user-a', { threadId: 'th', content: 'c' }),
       (err: unknown) => {
         assert.ok(err instanceof AppError);
         assert.equal(err.code, 'MSG_SERVICE_PROTOCOL_ERROR');

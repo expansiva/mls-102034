@@ -1,4 +1,5 @@
 import { ensureEnvFileLoaded } from '/_102034_/l1/server/layer_1_external/config/env.js';
+import { readMessagesIntegration } from '/_102034_/l1/server/layer_1_external/config/messagesIntegration.js';
 import { AppError } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import { msgProxyTarget, serviceIdentityHeaders } from '/_102034_/l1/server/layer_1_external/transport/http/msgProxy.js';
 import type {
@@ -38,6 +39,8 @@ export type ServerMessagesClientOptions = {
   env?: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  /** Server-resolved application id. Module calls read its private credential; common calls ignore it. */
+  projectId?: string;
 };
 
 export type ServerMessagesClient = {
@@ -87,6 +90,8 @@ function localError(code: string, statusCode: number, message: string): AppError
   return new AppError(code, message, statusCode);
 }
 
+type CallAuth = 'common' | 'module';
+
 function isAbortError(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { name?: string }).name === 'AbortError';
 }
@@ -103,23 +108,47 @@ export function createServerMessagesClient(options: ServerMessagesClientOptions 
   if (options.env === undefined) ensureEnvFileLoaded();
   const capturedEnv: NodeJS.ProcessEnv = { ...(options.env ?? process.env) };
 
-  async function call<T>(
-    action: ActionName,
-    asUserId: string,
-    input: object,
-  ): Promise<MessagesCallResult<T>> {
-    const userId = callerUserId(asUserId);
+  function moduleHeaders(asUserId: string, boundProject: string): Record<string, string> {
+    const projectId = options.projectId;
+    if (projectId === undefined) {
+      throw localError('MSG_APP_NOT_CONFIGURED', 503, 'Messages integration is not configured for this application.');
+    }
+    if (boundProject !== projectId) {
+      throw localError('MSG_APP_SCOPE_INVALID', 400, 'Module operation is outside the configured application.');
+    }
+    const integration = readMessagesIntegration(projectId);
+    return {
+      'Content-Type': 'application/json',
+      authorization: `Bearer ${integration.token}`,
+      'x-app-id': integration.projectId,
+      'x-org-id': integration.organizationId,
+      'x-user-id': asUserId,
+    };
+  }
+
+  function commonHeaders(action: ActionName, userId: string): Record<string, string> {
     const identity = serviceIdentityHeaders({ ...capturedEnv, MSG_PROXY_USER_ID: userId });
     if (!('inject' in identity) || identity.inject === null) {
       throw localError('MSG_SERVICE_NOT_CONFIGURED', 503, `${NOT_CONFIGURED} (${action})`);
     }
-
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       authorization: identity.inject.authorization,
       'x-user-id': identity.inject['x-user-id'],
     };
     if (identity.inject['x-org-id']) headers['x-org-id'] = identity.inject['x-org-id'];
+    return headers;
+  }
+
+  async function call<T>(
+    action: ActionName,
+    asUserId: string,
+    input: object,
+    auth: CallAuth,
+    boundProject?: string,
+  ): Promise<MessagesCallResult<T>> {
+    const userId = callerUserId(asUserId);
+    const headers = auth === 'module' ? moduleHeaders(userId, boundProject ?? '') : commonHeaders(action, userId);
 
     const ac = new AbortController();
     let timedOut = false;
@@ -213,11 +242,11 @@ export function createServerMessagesClient(options: ServerMessagesClientOptions 
   }
 
   return {
-    ensureModuleThread: (asUserId, input) => call('ensureModuleThread', asUserId, input),
-    openModuleTask: (asUserId, input) => call('openModuleTask', asUserId, input),
-    applyIntents: (asUserId, input) => call('applyIntents', asUserId, input),
-    getTaskUpdate: (asUserId, input) => call('getTaskUpdate', asUserId, input),
-    addMessage: (asUserId, input) => call('addMessage', asUserId, input),
-    addUserInThread: (asUserId, input) => call('addUserInThread', asUserId, input),
+    ensureModuleThread: (asUserId, input) => call('ensureModuleThread', asUserId, input, 'module', input.project),
+    openModuleTask: (asUserId, input) => call('openModuleTask', asUserId, input, 'module', input.ref.project),
+    applyIntents: (asUserId, input) => call('applyIntents', asUserId, input, 'common'),
+    getTaskUpdate: (asUserId, input) => call('getTaskUpdate', asUserId, input, 'common'),
+    addMessage: (asUserId, input) => call('addMessage', asUserId, input, 'common'),
+    addUserInThread: (asUserId, input) => call('addUserInThread', asUserId, input, 'common'),
   };
 }
