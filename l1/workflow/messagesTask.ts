@@ -55,7 +55,8 @@ function requiredText(value: unknown): string {
   return parsed;
 }
 
-async function toCm(ctx: RequestContext, identities: MessagesWorkflowIdentities, mdmId: string): Promise<string> {
+/** MDM id → CM user id through the resolver; identity errors keep the resolver code with a sanitized message. */
+export async function toCm(ctx: RequestContext, identities: MessagesWorkflowIdentities, mdmId: string): Promise<string> {
   try {
     return requiredText(await identities.toCmUserId(ctx, mdmId));
   } catch (error) {
@@ -194,8 +195,10 @@ function readWake(value: unknown): TaskOccurrenceSnapshot['wake'] {
   return wake;
 }
 
-function projectMessage(message: TaskModuleHistoryEntry['message']): TaskOccurrenceMessageStatus | undefined {
+/** Delivery status projected from the wire: state, threadId and orderAt only. */
+export function projectMessage(message: unknown): TaskOccurrenceMessageStatus | undefined {
   if (message === undefined) return undefined;
+  if (!isRecord(message)) protocol();
   if (message.state !== 'pending' && message.state !== 'sent') protocol();
   const projected: TaskOccurrenceMessageStatus = {
     state: message.state,
