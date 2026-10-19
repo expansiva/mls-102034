@@ -38,6 +38,11 @@ export {
   type TaskWorkflowAdvance,
 } from '/_102034_/l1/workflow/engine.js';
 export { createMemoryOccurrencePort } from '/_102034_/l1/workflow/memoryOccurrence.js';
+export {
+  createMessagesTaskOccurrencePort,
+  type MessagesTaskOccurrencePortOptions,
+} from '/_102034_/l1/workflow/messagesOccurrence.js';
+export type { MessagesWorkflowIdentities } from '/_102034_/l1/workflow/messagesTask.js';
 export { createOccurrenceContext, occurrenceRecordId } from '/_102034_/l1/workflow/occurrenceRecordId.js';
 export {
   prepareWorkflowPlan,
