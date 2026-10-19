@@ -464,6 +464,67 @@ test('T19: a key without git+https or outside mls-<n> is ignored', () => {
   });
 });
 
+const PRIVATE_TOKEN_SENTINEL = 'SENTINEL_TOKEN_rt93_do_not_echo_7f3a';
+
+test('private collabMessages token stays off login and org projections and logs', () => {
+  withProjectsDir((root) => {
+    withProjectFilesDir((filesRoot) => {
+      const id = allocProjectId();
+      writeCompiledZip(root, id);
+      writeProjectFile(filesRoot, id, sampleProjectFile('org-tok', 'tokorg', id, {
+        collabMessages: { token: PRIVATE_TOKEN_SENTINEL },
+      }));
+      const warns: string[] = [];
+      const errors = captureErrors(() => {
+        const orig = console.warn;
+        console.warn = ((...args: unknown[]) => {
+          warns.push(args.map(String).join(' '));
+        }) as typeof console.warn;
+        try {
+          const file = readProjectFile(id);
+          assert.ok(file);
+          assert.equal(file.org.slug, 'tokorg');
+          const org = resolveOrgInfo([id]);
+          const settings = buildProjectSettings(id, []);
+          assert.ok(settings);
+          const projected = JSON.stringify({ org, settings });
+          assert.equal(projected.includes(PRIVATE_TOKEN_SENTINEL), false);
+          assert.equal(projected.includes('collabMessages'), false);
+          assert.equal(org.slug, 'tokorg');
+        } finally {
+          console.warn = orig;
+        }
+      });
+      const logged = [...warns, ...errors].join('\n');
+      assert.equal(logged.includes(PRIVATE_TOKEN_SENTINEL), false);
+      assert.equal(logged.includes('collabMessages'), false);
+    });
+  });
+});
+
+test('invalid project file with a sentinel does not echo it and logs once per mtime', () => {
+  withProjectFilesDir((filesRoot) => {
+    const id = allocProjectId();
+    writeProjectFile(
+      filesRoot,
+      id,
+      `{ "schema": 1, "collabMessages": { "token": "${PRIVATE_TOKEN_SENTINEL}" } not-json`,
+    );
+    const errors = captureErrors(() => {
+      assert.equal(readProjectFile(id), null);
+      assert.equal(readProjectFile(id), null);
+    });
+    const relevant = errors.filter((line) => line.includes(`project ${id}`) && line.includes('unreadable'));
+    assert.equal(relevant.length, 1, `expected one error for the unchanged mtime, got: ${errors.join(' | ')}`);
+    assert.match(relevant[0], /SyntaxError/);
+    assert.match(relevant[0], new RegExp(`${id}\\.json`));
+    const logged = errors.join('\n');
+    assert.equal(logged.includes(PRIVATE_TOKEN_SENTINEL), false);
+    assert.equal(logged.includes('collabMessages'), false);
+    assert.equal(logged.includes('not-json'), false);
+  });
+});
+
 test('T14: rewritten project file (new mtime) is re-read', () => {
   withProjectFilesDir((filesRoot) => {
     const id = allocProjectId();

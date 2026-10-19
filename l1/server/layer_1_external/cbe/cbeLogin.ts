@@ -41,6 +41,8 @@ interface ProjectFileV1 {
   generatedAt: string;
   org: { orgId: string; slug: string; name: string; createdAt: string };
   project: { projectId: string; domain: string; appEnv: string | null; language: string | null; type: string; createdAt: string };
+  /** Private server extension. Presence is not required for login or organization. */
+  collabMessages?: unknown;
 }
 
 interface ProjectFileCacheEntry {
@@ -75,7 +77,8 @@ function isValidProjectFile(parsed: unknown): parsed is ProjectFileV1 {
  * Reads the project file the sites writes at `getProjectFilesDir()`, cached by
  * mtime like the compiled.zip (cbeCompiledLocal.ts). Missing is normal and does
  * not log. Invalid (broken JSON, or schema/org.slug/org.name missing or
- * malformed) logs a console.error with the path and is treated as missing —
+ * malformed) logs a console.error with the path and the error class, never
+ * the parser text, file contents, stack, or cause, and is treated as missing —
  * once per mtime, since an unchanged mtime returns the cached result without
  * re-parsing.
  */
@@ -96,7 +99,8 @@ export function readProjectFile(projectId: number): ProjectFileV1 | null {
       console.error(`[cbe] project ${projectId}: project file invalid at ${filePath} — schema/org.slug/org.name missing or malformed, treated as absent`);
     }
   } catch (err) {
-    console.error(`[cbe] project ${projectId}: project file unreadable at ${filePath} — ${(err as Error).message}, treated as absent`);
+    const errorClass = err instanceof Error && err.constructor?.name ? err.constructor.name : 'Error';
+    console.error(`[cbe] project ${projectId}: project file unreadable at ${filePath} — ${errorClass}, treated as absent`);
   }
 
   projectFileCache.set(projectId, { mtimeMs, data });
