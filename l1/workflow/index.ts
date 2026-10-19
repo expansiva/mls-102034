@@ -42,6 +42,15 @@ export {
   createMessagesTaskOccurrencePort,
   type MessagesTaskOccurrencePortOptions,
 } from '/_102034_/l1/workflow/messagesOccurrence.js';
+export {
+  createMessagesWorkflowIdentities,
+  type MessagesWorkflowIdentitiesOptions,
+} from '/_102034_/l1/workflow/messagesIdentities.js';
+export {
+  createRuntimeMessagesTaskPort,
+  type RuntimeMessagesClient,
+  type RuntimeMessagesTaskPortOptions,
+} from '/_102034_/l1/workflow/messagesRuntime.js';
 export type { MessagesWorkflowIdentities } from '/_102034_/l1/workflow/messagesTask.js';
 export { createOccurrenceContext, occurrenceRecordId } from '/_102034_/l1/workflow/occurrenceRecordId.js';
 export {
