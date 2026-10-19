@@ -3,18 +3,23 @@ import { readMessagesIntegration } from '/_102034_/l1/server/layer_1_external/co
 import { AppError } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import { msgProxyTarget, serviceIdentityHeaders } from '/_102034_/l1/server/layer_1_external/transport/http/msgProxy.js';
 import type {
+  AgentIntentModuleAdvance,
   RequestAddMessage,
   RequestAddUserInThread,
   RequestApplyIntents,
   RequestEnsureModuleThread,
+  RequestGetModuleTask,
   RequestGetTaskUpdate,
+  RequestListModuleTasks,
   RequestOpenModuleTask,
   ResponseAddMessage,
   ResponseAddUserInThread,
   ResponseApplyIntents,
   ResponseBase,
   ResponseEnsureModuleThread,
+  ResponseGetModuleTask,
   ResponseGetTaskUpdate,
+  ResponseListModuleTasks,
   ResponseOpenModuleTask,
 } from '/_102036_/l2/shared/interfaces.js';
 
@@ -25,6 +30,8 @@ const NOT_CONFIGURED = 'collab-messages service is not configured';
 type ActionName =
   | 'ensureModuleThread'
   | 'openModuleTask'
+  | 'getModuleTask'
+  | 'listModuleTasks'
   | 'applyIntents'
   | 'getTaskUpdate'
   | 'addMessage'
@@ -52,6 +59,18 @@ export type ServerMessagesClient = {
     asUserId: string,
     input: Omit<RequestOpenModuleTask, 'action' | 'userId'>,
   ): Promise<MessagesCallResult<ResponseOpenModuleTask>>;
+  getModuleTask(
+    asUserId: string,
+    input: Omit<RequestGetModuleTask, 'action' | 'userId'>,
+  ): Promise<MessagesCallResult<ResponseGetModuleTask>>;
+  listModuleTasks(
+    asUserId: string,
+    input: Omit<RequestListModuleTasks, 'action' | 'userId'>,
+  ): Promise<MessagesCallResult<ResponseListModuleTasks>>;
+  advanceModuleTask(
+    asUserId: string,
+    intent: AgentIntentModuleAdvance,
+  ): Promise<MessagesCallResult<ResponseApplyIntents>>;
   applyIntents(
     asUserId: string,
     input: Omit<RequestApplyIntents, 'action' | 'userId'>,
@@ -94,6 +113,20 @@ type CallAuth = 'common' | 'module';
 
 function isAbortError(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { name?: string }).name === 'AbortError';
+}
+
+const MODULE_INTENT_UNSUPPORTED = 'Module intent is not accepted on this call.';
+
+function isModuleIntentType(type: unknown): boolean {
+  return type === 'module-advance' || type === 'module-progress';
+}
+
+function containsModuleIntent(intents: unknown): boolean {
+  if (!Array.isArray(intents)) return false;
+  return intents.some((item) => {
+    if (item === null || typeof item !== 'object') return false;
+    return isModuleIntentType((item as { type?: unknown }).type);
+  });
 }
 
 function isEnvelope(value: unknown): value is Record<string, unknown> & { statusCode: number } {
@@ -244,7 +277,20 @@ export function createServerMessagesClient(options: ServerMessagesClientOptions 
   return {
     ensureModuleThread: (asUserId, input) => call('ensureModuleThread', asUserId, input, 'module', input.project),
     openModuleTask: (asUserId, input) => call('openModuleTask', asUserId, input, 'module', input.ref.project),
-    applyIntents: (asUserId, input) => call('applyIntents', asUserId, input, 'common'),
+    getModuleTask: (asUserId, input) => call('getModuleTask', asUserId, input, 'module', input.ref.project),
+    listModuleTasks: (asUserId, input) => call('listModuleTasks', asUserId, input, 'module', input.project),
+    advanceModuleTask: async (asUserId, intent) => {
+      if (intent.type !== 'module-advance') {
+        throw localError('MSG_MODULE_INTENT_UNSUPPORTED', 400, MODULE_INTENT_UNSUPPORTED);
+      }
+      return call('applyIntents', asUserId, { intents: [intent] }, 'module', options.projectId);
+    },
+    applyIntents: async (asUserId, input) => {
+      if (containsModuleIntent(input.intents)) {
+        throw localError('MSG_MODULE_INTENT_UNSUPPORTED', 400, MODULE_INTENT_UNSUPPORTED);
+      }
+      return call('applyIntents', asUserId, input, 'common');
+    },
     getTaskUpdate: (asUserId, input) => call('getTaskUpdate', asUserId, input, 'common'),
     addMessage: (asUserId, input) => call('addMessage', asUserId, input, 'common'),
     addUserInThread: (asUserId, input) => call('addUserInThread', asUserId, input, 'common'),
