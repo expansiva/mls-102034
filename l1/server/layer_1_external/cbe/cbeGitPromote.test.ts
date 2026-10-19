@@ -396,9 +396,25 @@ test('draftDiff is the whole branch, or one contained path', async () => {
 
 test('draftDiff with names lists each file and the draft head', async () => {
   const head = 'abc123def\n';
+  const shaM = '1111111111111111111111111111111111111111';
+  const shaA = '2222222222222222222222222222222222222222';
+  const shaR = '3333333333333333333333333333333333333333';
+  const zero = '0000000000000000000000000000000000000000';
+  const oldM = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const oldD = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+  const oldR = 'cccccccccccccccccccccccccccccccccccccccc';
   const { git, calls } = promoteGit((cmd) => {
-    if (cmd[0] === 'diff' && cmd[1] === '--name-status') {
-      return { stdout: 'M\tl2/a.ts\nA\tl2/b.ts\nD\tl1/c.ts\nR100\tl2/old.ts\tl2/new.ts\n', code: 0 };
+    if (cmd[0] === 'diff' && cmd[1] === '--raw' && cmd[2] === '--no-abbrev') {
+      return {
+        stdout: [
+          `:100644 100644 ${oldM} ${shaM} M\tl2/a.ts`,
+          `:000000 100644 ${zero} ${shaA} A\tl2/b.ts`,
+          `:100644 000000 ${oldD} ${zero} D\tl1/c.ts`,
+          `:100644 100644 ${oldR} ${shaR} R100\tl2/old.ts\tl2/new.ts`,
+          '',
+        ].join('\n'),
+        code: 0,
+      };
     }
     if (cmd[0] === 'rev-parse' && cmd[1] === branch) return { stdout: head, code: 0 };
     throw new Error(`unexpected git ${cmd.join(' ')}`);
@@ -410,13 +426,13 @@ test('draftDiff with names lists each file and the draft head', async () => {
     status: 'files',
     head: head.trim(),
     files: [
-      { status: 'M', path: 'l2/a.ts' },
-      { status: 'A', path: 'l2/b.ts' },
-      { status: 'D', path: 'l1/c.ts' },
-      { status: 'R', path: 'l2/new.ts' },
+      { status: 'M', path: 'l2/a.ts', sha: shaM },
+      { status: 'A', path: 'l2/b.ts', sha: shaA },
+      { status: 'D', path: 'l1/c.ts', sha: null },
+      { status: 'R', path: 'l2/new.ts', sha: shaR },
     ],
   });
-  assert.deepEqual(innerArgs(calls[0].args), ['diff', '--name-status', `main...${branch}`]);
+  assert.deepEqual(innerArgs(calls[0].args), ['diff', '--raw', '--no-abbrev', `main...${branch}`]);
   assert.deepEqual(innerArgs(calls[1].args), ['rev-parse', branch]);
   assert.equal(calls[0].cwd, repo);
 });

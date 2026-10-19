@@ -65,6 +65,8 @@ export type ListDraftsResult =
 export interface DraftDiffFile {
   status: 'A' | 'M' | 'D' | 'R';
   path: string;
+  /** Blob on the draft. Null when the draft deleted the file. */
+  sha: string | null;
 }
 
 export type DraftDiffResult =
@@ -395,12 +397,18 @@ function parseNameStatus(stdout: string): DraftDiffFile[] {
   const files: DraftDiffFile[] = [];
   for (const line of linesOf(stdout)) {
     const parts = line.split('\t');
-    const raw = parts[0] ?? '';
+    // `:<mode> <mode> <old> <new> <status>\t<path>[\t<new path>]`
+    const tokens = (parts[0] ?? '').split(' ');
+    if (tokens.length < 5 || !tokens[3]) continue;
+    const newBlob = tokens[3];
+    const raw = tokens[4] ?? '';
     const letter = raw.charAt(0);
-    if ((letter === 'A' || letter === 'M' || letter === 'D') && raw.length === 1 && parts[1]) {
-      files.push({ status: letter, path: parts[1] });
+    if ((letter === 'A' || letter === 'M') && raw.length === 1 && parts[1]) {
+      files.push({ status: letter, path: parts[1], sha: newBlob });
+    } else if (letter === 'D' && raw.length === 1 && parts[1]) {
+      files.push({ status: 'D', path: parts[1], sha: null });
     } else if (letter === 'R' && /^R\d*$/u.test(raw) && parts.length >= 3 && parts[parts.length - 1]) {
-      files.push({ status: 'R', path: parts[parts.length - 1] });
+      files.push({ status: 'R', path: parts[parts.length - 1], sha: newBlob });
     }
   }
   return files;
@@ -419,7 +427,7 @@ export async function draftDiff(opts: {
 
   const cwd = mainWorktree(opts.base, opts.projectId);
   const args = opts.names === true
-    ? ['diff', '--name-status', `main...${parsed.branch}`]
+    ? ['diff', '--raw', '--no-abbrev', `main...${parsed.branch}`]
     : ['diff', `main...${parsed.branch}`];
   if (opts.shortPath !== undefined) {
     // Same containment as getContents: a browser path never becomes a git path
