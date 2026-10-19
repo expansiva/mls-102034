@@ -1,4 +1,5 @@
 /// <mls fileReference="_102034_/l1/workflow/memoryOccurrence.ts" enhancement="_blank"/>
+import cluster from 'node:cluster';
 import { AppError } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import type {
   AdvanceOccurrenceCommand,
@@ -34,8 +35,42 @@ function samePassage(current: OccurrenceSnapshot, command: AdvanceOccurrenceComm
  * In-memory occurrence port. The map is private to this instance.
  * Read, decide and write run with no await between them, so one instance
  * is atomic on a single process. This is not a stand-in for the cm adapter.
+ * A launcher that announces COLLAB_WORKER_COUNT may use this port only for
+ * a single worker. A managed worker with no announced total is refused.
  */
+function assertSingleWorkerTopology(): void {
+  const announced = process.env.COLLAB_WORKER_COUNT;
+  if (announced !== undefined) {
+    if (!/^[1-9]\d*$/.test(announced)) {
+      throw new AppError(
+        'WORKFLOW_RUNTIME_TOPOLOGY_INVALID',
+        'COLLAB_WORKER_COUNT must be a positive decimal integer.',
+        500,
+        { workerCount: announced },
+      );
+    }
+    if (announced !== '1') {
+      throw new AppError(
+        'WORKFLOW_MEMORY_REQUIRES_SINGLE_WORKER',
+        `Memory occurrence port requires one worker; announced count is ${announced}.`,
+        500,
+        { workerCount: announced },
+      );
+    }
+    return;
+  }
+  if (process.env.NODE_APP_INSTANCE !== undefined || cluster.isWorker) {
+    throw new AppError(
+      'WORKFLOW_RUNTIME_TOPOLOGY_INVALID',
+      'A managed worker started without COLLAB_WORKER_COUNT.',
+      500,
+      { nodeAppInstance: process.env.NODE_APP_INSTANCE ?? null },
+    );
+  }
+}
+
 export function createMemoryOccurrencePort(): OccurrencePort {
+  assertSingleWorkerTopology();
   const records = new Map<string, OccurrenceSnapshot>();
 
   return {
