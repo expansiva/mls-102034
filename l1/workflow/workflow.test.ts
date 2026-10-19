@@ -7,15 +7,29 @@ import test from 'node:test';
 import type { RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import { createRequestContext } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
 import { resetRunningReleaseCache } from '/_102034_/l1/server/layer_1_external/cbe/cbeRelease.js';
+import { ownerOf as ownerOfEngine } from '/_102034_/l1/workflow/engine.js';
 import {
   createMemoryOccurrencePort,
   createOccurrenceContext,
   createWorkflowEngine,
   occurrenceRecordId,
+  ownerOf,
+  prepareWorkflowPlan,
   type OccurrencePort,
   type WorkflowEngine,
+  type WorkflowPlan,
+  type WorkflowPlanInput,
+  type WorkflowPlanStep,
+  type WorkflowPlanStepInput,
   type WorkflowTable,
 } from '/_102034_/l1/workflow/index.js';
+import {
+  prepareWorkflowPlan as prepareWorkflowPlanDirect,
+  type WorkflowPlan as WorkflowPlanDirect,
+  type WorkflowPlanInput as WorkflowPlanInputDirect,
+  type WorkflowPlanStep as WorkflowPlanStepDirect,
+  type WorkflowPlanStepInput as WorkflowPlanStepInputDirect,
+} from '/_102034_/l1/workflow/plan.js';
 
 /** In-memory business records. The library does not own this store. */
 interface BusinessRecord {
@@ -81,6 +95,101 @@ async function withRelease(id: string | null, run: () => Promise<void>): Promise
 test('the public entry has no browser global', () => {
   assert.equal('window' in globalThis, false);
   assert.equal('document' in globalThis, false);
+  assert.equal(typeof prepareWorkflowPlan, 'function');
+  assert.equal(typeof prepareWorkflowPlanDirect, 'function');
+});
+
+const fullPlanInput: WorkflowPlanInput = {
+  processId: 'ciclo',
+  title: 'Ciclo de tarefa',
+  moduleTitle: 'Tarefas',
+  steps: [
+    {
+      stepId: 'H',
+      kind: 'human',
+      title: 'Pessoa',
+      actorRef: 'actor-ada',
+      next: ['M'],
+      conditions: 'when the prose stays exactly',
+      params: { note: 'keep me' },
+    },
+    { stepId: 'M', kind: 'mechanical', title: 'Módulo', functionRef: 'fn-close', next: ['L'] },
+    { stepId: 'L', kind: 'llm', title: 'Agente', journeyRef: 'journey-1', next: ['W'] },
+    { stepId: 'W', kind: 'wait', title: 'Relógio', next: ['A'] },
+    { stepId: 'A', kind: 'alert', title: 'Alerta', next: ['H'] },
+  ],
+};
+
+test('public and direct plan imports share one preparation and one owner function', async () => {
+  assert.equal(prepareWorkflowPlan, prepareWorkflowPlanDirect);
+  assert.equal(ownerOf, ownerOfEngine);
+  assert.equal(ownerOf('human'), 'person');
+  assert.equal(ownerOfEngine('human'), 'person');
+  assert.equal(ownerOf('alert'), 'person');
+  assert.equal(ownerOfEngine('alert'), 'person');
+  assert.equal(ownerOf('mechanical'), 'module');
+  assert.equal(ownerOfEngine('mechanical'), 'module');
+  assert.equal(ownerOf('llm'), 'agent');
+  assert.equal(ownerOfEngine('llm'), 'agent');
+  assert.equal(ownerOf('wait'), 'clock');
+  assert.equal(ownerOfEngine('wait'), 'clock');
+
+  const typed: WorkflowPlanInputDirect = fullPlanInput;
+  const published: WorkflowPlan = prepareWorkflowPlan(typed);
+  const direct: WorkflowPlanDirect = prepareWorkflowPlanDirect(fullPlanInput);
+  const publishedStep: WorkflowPlanStep = published.steps[0];
+  const directStep: WorkflowPlanStepDirect = direct.steps[0];
+  const inputStep: WorkflowPlanStepInput = fullPlanInput.steps[0];
+  const directInputStep: WorkflowPlanStepInputDirect = typed.steps[0];
+  assert.equal(inputStep.title, directInputStep.title);
+  assert.deepEqual(published, direct);
+  assert.equal(published.processId, 'ciclo');
+  assert.equal(published.title, 'Ciclo de tarefa');
+  assert.equal(published.moduleTitle, 'Tarefas');
+  assert.deepEqual(
+    published.steps.map(step => [step.stepId, step.kind, step.ownerKind, step.title]),
+    [
+      ['H', 'human', 'person', 'Pessoa'],
+      ['M', 'mechanical', 'module', 'Módulo'],
+      ['L', 'llm', 'agent', 'Agente'],
+      ['W', 'wait', 'clock', 'Relógio'],
+      ['A', 'alert', 'person', 'Alerta'],
+    ],
+  );
+  assert.equal(publishedStep.actorRef, 'actor-ada');
+  assert.equal(published.steps[1]?.functionRef, 'fn-close');
+  assert.equal(published.steps[2]?.journeyRef, 'journey-1');
+  assert.equal(publishedStep.conditions, 'when the prose stays exactly');
+  assert.deepEqual(publishedStep.params, { note: 'keep me' });
+  assert.deepEqual(published.steps.map(step => step.next), [['M'], ['L'], ['W'], ['A'], ['H']]);
+  assert.equal(directStep.ownerKind, 'person');
+
+  const again = prepareWorkflowPlan(fullPlanInput);
+  published.title = 'trocado';
+  published.moduleTitle = 'outro';
+  published.steps[0].title = 'outra pessoa';
+  published.steps[0].conditions = 'prosa nova';
+  published.steps[0].next.push('Z');
+  published.steps[0].params = { note: 'mutado' };
+  assert.equal(again.title, 'Ciclo de tarefa');
+  assert.equal(again.moduleTitle, 'Tarefas');
+  assert.equal(again.steps[0]?.title, 'Pessoa');
+  assert.equal(again.steps[0]?.conditions, 'when the prose stays exactly');
+  assert.deepEqual(again.steps[0]?.next, ['M']);
+  assert.deepEqual(again.steps[0]?.params, { note: 'keep me' });
+  assert.equal(fullPlanInput.title, 'Ciclo de tarefa');
+  assert.deepEqual(fullPlanInput.steps[0]?.next, ['M']);
+
+  const parent = requestCtx();
+  const engine = createWorkflowEngine(createMemoryOccurrencePort());
+  const recordId = occurrenceRecordId(parent, 'ciclo');
+  assert.equal(await engine.find(parent, {
+    project: '10',
+    module: 'tarefas',
+    processId: 'ciclo',
+    entity: 'Tarefa',
+    recordId,
+  }), null);
 });
 
 test('partial create then partial advance recover without a second business write or history row', async () => {

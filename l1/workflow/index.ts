@@ -23,3 +23,10 @@ export {
 } from '/_102034_/l1/workflow/engine.js';
 export { createMemoryOccurrencePort } from '/_102034_/l1/workflow/memoryOccurrence.js';
 export { createOccurrenceContext, occurrenceRecordId } from '/_102034_/l1/workflow/occurrenceRecordId.js';
+export {
+  prepareWorkflowPlan,
+  type WorkflowPlan,
+  type WorkflowPlanInput,
+  type WorkflowPlanStep,
+  type WorkflowPlanStepInput,
+} from '/_102034_/l1/workflow/plan.js';
