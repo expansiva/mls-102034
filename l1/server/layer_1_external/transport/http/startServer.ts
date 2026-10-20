@@ -31,6 +31,8 @@ import { registerMsgProxy } from '/_102034_/l1/server/layer_1_external/transport
 import { registerGitRoutes } from '/_102034_/l1/server/layer_1_external/transport/http/gitHttp.js';
 import { registerSessionRegistrationRoutes } from '/_102034_/l1/server/layer_1_external/transport/http/sessionRegistration.js';
 import { registerLocalTestSessionRoutes } from '/_102034_/l1/server/layer_1_external/transport/http/localTestSessionHttp.js';
+import { registerWorkflowWakeRoutes } from '/_102034_/l1/server/layer_1_external/transport/http/workflowWake.js';
+import { WorkflowWakeInboxLoop } from '/_102034_/l1/workflow/wakeLoop.js';
 import { OnboardingConfigError, readOnboardingConfig, resolveOrganizationBinding } from '/_102034_/l1/server/layer_1_external/config/onboardingConfig.js';
 import { isPersonAccessComplete } from '/_102034_/l1/mdm/layer_3_usecases/mdmSupport.js';
 import { normalizeRegistrationEmail } from '/_102034_/l1/mdm/layer_3_usecases/registrationCandidates.js';
@@ -547,6 +549,7 @@ export function buildHttpServer() {
     if (result.headers) reply.headers(result.headers);
     return result.body;
   });
+  registerWorkflowWakeRoutes(app);
   app.post('/execBff', async (request, reply) => {
     const draft = await applyDraftExecBff({
       request,
@@ -892,7 +895,47 @@ export interface BootStepsInput {
   draft: boolean;
   runMigrations: () => Promise<void>;
   initializeOrganization?: () => Promise<void>;
+  /** After migrations and organization bootstrap, before the process accepts traffic. */
+  beforeListen?: () => Promise<void>;
   listen: () => Promise<void>;
+}
+
+export interface ServerWorkflowWakeLoop {
+  start(): Promise<void>;
+  stop(): Promise<void>;
+}
+
+export interface ServerWorkflowWakeLifecycleDeps {
+  readEnv?: () => { runtimeMode: 'memory' | 'postgres'; tickEnabled: boolean };
+  createLoop?: () => ServerWorkflowWakeLoop;
+}
+
+/** Postgres inbox recovery. `tickEnabled` does not gate it. Memory runtime does not start a loop. */
+export function createServerWorkflowWakeLifecycle(
+  deps: ServerWorkflowWakeLifecycleDeps = {},
+): ServerWorkflowWakeLoop {
+  const readEnv = deps.readEnv ?? (() => {
+    const env = readAppEnv();
+    return { runtimeMode: env.runtimeMode, tickEnabled: env.tickEnabled };
+  });
+  const createLoop = deps.createLoop ?? (() => new WorkflowWakeInboxLoop());
+  let loop: ServerWorkflowWakeLoop | null = null;
+  return {
+    async start() {
+      if (loop) return;
+      const env = readEnv();
+      if (env.runtimeMode !== 'postgres') return;
+      const created = createLoop();
+      loop = created;
+      // Do not hold listen on the first round: a round may call handlers that wait on the cm.
+      // The loop never throws from start; stop() still waits for the round in flight.
+      void created.start();
+    },
+    async stop() {
+      if (!loop) return;
+      await loop.stop();
+    },
+  };
 }
 
 export async function bootSteps(input: BootStepsInput): Promise<void> {
@@ -916,6 +959,7 @@ export async function bootSteps(input: BootStepsInput): Promise<void> {
       throw new Error(`[boot] process.exit(1) was ignored after: ${cause}`);
     }
   }
+  if (input.beforeListen) await input.beforeListen();
   await input.listen();
 }
 
@@ -926,9 +970,11 @@ if (isMainModule) {
     ? createRuntimeMetricsCollector(env, readProjectsConfig().defaultProjectId)
     : null;
   const moduleTickLoop = env.runtimeMode === 'postgres' && env.tickEnabled ? new ModuleTickLoop() : null;
+  const workflowWakeLifecycle = createServerWorkflowWakeLifecycle();
   server.addHook('onClose', async () => {
     runtimeMetricsCollector?.stop();
     moduleTickLoop?.stop();
+    await workflowWakeLifecycle.stop();
   });
   void bootSteps({
     draft: Boolean(process.env.COLLAB_DRAFT),
@@ -937,6 +983,7 @@ if (isMainModule) {
       await runMigrations();
     },
     initializeOrganization: () => initializeOrganizationForProcess(),
+    beforeListen: () => workflowWakeLifecycle.start(),
     listen: () => getFrontendAppRegistrations().then((apps) => {
     // Logs the [alpha] line at boot when the VM switch is on (the check itself warns on every off→on flip).
     isAlphaAllAuthorities();

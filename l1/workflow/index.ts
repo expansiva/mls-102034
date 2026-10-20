@@ -86,3 +86,11 @@ export {
   type RebuildWorkflowActivityPageResult,
   type WorkflowActivityRebuildFailure,
 } from '/_102034_/l1/workflow/activitiesRebuild.js';
+export type {
+  ModuleWakeEvent,
+  ModuleWakeReceipt,
+  WorkflowWakeHandler,
+  WorkflowWakeScope,
+} from '/_102034_/l1/workflow/wakeContracts.js';
+export { workflowWakeCommandId } from '/_102034_/l1/workflow/wakeContracts.js';
+export { registerWorkflowWakeHandler } from '/_102034_/l1/workflow/wakeRegistry.js';
