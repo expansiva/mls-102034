@@ -27,6 +27,7 @@ import type {
   MdmTagRecord,
 } from '/_102034_/l1/mdm/module.js';
 import { getMdmTableNames } from '/_102034_/l1/mdm/tableNames.js';
+import { createPostgresMdmIdentityUsersReader } from '/_102034_/l1/mdm/layer_1_external/data/postgres/MdmIdentityUsersPostgres.js';
 import { getSharedPgPool, queryRows, withPgTransaction } from '/_102034_/l1/mdm/layer_1_external/data/postgres/pg.js';
 
 type PgExecutor = Pool | PoolClient;
@@ -271,6 +272,7 @@ function createPostgresRuntimeWithExecutor(env: AppEnv, executor: PgExecutor): I
     mdmOutbox: new TableRuntimePostgres<MdmOutboxRecord>(executor, tableNames.outbox),
     pgQueue: new QueueRuntimePostgres(executor, tableNames.outbox),
     moduleData: createPostgresModuleDataRuntime(env, executor),
+    mdmIdentityUsers: createPostgresMdmIdentityUsersReader(env, executor),
     async runInTransaction<TValue>() {
       throw new AppError('INVALID_RUNTIME', 'Nested transaction runtime is not supported directly', 500);
     },
@@ -306,6 +308,6 @@ function createPostgresRuntimeWithExecutor(env: AppEnv, executor: PgExecutor): I
   return runtime;
 }
 
-export function createPostgresDataRuntime(env: AppEnv): IDataRuntime {
-  return createPostgresRuntimeWithExecutor(env, getSharedPgPool(env));
+export function createPostgresDataRuntime(env: AppEnv, pool?: Pool): IDataRuntime {
+  return createPostgresRuntimeWithExecutor(env, pool ?? getSharedPgPool(env));
 }
