@@ -452,6 +452,63 @@ test('recoverable get failures stay distinct and do not open, repair or advance'
   assert.deepEqual(legacy.calls.map((call) => call.name), ['get']);
 });
 
+test('a coherent 422 is a definitive rejection and a mismatched 422 stays protocol', async () => {
+  const secret = 'task#secret-99';
+  const payload = 'raw-payload-value';
+  const status422 = 422 as ResponseBase['statusCode'];
+  const accepted: Array<{ httpStatus: number; body: ResponseBase & Record<string, unknown> }> = [
+    { httpStatus: 200, body: { statusCode: status422, msg: 'test_rejected', taskId: secret, note: payload } },
+    { httpStatus: 422, body: { statusCode: status422, msg: 'test_rejected', detail: payload } },
+    { httpStatus: 200, body: { statusCode: status422, msg: 'quota_exceeded', reason: payload } },
+  ];
+  for (const item of accepted) {
+    for (const op of ['find', 'open', 'advance'] as const) {
+      const routed = scripted(async (call) => {
+        if (op === 'advance' && call.name === 'get') return envelope(200, { statusCode: 200, task: task(), room: room() });
+        return envelope(item.httpStatus, item.body);
+      });
+      const occurrence = port(routed.client);
+      const run = op === 'find'
+        ? occurrence.find(ctx(), KEY)
+        : op === 'open'
+          ? occurrence.open(ctx(), openCommand())
+          : occurrence.advance(ctx(), KEY, advanceCommand());
+      await assert.rejects(run, (error: unknown) => {
+        assert.ok(error instanceof AppError);
+        assert.equal(error.code, 'WORKFLOW_CM_REJECTED');
+        assert.equal(error.statusCode, 422);
+        assert.equal(error.message, 'Module task was rejected.');
+        assert.equal(error.message.includes(secret), false);
+        assert.equal(error.message.includes(payload), false);
+        assert.equal(error.message.includes('test_rejected'), false);
+        assert.equal(error.details, undefined);
+        return true;
+      });
+      assert.deepEqual(routed.calls.map((call) => call.name), op === 'advance' ? ['get', 'advance'] : [op === 'open' ? 'open' : 'get']);
+    }
+  }
+  const invalid: Array<{ httpStatus: number; body: ResponseBase & Record<string, unknown> }> = [
+    { httpStatus: 422, body: { statusCode: 200, msg: 'ok', task: task(), moduleAdvance: { commandId: 'cmd-2', outcome: 'applied' } } },
+    { httpStatus: 403, body: { statusCode: status422, msg: 'test_rejected', taskId: secret } },
+  ];
+  for (const item of invalid) {
+    for (const op of ['find', 'open', 'advance'] as const) {
+      const routed = scripted(async (call) => {
+        if (op === 'advance' && call.name === 'get') return envelope(200, { statusCode: 200, task: task(), room: room() });
+        return envelope(item.httpStatus, item.body);
+      });
+      const occurrence = port(routed.client);
+      const run = op === 'find'
+        ? occurrence.find(ctx(), KEY)
+        : op === 'open'
+          ? occurrence.open(ctx(), openCommand())
+          : occurrence.advance(ctx(), KEY, advanceCommand());
+      await assert.rejects(run, (error: unknown) => error instanceof AppError && error.code === 'WORKFLOW_CM_PROTOCOL_ERROR' && error.message.includes(secret) === false && error.message.includes(payload) === false);
+      assert.deepEqual(routed.calls.map((call) => call.name), op === 'advance' ? ['get', 'advance'] : [op === 'open' ? 'open' : 'get']);
+    }
+  }
+});
+
 test('factory rejects an empty binding', () => {
   assert.throws(() => createMessagesTaskOccurrencePort({
     projectId: ' ',

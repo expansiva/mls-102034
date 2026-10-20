@@ -42,7 +42,7 @@ const REJECTED = 'Module task was rejected.';
 const BUSY = 'Module task is busy.';
 const INCOMPLETE = 'Module task is incomplete.';
 const ROOM_UNAVAILABLE = 'Module task room is unavailable.';
-const REMOTE_STATUS = new Set([400, 401, 403, 404, 409, 507]);
+const REMOTE_STATUS = new Set([400, 401, 403, 404, 409, 422, 507]);
 
 function protocol(): never {
   throw new AppError('WORKFLOW_CM_PROTOCOL_ERROR', PROTOCOL, 502);
