@@ -248,12 +248,15 @@ async function buildPage(
   const selected = selectEntries(filtered.entries, query.limit);
   const oldest = selected.entries[0];
   const oldestStart = oldest ? entryStart(oldest) : base;
-  const moreInFile = oldest ? oldestStart > 0 : (parsed !== parsedAll ? true : base > 0);
-  const stoppedByCap = filtered.entries.length > selected.entries.length && selected.entries.length >= query.limit && !selected.truncated;
-  const hasMore = moreInFile || filtered.entries.length > selected.entries.length;
-  const limited = selected.truncated || (!stoppedByCap && hasMore && selected.entries.length < query.limit);
+  // More history exists only when bytes before the read window were not scanned, or the page was cut by count.
+  // Reaching the file start with every match on the page is the end, even if the oldest match is not at byte 0.
+  const unreadBefore = readStart > 0;
+  const cutByCount = filtered.entries.length > selected.entries.length;
+  const hasMore = unreadBefore || cutByCount;
+  const limited = selected.truncated || (unreadBefore && !cutByCount && selected.entries.length < query.limit);
   const firstKept = parsed[0];
-  const nextOffset = selected.entries.length > 0 ? oldestStart : (firstKept && parsed !== parsedAll ? entryStart(firstKept) : base);
+  const windowStart = firstKept && parsed !== parsedAll ? entryStart(firstKept) : base;
+  const nextOffset = cutByCount ? oldestStart : windowStart;
   const moving = hasMore && nextOffset < regionEnd && nextOffset >= 0;
   const edgeHash = moving ? fingerprint(await readAt(handle, nextOffset, anchorLength(opened.size, nextOffset))) : '';
   return {

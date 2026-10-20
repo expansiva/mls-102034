@@ -224,6 +224,36 @@ test('a multiline block cut by the read budget is returned whole, never as a hea
   }
 });
 
+test('a filtered read that reached the file start ends without a read-limit warning', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'rt110-'));
+  try {
+    const file = join(dir, 'pm2-api-error.log');
+    const lines: string[] = [];
+    for (let index = 0; index < 400; index += 1) {
+      const stamp = new Date(Date.UTC(2026, 9, 20, 10, 0, 0) + index * 10_000).toISOString().slice(0, 19);
+      lines.push(`${stamp}: entry ${index}${index === 20 || index === 40 ? ' [config_error]' : ''}`);
+    }
+    await writeFile(file, `${lines.join('\n')}\n`);
+    const page = await okPage(file, { text: '[config_error]', limit: 200 });
+    assert.deepEqual(page.entries.map((entry) => entry.text), ['entry 20 [config_error]', 'entry 40 [config_error]']);
+    assert.equal(page.hasMore, false);
+    assert.equal(page.limited, false);
+    assert.equal(page.nextCursor, null);
+
+    const big = join(dir, 'pm2-api-out.log');
+    const filler = `2026-10-20T09:00:00: ${'f'.repeat(200)}\n`;
+    await writeFile(big, `2026-10-20T08:00:00: early [config_error]\n${filler.repeat(Math.ceil((LOG_PAGE_READ_BUDGET + 200_000) / filler.length))}`);
+    const sparse = await okPage(big, { text: '[config_error]', limit: 200 });
+    assert.equal(sparse.entries.length, 0);
+    assert.equal(sparse.hasMore, true);
+    assert.equal(sparse.limited, true);
+    const rest = await pageAll(big, { text: '[config_error]', limit: 200 });
+    assert.deepEqual(rest.map((entry) => entry.text), ['early [config_error]']);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('empty and absent files are distinct, and an unreadable file is not empty', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'rt110-'));
   const hidden = join(dir, 'denied.log');

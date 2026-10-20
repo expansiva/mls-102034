@@ -255,7 +255,8 @@ export class MonitorWebDesktopMessagesPage extends LitElement {
                     ? html`<p class="mt-1 text-sm text-rose-700">${payload.pm2Error}</p>`
                     : null}
                 </div>
-                <table class="min-w-full text-left text-sm">
+                <div class="min-w-0 overflow-x-auto">
+                <table class="min-w-full whitespace-nowrap text-left text-sm">
                   <thead class="bg-slate-50 text-slate-600">
                     <tr>
                       <th class="px-4 py-2 font-medium">Process</th>
@@ -280,6 +281,7 @@ export class MonitorWebDesktopMessagesPage extends LitElement {
                       : null}
                   </tbody>
                 </table>
+                </div>
               </article>
 
               <article class="min-w-0 max-w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
