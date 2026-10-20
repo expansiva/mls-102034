@@ -248,7 +248,7 @@ function renderIndexColumn(column: TableIndexColumnDefinition): string {
   return `${quoteIdentifier(column.name)} ${(column.direction ?? 'asc').toUpperCase()}`;
 }
 
-function buildCreateTableSql(definition: ResolvedTableDefinition): string {
+export function buildCreateTableSql(definition: ResolvedTableDefinition): string {
   const columnsSql = definition.columns.map((column) => {
     const notNullSql = column.nullable ? '' : ' NOT NULL';
     const defaultSql = column.defaultSql ? ` DEFAULT ${column.defaultSql}` : '';
@@ -313,7 +313,7 @@ export function sanitizeDefinitionIndexes<T extends {
   return { ...definition, indexes: kept };
 }
 
-function buildCreateIndexSql(definition: ResolvedTableDefinition): string[] {
+export function buildCreateIndexSql(definition: ResolvedTableDefinition): string[] {
   return (sanitizeDefinitionIndexes(definition).indexes ?? []).map((index) => {
     const whereSql = index.where ? ` WHERE ${index.where}` : '';
     return `CREATE ${index.unique ? 'UNIQUE ' : ''}INDEX ${quoteIdentifier(index.name)}
