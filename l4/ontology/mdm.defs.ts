@@ -138,7 +138,7 @@ export const mdm = {
         "photoUrl": { "type": "string" },
         "privacyConsent": { "type": "object", "of": "PrivacyConsent", "description": "Required for residents of Brazil (LGPD) and the EU (GDPR)." }
       },
-      "capabilities": ["locate.byLogin", "invite.login", "register.self", "accessRequest.read", "accessRequest.resolve", "export.personalData", "anonymize"],
+      "capabilities": ["locate.byLogin", "locate.users", "invite.login", "register.self", "accessRequest.read", "accessRequest.resolve", "export.personalData", "anonymize"],
       "rules": ["rule-person-ssn-unique-for-us", "rule-person-privacy-consent-required-br-eu"]
     },
     "Company": {
@@ -322,6 +322,7 @@ export const mdm = {
     "locate.byDocument": "Finds the single record that holds a national document (CPF, CNPJ, SSN, EIN) · findByDocument loads the index and filters in JS · whoever registers, to deduplicate before creating · platform: partial",
     "locate.byContact": "Finds the record that owns a phone, WhatsApp handle or e-mail · findByContact loads every ContactChannel record · whoever answers an inbound call or message · platform: partial",
     "locate.byLogin": "Finds the person behind a login e-mail · mdm_tag row with namespace login, partial unique index on (namespace, tag, module) · the session resolver · platform: ready",
+    "locate.users": "Lists people who already have a platform login · ctx.mdm.identity.listUsers({ name?, status?, roleTag?, roleTagMode?, pageSize?, cursor? }) filters a folded literal name, status Active by default or Inactive, Merged, Blocked or all, and one role tag with or without that tag; pages of 1 to 100, default 20, ordered by mdmId in UTF-8 byte order and continued by nextCursor, which is navigation and not a snapshot · the MDM is the one shared by the organization and the VM, with no project filter · ctx.mdm.identity.getLoginEmail(mdmId) reads the login of one person · platform: ready, proved in memory and on PostgreSQL",
     "locate.byTag": "Finds every record carrying a given label — which is how a secondary key works here · mdm.tag.findByTag, over the index idx_mdm_tag_lookup on (entityType, tag, module); the `namespace` column keeps one key space apart from another, and the login e-mail of locate.byLogin is nothing but the namespace 'login' · a module that has to find a record by a code of its own, such as a chart or a badge number · platform: ready",
     "locate.semantic": "Finds a record through a misspelling, a phonetic match or half a name · would need a trigram or tsvector index, or embeddings; searchVector is TEXT compared literally · reception, when the spelling is uncertain · platform: missing",
     "locate.byDocumentField": "Filters or sorts by something that lives only in the document, such as birth month, city or any module field · would need that field promoted to an index column, or a GIN index on details; for a key the module itself controls, locate.byTag already answers without any of that · marketing and reporting · platform: missing",
