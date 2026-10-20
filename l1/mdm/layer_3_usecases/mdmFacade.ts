@@ -47,10 +47,18 @@ import type { MdmProspectStatus, MdmStatus, MdmSubtype, RelationshipType } from 
 import {
   findByLogin,
   invite,
+  lookupLoginEmail,
   setLogin,
   type MdmIdentityInviteInput,
   type MdmIdentityInviteResult,
 } from '/_102034_/l1/mdm/layer_3_usecases/identityUsecases.js';
+import { listUsers } from '/_102034_/l1/mdm/layer_3_usecases/identityUsers.js';
+import type {
+  MdmListUsersInput,
+  MdmListUsersResult,
+  MdmUserSummary,
+} from '/_102034_/l1/mdm/layer_3_usecases/identityUsersContracts.js';
+export type { MdmListUsersInput, MdmListUsersResult, MdmUserSummary };
 
 const DEFAULT_GET_MANY_CHUNK_SIZE = 100;
 
@@ -1011,6 +1019,14 @@ export class MdmIdentity {
 
   public invite(input: MdmIdentityInviteInput): Promise<MdmIdentityInviteResult> {
     return invite(this.ctx, input);
+  }
+
+  public listUsers(input?: MdmListUsersInput): Promise<MdmListUsersResult> {
+    return listUsers(this.ctx, input);
+  }
+
+  public getLoginEmail(mdmId: string): Promise<string | null> {
+    return lookupLoginEmail(this.ctx, mdmId);
   }
 }
 
