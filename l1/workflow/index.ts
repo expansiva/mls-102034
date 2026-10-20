@@ -80,3 +80,9 @@ export {
   type PostgresWorkflowActivityStoreOptions,
 } from '/_102034_/l1/workflow/activitiesPostgres.js';
 export { withWorkflowActivityProjection } from '/_102034_/l1/workflow/activitiesSync.js';
+export {
+  rebuildWorkflowActivityPage,
+  type RebuildWorkflowActivityPageInput,
+  type RebuildWorkflowActivityPageResult,
+  type WorkflowActivityRebuildFailure,
+} from '/_102034_/l1/workflow/activitiesRebuild.js';
