@@ -19,6 +19,7 @@ import { monitorOperationsSummaryHandler } from '/_102034_/l1/monitor/layer_2_co
 import { monitorRequestTraceLoadHandler } from '/_102034_/l1/monitor/layer_2_controllers/traceHandlers.js';
 import { monitorMessagesStatusHandler } from '/_102034_/l1/monitor/layer_2_controllers/messagesHandlers.js';
 import {
+  monitorLogsPageHandler,
   monitorLogsTailHandler,
   monitorReleasesActivateHandler,
   monitorReleasesListHandler,
@@ -53,6 +54,7 @@ export function createMonitorRouter(): Map<string, BffHandler> {
     ['monitor.releases.list', monitorReleasesListHandler],
     ['monitor.releases.activate', monitorReleasesActivateHandler],
     ['monitor.logs.tail', monitorLogsTailHandler],
+    ['monitor.logs.page', monitorLogsPageHandler],
     ['monitor.messages.status', monitorMessagesStatusHandler],
     // Generated BFF tests (devenv). run is gated to development inside the usecase.
     ['monitor.tests.list', monitorTestsListHandler],

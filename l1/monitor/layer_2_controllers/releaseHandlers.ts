@@ -2,6 +2,8 @@
 import { spawn, execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, readlinkSync, statSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
+import { readLogFilePage } from '/_102034_/l1/monitor/layer_3_usecases/logFilePages.js';
+import { validateMonitorLogPageInput } from '/_102034_/l1/monitor/layer_3_usecases/logEntries.js';
 import { AppError, fail, ok, type BffHandler } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 
 // ── Runtime layout ───────────────────────────────────────────────────────────
@@ -189,3 +191,26 @@ export const monitorLogsTailHandler: BffHandler = async ({ request }) => {
   const tail = readFileSync(target.file, 'utf8').split(/\r?\n/u).slice(-lines);
   return ok({ ...target, stream, available, lines: tail });
 };
+
+// Paged read of the allowlisted Collab Messages logs. The app and stream are
+// validated before selectLogTarget, so an unknown app cannot fall back to another file.
+export function createMonitorLogsPageHandler(options: LogTargetOptions = {}): BffHandler {
+  return async ({ request }) => {
+    const params = (request.params ?? {}) as Record<string, unknown>;
+    const validated = validateMonitorLogPageInput(params);
+    if (!validated.ok) {
+      return fail(new AppError(validated.error.code, validated.error.message, validated.error.status));
+    }
+    const { target } = selectLogTarget(validated.value.stream, validated.value.app, options);
+    if (target.app !== validated.value.app) {
+      return fail(new AppError('INVALID_LOG_QUERY', 'log target does not match the requested app', 400));
+    }
+    const result = await readLogFilePage({ file: target.file }, params);
+    if (!result.ok) {
+      return fail(new AppError(result.error.code, result.error.message, result.error.status));
+    }
+    return ok(result.page);
+  };
+}
+
+export const monitorLogsPageHandler: BffHandler = createMonitorLogsPageHandler();
