@@ -200,8 +200,11 @@ export class MonitorWebDesktopMessagesPage extends LitElement {
     const storage = payload?.health.storage;
     const healthOk = storage?.ok === true && payload?.health.reachable === true;
     const errorCode = payload ? this.storageError(payload) : undefined;
+    const statusFailed = !this.busy && payload == null && this.status !== 'Loading collab-messages...';
+    const healthWord = payload == null ? (statusFailed ? 'error' : '—') : (healthOk ? 'ok' : 'error');
+    const failureText = errorCode ?? (statusFailed ? this.status : undefined);
     return html`
-      <section class="space-y-6">
+      <section class="min-w-0 space-y-4">
         <header class="flex items-center justify-between gap-4">
           <div>
             <h1 class="text-lg font-semibold text-slate-900">Collab Messages</h1>
@@ -216,48 +219,38 @@ export class MonitorWebDesktopMessagesPage extends LitElement {
 
         ${payload && !payload.local
           ? html`
-              <article class="rounded-3xl border border-amber-200 bg-amber-50 p-6 text-sm text-amber-900">
+              <article class="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900">
                 This VM does not host collab-messages. <code class="font-mono">${payload.target}</code> is the
                 upstream; health and ready below are remote. pm2 and logs live on the host VM.
               </article>
             `
           : null}
 
-        <div class="grid gap-6 lg:grid-cols-2">
-          <article class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-            <h2 class="text-lg font-semibold text-slate-900">Health</h2>
-            <p class="mt-1 text-xs text-slate-500">${payload?.health.url ?? ''}</p>
-            <div class="mt-4 flex flex-wrap items-center gap-2">
-              ${healthOk
-                ? html`<span class="rounded-full bg-emerald-100 px-3 py-1 text-sm font-medium text-emerald-800">ok</span>`
-                : html`<span class="rounded-full bg-rose-100 px-3 py-1 text-sm font-medium text-rose-800">error</span>`}
-              ${errorCode
-                ? html`<span class="rounded-full bg-rose-600 px-3 py-1 text-sm font-semibold text-white">${errorCode}</span>`
-                : null}
-            </div>
-            <p class="mt-3 text-sm text-slate-600">
-              HTTP ${payload?.health.statusCode ?? '—'}
-              · ready ${payload?.ready.status ?? '—'}
-              (${payload?.ready.statusCode ?? '—'})
-            </p>
-          </article>
-
-          <article class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-            <h2 class="text-lg font-semibold text-slate-900">Storage account</h2>
-            <dl class="mt-4 grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
-              <dt class="text-slate-500">accountId</dt><dd class="font-mono text-slate-900">${storage?.accountId ?? '—'}</dd>
-              <dt class="text-slate-500">region</dt><dd class="font-mono text-slate-900">${storage?.dynamoRegion ?? '—'}</dd>
-              <dt class="text-slate-500">bucket</dt><dd class="font-mono text-slate-900">${storage?.bucket ?? '—'}</dd>
-              <dt class="text-slate-500">instanceId</dt><dd class="font-mono text-slate-900">${storage?.instanceId ?? '—'}</dd>
-            </dl>
-          </article>
-        </div>
+        <article class="min-w-0 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm shadow-sm">
+          <p class="flex flex-wrap items-baseline gap-x-4 gap-y-1 leading-6">
+            <span><span class="text-slate-500">Health</span> <span class="${healthWord === 'ok' ? 'font-medium text-emerald-800' : healthWord === 'error' ? 'font-medium text-rose-800' : 'text-slate-900'}">${healthWord}</span></span>
+            <span><span class="text-slate-500">HTTP</span> <span class="font-mono text-slate-900">${payload?.health.statusCode ?? '—'}</span></span>
+            <span><span class="text-slate-500">ready</span> <span class="font-mono text-slate-900">${payload?.ready.status ?? '—'} (${payload?.ready.statusCode ?? '—'})</span></span>
+            ${healthWord === 'error'
+              ? html`<span class="rounded-full bg-rose-600 px-2 py-0.5 text-xs font-semibold text-white">${failureText ?? 'error'}</span>`
+              : null}
+            ${payload?.health.url
+              ? html`<span class="font-mono text-xs text-slate-500">${payload.health.url}</span>`
+              : null}
+          </p>
+          <p class="mt-1 flex flex-wrap items-baseline gap-x-4 gap-y-1 leading-6">
+            <span><span class="text-slate-500">accountId</span> <span class="font-mono text-slate-900">${storage?.accountId ?? '—'}</span></span>
+            <span><span class="text-slate-500">region</span> <span class="font-mono text-slate-900">${storage?.dynamoRegion ?? '—'}</span></span>
+            <span><span class="text-slate-500">bucket</span> <span class="font-mono text-slate-900">${storage?.bucket ?? '—'}</span></span>
+            <span><span class="text-slate-500">instanceId</span> <span class="font-mono text-slate-900">${storage?.instanceId ?? '—'}</span></span>
+          </p>
+        </article>
 
         ${payload?.local
           ? html`
-              <article class="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
-                <div class="px-6 py-4">
-                  <h2 class="text-lg font-semibold text-slate-900">pm2</h2>
+              <article class="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                <div class="px-4 py-2">
+                  <h2 class="text-base font-semibold text-slate-900">pm2</h2>
                   ${payload.pm2Error
                     ? html`<p class="mt-1 text-sm text-rose-700">${payload.pm2Error}</p>`
                     : null}
@@ -265,31 +258,31 @@ export class MonitorWebDesktopMessagesPage extends LitElement {
                 <table class="min-w-full text-left text-sm">
                   <thead class="bg-slate-50 text-slate-600">
                     <tr>
-                      <th class="px-6 py-3 font-medium">Process</th>
-                      <th class="px-6 py-3 font-medium">Instances</th>
-                      <th class="px-6 py-3 font-medium">Status</th>
-                      <th class="px-6 py-3 font-medium">Uptime</th>
-                      <th class="px-6 py-3 font-medium">Restarts</th>
+                      <th class="px-4 py-2 font-medium">Process</th>
+                      <th class="px-4 py-2 font-medium">Instances</th>
+                      <th class="px-4 py-2 font-medium">Status</th>
+                      <th class="px-4 py-2 font-medium">Uptime</th>
+                      <th class="px-4 py-2 font-medium">Restarts</th>
                     </tr>
                   </thead>
                   <tbody>
                     ${payload.pm2.map((proc) => html`
                       <tr class="border-t border-slate-100">
-                        <td class="px-6 py-3 font-medium text-slate-900">${proc.name}</td>
-                        <td class="px-6 py-3 text-slate-600">${proc.instances}</td>
-                        <td class="px-6 py-3">${proc.status}</td>
-                        <td class="px-6 py-3 text-slate-600">${formatUptime(proc.uptimeMs)}</td>
-                        <td class="px-6 py-3 text-slate-600">${proc.restarts}</td>
+                        <td class="px-4 py-2 font-medium text-slate-900">${proc.name}</td>
+                        <td class="px-4 py-2 text-slate-600">${proc.instances}</td>
+                        <td class="px-4 py-2">${proc.status}</td>
+                        <td class="px-4 py-2 text-slate-600">${formatUptime(proc.uptimeMs)}</td>
+                        <td class="px-4 py-2 text-slate-600">${proc.restarts}</td>
                       </tr>
                     `)}
                     ${payload.pm2.length === 0
-                      ? html`<tr><td class="px-6 py-4 text-sm text-slate-500" colspan="5">No msg / msg-worker process reported.</td></tr>`
+                      ? html`<tr><td class="px-4 py-2 text-sm text-slate-500" colspan="5">No msg / msg-worker process reported.</td></tr>`
                       : null}
                   </tbody>
                 </table>
               </article>
 
-              <article class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+              <article class="min-w-0 max-w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
                 <div class="mb-3 flex flex-wrap items-start justify-between gap-4">
                   <div>
                     <h2 class="text-lg font-semibold text-slate-900">pm2 logs</h2>
@@ -399,7 +392,9 @@ export class MonitorWebDesktopMessagesPage extends LitElement {
                 ${this.logs.phase === 'result' && !this.logs.hasMore
                   ? html`<p class="mb-3 text-sm text-slate-600">End of log.</p>`
                   : null}
-                <pre data-messages-log class="max-h-96 overflow-auto whitespace-pre rounded-2xl bg-slate-950 p-4 font-mono text-xs leading-relaxed text-slate-100">${messagesLogsBody(this.logs)}</pre>
+                <div class="min-w-0 max-w-full">
+                  <pre data-messages-log class="h-[62vh] min-h-[12rem] w-full min-w-0 overflow-x-auto overflow-y-auto whitespace-pre rounded-2xl bg-slate-950 p-4 font-mono text-xs leading-relaxed text-slate-100 lg:min-h-[24rem]">${messagesLogsBody(this.logs)}</pre>
+                </div>
               </article>
             `
           : null}
