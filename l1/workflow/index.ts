@@ -60,3 +60,9 @@ export {
   type WorkflowPlanStep,
   type WorkflowPlanStepInput,
 } from '/_102034_/l1/workflow/plan.js';
+export {
+  projectWorkflowActivities,
+  type WorkflowActivitiesSnapshot,
+  type WorkflowActivity,
+  type WorkflowActivityState,
+} from '/_102034_/l1/workflow/activities.js';
