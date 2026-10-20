@@ -67,6 +67,69 @@ async function loadCompositionRoot(tableDefsDir: string, moduleId: string): Prom
   await import(resolveProjectModuleImportUrl(relativePath));
 }
 
+const compositionRootLoads = new Map<string, Promise<void>>();
+
+function compositionRootKey(projectId: string, moduleId: string): string {
+  return JSON.stringify([projectId, moduleId]);
+}
+
+async function importConfiguredCompositionRoot(projectId: string, moduleId: string): Promise<void> {
+  const config = readProjectsConfig();
+  const project = config.projects[projectId];
+  const moduleConfig = project?.modules?.find((entry) => entry.moduleId === moduleId);
+  const persistence = project?.persistenceModules?.find((entry) => entry.moduleId === moduleId);
+  const tableDefsDir = persistence?.tableDefsDir;
+  if (!project || !moduleConfig || !tableDefsDir) {
+    throw new AppError(
+      'WORKFLOW_WAKE_MODULE_NOT_CONFIGURED',
+      'Workflow wake module is not configured',
+      503,
+    );
+  }
+  const relativePath = `${tableDefsDir.replace(/\/$/u, '')}/registerRepositories.js`;
+  if (!existsSync(resolveProjectDistPath(relativePath))) {
+    throw new AppError(
+      'WORKFLOW_WAKE_COMPOSITION_ROOT_MISSING',
+      'Workflow wake composition root is not configured',
+      503,
+    );
+  }
+  try {
+    await loadCompositionRoot(tableDefsDir, moduleId);
+  } catch (error: unknown) {
+    if (error instanceof AppError) {
+      throw error;
+    }
+    throw new AppError(
+      'WORKFLOW_WAKE_COMPOSITION_ROOT_FAILED',
+      'Workflow wake composition root could not be loaded',
+      503,
+    );
+  }
+}
+
+export async function loadConfiguredModuleCompositionRoot(projectId: string, moduleId: string): Promise<void> {
+  const key = compositionRootKey(projectId, moduleId);
+  const cached = compositionRootLoads.get(key);
+  if (cached) {
+    return cached;
+  }
+  const pending = importConfiguredCompositionRoot(projectId, moduleId);
+  compositionRootLoads.set(key, pending);
+  try {
+    await pending;
+  } catch (error: unknown) {
+    if (compositionRootLoads.get(key) === pending) {
+      compositionRootLoads.delete(key);
+    }
+    throw error;
+  }
+}
+
+export function resetConfiguredModuleCompositionCache(): void {
+  compositionRootLoads.clear();
+}
+
 function getConfiguredModuleRegistrations(): ModuleBffRegistration[] {
   const config = readProjectsConfig();
   const configuredProjects = Object.entries(config.projects) as Array<[string, import('/_102034_/l1/server/layer_1_external/config/projectConfig.js').ProjectConfigRecord]>;
