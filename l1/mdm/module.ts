@@ -797,3 +797,10 @@ export const moduleConfig: ModuleConfig = {
     restoreLocalFromRemote: true,
   },
 };
+
+export type { PersonAccessData } from '/_102034_/l1/mdm/personAccess.js';
+export {
+  isPersonAccessComplete,
+  isProtectedPrivacyCountry,
+  isValidPrivacyConsent,
+} from '/_102034_/l1/mdm/personAccess.js';
