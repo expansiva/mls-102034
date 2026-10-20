@@ -177,9 +177,9 @@ test('(T3) the platform Person resolves to five branches and seventeen links', (
   // Without a moduleId the namespace branch keeps the placeholder the ontology itself uses.
   assert.ok(resolvePlatformEntity(mdm, 'Person').details.some(node => node.id === '<moduleId>'));
 
-  // 25 universal + the 7 Person claims; 4 universal rules + the 2 Person claims. By NAME, because the
-  // count 6 also happens to be Paciente's, and a swap would hide behind it.
-  assert.equal(view.capabilities.length, 32);
+  // 25 universal + the 8 Person claims (locate.users since rt108); 4 universal rules + the 2 Person claims.
+  // By NAME, because the count 6 also happens to be Paciente's, and a swap would hide behind it.
+  assert.equal(view.capabilities.length, 33);
   assert.deepEqual([...view.rules.map(item => item.id)].sort(), [
     'rule-delete-blocked-by-relationships',
     'rule-document-shape-validated',

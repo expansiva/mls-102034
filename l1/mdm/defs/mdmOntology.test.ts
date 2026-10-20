@@ -144,8 +144,8 @@ test('(d) the ontology declares the 13 subtypes, once each', () => {
 test('(e) the counts are the ones measured in ns5_37', () => {
   // 26 measured in ns5_37, plus the three the router exposes and the catalogue had missed
   // (`read.byId`, `locate.byTag`, `config.kv`), plus `register.self`, `accessRequest.read`
-  // and `accessRequest.resolve`.
-  assert.equal(Object.keys(mdm.capabilities).length, 32, 'capabilities');
+  // and `accessRequest.resolve`, plus `locate.users` (rt108).
+  assert.equal(Object.keys(mdm.capabilities).length, 33, 'capabilities');
   assert.equal(Object.keys(mdm.rules).length, 13, 'rules');
   assert.equal(mdm.relationships.length, 26, 'relationship types');
   assert.equal(new Set(mdm.relationships.map(item => item.type)).size, 26, 'duplicate relationship type');
