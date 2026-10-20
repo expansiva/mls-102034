@@ -15,6 +15,7 @@ import type {
   MdmStatusHistoryRecord,
   MdmTagRecord,
 } from '/_102034_/l1/mdm/module.js';
+import type { MdmIdentityUserReader } from '/_102034_/l1/mdm/layer_3_usecases/identityUsersContracts.js';
 import type { IFindManyInput, IModuleDataRuntime } from '/_102034_/l1/server/layer_1_external/data/moduleDataRuntime.js';
 
 export interface ITableRuntime<TRecord> {
@@ -64,6 +65,8 @@ export interface IDataRuntime {
   mdmOutbox: ITableRuntime<MdmOutboxRecord>;
   pgQueue: IQueueRuntime;
   moduleData: IModuleDataRuntime;
+  /** Optional directory reader. Absence must not open a global pool. */
+  mdmIdentityUsers?: MdmIdentityUserReader;
   runInTransaction<TValue>(
     callback: (runtime: IDataRuntime) => Promise<TValue>,
     options?: { lockKey: string },
