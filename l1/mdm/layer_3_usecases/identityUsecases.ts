@@ -15,6 +15,11 @@ import {
   AuditLogService,
   runMonitoredWrite,
 } from '/_102034_/l1/mdm/layer_3_usecases/core/DataRecordService.js';
+import {
+  assertLoginEmail,
+  normalizeLoginEmail,
+  storedLoginEmailFromTags,
+} from '/_102034_/l1/mdm/layer_3_usecases/identityLogin.js';
 
 export const MDM_LOGIN_NAMESPACE = 'login';
 export const MDM_LOGIN_ENTITY_TYPE = 'MdmEntity';
@@ -30,28 +35,6 @@ export interface MdmIdentityInviteResult {
   token: string;
   expiresAt: string;
   teamIds?: string[];
-}
-
-function normalizeLoginEmail(email: string): string {
-  return email.trim().toLowerCase();
-}
-
-function loginEmailRejection(normalized: string): 'required' | 'too-long' | null {
-  if (!normalized || !normalized.includes('@') || /\s/u.test(normalized)) return 'required';
-  if (normalized.length > 254) return 'too-long';
-  return null;
-}
-
-function assertLoginEmail(email: string): string {
-  const normalized = normalizeLoginEmail(email);
-  const rejection = loginEmailRejection(normalized);
-  if (rejection === 'required') {
-    throw new AppError('VALIDATION_ERROR', 'login e-mail is required', 400, { field: 'email' });
-  }
-  if (rejection === 'too-long') {
-    throw new AppError('VALIDATION_ERROR', 'login e-mail exceeds 254 chars', 400, { field: 'email' });
-  }
-  return normalized;
 }
 
 async function findLoginRowsByEmail(ctx: RequestContext, email: string): Promise<MdmTagRecord[]> {
@@ -95,30 +78,12 @@ async function writeIdentityCache(
   await ctx.cache.set(key, value, identityCacheTtlSeconds());
 }
 
-function storedLoginEmailIsUsable(email: string): boolean {
-  return loginEmailRejection(normalizeLoginEmail(email)) === null;
-}
-
 export async function lookupLoginEmail(ctx: RequestContext, mdmId: string): Promise<string | null> {
   if (!mdmId.trim()) {
     throw new AppError('VALIDATION_ERROR', 'mdmId is required', 400, { field: 'mdmId' });
   }
   const rows = await findLoginRowsByEntity(ctx, mdmId);
-  if (rows.length === 0) return null;
-  const emails = new Set<string>();
-  for (const row of rows) {
-    if (!storedLoginEmailIsUsable(row.tag)) {
-      throw new AppError('MDM_LOGIN_INVALID', 'Stored login e-mail is not valid', 409, { field: 'email' });
-    }
-    emails.add(normalizeLoginEmail(row.tag));
-  }
-  if (emails.size > 1) {
-    throw new AppError('MDM_LOGIN_AMBIGUOUS', 'More than one login e-mail is linked to this person', 409, {
-      field: 'mdmId',
-    });
-  }
-  const [email] = emails;
-  return email ?? null;
+  return storedLoginEmailFromTags(rows.map(row => row.tag), mdmId);
 }
 
 export async function lookupLogin(

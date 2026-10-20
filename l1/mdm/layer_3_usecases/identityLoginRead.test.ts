@@ -6,6 +6,11 @@ import { createRequestContext } from '/_102034_/l1/server/layer_2_controllers/ex
 import { MDM_ORGANIZATION_MODULE_ID, type MdmTagRecord } from '/_102034_/l1/mdm/module.js';
 import { createMdmRouter } from '/_102034_/l1/mdm/layer_2_controllers/router.js';
 import { lookupLoginEmail } from '/_102034_/l1/mdm/layer_3_usecases/identityUsecases.js';
+import {
+  assertLoginEmail,
+  normalizeLoginEmail,
+  storedLoginEmailFromTags,
+} from '/_102034_/l1/mdm/layer_3_usecases/identityLogin.js';
 
 async function createPerson(ctx: ReturnType<typeof createRequestContext>, name: string) {
   return ctx.mdm.entity.create({
@@ -89,6 +94,7 @@ test('lookupLoginEmail reads the normalized login and ignores other tags and peo
   });
 
   const writes = watchWrites(ctx);
+  assert.equal(storedLoginEmailFromTags(['  Aluno@Academia.Test '], aluno.mdmId), 'aluno@academia.test');
   assert.equal(await lookupLoginEmail(ctx, aluno.mdmId), 'aluno@academia.test');
   assert.equal(await lookupLoginEmail(ctx, outro.mdmId), 'outro@academia.test');
   assert.equal(writes.count, 0);
@@ -103,11 +109,28 @@ test('lookupLoginEmail collapses duplicate e-mails and rejects ambiguity, malfor
   const aluno = await createPerson(ctx, 'Aluno Duplicata');
   await insertTag(ctx, { entityId: aluno.mdmId, tag: 'Dup@Academia.Test' });
   await insertTag(ctx, { entityId: aluno.mdmId, tag: 'dup@academia.test' });
+  assert.equal(
+    storedLoginEmailFromTags(['Dup@Academia.Test', ' dup@academia.test '], aluno.mdmId),
+    'dup@academia.test',
+  );
   assert.equal(await lookupLoginEmail(ctx, aluno.mdmId), 'dup@academia.test');
 
   const ambiguo = await createPerson(ctx, 'Aluno Ambiguo');
   await insertTag(ctx, { entityId: ambiguo.mdmId, tag: 'um@academia.test' });
   await insertTag(ctx, { entityId: ambiguo.mdmId, tag: 'dois@academia.test' });
+  assert.throws(
+    () => storedLoginEmailFromTags(['um@academia.test', 'dois@academia.test'], ambiguo.mdmId),
+    (error: unknown) => {
+      assert.ok(error instanceof AppError);
+      assert.equal(error.code, 'MDM_LOGIN_AMBIGUOUS');
+      assert.equal(error.statusCode, 409);
+      const text = `${error.message} ${JSON.stringify(error.details ?? {})}`;
+      assert.equal(text.includes('um@academia.test'), false);
+      assert.equal(text.includes('dois@academia.test'), false);
+      assert.equal(text.includes('entityId'), false);
+      return true;
+    },
+  );
   await assert.rejects(
     () => lookupLoginEmail(ctx, ambiguo.mdmId),
     (error: unknown) => {
@@ -124,6 +147,16 @@ test('lookupLoginEmail collapses duplicate e-mails and rejects ambiguity, malfor
 
   const invalido = await createPerson(ctx, 'Aluno Invalido');
   await insertTag(ctx, { entityId: invalido.mdmId, tag: 'sem-arroba' });
+  assert.throws(
+    () => storedLoginEmailFromTags(['sem-arroba'], invalido.mdmId),
+    (error: unknown) => {
+      assert.ok(error instanceof AppError);
+      assert.equal(error.code, 'MDM_LOGIN_INVALID');
+      assert.equal(error.statusCode, 409);
+      assert.equal(`${error.message} ${JSON.stringify(error.details ?? {})}`.includes('sem-arroba'), false);
+      return true;
+    },
+  );
   await assert.rejects(
     () => lookupLoginEmail(ctx, invalido.mdmId),
     (error: unknown) => {
@@ -137,6 +170,30 @@ test('lookupLoginEmail collapses duplicate e-mails and rejects ambiguity, malfor
 
   await assert.rejects(
     () => lookupLoginEmail(ctx, '   '),
+    (error: unknown) => error instanceof AppError && error.code === 'VALIDATION_ERROR' && error.statusCode === 400,
+  );
+});
+
+test('storedLoginEmailFromTags applies the same login rules without choosing the first tag', () => {
+  assert.equal(storedLoginEmailFromTags([], 'person-1'), null);
+  assert.equal(normalizeLoginEmail('  Ana@Org.Test '), 'ana@org.test');
+  assert.equal(assertLoginEmail('  Ana@Org.Test '), 'ana@org.test');
+  assert.equal(storedLoginEmailFromTags(['  ANA@org.test ', 'ana@org.test'], 'person-1'), 'ana@org.test');
+  assert.throws(
+    () => storedLoginEmailFromTags(['primeiro@org.test', 'segundo@org.test'], 'person-1'),
+    (error: unknown) => {
+      assert.ok(error instanceof AppError);
+      assert.equal(error.code, 'MDM_LOGIN_AMBIGUOUS');
+      const text = `${error.message} ${JSON.stringify(error.details ?? {})}`;
+      assert.equal(text.includes('primeiro@org.test'), false);
+      assert.equal(text.includes('segundo@org.test'), false);
+      assert.equal(text.includes('person-1'), false);
+      return true;
+    },
+  );
+  const tooLong = `${'a'.repeat(250)}@x.test`;
+  assert.throws(
+    () => assertLoginEmail(tooLong),
     (error: unknown) => error instanceof AppError && error.code === 'VALIDATION_ERROR' && error.statusCode === 400,
   );
 });
