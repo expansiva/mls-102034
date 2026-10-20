@@ -7,16 +7,20 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, test } from 'node:test';
 import { resetRunningReleaseCache } from '/_102034_/l1/server/layer_1_external/cbe/cbeRelease.js';
+import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { AppError, type RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import { createRequestContext } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
 import type { AIModuleStep, TaskData } from '/_102036_/l2/shared/interfaces.js';
 import {
   createMemoryOccurrencePort,
   createMessagesTaskOccurrencePort,
+  createPostgresWorkflowActivityStore,
   createRuntimeMessagesTaskPort,
   createWorkflowEngine,
+  withWorkflowActivityProjection,
   type TaskWorkflowEngine,
   type TaskWorkflowOpen,
+  type WorkflowActivityStore,
 } from '/_102034_/l1/workflow/index.js';
 import type { WorkflowPlanInput } from '/_102034_/l1/workflow/plan.js';
 
@@ -425,10 +429,27 @@ function openInput(item: Directed, plan: WorkflowPlanInput): TaskWorkflowOpen {
   };
 }
 
-function engineFor(item: Directed): TaskWorkflowEngine {
+function projectionStore(item: Directed, trace: { refreshes: number; fail: boolean }): WorkflowActivityStore {
+  return {
+    projectId: item.project,
+    moduleId: item.module,
+    async refresh(_ctx, _key, loadOccurrence) {
+      trace.refreshes += 1;
+      if (trace.fail) throw new AppError('WORKFLOW_PROJECTION_UNAVAILABLE', 'simulated projection failure', 503);
+      const occurrence = await loadOccurrence();
+      return { state: occurrence ? 'synced' : 'absent', occurrence };
+    },
+    list() {
+      throw new Error('activity list is postgres-only');
+    },
+  };
+}
+
+function engineFor(item: Directed, store: WorkflowActivityStore): TaskWorkflowEngine {
   return createWorkflowEngine(createRuntimeMessagesTaskPort({
     projectId: item.project,
     moduleId: item.module,
+    projectionStore: store,
   }));
 }
 
@@ -450,6 +471,8 @@ test('production composition is exported beside the generic library', () => {
   assert.equal(typeof createRuntimeMessagesTaskPort, 'function');
   assert.equal(typeof createMessagesTaskOccurrencePort, 'function');
   assert.equal(typeof createMemoryOccurrencePort, 'function');
+  assert.equal(typeof createPostgresWorkflowActivityStore, 'function');
+  assert.equal(typeof withWorkflowActivityProjection, 'function');
   const legacy = createWorkflowEngine(createMemoryOccurrencePort());
   assert.equal(typeof legacy.open, 'function');
 });
@@ -459,6 +482,81 @@ test('real factory links through server login and resumes the canonical plan', a
     const dir = mkdtempSync(join(tmpdir(), 'rt102-runtime-'));
     tempDirs.push(dir);
     process.env.CBE_PROJECT_FILES_DIR = dir;
+    const previousMode = process.env.RUNTIME_MODE;
+    const previousModeDevelopment = process.env.RUNTIME_MODE_DEVELOPMENT;
+    const previousAppEnv = process.env.APP_ENV;
+    process.env.APP_ENV = 'development';
+    process.env.RUNTIME_MODE = 'memory';
+    process.env.RUNTIME_MODE_DEVELOPMENT = 'memory';
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (message?: unknown, ...rest: unknown[]) => {
+      warnings.push([message, ...rest].map((part) => String(part)).join(' '));
+    };
+    try {
+      assert.equal(readAppEnv().runtimeMode, 'memory');
+      const item = CASES[0];
+      writeCredential(item);
+      const ctx = requestCtx(item.project);
+      await bindPeople(ctx, item.people);
+      const book = indexPeople(item.people);
+      let opened = false;
+      const loop = await bindLoopback((body) => {
+        const action = String(body.action);
+        if (action === 'linkModulePerson') {
+          const row = book.byMdm.get(String(body.mdmId));
+          assert.ok(row);
+          row.state = 'linked';
+          return ok({ cmUserId: row.cmUserId, outcome: 'linked' });
+        }
+        if (action === 'resolveModulePeople') {
+          const mdmIds = body.mdmIds as string[] | undefined;
+          const cmUserIds = body.cmUserIds as string[] | undefined;
+          if (mdmIds && cmUserIds) {
+            const row = book.byMdm.get(mdmIds[0]);
+            assert.ok(row);
+            return ok({ people: [personView(row, 'mdm'), personView(row, 'cm')] });
+          }
+          if (mdmIds) {
+            const row = book.byMdm.get(mdmIds[0]);
+            assert.ok(row);
+            return ok({ people: [personView(row, 'mdm')] });
+          }
+          const row = book.byCm.get((cmUserIds ?? [])[0]);
+          if (!row || row.state === 'unlinked') return ok({ people: [{ cmUserId: (cmUserIds ?? [])[0], state: 'unlinked' }] });
+          return ok({ people: [personView(row, 'cm')] });
+        }
+        if (action === 'getModuleTask') {
+          if (!opened) return { httpStatus: 200, body: { statusCode: 404, msg: 'not_found' } };
+          return ok({ task: taskOf(item, item.revision, 'pending'), room: { threadId: item.threadId } });
+        }
+        if (action === 'openModuleTask') {
+          opened = true;
+          return ok({
+            task: taskOf(item, item.revision, 'pending'),
+            room: { threadId: item.threadId },
+            created: true,
+            moduleMessage: { state: 'pending', threadId: item.threadId, orderAt: '2026-10-19T00:02:00.000Z', content: 'hidden', author: 'hidden', userId: item.people.actorCm },
+          });
+        }
+        return { httpStatus: 500, body: { statusCode: 500, msg: 'unscripted' } };
+      });
+      const port = createRuntimeMessagesTaskPort({ projectId: item.project, moduleId: item.module });
+      assert.equal(warnings.length, 0);
+      const created = await createWorkflowEngine(port).open(ctx, openInput(item, planOf(item, 'stored')));
+      assert.equal(created.outcome, 'created');
+      assert.equal(loop.seen.filter((hit) => hit.action === 'openModuleTask').length, 1);
+      assert.equal(warnings.some((line) => line.includes('WORKFLOW_PROJECTION_RUNTIME_INVALID')), true);
+    } finally {
+      console.warn = originalWarn;
+      if (previousMode === undefined) delete process.env.RUNTIME_MODE;
+      else process.env.RUNTIME_MODE = previousMode;
+      if (previousModeDevelopment === undefined) delete process.env.RUNTIME_MODE_DEVELOPMENT;
+      else process.env.RUNTIME_MODE_DEVELOPMENT = previousModeDevelopment;
+      if (previousAppEnv === undefined) delete process.env.APP_ENV;
+      else process.env.APP_ENV = previousAppEnv;
+    }
+
     for (const item of CASES) {
       writeCredential(item);
       const ctx = requestCtx(item.project);
@@ -537,7 +635,10 @@ test('real factory links through server login and resumes the canonical plan', a
         return { httpStatus: 500, body: { statusCode: 500, msg: 'unscripted' } };
       });
 
-      const created = await engineFor(item).open(ctx, openInput(item, planOf(item, 'stored')));
+      const trace = { refreshes: 0, fail: false };
+      const engine = engineFor(item, projectionStore(item, trace));
+      const created = await engine.open(ctx, openInput(item, planOf(item, 'stored')));
+      assert.ok(trace.refreshes >= 1);
       assert.equal(created.outcome, 'created');
       assert.equal(created.occurrence.owner, item.people.ownerMdm);
       assert.equal(created.occurrence.origin.by, item.people.byMdm);
@@ -556,7 +657,9 @@ test('real factory links through server login and resumes the canonical plan', a
 
       await ctx.mdm.identity.setLogin(item.people.ownerMdm, 'changed-login@academia.test');
       const before = loop.seen.length;
-      const resumed = await engineFor(item).open(ctx, openInput(item, planOf(item, 'templateB')));
+      const refreshesBeforeResume = trace.refreshes;
+      const resumed = await engine.open(ctx, openInput(item, planOf(item, 'templateB')));
+      assert.ok(trace.refreshes > refreshesBeforeResume);
       assert.equal(resumed.outcome, 'existing');
       assert.equal(resumed.occurrence.plan.title, item.processTitle);
       assert.equal(resumed.occurrence.plan.steps[1].title, item.titleB);
@@ -565,7 +668,7 @@ test('real factory links through server login and resumes the canonical plan', a
       const posts = loop.seen.filter((hit) => hit.action === 'applyIntents').length;
       mode = 'busy';
       await assert.rejects(
-        () => engineFor(item).advance(ctx, openInput(item, planOf(item, 'stored')).key, {
+        () => engine.advance(ctx, openInput(item, planOf(item, 'stored')).key, {
           commandId: item.advanceCommand,
           expectedRevision: item.revision,
           from: item.stepA,
@@ -577,7 +680,7 @@ test('real factory links through server login and resumes the canonical plan', a
       );
       mode = 'room';
       await assert.rejects(
-        () => engineFor(item).advance(ctx, openInput(item, planOf(item, 'stored')).key, {
+        () => engine.advance(ctx, openInput(item, planOf(item, 'stored')).key, {
           commandId: item.advanceCommand,
           expectedRevision: item.revision,
           from: item.stepA,
@@ -590,7 +693,8 @@ test('real factory links through server login and resumes the canonical plan', a
       assert.equal(loop.seen.filter((hit) => hit.action === 'applyIntents').length, posts);
       mode = 'live';
 
-      const advanced = await engineFor(item).advance(ctx, openInput(item, planOf(item, 'stored')).key, {
+      const refreshesBeforeAdvance = trace.refreshes;
+      const advanced = await engine.advance(ctx, openInput(item, planOf(item, 'stored')).key, {
         commandId: item.advanceCommand,
         expectedRevision: item.revision,
         from: item.stepA,
@@ -600,6 +704,7 @@ test('real factory links through server login and resumes the canonical plan', a
         message: { content: 'advance-caller' },
       });
       assert.equal(advanced.moduleMessage?.state, 'pending');
+      assert.ok(trace.refreshes > refreshesBeforeAdvance);
       const intent = loop.seen.filter((hit) => hit.action === 'applyIntents').at(-1)?.body.intents as Array<Record<string, unknown>>;
       assert.equal((intent[0].executor as { kind: string }).kind, 'routine');
       assert.equal((intent[0].executor as { name: string }).name, 'nightly');
@@ -608,11 +713,22 @@ test('real factory links through server login and resumes the canonical plan', a
       const owner = book.byMdm.get(item.people.ownerMdm);
       assert.ok(owner);
       owner.state = 'removed';
-      const found = await engineFor(item).find(ctx, openInput(item, planOf(item, 'stored')).key);
+      const refreshesBeforeFind = trace.refreshes;
+      const found = await engine.find(ctx, openInput(item, planOf(item, 'stored')).key);
+      assert.ok(trace.refreshes > refreshesBeforeFind);
       assert.equal(found?.owner, item.people.ownerMdm);
       const opens = loop.seen.filter((hit) => hit.action === 'openModuleTask').length;
+      const opensBeforeFail = loop.seen.filter((hit) => hit.action === 'openModuleTask').length;
+      const advancesBeforeFail = loop.seen.filter((hit) => hit.action === 'applyIntents').length;
+      trace.fail = true;
+      const lagged = await engine.open(ctx, openInput(item, planOf(item, 'stored')));
+      assert.equal(lagged.outcome, 'existing');
+      assert.equal(loop.seen.filter((hit) => hit.action === 'openModuleTask').length, opensBeforeFail);
+      assert.equal(loop.seen.filter((hit) => hit.action === 'applyIntents').length, advancesBeforeFail);
+      trace.fail = false;
+
       await assert.rejects(
-        () => engineFor(item).open(ctx, {
+        () => engine.open(ctx, {
           ...openInput(item, planOf(item, 'stored')),
           key: { ...openInput(item, planOf(item, 'stored')).key, recordId: `${item.recordId}-new` },
         }),
@@ -623,7 +739,7 @@ test('real factory links through server login and resumes the canonical plan', a
       mode = 'diverge-owner';
       owner.state = 'linked';
       await assert.rejects(
-        () => engineFor(item).open(ctx, {
+        () => engine.open(ctx, {
           ...openInput(item, planOf(item, 'stored')),
           key: { ...openInput(item, planOf(item, 'stored')).key, recordId: `${item.recordId}-split` },
         }),

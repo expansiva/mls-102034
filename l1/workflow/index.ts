@@ -66,3 +66,17 @@ export {
   type WorkflowActivity,
   type WorkflowActivityState,
 } from '/_102034_/l1/workflow/activities.js';
+export type {
+  WorkflowActivityListItem,
+  WorkflowActivityListQuery,
+  WorkflowActivityListResult,
+  WorkflowActivityRefreshResult,
+  WorkflowActivityStore,
+  WorkflowActivitySubject,
+} from '/_102034_/l1/workflow/activitiesStore.js';
+export {
+  createPostgresWorkflowActivityStore,
+  type PostgresWorkflowActivityDefinitions,
+  type PostgresWorkflowActivityStoreOptions,
+} from '/_102034_/l1/workflow/activitiesPostgres.js';
+export { withWorkflowActivityProjection } from '/_102034_/l1/workflow/activitiesSync.js';
