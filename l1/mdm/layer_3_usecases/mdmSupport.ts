@@ -20,12 +20,13 @@ import type {
   ServiceKind,
 } from '/_102034_/l1/mdm/module.js';
 import { AppError, type RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
+import {
+  isPersonAccessComplete,
+  isProtectedPrivacyCountry,
+  isTwoLetterCountry,
+} from '/_102034_/l1/mdm/personAccess.js';
 
-const EU_COUNTRY_CODES = new Set([
-  'AT', 'BE', 'BG', 'HR', 'CY', 'CZ', 'DK', 'EE', 'FI', 'FR', 'DE', 'GR', 'HU',
-  'IE', 'IT', 'LV', 'LT', 'LU', 'MT', 'NL', 'PL', 'PT', 'RO', 'SK', 'SI', 'ES',
-  'SE',
-]);
+export { isPersonAccessComplete, isProtectedPrivacyCountry };
 
 const BIDIRECTIONAL_RELATIONSHIP_TYPES = new Set<RelationshipType>(['Family']);
 
@@ -317,10 +318,6 @@ export function normalizeCountryCode(countryCode?: string | null): string {
   return countryCode?.trim().toUpperCase() || 'US';
 }
 
-function isTwoLetterCountry(countryCode: string): boolean {
-  return /^[A-Z]{2}$/.test(countryCode);
-}
-
 function explicitCountryCode(value: unknown, draft: boolean): string {
   const text = typeof value === 'string' ? value.trim().toUpperCase() : '';
   if (!text) {
@@ -332,32 +329,6 @@ function explicitCountryCode(value: unknown, draft: boolean): string {
     });
   }
   return draft ? text : normalizeCountryCode(typeof value === 'string' ? value : null);
-}
-
-function isValidPrivacyConsent(consent: PrivacyConsentValue | null | undefined): boolean {
-  if (!consent || consent.revokedAt) {
-    return false;
-  }
-  if (!String(consent.consentVersion ?? '').trim() || !String(consent.channel ?? '').trim()) {
-    return false;
-  }
-  return Number.isFinite(Date.parse(consent.consentedAt));
-}
-
-/** Name, country and, in a protected country, a valid consent. Ignores registrationDraft. */
-export function isPersonAccessComplete(detail: {
-  name?: string | null;
-  countryCode?: string | null;
-  privacyConsent?: PrivacyConsentValue | null;
-}): boolean {
-  const countryCode = typeof detail.countryCode === 'string' ? detail.countryCode.trim().toUpperCase() : '';
-  if (!detail.name?.trim() || !isTwoLetterCountry(countryCode)) {
-    return false;
-  }
-  if (isProtectedPrivacyCountry(countryCode) && !isValidPrivacyConsent(detail.privacyConsent)) {
-    return false;
-  }
-  return true;
 }
 
 function isCompanyRegistrationComplete(detail: MdmDetailRecord): boolean {
@@ -402,10 +373,6 @@ export function normalizeContactValue(value?: string | null): string | null {
   }
 
   return value.trim().toLowerCase();
-}
-
-export function isProtectedPrivacyCountry(countryCode: string): boolean {
-  return countryCode === 'BR' || EU_COUNTRY_CODES.has(countryCode);
 }
 
 export function normalizeDetailInput(
