@@ -7,9 +7,13 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import type { Pool } from 'pg';
 
-import type { ProjectOnboardingConfig } from '/_102029_/l2/runtimeConfigTypes.js';
+import type { ProjectOnboardingConfig, ProjectsConfig } from '/_102029_/l2/runtimeConfigTypes.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
-import type { OrganizationBinding } from '/_102034_/l1/server/layer_1_external/config/onboardingConfig.js';
+import {
+  readOnboardingConfig,
+  resolveOrganizationBinding,
+  type OrganizationBinding,
+} from '/_102034_/l1/server/layer_1_external/config/onboardingConfig.js';
 import {
   resetProjectsConfigCache,
   resolveProjectModuleImportUrl,
@@ -25,7 +29,9 @@ import type { MdmDocumentRecord, MdmEntityIndexRecord, MdmKvRecord } from '/_102
 import { getMdmTableNames } from '/_102034_/l1/mdm/tableNames.js';
 import {
   ensureOrganizationCompany,
+  ensureOrganizationIdentity,
   organizationReservationKey,
+  setOrganizationBootstrapFault,
 } from '/_102034_/l1/mdm/layer_3_usecases/organizationBootstrap.js';
 import { registrationLockKey } from '/_102034_/l1/mdm/layer_3_usecases/registrationStore.js';
 
@@ -34,7 +40,7 @@ const companyType = 'inicio.Organizacao';
 
 test(
   'postgres bench: one organization company across two waiting connections',
-  { skip: !optedIn, timeout: 20000 },
+  { skip: !optedIn, timeout: 40000 },
   async () => {
     const testUrl = process.env.DATABASE_URL_TEST;
     if (!testUrl) {
@@ -64,6 +70,7 @@ test(
     const persistenceSource = join(repoRoot, 'l1', 'mdm', 'persistence.ts');
     let pool: Pool | undefined;
     const orgKey = `rt81-s4r3:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+    const extraReservationKeys: string[] = [];
     const binding: OrganizationBinding = { key: orgKey, name: 'Org Bench', source: 'development-project' };
     const onboarding: ProjectOnboardingConfig = {
       moduleId: 'inicio',
@@ -210,11 +217,152 @@ test(
       const reread = await documents.findOne({ where: { mdmId: companyMdmId } });
       assert.equal(reread?.version, version);
       assert.equal(await countWhere(pool, tables.kv, '"key" = $1', [reservationKey]), 1);
+
+      const stamp = `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
+      const identityOrgId = `rt119${stamp}`;
+      const otherOrgId = `rt119b${stamp}`;
+      const rolledOrgId = `rt119c${stamp}`;
+      const identityProjects = {
+        defaultProjectId: '102081',
+        organization: { source: 'project-file' as const },
+        projects: {
+          '102081': { root: './client', type: 'client' as const },
+        },
+      } as unknown as ProjectsConfig;
+      assert.equal(readOnboardingConfig(identityProjects), null);
+      const identityBinding = resolveOrganizationBinding(identityProjects, {
+        readProjectFile: () => simulatedProjectFile(identityOrgId, 'Org Identity'),
+      });
+      const otherBinding = resolveOrganizationBinding(identityProjects, {
+        readProjectFile: () => simulatedProjectFile(otherOrgId, 'Org Other'),
+      });
+      const rolledBinding = resolveOrganizationBinding(identityProjects, {
+        readProjectFile: () => simulatedProjectFile(rolledOrgId, 'Org Rolled'),
+      });
+      assert.ok(identityBinding);
+      assert.ok(otherBinding);
+      assert.ok(rolledBinding);
+      assert.equal(identityBinding.source, 'project-file');
+      assert.equal(identityBinding.key, `org:${identityOrgId}`);
+      assert.notEqual(identityBinding.key, otherBinding.key);
+      extraReservationKeys.push(
+        organizationReservationKey(identityBinding.key),
+        organizationReservationKey(otherBinding.key),
+        organizationReservationKey(rolledBinding.key),
+      );
+
+      const identityLock = registrationLockKey([identityBinding.key]);
+      const identityBlocker = createPostgresDataRuntime(env);
+      let releaseIdentity: () => void = () => {};
+      const identityBlocked = new Promise<void>((resolve) => {
+        releaseIdentity = resolve;
+      });
+      const identityHolding = new Promise<void>((resolve, reject) => {
+        const hold = identityBlocker.runInTransaction(async () => {
+          resolve();
+          await identityBlocked;
+        }, { lockKey: identityLock });
+        operations.push(hold);
+        hold.catch(reject);
+      });
+      await identityHolding;
+
+      const identityFirst = ensureOrganizationIdentity(createRequestContext(createPostgresDataRuntime(env)), identityBinding);
+      const identitySecond = ensureOrganizationIdentity(createRequestContext(createPostgresDataRuntime(env)), identityBinding);
+      operations.push(identityFirst, identitySecond);
+      const identityWaitStarted = Date.now();
+      let identityWaiters: number[] = [];
+      for (;;) {
+        identityWaiters = await advisoryWaiterPids(pool, identityLock);
+        if (new Set(identityWaiters).size >= 2) break;
+        if (Date.now() - identityWaitStarted > 8000) {
+          throw new Error(`timed out waiting for two identity advisory lock waiters (saw ${identityWaiters.length})`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 15));
+      }
+      assert.equal(new Set(identityWaiters).size, 2);
+      releaseIdentity();
+      const [identityCreated, identityRepeated] = await Promise.all([identityFirst, identitySecond]);
+      assert.equal(identityCreated.companyMdmId, identityRepeated.companyMdmId);
+
+      const otherCompany = await ensureOrganizationIdentity(
+        createRequestContext(createPostgresDataRuntime(env)),
+        otherBinding,
+      );
+      assert.notEqual(otherCompany.companyMdmId, identityCreated.companyMdmId);
+
+      const identityKey = organizationReservationKey(identityBinding.key);
+      assert.equal(await countWhere(pool, tables.kv, '"key" = $1', [identityKey]), 1);
+      const identityDocument = await documents.findOne({ where: { mdmId: identityCreated.companyMdmId } });
+      assert.ok(identityDocument);
+      const identityTags = Array.isArray(identityDocument.details.tags) ? identityDocument.details.tags : [];
+      assert.equal(identityTags.includes(companyType), false);
+      const identityIndexed = await index.findOne({ where: { mdmId: identityCreated.companyMdmId } });
+      assert.equal(identityIndexed?.subtype, 'Company');
+
+      const editor = createRequestContext(createPostgresDataRuntime(env));
+      const beforeEdit = await editor.mdm.entity.get({ mdmId: identityCreated.companyMdmId });
+      const edited = await editor.mdm.entity.update({
+        mdmId: identityCreated.companyMdmId,
+        expectedVersion: beforeEdit.version,
+        patch: { name: 'Org Identity Legal', legalName: 'Org Identity LTDA' },
+      });
+      const restarted = await ensureOrganizationIdentity(
+        createRequestContext(createPostgresDataRuntime(env)),
+        identityBinding,
+      );
+      assert.equal(restarted.companyMdmId, identityCreated.companyMdmId);
+      const afterRetry = await editor.mdm.entity.get({ mdmId: identityCreated.companyMdmId });
+      assert.equal(afterRetry.version, edited.version);
+      assert.equal(afterRetry.details.subtype, 'Company');
+      if (afterRetry.details.subtype === 'Company') {
+        assert.equal(afterRetry.details.name, 'Org Identity Legal');
+        assert.equal(afterRetry.details.legalName, 'Org Identity LTDA');
+      }
+
+      setOrganizationBootstrapFault('before-return');
+      await assert.rejects(
+        () => ensureOrganizationIdentity(createRequestContext(createPostgresDataRuntime(env)), identityBinding),
+        /organization bootstrap fault: before-return/u,
+      );
+      setOrganizationBootstrapFault(null);
+      const preserved = await kv.findOne({ where: { key: identityKey } });
+      assert.equal(preserved?.value && (preserved.value as { schema?: number }).schema, 1);
+      assert.equal(
+        preserved?.value && (preserved.value as { companyMdmId?: string }).companyMdmId,
+        identityCreated.companyMdmId,
+      );
+      const resumed = await ensureOrganizationIdentity(
+        createRequestContext(createPostgresDataRuntime(env)),
+        identityBinding,
+      );
+      assert.equal(resumed.companyMdmId, identityCreated.companyMdmId);
+      const afterResume = await documents.findOne({ where: { mdmId: identityCreated.companyMdmId } });
+      assert.equal(afterResume?.version, edited.version);
+
+      const rolledKey = organizationReservationKey(rolledBinding.key);
+      setOrganizationBootstrapFault('after-reserve');
+      await assert.rejects(
+        () => ensureOrganizationIdentity(createRequestContext(createPostgresDataRuntime(env)), rolledBinding),
+        /organization bootstrap fault: after-reserve/u,
+      );
+      setOrganizationBootstrapFault(null);
+      assert.equal(await countWhere(pool, tables.kv, '"key" = $1', [rolledKey]), 0);
+      const afterRollback = await ensureOrganizationIdentity(
+        createRequestContext(createPostgresDataRuntime(env)),
+        rolledBinding,
+      );
+      assert.equal(await countWhere(pool, tables.kv, '"key" = $1', [rolledKey]), 1);
+      assert.notEqual(afterRollback.companyMdmId, identityCreated.companyMdmId);
+      const rolledDocument = await documents.findOne({ where: { mdmId: afterRollback.companyMdmId } });
+      assert.equal(rolledDocument?.version, 1);
     } finally {
+      setOrganizationBootstrapFault(null);
       releaseBlocker?.();
       await Promise.allSettled(operations);
       if (pool) {
         await cleanupBench(pool, organizationReservationKey(orgKey));
+        for (const key of extraReservationKeys) await cleanupBench(pool, key);
         await pool.end();
       }
       process.chdir(previousCwd);
@@ -252,6 +400,22 @@ async function countWhere(pool: Pool, tableName: string, whereSql: string, param
     params,
   );
   return rows[0]?.count ?? 0;
+}
+
+function simulatedProjectFile(orgId: string, name: string) {
+  return {
+    schema: 1,
+    generatedAt: '2026-10-21T00:00:00.000Z',
+    org: { orgId, slug: 'bench', name, createdAt: '2026-10-21T00:00:00.000Z' },
+    project: {
+      projectId: '102081',
+      domain: 'bench.local',
+      appEnv: 'development',
+      language: null,
+      type: 'client',
+      createdAt: '2026-10-21T00:00:00.000Z',
+    },
+  };
 }
 
 function quoteIdent(identifier: string): string {
