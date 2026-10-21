@@ -2,12 +2,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  getCountryCatalog,
   isPersonAccessComplete,
   isProtectedPrivacyCountry,
   isValidPrivacyConsent,
   moduleConfig,
+  type MdmCountryOption,
   type PrivacyConsentValue,
 } from '/_102034_/l1/mdm/module.js';
+import { getCountryCatalog as fromCatalog } from '/_102034_/l1/mdm/countryCatalog.js';
 import {
   isPersonAccessComplete as fromPureComplete,
   isProtectedPrivacyCountry as fromPureProtected,
@@ -37,6 +40,10 @@ test('public module reexports the same person-access functions', () => {
   assert.equal(isProtectedPrivacyCountry, fromPureProtected);
   assert.equal(isProtectedPrivacyCountry, fromSupportProtected);
   assert.equal(isValidPrivacyConsent, fromPureValid);
+  assert.equal(getCountryCatalog, fromCatalog);
+  const option: MdmCountryOption = getCountryCatalog().find((item) => item.code === 'BR')!;
+  assert.equal(option.code, 'BR');
+  assert.equal(option.requiresPrivacyConsent, true);
 });
 
 test('public person-access matrix', () => {
@@ -48,7 +55,7 @@ test('public person-access matrix', () => {
   }
   assert.equal(isProtectedPrivacyCountry('US'), false);
   assert.equal(isPersonAccessComplete({ name: 'Ada', countryCode: 'US' }), true);
-  assert.equal(isPersonAccessComplete({ name: 'Ada', countryCode: 'zz' }), true);
+  assert.equal(isPersonAccessComplete({ name: 'Ada', countryCode: 'zz' }), false);
   assert.equal(isPersonAccessComplete({ name: '  ', countryCode: 'US' }), false);
   assert.equal(isPersonAccessComplete({ countryCode: 'US' }), false);
   assert.equal(isPersonAccessComplete({ name: 'Ada' }), false);

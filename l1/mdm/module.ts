@@ -799,6 +799,8 @@ export const moduleConfig: ModuleConfig = {
 };
 
 export type { PersonAccessData } from '/_102034_/l1/mdm/personAccess.js';
+export type { MdmCountryOption } from '/_102034_/l1/mdm/countryCatalog.js';
+export { getCountryCatalog } from '/_102034_/l1/mdm/countryCatalog.js';
 export {
   isPersonAccessComplete,
   isProtectedPrivacyCountry,
