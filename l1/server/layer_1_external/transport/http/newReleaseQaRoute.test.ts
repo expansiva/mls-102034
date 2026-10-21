@@ -28,9 +28,13 @@ test('new release QA route is limited to test modes and loopback requests', () =
 });
 
 test('QA html uses no login bypass and invalid project never falls back', () => {
-  assert.equal(newReleaseQaProjectHint('/__qa/new-release'), 102047);
-  assert.equal(newReleaseQaProjectHint('/__qa/new-release?project=102047'), 102047);
-  assert.equal(newReleaseQaProjectHint('/__qa/new-release?project=bad'), 0);
+  assert.equal(newReleaseQaProjectHint('/__qa/new-release', '111111'), 111111);
+  assert.equal(newReleaseQaProjectHint('/__qa/new-release', '222222'), 222222);
+  assert.equal(newReleaseQaProjectHint('/__qa/new-release?project=333333', '111111'), 333333);
+  assert.equal(newReleaseQaProjectHint('/__qa/new-release?project=bad', '222222'), 0);
+  assert.equal(newReleaseQaProjectHint('/__qa/new-release'), 0);
+  assert.equal(newReleaseQaProjectHint('/__qa/new-release', ''), 0);
+  assert.equal(newReleaseQaProjectHint('/__qa/new-release', 'not-a-client'), 0);
   const shellMap = {
     imports: {
       lit: '/_libs/lit/index.js',

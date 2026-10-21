@@ -31,10 +31,11 @@ export function canServeNewReleaseQa(input: NewReleaseQaAccess): boolean {
     && isQaLoopback(input.host) && isQaLoopback(input.remoteAddress);
 }
 
-export function newReleaseQaProjectHint(url: string): number {
+export function newReleaseQaProjectHint(url: string, defaultProjectId?: string): number {
   const raw = new URL(url, 'http://qa.local').searchParams.get('project');
-  if (raw === null) return 102047;
-  return /^[1-9]\d{5}$/u.test(raw) ? Number(raw) : 0;
+  const value = raw === null ? defaultProjectId : raw;
+  if (value == null || value === '') return 0;
+  return /^[1-9]\d{5}$/u.test(value) ? Number(value) : 0;
 }
 
 export function extractNewReleaseQaLitImportMap(shellHtml: string): string {

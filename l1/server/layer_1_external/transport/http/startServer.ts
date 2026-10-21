@@ -516,7 +516,7 @@ export function buildHttpServer() {
     reply.type('text/html; charset=utf-8').header('cache-control', 'no-store');
     return buildNewReleaseQaHtml(
       getRunningRelease()?.id ?? 'development',
-      newReleaseQaProjectHint(request.url),
+      newReleaseQaProjectHint(request.url, readProjectsConfig().defaultProjectId),
       litImportMap,
     );
   });
