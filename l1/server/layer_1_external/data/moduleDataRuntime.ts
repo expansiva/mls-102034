@@ -1,6 +1,7 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/data/moduleDataRuntime.ts" enhancement="_blank" />
 import type { Pool, PoolClient } from 'pg';
 import type { AppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
+import { readProjectMode } from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
 import { getSharedPgPool, queryRows, withPgTransaction } from '/_102034_/l1/server/layer_1_external/data/postgres/pg.js';
 import { createRuntimeUuid } from '/_102029_/l2/webCrypto.js';
 import type { ResolvedTableDefinition } from '/_102034_/l1/server/layer_1_external/persistence/contracts.js';
@@ -12,6 +13,7 @@ import {
   findResolvedTableDefinition,
   loadResolvedTableDefinitions,
 } from '/_102034_/l1/server/layer_1_external/persistence/registry.js';
+import { selectEligibleSeedRows } from '/_102034_/l1/server/layer_1_external/persistence/seedPolicy.js';
 import { AppError } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 
 type PgExecutor = Pool | PoolClient;
@@ -502,6 +504,19 @@ class PostgresTableRepository<TRecord extends object> implements ITableRepositor
   }
 }
 
+/** Same selection the migration uses: initial always, test only in the owning mode, initial wins a key clash. */
+export function copyEligibleSeedRows(
+  definition: ResolvedTableDefinition,
+  env: Pick<AppEnv, 'projectId'>,
+): Record<string, unknown>[] {
+  return selectEligibleSeedRows(definition, {
+    tableName: definition.tableName,
+    logicalTableName: definition.logicalTableName,
+    projectMode: readProjectMode(definition.projectId),
+    serverMode: readProjectMode(env.projectId),
+  }).map((row) => ({ ...row }));
+}
+
 class MemoryModuleDataRuntime implements IModuleDataRuntime {
   private readonly store = new Map<string, object[]>();
 
@@ -519,9 +534,8 @@ class MemoryModuleDataRuntime implements IModuleDataRuntime {
     }
 
     if (!this.store.has(definition.repositoryName)) {
-      // Mechanical seed: memory stores are rebuilt on every dev preview, so the mock
-      // rows from the definition (see TableSeedRows) are applied on first access.
-      const seeded = (definition.seedRows ?? []).map((row) => ({ ...row })) as object[];
+      // First access only. Later edits stay in this store; a second getTable must not reseed.
+      const seeded = copyEligibleSeedRows(definition, this.env) as object[];
       this.store.set(definition.repositoryName, seeded);
     }
 

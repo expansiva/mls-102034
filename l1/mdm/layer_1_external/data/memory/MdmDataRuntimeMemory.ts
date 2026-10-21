@@ -3,7 +3,7 @@ import { AppError } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import type { AppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { projectsConfigExists } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
-import { createMemoryModuleDataRuntime } from '/_102034_/l1/server/layer_1_external/data/moduleDataRuntime.js';
+import { copyEligibleSeedRows, createMemoryModuleDataRuntime } from '/_102034_/l1/server/layer_1_external/data/moduleDataRuntime.js';
 import { findResolvedTableDefinition } from '/_102034_/l1/server/layer_1_external/persistence/registry.js';
 import { createMemoryMdmIdentityUsersReader } from '/_102034_/l1/mdm/layer_1_external/data/memory/MdmIdentityUsersMemory.js';
 import type {
@@ -36,7 +36,7 @@ async function loadSeedRows<TRecord>(env: AppEnv, repositoryName: string): Promi
 
   try {
     const definition = await findResolvedTableDefinition(repositoryName, env);
-    return (definition.seedRows ?? []).map((row) => ({ ...row }) as TRecord);
+    return copyEligibleSeedRows(definition, env) as TRecord[];
   } catch {
     return [];
   }
