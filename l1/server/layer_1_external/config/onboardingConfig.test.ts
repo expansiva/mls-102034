@@ -60,6 +60,18 @@ test('config ausente deixa o onboarding desligado', () => {
   assert.equal(readOnboardingConfig(null), null);
 });
 
+test('sem módulo readOnboardingConfig fica null e o binding do arquivo não muda', () => {
+  const withModule = config();
+  const without = config({ organization: { source: 'project-file' } });
+  delete without.onboarding;
+  const readers = io({ readProjectFile: () => file({ orgId: 'org-9', name: 'Acme Ltda' }) });
+  assert.equal(readOnboardingConfig(without), null);
+  assert.deepEqual(
+    resolveOrganizationBinding(without, readers),
+    resolveOrganizationBinding(withModule, readers),
+  );
+});
+
 test('fonte sites usa orgId do cliente e conserva o id quando o nome muda', () => {
   const readers = io({ readProjectFile: () => file({ orgId: 'org-9', name: 'Acme Ltda' }) });
   const first = resolveOrganizationBinding(config(), readers);
