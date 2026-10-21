@@ -39,6 +39,7 @@ import { hasDeclaredProjectMode, readProjectMode } from '/_102034_/l1/server/lay
 import { createMemoryDataRuntime } from '/_102034_/l1/mdm/layer_1_external/data/memory/MdmDataRuntimeMemory.js';
 import { readProjectsConfig, resolveProjectModuleImportUrl } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import { loadResolvedTableDefinitions } from '/_102034_/l1/server/layer_1_external/persistence/registry.js';
+import { selectEligibleSeedRows, type SeedModeInput, type SeedPolicyTable } from '/_102034_/l1/server/layer_1_external/persistence/seedPolicy.js';
 import { createUuidV7 } from '/_102029_/l2/uuidv7.js';
 import type { M1HandlerStage } from '/_102021_/l2/agentMaterializeL1/core/registry.js';
 import {
@@ -838,6 +839,11 @@ async function loadSeedSparesInto(pool: Record<string, unknown>): Promise<void> 
   }
 }
 
+/** Rows the monitor may harvest. Same selection as the migration; seedIds/seedSpares stay untouched. */
+export function selectMonitorSeedRows(table: SeedPolicyTable, input: SeedModeInput): Record<string, unknown>[] {
+  return selectEligibleSeedRows(table, input);
+}
+
 /**
  * Fill the id pool from the SEEDED table rows. Seeded ids are the most reliable source for a
  * `<seedRef>` — they do not depend on a prior read having passed, and they are the lines that
@@ -849,9 +855,11 @@ async function loadSeedSparesInto(pool: Record<string, unknown>): Promise<void> 
  * the rows that would satisfy them sit in the store, seeded and unused.
  *
  * The rows come from the backend's `seeds.ts` (TableSeedRows merged into the definitions by the
- * persistence registry) and are read HERE, on the runtime side. The generated page tests only ever carry
- * seed markers (`<seedRef>`, `<seedValue>`, `<seedSpare>`), so the frontend never sees a row value —
- * same boundary as resolveSeededActorMdmId above.
+ * persistence registry) and are read HERE, on the runtime side. Eligibility is the same selection the
+ * migration uses: initial in every mode, test only in a test mode (platform tables follow serverMode).
+ * An anchor names that declared seed. It is not proof the row was persisted or left unedited.
+ * The generated page tests only ever carry seed markers (`<seedRef>`, `<seedValue>`, `<seedSpare>`),
+ * so the frontend never sees a row value — same boundary as resolveSeededActorMdmId above.
  *
  * Limits:
  *  - only a SINGLE-column primary key is harvested: that is the entity's own identifier, never a foreign
@@ -868,19 +876,27 @@ async function loadSeedSparesInto(pool: Record<string, unknown>): Promise<void> 
 async function fillPoolFromSeedRows(pool: Record<string, unknown>): Promise<void> {
   try {
     const namedIds = await loadNamedSeedIds();
-    const definitions = await loadResolvedTableDefinitions(readAppEnv());
+    const env = readAppEnv();
+    const serverMode = readProjectMode(env.projectId);
+    const definitions = await loadResolvedTableDefinitions(env);
     for (const definition of definitions) {
       if (definition.primaryKey?.length !== 1) continue;
       const column = definition.primaryKey[0];
       const fieldId = columnToField(column);
-      const seedRowIds = (definition.seedRows ?? []).map(row => row?.[column]);
+      const seedRows = selectMonitorSeedRows(definition, {
+        tableName: definition.tableName,
+        logicalTableName: definition.logicalTableName,
+        projectMode: readProjectMode(definition.projectId),
+        serverMode,
+      });
+      const seedRowIds = seedRows.map(row => row?.[column]);
       applySeedAnchors(pool, {
         entity: ontologyEntityName(definition),
         fieldId,
         seedRowIds,
         namedIds,
         moduleId: definition.moduleId,
-        seedRows: definition.seedRows,
+        seedRows,
         pkColumn: column,
       });
     }

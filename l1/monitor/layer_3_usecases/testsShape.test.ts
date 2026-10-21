@@ -5,7 +5,7 @@
 // falling back to `items`.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applySeedAnchors, applySeedSpares, checkShape, coercePageTestsFile, countItems, evaluate, reportAppEnv, PAGE11_VARIANT_POLICY, resolveParams, untestedPageEntries } from '/_102034_/l1/monitor/layer_3_usecases/testsUsecases.js';
+import { applySeedAnchors, applySeedSpares, checkShape, coercePageTestsFile, countItems, evaluate, reportAppEnv, PAGE11_VARIANT_POLICY, resolveParams, selectMonitorSeedRows, untestedPageEntries } from '/_102034_/l1/monitor/layer_3_usecases/testsUsecases.js';
 
 const menuEnvelope = { menuItems: [{ menuItemId: 'a' }, { menuItemId: 'b' }], total: 2 };
 
@@ -109,6 +109,72 @@ test('<seedRef> with a Petition fieldRef does not resolve a petitionId harvested
   );
   assert.deepEqual(result.params, {});
   assert.deepEqual(result.unresolved, ['petitionId']);
+});
+
+test('monitor harvest keeps unmarked seeds in a test mode and drops them outside one', () => {
+  const unmarked = {
+    tableName: 'mls910118_country',
+    logicalTableName: 'country',
+    storageProfile: 'postgres',
+    columns: [{ name: 'id', nullable: false }],
+    primaryKey: ['id'],
+    seedRows: [{ id: 'legacy' }],
+  };
+  const modes = { tableName: unmarked.tableName, logicalTableName: unmarked.logicalTableName, serverMode: 'production' as const };
+  assert.deepEqual(
+    selectMonitorSeedRows(unmarked, { ...modes, projectMode: 'presentation' }).map(row => row.id),
+    ['legacy'],
+  );
+  assert.deepEqual(
+    selectMonitorSeedRows(unmarked, { ...modes, projectMode: 'production' }),
+    [],
+  );
+});
+
+test('monitor harvest takes initial in production and homologation, and both purposes in test modes', () => {
+  const table = {
+    tableName: 'mls910118_country',
+    logicalTableName: 'country',
+    storageProfile: 'postgres',
+    columns: [{ name: 'id', nullable: false }],
+    primaryKey: ['id'],
+    initialSeedRows: [{ id: 'br' }],
+    seedRows: [{ id: 'br' }, { id: 'test-only' }],
+  };
+  const base = { tableName: table.tableName, logicalTableName: table.logicalTableName, serverMode: 'production' as const };
+  for (const projectMode of ['production', 'homologation'] as const) {
+    assert.deepEqual(
+      selectMonitorSeedRows(table, { ...base, projectMode }).map(row => row.id),
+      ['br'],
+    );
+  }
+  for (const projectMode of ['presentation', 'development'] as const) {
+    assert.deepEqual(
+      selectMonitorSeedRows(table, { ...base, projectMode }).map(row => row.id),
+      ['br', 'test-only'],
+    );
+  }
+});
+
+test('monitor harvest of a platform table follows serverMode', () => {
+  const table = {
+    tableName: 'mdm_documents',
+    logicalTableName: 'mdm_documents',
+    storageProfile: 'postgres',
+    columns: [{ name: 'id', nullable: false }],
+    primaryKey: ['id'],
+    initialSeedRows: [{ id: 'doc-initial' }],
+    seedRows: [{ id: 'doc-test' }],
+  };
+  const base = { tableName: table.tableName, logicalTableName: table.logicalTableName, projectMode: 'production' as const };
+  assert.deepEqual(
+    selectMonitorSeedRows(table, { ...base, serverMode: 'presentation' }).map(row => row.id),
+    ['doc-initial', 'doc-test'],
+  );
+  assert.deepEqual(
+    selectMonitorSeedRows(table, { ...base, serverMode: 'production' }).map(row => row.id),
+    ['doc-initial'],
+  );
 });
 
 test('seed anchors preferred over first row when the named id is a seeded line of that entity', () => {

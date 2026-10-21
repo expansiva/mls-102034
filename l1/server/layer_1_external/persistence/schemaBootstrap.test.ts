@@ -1,6 +1,8 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/persistence/schemaBootstrap.test.ts" enhancement="_blank" />
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import {
   bootstrapSchema,
   forceRebuildBlockReason,
@@ -13,6 +15,7 @@ import {
   sanitizeDefinitionIndexes,
   shouldApplySeedRows,
 } from '/_102034_/l1/server/layer_1_external/persistence/schemaBootstrap.js';
+import { resolveProjectDistPath } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import type { AppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import type { ResolvedTableDefinition } from '/_102034_/l1/server/layer_1_external/persistence/contracts.js';
 import { formatMigrationReport } from '/_102034_/l1/server/layer_1_external/persistence/schemaModulePlan.js';
@@ -36,6 +39,8 @@ function resolvedDef(input: {
   tableName: string;
   logicalTableName: string;
   seedRows: Array<Record<string, unknown>>;
+  initialSeedRows?: Array<Record<string, unknown>>;
+  projectId?: string;
 }): ResolvedTableDefinition {
   return {
     moduleId: input.moduleId,
@@ -46,14 +51,27 @@ function resolvedDef(input: {
     backupHot: false,
     storageProfile: 'postgres',
     writeMode: 'sync',
-    columns: [{ name: 'id', postgresType: 'text' }],
+    columns: [{ name: 'id', postgresType: 'text', nullable: false }],
     primaryKey: ['id'],
     version: 1,
     seedRows: input.seedRows,
-    projectId: 'rt89-seed',
+    ...(input.initialSeedRows ? { initialSeedRows: input.initialSeedRows } : {}),
+    projectId: input.projectId ?? 'rt89-seed',
     logicalTableName: input.logicalTableName,
     dynamoResolvedTableName: null,
   };
+}
+
+/** Writes where readProjectMode reads (the projects dir, not the cwd: the runner runs from the layer root). */
+function declareProjectMode(projectId: string, mode: string): string {
+  const path = resolveProjectDistPath(`_${projectId}_/l5/project.json`);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify({ appEnv: mode }));
+  return path;
+}
+
+function removeDeclaredProject(projectId: string): void {
+  rmSync(dirname(dirname(resolveProjectDistPath(`_${projectId}_/l5/project.json`))), { recursive: true, force: true });
 }
 
 test('sanitizeDefinitionIndexes discards an index named <table>_pkey', () => {
@@ -359,6 +377,62 @@ test('force rebuilds the registry scope and the report counts seeds', () => {
     { moduleId: 'controleEstoque', tables: 1, seedRows: 2 },
     { moduleId: 'mdm', tables: 1, seedRows: 1 },
   ]);
+});
+
+test('rebuiltSummary counts initial in every mode and test only in a test mode', () => {
+  const ids = ['910118', '910119', '910120', '910121', '910122'];
+  declareProjectMode('910118', 'production');
+  declareProjectMode('910119', 'homologation');
+  declareProjectMode('910120', 'presentation');
+  declareProjectMode('910121', 'development');
+  declareProjectMode('910122', 'production');
+  try {
+    const client = (projectId: string) => resolvedDef({
+      moduleId: 'onboarding',
+      tableName: `mls${projectId}_country`,
+      logicalTableName: 'country',
+      projectId,
+      seedRows: [{ id: 't1' }, { id: 't2' }],
+      initialSeedRows: [{ id: 'br' }],
+    });
+    const platform = (projectId: string) => resolvedDef({
+      moduleId: 'mdm',
+      tableName: 'mdm_documents',
+      logicalTableName: 'mdm_documents',
+      projectId,
+      seedRows: [{ id: 'doc-test' }],
+      initialSeedRows: [{ id: 'doc-initial' }],
+    });
+    const count = (projectId: string, serverProjectId: string) => rebuiltSummary(
+      { projectId: serverProjectId } as AppEnv,
+      [client(projectId), platform(projectId)],
+      ['onboarding', 'mdm'],
+    );
+
+    assert.deepEqual(count('910118', '910118'), [
+      { moduleId: 'mdm', tables: 1, seedRows: 1 },
+      { moduleId: 'onboarding', tables: 1, seedRows: 1 },
+    ]);
+    assert.deepEqual(count('910119', '910119'), [
+      { moduleId: 'mdm', tables: 1, seedRows: 1 },
+      { moduleId: 'onboarding', tables: 1, seedRows: 1 },
+    ]);
+    assert.deepEqual(count('910120', '910120'), [
+      { moduleId: 'mdm', tables: 1, seedRows: 2 },
+      { moduleId: 'onboarding', tables: 1, seedRows: 3 },
+    ]);
+    assert.deepEqual(count('910121', '910121'), [
+      { moduleId: 'mdm', tables: 1, seedRows: 2 },
+      { moduleId: 'onboarding', tables: 1, seedRows: 3 },
+    ]);
+    // Platform follows the server mode: presentation project, production server.
+    assert.deepEqual(count('910120', '910122'), [
+      { moduleId: 'mdm', tables: 1, seedRows: 1 },
+      { moduleId: 'onboarding', tables: 1, seedRows: 3 },
+    ]);
+  } finally {
+    for (const id of ids) removeDeclaredProject(id);
+  }
 });
 
 test('forceRebuild refuses production, homologation, and an undeclared mode', () => {
