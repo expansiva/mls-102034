@@ -89,53 +89,82 @@ async function attachCompanyType(ctx: RequestContext, companyMdmId: string, comp
   await ctx.mdm.entity.attachRole(companyMdmId, companyType);
 }
 
+function requireBinding(binding: OrganizationBinding): void {
+  if (!binding?.key || !binding.name) {
+    throw new AppError('VALIDATION_ERROR', 'organization binding is required', 400, { field: 'binding' });
+  }
+}
+
 /**
- * One Company per organization key. The reservation is written before the MDM row so a memory
- * process can resume after a later step fails. Postgres holds the same steps in one locked transaction.
- * A repeat reads that id and does not overwrite a Company that already has data.
+ * Reservation and Company creation inside the caller's registration transaction.
+ * A reservation that points at a Person or an invalid record is refused and does not create a Company.
+ * A Company that already exists is not rewritten and receives no invented country or consent.
+ */
+async function reserveOrganizationCompany(tx: RequestContext, binding: OrganizationBinding): Promise<string> {
+  const reservationKey = organizationReservationKey(binding.key);
+  const stored = await readRegistrationStore(tx, reservationKey);
+  let companyMdmId: string;
+  if (!stored) {
+    companyMdmId = tx.idGenerator.newId();
+    await writeRegistrationStore(tx, reservationKey, {
+      schema: 1,
+      kind: 'organization',
+      organizationKey: binding.key,
+      companyMdmId,
+    });
+    throwIfFault('after-reserve');
+  } else {
+    companyMdmId = isReservation(stored, binding.key);
+  }
+
+  const existing = await loadCompany(tx, binding.key, companyMdmId);
+  if (!existing) {
+    const created = await createRegistrationEntity(tx, {
+      mdmId: companyMdmId,
+      detail: {
+        subtype: 'Company',
+        name: binding.name,
+      },
+    });
+    if (created.alreadyExists && created.mdmId !== companyMdmId) {
+      throw invalidReservation(binding.key, 'organization reservation collided with another Company');
+    }
+  }
+  return companyMdmId;
+}
+
+/**
+ * One Company per organization key, with no module role.
+ * The reservation is written before the MDM row so a memory process can resume after a later step fails.
+ * Postgres holds the same steps in one locked transaction.
+ */
+export async function ensureOrganizationIdentity(
+  ctx: RequestContext,
+  binding: OrganizationBinding,
+): Promise<OrganizationCompany> {
+  requireBinding(binding);
+  return withRegistrationTransaction(ctx, [binding.key], async (tx) => {
+    const companyMdmId = await reserveOrganizationCompany(tx, binding);
+    throwIfFault('before-return');
+    return { companyMdmId };
+  });
+}
+
+/**
+ * Onboarding adapter. Same reservation and the same transaction as identity, then the company role.
+ * Creating the Company and attaching the role are not two transactions.
  */
 export async function ensureOrganizationCompany(
   ctx: RequestContext,
   binding: OrganizationBinding,
   config: ProjectOnboardingConfig,
 ): Promise<OrganizationCompany> {
-  if (!binding?.key || !binding.name) {
-    throw new AppError('VALIDATION_ERROR', 'organization binding is required', 400, { field: 'binding' });
-  }
+  requireBinding(binding);
   if (!config?.companyType) {
     throw new AppError('VALIDATION_ERROR', 'onboarding.companyType is required', 400, { field: 'companyType' });
   }
-  const reservationKey = organizationReservationKey(binding.key);
   return withRegistrationTransaction(ctx, [binding.key], async (tx) => {
-    const stored = await readRegistrationStore(tx, reservationKey);
-    let companyMdmId: string;
-    if (!stored) {
-      companyMdmId = tx.idGenerator.newId();
-      await writeRegistrationStore(tx, reservationKey, {
-        schema: 1,
-        kind: 'organization',
-        organizationKey: binding.key,
-        companyMdmId,
-      });
-      throwIfFault('after-reserve');
-    } else {
-      companyMdmId = isReservation(stored, binding.key);
-    }
-
-    const existing = await loadCompany(tx, binding.key, companyMdmId);
-    if (!existing) {
-      const created = await createRegistrationEntity(tx, {
-        mdmId: companyMdmId,
-        detail: {
-          subtype: 'Company',
-          name: binding.name,
-        },
-      });
-      if (created.alreadyExists && created.mdmId !== companyMdmId) {
-        throw invalidReservation(binding.key, 'organization reservation collided with another Company');
-      }
-    }
-
+    const companyMdmId = await reserveOrganizationCompany(tx, binding);
     await attachCompanyType(tx, companyMdmId, config.companyType);
     throwIfFault('before-return');
     return { companyMdmId };
@@ -143,18 +172,23 @@ export async function ensureOrganizationCompany(
 }
 
 /**
- * Boot/migrate entry. Disabled onboarding returns without a context or a Company.
- * The id is published only after ensureOrganizationCompany returns.
+ * Boot/migrate entry. A missing module still ensures the organization Company.
+ * A null binding (legacy preview without an organization source) does not create one.
+ * The id is cleared first and published only after ensure succeeds.
  */
 export async function initializeOrganizationForProcess(): Promise<void> {
+  resolvedCompanyMdmId = undefined;
   const { readProjectsConfig } = await import('/_102034_/l1/server/layer_1_external/config/projectConfig.js');
   const { readOnboardingConfig, resolveOrganizationBinding } = await import('/_102034_/l1/server/layer_1_external/config/onboardingConfig.js');
   const projects = readProjectsConfig();
-  const onboarding = readOnboardingConfig(projects);
-  if (!onboarding) return;
   const binding = resolveOrganizationBinding(projects);
   if (!binding) return;
   const { createDefaultRequestContext } = await import('/_102034_/l1/server/layer_2_controllers/execBff.js');
-  const ensured = await ensureOrganizationCompany(createDefaultRequestContext(), binding, onboarding);
+  const ctx = createDefaultRequestContext();
+  const ensured = await ensureOrganizationIdentity(ctx, binding);
+  const onboarding = readOnboardingConfig(projects);
+  if (onboarding) {
+    await ensureOrganizationCompany(ctx, binding, onboarding);
+  }
   resolvedCompanyMdmId = ensured.companyMdmId;
 }

@@ -17,6 +17,7 @@ import { createRegistrationEntity } from '/_102034_/l1/mdm/layer_3_usecases/inte
 import { MdmDocumentEntity } from '/_102034_/l1/mdm/layer_3_usecases/internal/MdmDocumentStore.js';
 import {
   ensureOrganizationCompany,
+  ensureOrganizationIdentity,
   organizationReservationKey,
   setOrganizationBootstrapFault,
 } from '/_102034_/l1/mdm/layer_3_usecases/organizationBootstrap.js';
@@ -239,4 +240,87 @@ test('the first company is a draft without invented legal data', async () => {
   const index = await runtime.mdmEntityIndex.findOne({ where: { mdmId: created.companyMdmId } });
   assert.equal(index?.subtype, 'Company');
   assert.equal(index?.name, 'Acme Display');
+});
+
+test('identity without a module creates one Company and no role', async () => {
+  const { runtime, ctx } = runtimeContext();
+  const created = await ensureOrganizationIdentity(ctx, binding('org:acme', 'Acme Display'));
+  const stored = await storedCompany(runtime, created.companyMdmId);
+  assert.equal(stored.details.subtype, 'Company');
+  if (stored.details.subtype !== 'Company') return;
+  assert.equal(stored.details.tags.includes(companyType), false);
+  assert.equal(stored.details.registrationDraft, true);
+  assert.equal(stored.details.legalName, '');
+  assert.equal(stored.details.countryCode, '');
+  assert.equal(await companyCount(runtime), 1);
+  const reservation = await readRegistrationStore(ctx, organizationReservationKey('org:acme'));
+  assert.equal(reservation?.schema, 1);
+  assert.equal(reservation?.companyMdmId, created.companyMdmId);
+});
+
+test('the same Company stays when a module is enabled or its role changes', async () => {
+  const { runtime, ctx } = runtimeContext();
+  const org = binding('org:acme', 'Acme');
+  const created = await ensureOrganizationIdentity(ctx, org);
+  const before = await storedCompany(runtime, created.companyMdmId);
+  const enabled = await ensureOrganizationCompany(ctx, org, config());
+  assert.equal(enabled.companyMdmId, created.companyMdmId);
+  const changed = await ensureOrganizationCompany(ctx, org, { ...config(), companyType: 'outro.Organizacao' });
+  assert.equal(changed.companyMdmId, created.companyMdmId);
+  const stored = await storedCompany(runtime, created.companyMdmId);
+  assert.equal(stored.details.subtype, 'Company');
+  if (stored.details.subtype !== 'Company' || before.details.subtype !== 'Company') return;
+  assert.equal(stored.details.name, before.details.name);
+  assert.equal(stored.details.legalName, before.details.legalName);
+  assert.equal(stored.details.countryCode, before.details.countryCode);
+  assert.equal(stored.details.tags.includes(companyType), true);
+  assert.equal(stored.details.tags.includes('outro.Organizacao'), true);
+  assert.equal(await companyCount(runtime), 1);
+});
+
+test('repeating identity does not change company data or version', async () => {
+  const { runtime, ctx } = runtimeContext();
+  const created = await ensureOrganizationIdentity(ctx, binding('org:acme', 'Acme'));
+  const once = await storedCompany(runtime, created.companyMdmId);
+  const repeated = await ensureOrganizationIdentity(ctx, binding('org:acme', 'Acme Renamed'));
+  assert.equal(repeated.companyMdmId, created.companyMdmId);
+  const twice = await storedCompany(runtime, created.companyMdmId);
+  assert.equal(twice.version, once.version);
+  assert.deepEqual(twice.details, once.details);
+});
+
+test('identity failure after the reservation resumes the same id', async () => {
+  const { runtime, ctx } = runtimeContext();
+  setOrganizationBootstrapFault('after-reserve');
+  await assert.rejects(
+    () => ensureOrganizationIdentity(ctx, binding('org:acme', 'Acme')),
+    /after-reserve/,
+  );
+  assert.equal(await companyCount(runtime), 0);
+  const reserved = await readRegistrationStore(ctx, organizationReservationKey('org:acme'));
+  setOrganizationBootstrapFault(null);
+  const created = await ensureOrganizationIdentity(ctx, binding('org:acme', 'Acme'));
+  assert.equal(created.companyMdmId, reserved?.companyMdmId);
+  assert.equal(await companyCount(runtime), 1);
+  const stored = await storedCompany(runtime, created.companyMdmId);
+  assert.equal(stored.details.tags.includes(companyType), false);
+});
+
+test('identity refuses a reservation that points at a Person', async () => {
+  const { runtime, ctx } = runtimeContext();
+  const person = await createRegistrationEntity(ctx, {
+    mdmId: ctx.idGenerator.newId(),
+    detail: { subtype: 'Person', name: 'Ada' },
+  });
+  await writeRegistrationStore(ctx, organizationReservationKey('org:acme'), {
+    schema: 1,
+    kind: 'organization',
+    organizationKey: 'org:acme',
+    companyMdmId: person.mdmId,
+  });
+  await assert.rejects(
+    () => ensureOrganizationIdentity(ctx, binding('org:acme', 'Acme')),
+    (error: unknown) => error instanceof AppError && error.code === 'ORGANIZATION_RESERVATION_INVALID',
+  );
+  assert.equal(await companyCount(runtime), 0);
 });
