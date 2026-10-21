@@ -39,7 +39,7 @@ function onboarding(redirect?: boolean) {
   };
 }
 
-function writeConfig(block: 'false' | 'true' | 'default' | 'absent'): void {
+function writeConfig(block: 'false' | 'true' | 'default' | 'absent' | 'org' | 'file'): void {
   const config: Record<string, unknown> = {
     defaultProjectId: clientId,
     shellTemplates: { spa: './shells/spa.html', pwa: './shells/pwa.html' },
@@ -77,6 +77,8 @@ function writeConfig(block: 'false' | 'true' | 'default' | 'absent'): void {
   if (block === 'false') config.onboarding = onboarding(false);
   if (block === 'true') config.onboarding = onboarding(true);
   if (block === 'default') config.onboarding = onboarding(undefined);
+  if (block === 'org') config.organization = { source: 'development-project' };
+  if (block === 'file') config.organization = { source: 'project-file' };
   writeFileSync(join(workspace, 'config.json'), JSON.stringify(config));
   resetProjectsConfigCache();
 }
@@ -235,5 +237,100 @@ test('redirect false keeps one Company in the BFF and session and omits boot ent
     assert.equal(gone.statusCode, 404);
   } finally {
     await quiet.close();
+  }
+});
+
+test('organization without the module keeps one Company in session and BFF', async () => {
+  const previousFiles = process.env.CBE_PROJECT_FILES_DIR;
+  const filesDir = join(workspace, 'sites-projects');
+  mkdirSync(filesDir, { recursive: true });
+  process.env.CBE_PROJECT_FILES_DIR = filesDir;
+  try {
+    writeFileSync(join(workspace, `mls-${clientId}`, 'l5', 'project.json'), JSON.stringify({
+      orgName: 'Rt119 Sem Modulo',
+      appEnv: 'development',
+    }));
+    writeConfig('org');
+    resetResolvedOrganizationCompanyId();
+    resetSharedDataRuntime();
+    await initializeOrganizationForProcess();
+    const companyMdmId = getResolvedOrganizationCompanyId();
+    assert.ok(companyMdmId);
+    const ctx = createDefaultRequestContext();
+    assert.equal(ctx.sessionContext.activeCompanyId, companyMdmId);
+
+    const session = await resolveSessionInfoBody(ctx, { claims, reject: false, reason: 'ok' }, 'development', null);
+    assert.deepEqual(session.company, { mdmId: companyMdmId });
+    assert.equal('onboarding' in session, false);
+    assert.equal(session.userId, 'rt84-user');
+    assert.deepEqual(session.allAuthorities, ['inicio:responsavel']);
+    assert.equal(JSON.stringify(session).includes('102056'), false);
+    assert.equal(JSON.stringify(session).includes('development-org:'), false);
+
+    const unsigned = await resolveSessionInfoBody(
+      ctx,
+      { reject: false, reason: 'missing-token' },
+      'development',
+      null,
+    );
+    assert.equal('company' in unsigned, false);
+    assert.equal(unsigned.authenticated, false);
+
+    const app = buildHttpServer();
+    try {
+      const anonymous = await app.inject({ method: 'GET', url: '/session/info' });
+      const anonBody = anonymous.json();
+      assert.equal(anonBody.authenticated, false);
+      assert.equal('company' in anonBody, false);
+      assert.equal('onboarding' in anonBody, false);
+      const register = await app.inject({ method: 'POST', url: '/session/register', payload: {} });
+      assert.equal(register.statusCode, 404);
+      const html = bootPayload((await app.inject({ method: 'GET', url: '/inicio/index.html' })).body);
+      assert.equal('onboarding' in html, false);
+      const bootText = JSON.stringify(html);
+      assert.equal(bootText.includes('102056'), false);
+      assert.equal(bootText.includes(companyMdmId), false);
+    } finally {
+      await app.close();
+    }
+
+    writeFileSync(join(filesDir, `${clientId}.json`), JSON.stringify({
+      schema: 1,
+      org: { orgId: 'org-rt84', slug: 'rt84', name: 'Rt84 Arquivo', createdAt: '2026-10-21T00:00:00Z' },
+      project: { projectId: clientId },
+    }));
+    writeConfig('file');
+    await initializeOrganizationForProcess();
+    const fromFile = getResolvedOrganizationCompanyId();
+    assert.ok(fromFile);
+    assert.equal(createDefaultRequestContext().sessionContext.activeCompanyId, fromFile);
+    const filed = await resolveSessionInfoBody(
+      createDefaultRequestContext(),
+      { claims, reject: false, reason: 'ok' },
+      'development',
+      null,
+    );
+    assert.deepEqual(filed.company, { mdmId: fromFile });
+    assert.equal('onboarding' in filed, false);
+    assert.equal(JSON.stringify(filed).includes('102056'), false);
+
+    rmSync(join(filesDir, `${clientId}.json`));
+    await assert.rejects(() => initializeOrganizationForProcess());
+    assert.equal(getResolvedOrganizationCompanyId(), undefined);
+    assert.equal(createDefaultRequestContext().sessionContext.activeCompanyId, undefined);
+    const cleared = await resolveSessionInfoBody(
+      createDefaultRequestContext(),
+      { claims, reject: false, reason: 'ok' },
+      'development',
+      null,
+    );
+    assert.equal('company' in cleared, false);
+  } finally {
+    if (previousFiles === undefined) delete process.env.CBE_PROJECT_FILES_DIR;
+    else process.env.CBE_PROJECT_FILES_DIR = previousFiles;
+    writeFileSync(join(workspace, `mls-${clientId}`, 'l5', 'project.json'), JSON.stringify({
+      orgName: 'Rt84 Sessao',
+      appEnv: 'development',
+    }));
   }
 });

@@ -124,3 +124,70 @@ test('boot runs migrations, then the organization Company, then listen', async (
   assert.equal(getResolvedOrganizationCompanyId(), undefined);
   assert.equal(createDefaultRequestContext().sessionContext.activeCompanyId, undefined);
 });
+
+test('a valid organization source boots the Company when the module is absent', async () => {
+  const previousFiles = process.env.CBE_PROJECT_FILES_DIR;
+  const filesDir = join(workspace, 'sites-projects');
+  mkdirSync(filesDir, { recursive: true });
+  process.env.CBE_PROJECT_FILES_DIR = filesDir;
+  const projectFile = join(workspace, `mls-${clientId}`, 'l5', 'project.json');
+  try {
+    writeFileSync(projectFile, JSON.stringify({ orgName: 'Rt119 Sem Modulo', appEnv: 'development' }));
+    writeFileSync(join(workspace, 'config.json'), JSON.stringify({
+      defaultProjectId: clientId,
+      organization: { source: 'development-project' },
+      projects: {
+        [clientId]: {
+          root: './client',
+          type: 'client',
+          persistenceModules: [{
+            moduleId: 'mdm',
+            persistenceEntrypoint: './_102034_/l1/mdm/persistence.js',
+          }],
+        },
+        '102029': { root: './fe', type: 'master frontend' },
+        '102034': { root: './be', type: 'master backend' },
+      },
+    }));
+    resetProcessCaches();
+    await initializeOrganizationForProcess();
+    const companyMdmId = getResolvedOrganizationCompanyId();
+    assert.ok(companyMdmId);
+    const ctx = createDefaultRequestContext();
+    assert.equal(ctx.sessionContext.activeCompanyId, companyMdmId);
+    const created = await getEntity(ctx, companyMdmId);
+    assert.equal(created.details.subtype, 'Company');
+    assert.equal(created.details.name, 'Rt119 Sem Modulo');
+    assert.equal(JSON.stringify(created.details.tags ?? []), '[]');
+
+    writeFileSync(join(filesDir, `${clientId}.json`), JSON.stringify({
+      schema: 1,
+      org: { orgId: 'org-rt119', slug: 'rt119', name: 'Rt119 Arquivo', createdAt: '2026-10-21T00:00:00Z' },
+      project: { projectId: clientId },
+    }));
+    writeFileSync(join(workspace, 'config.json'), JSON.stringify({
+      defaultProjectId: clientId,
+      organization: { source: 'project-file' },
+      projects: JSON.parse(readFileSync(join(workspace, 'config.json'), 'utf8')).projects,
+    }));
+    resetProjectsConfigCache();
+    await initializeOrganizationForProcess();
+    const fromFile = getResolvedOrganizationCompanyId();
+    assert.ok(fromFile);
+    assert.notEqual(fromFile, companyMdmId);
+    const fileCtx = createDefaultRequestContext();
+    assert.equal(fileCtx.sessionContext.activeCompanyId, fromFile);
+    const filed = await getEntity(fileCtx, fromFile);
+    assert.equal(filed.details.name, 'Rt119 Arquivo');
+    assert.equal(filed.details.subtype, 'Company');
+
+    rmSync(join(filesDir, `${clientId}.json`));
+    await assert.rejects(() => initializeOrganizationForProcess());
+    assert.equal(getResolvedOrganizationCompanyId(), undefined);
+    assert.equal(createDefaultRequestContext().sessionContext.activeCompanyId, undefined);
+  } finally {
+    if (previousFiles === undefined) delete process.env.CBE_PROJECT_FILES_DIR;
+    else process.env.CBE_PROJECT_FILES_DIR = previousFiles;
+    writeFileSync(projectFile, JSON.stringify({ orgName: 'Rt81 Boot Org', appEnv: 'development' }));
+  }
+});
