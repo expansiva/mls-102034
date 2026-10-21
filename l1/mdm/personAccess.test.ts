@@ -1,16 +1,22 @@
 /// <mls fileReference="_102034_/l1/mdm/personAccess.test.ts" enhancement="_blank" />
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { PrivacyConsentValue } from '/_102034_/l1/mdm/module.js';
+import type { MdmDetailRecord, PrivacyConsentValue } from '/_102034_/l1/mdm/module.js';
+import { countryCodes } from '/_102034_/l1/mdm/countryCodes.js';
 import {
   isPersonAccessComplete,
   isProtectedPrivacyCountry,
+  isTwoLetterCountry,
   isValidPrivacyConsent,
 } from '/_102034_/l1/mdm/personAccess.js';
 import {
+  applyPatchToDetail,
   isPersonAccessComplete as fromSupportComplete,
   isProtectedPrivacyCountry as fromSupportProtected,
+  normalizeCountryCode,
+  normalizeDetailInput,
 } from '/_102034_/l1/mdm/layer_3_usecases/mdmSupport.js';
+import { AppError, type RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 
 const EU = [
   'AT', 'BE', 'BG', 'HR', 'CY', 'CZ', 'DK', 'EE', 'FI', 'FR', 'DE', 'GR', 'HU',
@@ -38,7 +44,9 @@ test('access matrix', () => {
   }
   assert.equal(isProtectedPrivacyCountry('US'), false);
   assert.equal(isPersonAccessComplete({ name: 'Ada', countryCode: 'US' }), true);
-  assert.equal(isPersonAccessComplete({ name: 'Ada', countryCode: 'zz' }), true);
+  assert.equal(isPersonAccessComplete({ name: 'Ada', countryCode: 'zz' }), false);
+  assert.equal(isPersonAccessComplete({ name: 'Ada', countryCode: 'XX' }), false);
+  assert.equal(isTwoLetterCountry('ZZ'), true);
   assert.equal(isPersonAccessComplete({ name: '  ', countryCode: 'US' }), false);
   assert.equal(isPersonAccessComplete({ countryCode: 'US' }), false);
   assert.equal(isPersonAccessComplete({ name: 'Ada' }), false);
@@ -54,4 +62,90 @@ test('access matrix', () => {
   assert.equal(isValidPrivacyConsent({ ...validConsent, revokedAt: '2026-02-01T00:00:00.000Z' }), false);
   assert.equal(isValidPrivacyConsent(validConsent), true);
   assert.equal(isValidPrivacyConsent(null), false);
+});
+
+test('every assigned country completes a person and unassigned codes do not', () => {
+  assert.equal(countryCodes.length, 249);
+  for (const { code } of countryCodes) {
+    const detail = {
+      name: 'Ada',
+      countryCode: ` ${code.toLowerCase()} `,
+      privacyConsent: isProtectedPrivacyCountry(code) ? validConsent : null,
+    };
+    assert.equal(isPersonAccessComplete(detail), true);
+    if (isProtectedPrivacyCountry(code)) {
+      assert.equal(isPersonAccessComplete({ name: 'Ada', countryCode: code }), false);
+    }
+  }
+});
+
+const ctx = { clock: { nowIso: () => '2026-01-02T00:00:00.000Z' } } as RequestContext;
+
+function personInput(countryCode: unknown): CreateLike {
+  return { subtype: 'Person', name: 'Ada', status: 'Active', countryCode };
+}
+
+interface CreateLike {
+  subtype: string;
+  name: string;
+  status: string;
+  countryCode?: unknown;
+  legalName?: string;
+}
+
+function assertCountryError(run: () => void): void {
+  assert.throws(run, (error: unknown) => {
+    assert.ok(error instanceof AppError);
+    assert.equal(error.code, 'VALIDATION_ERROR');
+    assert.equal(error.statusCode, 400);
+    assert.deepEqual(error.details, { field: 'countryCode' });
+    return true;
+  });
+}
+
+test('normalize, create and patch use the assigned set', () => {
+  assert.equal(normalizeCountryCode(null), 'US');
+  assert.equal(normalizeCountryCode('  '), 'US');
+  assert.equal(normalizeCountryCode(' br '), 'BR');
+  assertCountryError(() => normalizeCountryCode('ZZ'));
+  assertCountryError(() => normalizeCountryCode('USA'));
+
+  const created = normalizeDetailInput(personInput(' gb ') as never, ctx, 'p1');
+  assert.equal(created.countryCode, 'GB');
+
+  const omitted = normalizeDetailInput(personInput(undefined) as never, ctx, 'p2');
+  assert.equal(omitted.countryCode, 'US');
+
+  const raw = personInput('zz');
+  assertCountryError(() => normalizeDetailInput(raw as never, ctx, 'p3'));
+  assert.equal(raw.countryCode, 'zz');
+  assertCountryError(() => normalizeDetailInput(personInput(12) as never, ctx, 'p4'));
+
+  const draft = normalizeDetailInput(
+    { subtype: 'Company', name: 'Acme', legalName: 'Acme Ltd', status: 'Active', countryCode: '  ' } as never,
+    ctx,
+    'c1',
+    { registrationDraft: true },
+  );
+  assert.equal(draft.countryCode, '');
+  assert.equal(draft.registrationDraft, true);
+
+  const legacy = { ...draft, countryCode: 'ZZ' } as MdmDetailRecord;
+  const stillLegacy = applyPatchToDetail(legacy, { name: 'Acme 2' }, ctx);
+  assert.equal(legacy.countryCode, 'ZZ');
+  assert.equal(stillLegacy.countryCode, 'ZZ');
+  assert.equal(stillLegacy.registrationDraft, true);
+
+  const promoted = applyPatchToDetail(legacy, { countryCode: 'us' }, ctx);
+  assert.equal(promoted.countryCode, 'US');
+  assert.equal(promoted.registrationDraft, undefined);
+
+  const activeLegacy = { ...created, countryCode: 'ZZ' } as MdmDetailRecord;
+  assertCountryError(() => applyPatchToDetail(activeLegacy, { name: 'Ada 2' }, ctx));
+  assert.equal(activeLegacy.countryCode, 'ZZ');
+
+  const patched = applyPatchToDetail(created, { countryCode: ' br ' }, ctx);
+  assert.equal(patched.countryCode, 'BR');
+  const preserved = applyPatchToDetail(created, { name: 'Ada 3' }, ctx);
+  assert.equal(preserved.countryCode, 'GB');
 });

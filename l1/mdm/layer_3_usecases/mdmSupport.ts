@@ -19,11 +19,11 @@ import type {
   PrivacyConsentValue,
   ServiceKind,
 } from '/_102034_/l1/mdm/module.js';
+import { isSupportedCountryCode } from '/_102034_/l1/mdm/countryCodes.js';
 import { AppError, type RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import {
   isPersonAccessComplete,
   isProtectedPrivacyCountry,
-  isTwoLetterCountry,
 } from '/_102034_/l1/mdm/personAccess.js';
 
 export { isPersonAccessComplete, isProtectedPrivacyCountry };
@@ -314,28 +314,45 @@ export async function refreshRelationshipRefs(
   }
 }
 
+function rejectCountryCode(): never {
+  throw new AppError('VALIDATION_ERROR', 'countryCode must be an assigned catalog code', 400, {
+    field: 'countryCode',
+  });
+}
+
 export function normalizeCountryCode(countryCode?: string | null): string {
-  return countryCode?.trim().toUpperCase() || 'US';
+  const text = typeof countryCode === 'string' ? countryCode.trim().toUpperCase() : '';
+  if (!text) {
+    return 'US';
+  }
+  if (!isSupportedCountryCode(text)) {
+    rejectCountryCode();
+  }
+  return text;
 }
 
 function explicitCountryCode(value: unknown, draft: boolean): string {
-  const text = typeof value === 'string' ? value.trim().toUpperCase() : '';
+  if (value == null) {
+    return draft ? '' : normalizeCountryCode(null);
+  }
+  if (typeof value !== 'string') {
+    rejectCountryCode();
+  }
+  const text = value.trim().toUpperCase();
   if (!text) {
     return draft ? '' : normalizeCountryCode(null);
   }
-  if (draft && !isTwoLetterCountry(text)) {
-    throw new AppError('VALIDATION_ERROR', 'countryCode must be a two-letter catalog code', 400, {
-      field: 'countryCode',
-    });
+  if (!isSupportedCountryCode(text)) {
+    rejectCountryCode();
   }
-  return draft ? text : normalizeCountryCode(typeof value === 'string' ? value : null);
+  return text;
 }
 
 function isCompanyRegistrationComplete(detail: MdmDetailRecord): boolean {
   const countryCode = detail.countryCode.trim().toUpperCase();
   return Boolean(
     detail.name?.trim()
-    && isTwoLetterCountry(countryCode)
+    && isSupportedCountryCode(countryCode)
     && String(detail.legalName ?? '').trim(),
   );
 }

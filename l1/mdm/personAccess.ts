@@ -1,4 +1,5 @@
 /// <mls fileReference="_102034_/l1/mdm/personAccess.ts" enhancement="_blank" />
+import { isSupportedCountryCode } from '/_102034_/l1/mdm/countryCodes.js';
 import type { PrivacyConsentValue } from '/_102034_/l1/mdm/module.js';
 
 export interface PersonAccessData {
@@ -30,7 +31,7 @@ export function isValidPrivacyConsent(consent: PrivacyConsentValue | null | unde
 /** Name, country and, in a protected country, a valid consent. Ignores registrationDraft. */
 export function isPersonAccessComplete(detail: PersonAccessData): boolean {
   const countryCode = typeof detail.countryCode === 'string' ? detail.countryCode.trim().toUpperCase() : '';
-  if (!detail.name?.trim() || !isTwoLetterCountry(countryCode)) {
+  if (!detail.name?.trim() || !isSupportedCountryCode(countryCode)) {
     return false;
   }
   if (isProtectedPrivacyCountry(countryCode) && !isValidPrivacyConsent(detail.privacyConsent)) {
