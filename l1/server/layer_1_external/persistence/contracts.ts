@@ -82,17 +82,29 @@ export interface TableDefinition {
   dynamo?: DynamoTableConfig;
   retentionDays?: number;
   version: number;
-  // Mechanical mock rows applied when the table is (re)created empty: on every Postgres
-  // schema rebuild (migrate) and on every memory-runtime store init (dev preview).
+  // Legacy mock rows. Always test-purpose: applied only in test modes, never promoted to initial.
   // Keyed by column name; JSONB columns take plain objects.
   seedRows?: Array<Record<string, unknown>>;
 }
 
+export type SeedPurpose = 'initial' | 'test';
+
 /** Seed rows shipped in a separate file inside the module's tableDefsDir (so generated
- *  table definitions stay untouched). Discovered by shape, like TableDefinition. */
+ *  table definitions stay untouched). Discovered by shape, like TableDefinition.
+ *  `purpose` omitted means test, so existing exports stay valid. */
 export interface TableSeedRows {
   seedFor: string; // repositoryName or tableName of the target TableDefinition
+  purpose?: SeedPurpose;
   rows: Array<Record<string, unknown>>;
+}
+
+/** Provenance of one seed export after it is attached to a resolved table. */
+export interface SeedExportOrigin {
+  purpose: SeedPurpose;
+  source: string;
+  projectId: string;
+  moduleId: string;
+  seedFor: string;
 }
 
 export interface ResolvedTableDefinition extends TableDefinition {
@@ -104,6 +116,10 @@ export interface ResolvedTableDefinition extends TableDefinition {
   // `mls<projectId>_<module>_order`.
   logicalTableName: string;
   dynamoResolvedTableName: string | null;
+  /** Initial-purpose rows only. Absent on tables that received none. Not part of the schema snapshot. */
+  initialSeedRows?: Array<Record<string, unknown>>;
+  /** Export groups attached to this table, initial and test, with the module that exported each one. */
+  seedOrigins?: SeedExportOrigin[];
 }
 
 /** Column fields the Postgres rebuild materializes. Seed rows are not part of the snapshot. */

@@ -10,10 +10,12 @@ import {
 import type {
   ResolvedTableDefinition,
   SchemaSnapshot,
+  SeedExportOrigin,
   TableDefinition,
   TableSeedRows,
   ViewDefinition,
 } from '/_102034_/l1/server/layer_1_external/persistence/contracts.js';
+import { assertInitialSeed, readSeedPurpose } from '/_102034_/l1/server/layer_1_external/persistence/seedPolicy.js';
 import {
   applyProjectTableNamespace,
   isClientProjectType,
@@ -34,6 +36,13 @@ interface PersistenceModuleRegistration {
   moduleId: string;
   persistenceEntrypoint?: string;
   tableDefsDir?: string;
+}
+
+interface ImportedSeed {
+  seed: TableSeedRows;
+  source: string;
+  projectId: string;
+  moduleId: string;
 }
 
 interface ImportedPersistenceDefinitions {
@@ -205,6 +214,14 @@ function isTableSeedRows(value: unknown): value is TableSeedRows {
     && Array.isArray((value as TableSeedRows).rows);
 }
 
+function acceptSeedExport(value: unknown, source: string): TableSeedRows | null {
+  if (!isTableSeedRows(value)) {
+    return null;
+  }
+  readSeedPurpose(value.purpose, { source, seedFor: value.seedFor });
+  return value;
+}
+
 // Hexagonal model: discover every TableDefinition-shaped export across the module's table-def
 // adapters. TableSeedRows-shaped exports are collected globally and merged after every persistence
 // module is loaded, so a client module can seed 102034-owned MDM tables without owning them.
@@ -228,8 +245,11 @@ async function discoverTableDefinitions(tableDefsDir: string): Promise<ImportedP
       const definition = normalizeTableDefinition(value);
       if (definition) {
         definitions.push(definition);
-      } else if (isTableSeedRows(value)) {
-        seeds.push(value);
+      } else {
+        const seed = acceptSeedExport(value, moduleUrl);
+        if (seed) {
+          seeds.push(seed);
+        }
       }
     }
   }
@@ -252,7 +272,10 @@ async function importTableDefinitions(
   }
   const moduleUrl = resolveProjectModuleImportUrl(registration.persistenceEntrypoint);
   const mod = await import(moduleUrl);
-  const seeds = Object.values(mod).filter(isTableSeedRows);
+  const seeds = Object.values(mod).flatMap((value) => {
+    const seed = acceptSeedExport(value, moduleUrl);
+    return seed ? [seed] : [];
+  });
   const directExport = mod.tableDefinitions;
   if (Array.isArray(directExport)) {
     return {
@@ -279,16 +302,51 @@ async function importTableDefinitions(
   );
 }
 
+function rememberSeedOrigin(definition: ResolvedTableDefinition, origin: SeedExportOrigin) {
+  definition.seedOrigins = [...(definition.seedOrigins ?? []), origin];
+}
+
 function applySeedRows(
   definitions: ResolvedTableDefinition[],
-  seeds: Array<{ seed: TableSeedRows; source: string }>,
+  seeds: ImportedSeed[],
 ) {
-  for (const { seed, source } of seeds) {
-    // Seeds target the logical name (repositoryName like 'cafeFlowOrder', or the base table name
-    // 'order'); the physical tableName is namespaced, so match logicalTableName too.
-    const def = definitions.find((d) => matchesTableLookup(d, seed.seedFor));
+  for (const imported of seeds) {
+    const { seed, source, projectId, moduleId } = imported;
+    const purpose = readSeedPurpose(seed.purpose, { source, seedFor: seed.seedFor });
+    const origin: SeedExportOrigin = {
+      purpose,
+      source,
+      projectId,
+      moduleId,
+      seedFor: seed.seedFor,
+    };
+    if (purpose === 'initial') {
+      // Same logical name may exist in another module. Initial binds only to the exporter's table.
+      const matches = definitions.filter((definition) =>
+        definition.projectId === projectId
+        && definition.moduleId === moduleId
+        && matchesTableLookup(definition, seed.seedFor));
+      if (matches.length !== 1) {
+        throw new AppError(
+          'PERSISTENCE_SEED_INVALID',
+          matches.length === 0
+            ? `initial seed target not found in ${source}: ${seed.seedFor}`
+            : `initial seed target is ambiguous in ${source}: ${seed.seedFor}`,
+          500,
+          { ...origin, matchCount: matches.length },
+        );
+      }
+      const def = matches[0];
+      assertInitialSeed(def, seed.rows, origin);
+      def.initialSeedRows = [...(def.initialSeedRows ?? []), ...seed.rows];
+      rememberSeedOrigin(def, origin);
+      continue;
+    }
+    // Test and legacy exports keep the global lookup so a client module can still seed MDM tables.
+    const def = definitions.find((definition) => matchesTableLookup(definition, seed.seedFor));
     if (def) {
       def.seedRows = [...(def.seedRows ?? []), ...seed.rows];
+      rememberSeedOrigin(def, origin);
     } else {
       console.warn(`[persistence] seed target not found in ${source}: ${seed.seedFor}`);
     }
@@ -436,7 +494,12 @@ export async function loadResolvedTableDefinitions(
       });
       return {
         definitions,
-        seeds: loaded.seeds.map((seed) => ({ seed, source: loaded.seedSource })),
+        seeds: loaded.seeds.map((seed): ImportedSeed => ({
+          seed,
+          source: loaded.seedSource,
+          projectId: registration.projectId,
+          moduleId: registration.moduleId,
+        })),
       };
     }));
 
