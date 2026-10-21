@@ -13,47 +13,53 @@ test('candidate proxy allowlists exactly read, publish and mark-result', () => {
   assert.equal(candidateActionAllowed(null), false);
 });
 
+const TEST_ORIGIN = { CANDIDATE_ORIGIN: 'https://candidate.invalid' };
+
 test('candidate proxy forwards only the verified cauth token and preserves conflict', async () => {
-  const original = process.env.CANDIDATE_ORIGIN;
-  delete process.env.CANDIDATE_ORIGIN;
-  try {
-    const result = await proxyCandidateRequest(
-      { action: 'candidatePublish', project: 102047 }, 'verified token',
-      async (input, init) => {
-        assert.equal(String(input), 'https://102056.collabcodes.com/exec/candidate');
-        assert.equal(init?.redirect, 'manual');
-        assert.deepEqual(init?.headers, {
-          'Content-Type': 'application/json', Cookie: 'cauth=verified%20token',
-        });
-        assert.equal((init?.headers as Record<string, string>).Authorization, undefined);
-        return new Response(JSON.stringify({ statusCode: 409, status: 'conflict' }), {
-          status: 409, headers: { 'Content-Type': 'application/json' },
-        });
-      },
-    );
-    assert.equal(result.statusCode, 409);
-    assert.deepEqual(result.body, { statusCode: 409, status: 'conflict' });
-  } finally {
-    if (original === undefined) delete process.env.CANDIDATE_ORIGIN;
-    else process.env.CANDIDATE_ORIGIN = original;
-  }
+  const result = await proxyCandidateRequest(
+    { action: 'candidatePublish', project: 102047 }, 'verified token',
+    async (input, init) => {
+      assert.equal(String(input), 'https://candidate.invalid/exec/candidate');
+      assert.equal(init?.redirect, 'manual');
+      assert.deepEqual(init?.headers, {
+        'Content-Type': 'application/json', Cookie: 'cauth=verified%20token',
+      });
+      assert.equal((init?.headers as Record<string, string>).Authorization, undefined);
+      return new Response(JSON.stringify({ statusCode: 409, status: 'conflict' }), {
+        status: 409, headers: { 'Content-Type': 'application/json' },
+      });
+    },
+    TEST_ORIGIN,
+  );
+  assert.equal(result.statusCode, 409);
+  assert.deepEqual(result.body, { statusCode: 409, status: 'conflict' });
 });
 
-test('candidate origin defaults to the 102056 runtime and rejects non-localhost HTTP', async () => {
+test('candidate origin requires an explicit URL and rejects non-loopback HTTP', async () => {
   const previous = process.env.CANDIDATE_ORIGIN;
   delete process.env.CANDIDATE_ORIGIN;
   try {
-    assert.equal(candidateOrigin(), 'https://102056.collabcodes.com');
-    process.env.CANDIDATE_ORIGIN = 'http://example.com';
-    await assert.rejects(
-      () => proxyCandidateRequest({ action: 'candidateRead' }, 'jwt', async () => new Response('{}', { status: 200 })),
-      /CANDIDATE_ORIGIN must use HTTPS/,
-    );
-    process.env.CANDIDATE_ORIGIN = 'http://127.0.0.1:2047';
+    assert.throws(() => candidateOrigin(), /CANDIDATE_ORIGIN is not configured/);
+    assert.equal(candidateOrigin({ CANDIDATE_ORIGIN: 'https://candidate.invalid/' }), 'https://candidate.invalid');
+    let fetches = 0;
+    const neverFetch = async () => {
+      fetches += 1;
+      return new Response('{}', { status: 200 });
+    };
+    for (const origin of [undefined, '', '   ', 'not a url', 'http://example.com'] as const) {
+      await assert.rejects(
+        () => proxyCandidateRequest({ action: 'candidateRead' }, 'jwt', neverFetch, { CANDIDATE_ORIGIN: origin }),
+      );
+    }
+    assert.equal(fetches, 0);
     await proxyCandidateRequest({ action: 'candidateRead' }, 'jwt', async (input) => {
       assert.equal(String(input), 'http://127.0.0.1:2047/exec/candidate');
       return new Response('{}', { status: 200 });
-    });
+    }, { CANDIDATE_ORIGIN: 'http://127.0.0.1:2047' });
+    await proxyCandidateRequest({ action: 'candidateRead' }, 'jwt', async (input) => {
+      assert.equal(String(input), 'http://localhost:2047/exec/candidate');
+      return new Response('{}', { status: 200 });
+    }, { CANDIDATE_ORIGIN: 'http://localhost:2047/' });
   } finally {
     if (previous === undefined) delete process.env.CANDIDATE_ORIGIN;
     else process.env.CANDIDATE_ORIGIN = previous;
@@ -70,9 +76,9 @@ test('candidate hub mode is local only when CANDIDATE_HUB=local', () => {
 test('candidate proxy refuses anonymous, redirects and non-json transport', async () => {
   assert.equal((await proxyCandidateRequest({ action: 'candidateRead' }, '')).statusCode, 401);
   await assert.rejects(() => proxyCandidateRequest({ action: 'candidateRead' }, 'jwt',
-    async () => new Response('', { status: 302, headers: { Location: 'https://evil.example/' } })));
+    async () => new Response('', { status: 302, headers: { Location: 'https://evil.example/' } }), TEST_ORIGIN));
   await assert.rejects(() => proxyCandidateRequest({ action: 'candidateRead' }, 'jwt',
-    async () => new Response('<html/>', { status: 200 })));
+    async () => new Response('<html/>', { status: 200 }), TEST_ORIGIN));
 });
 
 test('runtime candidate route rejects test-user auth and rejects non-candidate actions locally', async () => {
@@ -136,8 +142,9 @@ test('hub identity is service only for the exact non-empty token plus a user id'
 });
 
 test('forward sends the cauth cookie for a jwt and MSG_PROXY headers otherwise', async () => {
-  const serviceEnv = { MSG_PROXY_TOKEN: 'svc', MSG_PROXY_USER_ID: 'desenv', MSG_PROXY_ORG_ID: 'collabcodes' };
-  const withJwt = await proxyCandidateRequest({ action: 'candidateRead' }, 'verified token', async (_input, init) => {
+  const serviceEnv = { ...TEST_ORIGIN, MSG_PROXY_TOKEN: 'svc', MSG_PROXY_USER_ID: 'desenv', MSG_PROXY_ORG_ID: 'collabcodes' };
+  const withJwt = await proxyCandidateRequest({ action: 'candidateRead' }, 'verified token', async (input, init) => {
+    assert.equal(String(input), 'https://candidate.invalid/exec/candidate');
     assert.deepEqual(init?.headers, { 'Content-Type': 'application/json', Cookie: 'cauth=verified%20token' });
     assert.equal((init?.headers as Record<string, string>).Authorization, undefined);
     return new Response('{}', { status: 200 });
@@ -219,4 +226,73 @@ test('1.25MB route limit accommodates the maximum contracted payload', () => {
   assert.equal(files.length, 80);
   assert.equal(files.reduce((sum, file) => sum + Buffer.from(file.contentBase64, 'base64').length, 0), 700_000);
   assert.ok(Buffer.byteLength(body) < CANDIDATE_BODY_LIMIT, `${Buffer.byteLength(body)} must fit ${CANDIDATE_BODY_LIMIT}`);
+});
+
+test('forward route returns 503 without fetching when origin is missing or invalid', async () => {
+  const previousOrigin = process.env.CANDIDATE_ORIGIN;
+  const previousHub = process.env.CANDIDATE_HUB;
+  const previousToken = process.env.MSG_PROXY_TOKEN;
+  const previousUser = process.env.MSG_PROXY_USER_ID;
+  delete process.env.CANDIDATE_HUB;
+  process.env.MSG_PROXY_TOKEN = 'svc';
+  process.env.MSG_PROXY_USER_ID = 'desenv';
+  const originalFetch = globalThis.fetch;
+  let fetches = 0;
+  globalThis.fetch = (async () => {
+    fetches += 1;
+    throw new Error('must not fetch');
+  }) as typeof fetch;
+  const app = Fastify();
+  registerCbeRoutes(app);
+  try {
+    for (const origin of [undefined, '', 'http://example.com'] as const) {
+      if (origin === undefined) delete process.env.CANDIDATE_ORIGIN;
+      else process.env.CANDIDATE_ORIGIN = origin;
+      const response = await app.inject({ method: 'POST', url: '/exec/candidate', payload: { action: 'candidateRead' } });
+      assert.equal(response.statusCode, 503);
+      assert.equal(response.json().msg, 'candidate.transport_unavailable');
+      assert.equal(JSON.stringify(response.json()).includes('example.com'), false);
+    }
+    assert.equal(fetches, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await app.close();
+    if (previousOrigin === undefined) delete process.env.CANDIDATE_ORIGIN;
+    else process.env.CANDIDATE_ORIGIN = previousOrigin;
+    if (previousHub === undefined) delete process.env.CANDIDATE_HUB;
+    else process.env.CANDIDATE_HUB = previousHub;
+    if (previousToken === undefined) delete process.env.MSG_PROXY_TOKEN;
+    else process.env.MSG_PROXY_TOKEN = previousToken;
+    if (previousUser === undefined) delete process.env.MSG_PROXY_USER_ID;
+    else process.env.MSG_PROXY_USER_ID = previousUser;
+  }
+});
+
+test('registerCbeRoutes boots without an origin and local hub does not need one', () => {
+  const previousOrigin = process.env.CANDIDATE_ORIGIN;
+  const previousHub = process.env.CANDIDATE_HUB;
+  const lines: string[] = [];
+  const previousInfo = console.info;
+  console.info = ((message?: unknown) => { lines.push(String(message)); }) as typeof console.info;
+  const forwardApp = Fastify();
+  const localApp = Fastify();
+  try {
+    delete process.env.CANDIDATE_ORIGIN;
+    delete process.env.CANDIDATE_HUB;
+    registerCbeRoutes(forwardApp);
+    assert.ok(lines.some((line) => line.includes('CANDIDATE_ORIGIN is not configured')));
+    lines.length = 0;
+    process.env.CANDIDATE_HUB = 'local';
+    registerCbeRoutes(localApp);
+    assert.ok(lines.some((line) => line.includes('candidate: local hub')));
+    assert.equal(lines.some((line) => line.includes('CANDIDATE_ORIGIN')), false);
+  } finally {
+    console.info = previousInfo;
+    void forwardApp.close();
+    void localApp.close();
+    if (previousOrigin === undefined) delete process.env.CANDIDATE_ORIGIN;
+    else process.env.CANDIDATE_ORIGIN = previousOrigin;
+    if (previousHub === undefined) delete process.env.CANDIDATE_HUB;
+    else process.env.CANDIDATE_HUB = previousHub;
+  }
 });

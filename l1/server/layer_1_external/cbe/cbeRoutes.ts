@@ -1201,7 +1201,11 @@ export function registerCbeRoutes(app: FastifyInstance): void {
     }
     console.info('[cbe] candidate: local hub');
   } else {
-    console.info(`[cbe] candidate: forward to ${candidateOrigin()}`);
+    try {
+      console.info(`[cbe] candidate: forward to ${candidateOrigin()}`);
+    } catch (err) {
+      console.info(`[cbe] candidate: ${(err as Error).message}`);
+    }
   }
   logCbeStaticConfig();
   console.info(`[cbe] projects base: ${getProjectsBaseDir()} | jwtAuth: ${isJwtAuthEnabled() ? 'enabled' : 'DISABLED'}${process.env.CBE_TEST_LOGIN_USER ? ` | TEST user: ${process.env.CBE_TEST_LOGIN_USER}` : ''}`);

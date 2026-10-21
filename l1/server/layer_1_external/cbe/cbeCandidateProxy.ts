@@ -2,8 +2,10 @@
 
 export const CANDIDATE_BODY_LIMIT = 1_250_000;
 export const CANDIDATE_ACTIONS = new Set(['candidateRead', 'candidatePublish', 'candidateMarkResult']);
-export const DEFAULT_CANDIDATE_ORIGIN = 'https://102056.collabcodes.com';
 const DEFAULT_TIMEOUT_MS = 15_000;
+const ORIGIN_MISSING = 'CANDIDATE_ORIGIN is not configured';
+const ORIGIN_INVALID = 'CANDIDATE_ORIGIN is invalid';
+const ORIGIN_HTTPS = 'CANDIDATE_ORIGIN must use HTTPS (HTTP is allowed only for localhost)';
 
 export interface CandidateProxyResult {
   statusCode: number;
@@ -11,21 +13,28 @@ export interface CandidateProxyResult {
   contentType: string;
 }
 
-/** `local` only when CANDIDATE_HUB=local (the 102056 hub). Anything else forwards. */
+/** `local` only when CANDIDATE_HUB=local. Anything else forwards. */
 export function candidateHubMode(env: Record<string, string | undefined> = process.env): 'local' | 'forward' {
   return env.CANDIDATE_HUB === 'local' ? 'local' : 'forward';
 }
 
+/** Forward origin. Requires a non-empty CANDIDATE_ORIGIN. HTTPS, or HTTP on loopback only. No fallback host. */
 export function candidateOrigin(env: Record<string, string | undefined> = process.env): string {
-  return (env.CANDIDATE_ORIGIN ?? DEFAULT_CANDIDATE_ORIGIN).replace(/\/$/u, '');
+  const raw = (env.CANDIDATE_ORIGIN ?? '').trim().replace(/\/$/u, '');
+  if (raw === '') throw new Error(ORIGIN_MISSING);
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(ORIGIN_INVALID);
+  }
+  const loopback = url.hostname === '127.0.0.1' || url.hostname === 'localhost';
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) throw new Error(ORIGIN_HTTPS);
+  return raw;
 }
 
 function centralCandidateUrl(env: Record<string, string | undefined> = process.env): URL {
-  const url = new URL(`${candidateOrigin(env)}/exec/candidate`);
-  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && (url.hostname === '127.0.0.1' || url.hostname === 'localhost'))) {
-    throw new Error('CANDIDATE_ORIGIN must use HTTPS (HTTP is allowed only for localhost)');
-  }
-  return url;
+  return new URL(`${candidateOrigin(env)}/exec/candidate`);
 }
 
 export function candidateActionAllowed(body: unknown): body is { action: 'candidateRead' | 'candidatePublish' | 'candidateMarkResult' } {
@@ -125,11 +134,12 @@ export async function proxyCandidateRequest(
     statusCode: 401, contentType: 'application/json; charset=utf-8',
     body: { statusCode: 401, status: 'error', msg: 'candidate.unauthorized' },
   };
+  const target = centralCandidateUrl(forwardEnv);
   const controller = new AbortController();
   const timeoutMs = Number(process.env.CBE_CANDIDATE_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS);
   const timer = setTimeout(() => controller.abort(), Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_TIMEOUT_MS);
   try {
-    const response = await fetchImpl(centralCandidateUrl(), {
+    const response = await fetchImpl(target, {
       method: 'POST', redirect: 'manual', signal: controller.signal,
       headers,
       body: JSON.stringify(body),
