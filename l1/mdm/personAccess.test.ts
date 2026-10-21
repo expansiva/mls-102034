@@ -2,7 +2,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { MdmDetailRecord, PrivacyConsentValue } from '/_102034_/l1/mdm/module.js';
-import { countryCodes } from '/_102034_/l1/mdm/countryCodes.js';
 import {
   isPersonAccessComplete,
   isProtectedPrivacyCountry,
@@ -44,8 +43,10 @@ test('access matrix', () => {
   }
   assert.equal(isProtectedPrivacyCountry('US'), false);
   assert.equal(isPersonAccessComplete({ name: 'Ada', countryCode: 'US' }), true);
-  assert.equal(isPersonAccessComplete({ name: 'Ada', countryCode: 'zz' }), false);
-  assert.equal(isPersonAccessComplete({ name: 'Ada', countryCode: 'XX' }), false);
+  assert.equal(isPersonAccessComplete({ name: 'Ada', countryCode: 'zz' }), true);
+  assert.equal(isPersonAccessComplete({ name: 'Ada', countryCode: 'XX' }), true);
+  assert.equal(isPersonAccessComplete({ name: 'Ada', countryCode: ' uk ' }), true);
+  assert.equal(isPersonAccessComplete({ name: 'Ada', countryCode: 'EU' }), true);
   assert.equal(isTwoLetterCountry('ZZ'), true);
   assert.equal(isPersonAccessComplete({ name: '  ', countryCode: 'US' }), false);
   assert.equal(isPersonAccessComplete({ countryCode: 'US' }), false);
@@ -62,21 +63,6 @@ test('access matrix', () => {
   assert.equal(isValidPrivacyConsent({ ...validConsent, revokedAt: '2026-02-01T00:00:00.000Z' }), false);
   assert.equal(isValidPrivacyConsent(validConsent), true);
   assert.equal(isValidPrivacyConsent(null), false);
-});
-
-test('every assigned country completes a person and unassigned codes do not', () => {
-  assert.equal(countryCodes.length, 249);
-  for (const { code } of countryCodes) {
-    const detail = {
-      name: 'Ada',
-      countryCode: ` ${code.toLowerCase()} `,
-      privacyConsent: isProtectedPrivacyCountry(code) ? validConsent : null,
-    };
-    assert.equal(isPersonAccessComplete(detail), true);
-    if (isProtectedPrivacyCountry(code)) {
-      assert.equal(isPersonAccessComplete({ name: 'Ada', countryCode: code }), false);
-    }
-  }
 });
 
 const ctx = { clock: { nowIso: () => '2026-01-02T00:00:00.000Z' } } as RequestContext;
@@ -103,11 +89,11 @@ function assertCountryError(run: () => void): void {
   });
 }
 
-test('normalize, create and patch use the assigned set', () => {
+test('normalize, create and patch use the two-letter format', () => {
   assert.equal(normalizeCountryCode(null), 'US');
   assert.equal(normalizeCountryCode('  '), 'US');
   assert.equal(normalizeCountryCode(' br '), 'BR');
-  assertCountryError(() => normalizeCountryCode('ZZ'));
+  assert.equal(normalizeCountryCode(' zz '), 'ZZ');
   assertCountryError(() => normalizeCountryCode('USA'));
 
   const created = normalizeDetailInput(personInput(' gb ') as never, ctx, 'p1');
@@ -116,9 +102,9 @@ test('normalize, create and patch use the assigned set', () => {
   const omitted = normalizeDetailInput(personInput(undefined) as never, ctx, 'p2');
   assert.equal(omitted.countryCode, 'US');
 
-  const raw = personInput('zz');
-  assertCountryError(() => normalizeDetailInput(raw as never, ctx, 'p3'));
-  assert.equal(raw.countryCode, 'zz');
+  const formatted = normalizeDetailInput(personInput('zz') as never, ctx, 'p3');
+  assert.equal(formatted.countryCode, 'ZZ');
+  assertCountryError(() => normalizeDetailInput(personInput('USA') as never, ctx, 'p3b'));
   assertCountryError(() => normalizeDetailInput(personInput(12) as never, ctx, 'p4'));
 
   const draft = normalizeDetailInput(
@@ -134,15 +120,16 @@ test('normalize, create and patch use the assigned set', () => {
   const stillLegacy = applyPatchToDetail(legacy, { name: 'Acme 2' }, ctx);
   assert.equal(legacy.countryCode, 'ZZ');
   assert.equal(stillLegacy.countryCode, 'ZZ');
-  assert.equal(stillLegacy.registrationDraft, true);
+  assert.equal(stillLegacy.registrationDraft, undefined);
 
   const promoted = applyPatchToDetail(legacy, { countryCode: 'us' }, ctx);
   assert.equal(promoted.countryCode, 'US');
   assert.equal(promoted.registrationDraft, undefined);
 
   const activeLegacy = { ...created, countryCode: 'ZZ' } as MdmDetailRecord;
-  assertCountryError(() => applyPatchToDetail(activeLegacy, { name: 'Ada 2' }, ctx));
+  const renamedLegacy = applyPatchToDetail(activeLegacy, { name: 'Ada 2' }, ctx);
   assert.equal(activeLegacy.countryCode, 'ZZ');
+  assert.equal(renamedLegacy.countryCode, 'ZZ');
 
   const patched = applyPatchToDetail(created, { countryCode: ' br ' }, ctx);
   assert.equal(patched.countryCode, 'BR');

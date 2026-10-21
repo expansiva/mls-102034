@@ -19,11 +19,11 @@ import type {
   PrivacyConsentValue,
   ServiceKind,
 } from '/_102034_/l1/mdm/module.js';
-import { isSupportedCountryCode } from '/_102034_/l1/mdm/countryCodes.js';
 import { AppError, type RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import {
   isPersonAccessComplete,
   isProtectedPrivacyCountry,
+  isTwoLetterCountry,
 } from '/_102034_/l1/mdm/personAccess.js';
 
 export { isPersonAccessComplete, isProtectedPrivacyCountry };
@@ -315,7 +315,7 @@ export async function refreshRelationshipRefs(
 }
 
 function rejectCountryCode(): never {
-  throw new AppError('VALIDATION_ERROR', 'countryCode must be an assigned catalog code', 400, {
+  throw new AppError('VALIDATION_ERROR', 'countryCode must be two letters', 400, {
     field: 'countryCode',
   });
 }
@@ -325,7 +325,7 @@ export function normalizeCountryCode(countryCode?: string | null): string {
   if (!text) {
     return 'US';
   }
-  if (!isSupportedCountryCode(text)) {
+  if (!isTwoLetterCountry(text)) {
     rejectCountryCode();
   }
   return text;
@@ -342,7 +342,7 @@ function explicitCountryCode(value: unknown, draft: boolean): string {
   if (!text) {
     return draft ? '' : normalizeCountryCode(null);
   }
-  if (!isSupportedCountryCode(text)) {
+  if (!isTwoLetterCountry(text)) {
     rejectCountryCode();
   }
   return text;
@@ -352,7 +352,7 @@ function isCompanyRegistrationComplete(detail: MdmDetailRecord): boolean {
   const countryCode = detail.countryCode.trim().toUpperCase();
   return Boolean(
     detail.name?.trim()
-    && isSupportedCountryCode(countryCode)
+    && isTwoLetterCountry(countryCode)
     && String(detail.legalName ?? '').trim(),
   );
 }
