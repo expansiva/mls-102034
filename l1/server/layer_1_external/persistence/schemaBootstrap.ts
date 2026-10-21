@@ -34,6 +34,8 @@ import {
   stateKey,
   type ModuleRebuildMode,
 } from '/_102034_/l1/server/layer_1_external/persistence/schemaModulePlan.js';
+import { applySeedRows } from '/_102034_/l1/server/layer_1_external/persistence/seedApplier.js';
+import { selectEligibleSeedRows } from '/_102034_/l1/server/layer_1_external/persistence/seedPolicy.js';
 
 const SCHEMA_MODULE_STATE_TABLE = '_schema_module_state';
 const SCHEMA_MIGRATIONS_TABLE = '_schema_migrations';
@@ -348,7 +350,7 @@ async function rebuildPostgresSchema(
     removedModules: string[];
     insertSnapshot: boolean;
   },
-): Promise<{ timescaleAvailable: boolean; orphans: string[] }> {
+): Promise<{ timescaleAvailable: boolean; orphans: string[]; createdTables: ResolvedTableDefinition[] }> {
   const pool = getSharedPgPool(env);
   const postgresDefinitions = definitions.filter((definition) => usesPostgres(definition));
   const hasTimescale = definitions.some((d) => d.timescale?.hypertable);
@@ -470,42 +472,6 @@ async function rebuildPostgresSchema(
     }
   }
 
-  // Mechanical seed: the schema was just rebuilt, so every table is empty. Seed only in a
-  // test mode (presentation/development). Production/homologation rebuilds stay empty.
-  // Non-fatal: bad seed data must not block a release.
-  const serverMode = readProjectMode(env.projectId);
-  for (const definition of orderedDefinitions.filter((d) => d.seedRows?.length)) {
-    const decision = shouldApplySeedRows({
-      tableName: definition.tableName,
-      logicalTableName: definition.logicalTableName,
-      projectMode: readProjectMode(definition.projectId),
-      serverMode,
-    });
-    if (!decision.apply) {
-      console.info(`[bootstrapSchema] ${decision.reason}`);
-      continue;
-    }
-    try {
-      for (const row of definition.seedRows!) {
-        const columns = definition.columns.filter((column) => row[column.name] !== undefined);
-        if (columns.length === 0) continue;
-        const placeholders = columns.map((_, index) => `$${index + 1}`);
-        const values = columns.map((column) => {
-          const value = row[column.name];
-          if (value === null || typeof value !== 'object') return value;
-          return column.postgresType.endsWith('[]') ? value : JSON.stringify(value);
-        });
-        await pool.query(
-          `INSERT INTO ${quoteIdentifier(definition.tableName)} (${columns.map((column) => quoteIdentifier(column.name)).join(', ')}) VALUES (${placeholders.join(', ')})`,
-          values,
-        );
-      }
-      console.info(`[bootstrapSchema] ${decision.reason}: ${definition.seedRows!.length} row(s)`);
-    } catch (error) {
-      console.warn(`[bootstrapSchema] seed failed for "${definition.tableName}":`, error instanceof Error ? error.message : error);
-    }
-  }
-
   if (input.insertSnapshot) {
     // Apps sharing a database alternate snapshots, so this id may already be there from an earlier publish.
     await pool.query(
@@ -513,7 +479,7 @@ async function rebuildPostgresSchema(
       [snapshotId],
     );
   }
-  return { timescaleAvailable, orphans };
+  return { timescaleAvailable, orphans, createdTables: orderedDefinitions };
 }
 
 function modulesOf(tables: { projectId: string; moduleId: string }[]): { projectId: string; moduleId: string }[] {
@@ -614,19 +580,15 @@ export function rebuiltSummary(
   const serverMode = readProjectMode(env.projectId);
   return [...rebuildModules].sort((left, right) => left.localeCompare(right)).map((moduleId) => {
     const tables = definitions.filter((definition) => definition.moduleId === moduleId && usesPostgres(definition));
+    // Eligible rows for this rebuild (initial always, test only in a test mode). Not a write count.
     let seedRows = 0;
     for (const definition of tables) {
-      const declared = definition.seedRows?.length ?? 0;
-      if (declared === 0) continue;
-      const decision = shouldApplySeedRows({
+      seedRows += selectEligibleSeedRows(definition, {
         tableName: definition.tableName,
         logicalTableName: definition.logicalTableName,
         projectMode: readProjectMode(definition.projectId),
         serverMode,
-      });
-      if (decision.apply) {
-        seedRows += declared;
-      }
+      }).length;
     }
     return { moduleId, tables: tables.length, seedRows };
   });
@@ -700,6 +662,7 @@ export async function bootstrapSchema(
   });
 
   let orphans: string[] = [];
+  let createdTables: ResolvedTableDefinition[] = [];
   if (plan.mode === 'none') {
     console.info(`[bootstrapSchema] schema unchanged (${snapshot.id}); skipping rebuild`);
   } else if (plan.mode === 'recordOnly') {
@@ -727,11 +690,21 @@ export async function bootstrapSchema(
       insertSnapshot: forceRebuild || lastSnapshotId !== snapshot.id,
     });
     orphans = rebuilt.orphans;
+    createdTables = rebuilt.createdTables;
     if (plan.rebuild.length > 0 || plan.removed.length > 0) {
       await applyViewDefinitions(pool, { timescaleAvailable: rebuilt.timescaleAvailable });
     }
     await writeModuleState(pool, currentHashes, ownProjects);
   }
+
+  const seedCounts = await applySeedRows(pool, definitions, {
+    projectMode: readProjectMode,
+    serverMode: readProjectMode(env.projectId),
+    rebuiltTableNames: new Set(createdTables.map((definition) => definition.tableName)),
+  });
+  console.info(
+    `[bootstrapSchema] seed applied (plan ${plan.mode}): initial inserted ${seedCounts.initialInserted}, conflicts ${seedCounts.initialConflicts}, test inserted ${seedCounts.testInserted}`,
+  );
 
   let dynamoTableCount = 0;
   if (input?.ensureDynamo !== false) {
