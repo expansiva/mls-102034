@@ -1,6 +1,9 @@
 /// <mls fileReference="_102034_/l1/monitor/layer_3_usecases/messagesStatusUsecases.test.ts" enhancement="_blank" />
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createMessagesStatusHandler } from '/_102034_/l1/monitor/layer_2_controllers/messagesHandlers.js';
 import { createMonitorRouter } from '/_102034_/l1/monitor/layer_2_controllers/router.js';
 import {
@@ -208,4 +211,119 @@ test('createMessagesStatusHandler returns ok when the upstream is unreachable', 
 
 test('createMonitorRouter registers monitor.messages.status', () => {
   assert.equal(createMonitorRouter().has('monitor.messages.status'), true);
+});
+
+function localFetch(): typeof fetch {
+  return mockFetch({
+    'http://127.0.0.1:8180/health': jsonResponse(200, { status: 'ok', storage: STORAGE_OK }),
+    'http://127.0.0.1:8180/ready': jsonResponse(503, { statusCode: 503, status: 'not-ready', error: 'db' }),
+  });
+}
+
+test('default pm2 reader uses the installed helper and does not spawn the pm2 cli', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'pm2-status-'));
+  const libDir = join(root, 'lib');
+  const binDir = join(root, 'bin');
+  mkdirSync(libDir, { recursive: true });
+  mkdirSync(binDir, { recursive: true });
+  const marker = join(root, 'spawned');
+  const helperLog = join(root, 'helper-log');
+  const trap = join(binDir, 'pm2');
+  writeFileSync(trap, `#!/bin/sh\nprintf 'spawned\\n' >> '${marker}'\n`);
+  chmodSync(trap, 0o755);
+  writeFileSync(join(libDir, 'pm2-readonly.mjs'), `
+import { appendFileSync } from 'node:fs';
+appendFileSync(process.env.HELPER_LOG, JSON.stringify({ argv: process.argv.slice(2), home: process.env.PM2_HOME }) + '\\n');
+if (process.env.PM2_MODE === 'stale') {
+  process.stderr.write('unavailable\\n');
+  process.exit(3);
+}
+process.stdout.write(process.env.PM2_PAYLOAD ?? '[]');
+`);
+  const previous = {
+    PATH: process.env.PATH,
+    PM2_HOME: process.env.PM2_HOME,
+    COLLAB_LIB_DIR: process.env.COLLAB_LIB_DIR,
+    COLLAB_PM2_BIN: process.env.COLLAB_PM2_BIN,
+    HELPER_LOG: process.env.HELPER_LOG,
+    PM2_MODE: process.env.PM2_MODE,
+    PM2_PAYLOAD: process.env.PM2_PAYLOAD,
+  };
+  const restore = () => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  };
+  process.env.PATH = binDir;
+  process.env.PM2_HOME = join(root, 'home');
+  process.env.COLLAB_LIB_DIR = libDir;
+  delete process.env.COLLAB_PM2_BIN;
+  process.env.HELPER_LOG = helperLog;
+  process.env.PM2_PAYLOAD = JSON.stringify(PM2_SAMPLE);
+
+  try {
+    delete process.env.COLLAB_LIB_DIR;
+    process.env.COLLAB_LIB_DIR = join(root, 'missing-lib');
+    const absent = await loadMessagesStatus({
+      getTarget: () => 'http://127.0.0.1:8180',
+      now: () => NOW,
+      fetchFn: localFetch(),
+    });
+    assert.equal(absent.health.reachable, true);
+    assert.equal(absent.health.storage?.ok, true);
+    assert.equal(absent.ready.status, 'not-ready');
+    assert.equal(absent.pm2Error, 'pm2 unavailable: readonly helper is missing');
+    assert.deepEqual(absent.pm2, []);
+    assert.equal(existsSync(marker), false);
+
+    process.env.COLLAB_LIB_DIR = libDir;
+    process.env.PM2_MODE = 'stale';
+    const stale = await loadMessagesStatus({
+      getTarget: () => 'http://127.0.0.1:8180',
+      now: () => NOW,
+      fetchFn: localFetch(),
+    });
+    assert.equal(stale.health.statusCode, 200);
+    assert.equal(stale.ready.statusCode, 503);
+    assert.equal(stale.pm2Error, 'pm2 unavailable: unavailable');
+    assert.deepEqual(stale.pm2, []);
+
+    delete process.env.PM2_MODE;
+    const listed = await loadMessagesStatus({
+      getTarget: () => 'http://127.0.0.1:8180',
+      now: () => NOW,
+      fetchFn: mockFetch({
+        'http://127.0.0.1:8180/health': new Error('fetch failed'),
+        'http://127.0.0.1:8180/ready': jsonResponse(200, { status: 'ready' }),
+      }),
+    });
+    assert.equal(listed.health.reachable, false);
+    assert.equal(listed.ready.status, 'ready');
+    assert.equal(listed.pm2Error, undefined);
+    assert.deepEqual(
+      listed.pm2.map((proc) => ({
+        name: proc.name,
+        instances: proc.instances,
+        restarts: proc.restarts,
+        status: proc.status,
+        memoryMb: proc.memoryMb,
+        cpu: proc.cpu,
+        uptimeMs: proc.uptimeMs,
+      })),
+      [
+        { name: 'msg', instances: 2, restarts: 3, status: 'online', memoryMb: 150, cpu: 2, uptimeMs: 60_000 },
+        { name: 'msg-worker', instances: 1, restarts: 0, status: 'online', memoryMb: 40, cpu: 0.1, uptimeMs: 120_000 },
+      ],
+    );
+    const calls = readFileSync(helperLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as { argv: string[]; home: string });
+    assert.equal(calls.length, 2);
+    for (const call of calls) {
+      assert.deepEqual(call.argv.slice(0, 2), ['list', trap]);
+      assert.equal(call.home, join(root, 'home'));
+    }
+    assert.equal(existsSync(marker), false);
+  } finally {
+    restore();
+  }
 });

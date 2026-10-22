@@ -1,5 +1,6 @@
 /// <mls fileReference="_102034_/l1/monitor/layer_3_usecases/messagesStatusUsecases.ts" enhancement="_blank" />
 import { execFileSync } from 'node:child_process';
+import { accessSync, constants } from 'node:fs';
 import type {
   MonitorMessagesPm2Process,
   MonitorMessagesStatusResponse,
@@ -10,6 +11,8 @@ import type {
 // reads MSG_PROXY_TARGET, it does not share the proxy implementation.
 const DEFAULT_TARGET = 'http://127.0.0.1:8180';
 const HEALTH_TIMEOUT_MS = 12_000;
+const PM2_LIST_TIMEOUT_MS = 8_000;
+const DEFAULT_COLLAB_LIB = '/usr/local/lib/collab';
 const MSG_PM2_NAMES = ['msg', 'msg-worker'] as const;
 
 export interface MessagesStatusDeps {
@@ -93,8 +96,64 @@ export async function loadMessagesStatus(
   return response;
 }
 
+function collabLibDir(env: NodeJS.ProcessEnv): string {
+  const dir = env.COLLAB_LIB_DIR?.trim();
+  return dir ? dir : DEFAULT_COLLAB_LIB;
+}
+
+function resolvePm2Bin(env: NodeJS.ProcessEnv): string {
+  const explicit = env.COLLAB_PM2_BIN?.trim();
+  if (explicit) return explicit;
+  for (const dir of (env.PATH ?? '').split(':')) {
+    if (!dir) continue;
+    const candidate = `${dir}/pm2`;
+    try {
+      accessSync(candidate, constants.X_OK);
+      return candidate;
+    } catch {
+      // Another PATH entry may hold the deploy user's pm2 binary.
+    }
+  }
+  throw new Error('pm2 unavailable: binary not found');
+}
+
+function pm2FailureMessage(error: unknown): string {
+  if (error && typeof error === 'object') {
+    const rec = error as { code?: unknown; stderr?: unknown; message?: unknown };
+    if (rec.code === 'ENOENT') return 'pm2 unavailable: readonly helper is missing';
+    const stderr = Buffer.isBuffer(rec.stderr)
+      ? rec.stderr.toString('utf8')
+      : typeof rec.stderr === 'string'
+        ? rec.stderr
+        : '';
+    const line = stderr.split('\n').map((item) => item.trim()).find((item) => item.length > 0);
+    if (line) return `pm2 unavailable: ${line}`;
+    if (typeof rec.message === 'string' && rec.message.trim()) return rec.message;
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
 function defaultListPm2(): unknown {
-  const stdout = execFileSync('pm2', ['jlist'], { encoding: 'utf8', timeout: 8_000 });
+  const pm2Home = process.env.PM2_HOME?.trim();
+  if (!pm2Home) throw new Error('pm2 unavailable: PM2_HOME is not set');
+  const helper = `${collabLibDir(process.env)}/pm2-readonly.mjs`;
+  try {
+    accessSync(helper, constants.R_OK);
+  } catch {
+    throw new Error('pm2 unavailable: readonly helper is missing');
+  }
+  const pm2Bin = resolvePm2Bin(process.env);
+  let stdout: string;
+  try {
+    stdout = execFileSync(process.execPath, [helper, 'list', pm2Bin], {
+      encoding: 'utf8',
+      timeout: PM2_LIST_TIMEOUT_MS,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, PM2_HOME: pm2Home },
+    });
+  } catch (error) {
+    throw new Error(pm2FailureMessage(error));
+  }
   return JSON.parse(stdout) as unknown;
 }
 
