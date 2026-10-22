@@ -5,7 +5,7 @@
 // falling back to `items`.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applySeedAnchors, applySeedSpares, checkShape, coercePageTestsFile, countItems, evaluate, reportAppEnv, PAGE11_VARIANT_POLICY, resolveParams, selectMonitorSeedRows, untestedPageEntries } from '/_102034_/l1/monitor/layer_3_usecases/testsUsecases.js';
+import { applySeedAnchors, applySeedSpares, checkShape, coercePageTestsFile, countItems, evaluate, itemsAt, reportAppEnv, PAGE11_VARIANT_POLICY, resolveParams, selectMonitorSeedRows, untestedPageEntries } from '/_102034_/l1/monitor/layer_3_usecases/testsUsecases.js';
 
 const menuEnvelope = { menuItems: [{ menuItemId: 'a' }, { menuItemId: 'b' }], total: 2 };
 
@@ -306,4 +306,23 @@ test('the page actor survives coercion; absent/blank/non-string is undefined', (
     assert.ok(file, `still loads with actor=${JSON.stringify(actor)}`);
     assert.equal(file.actor, undefined);
   }
+});
+
+test('itemsKey is a path: a nested page is read and counted', () => {
+  const data = { consultas: { items: [{ id: 'a' }, { id: 'b' }], page: 1, pageSize: 20, hasMore: false } };
+  assert.equal(checkShape(data, 'paginated', 'consultas.items'), '');
+  assert.equal(countItems(data, 'consultas.items'), 2);
+  assert.deepEqual(itemsAt({ items: [1] }), [1]);
+  assert.match(checkShape({ consultas: {} }, 'paginated', 'consultas.items'), /expected paginated/);
+});
+
+test('an expected business error with an unresolved seed marker is inconclusive, not a fail', () => {
+  const conflictCase = { id: 'abrirComanda.conflict', routine: 'm.p.abrirComanda', params: { mesaId: '<seedRef>' }, expect: { ok: false, errorCode: 'CONFLICT' }, mutating: true };
+  const missing = evaluate(conflictCase as never, 'm', 'p',
+    { response: { ok: false, data: null, error: { code: 'VALIDATION_ERROR', message: 'mesaId is required.' } }, statusCode: 400 }, 1, ['mesaId']);
+  assert.equal(missing.status, 'inconclusive');
+  assert.match(missing.reason, /seed marker not resolved for mesaId/);
+  const resolvedWrong = evaluate(conflictCase as never, 'm', 'p',
+    { response: { ok: false, data: null, error: { code: 'VALIDATION_ERROR', message: 'x' } }, statusCode: 400 }, 1, []);
+  assert.equal(resolvedWrong.status, 'fail');
 });

@@ -598,12 +598,22 @@ function describeShape(data: unknown): string {
 // Item 5 drift guard: the actual response shape must match the shape the FE contract declares.
 // Returns '' when compatible, else a failure reason (object×array, or paginated missing the
 // declared collection). The reason names the expected key so a drift is readable at a glance.
+/** `itemsKey` is a path: `consultas.items` reads `data.consultas.items` (the contract nests the page). */
+export function itemsAt(data: unknown, itemsKey = DEFAULT_ITEMS_KEY): unknown {
+  let current: unknown = data;
+  for (const part of itemsKey.split('.')) {
+    if (!isRecord(current)) return undefined;
+    current = current[part];
+  }
+  return current;
+}
+
 export function checkShape(data: unknown, shape: TestShape, itemsKey = DEFAULT_ITEMS_KEY): string {
   if (shape === 'array') {
     return Array.isArray(data) ? '' : `expected array output, got ${describeShape(data)}`;
   }
   if (shape === 'paginated') {
-    return isRecord(data) && Array.isArray(data[itemsKey])
+    return Array.isArray(itemsAt(data, itemsKey))
       ? ''
       : `expected paginated { ${itemsKey}: [] }, got ${describeShape(data)}`;
   }
@@ -612,7 +622,8 @@ export function checkShape(data: unknown, shape: TestShape, itemsKey = DEFAULT_I
 
 export function countItems(data: unknown, itemsKey = DEFAULT_ITEMS_KEY): number {
   if (Array.isArray(data)) return data.length;
-  if (isRecord(data) && Array.isArray(data[itemsKey])) return data[itemsKey].length;
+  const items = itemsAt(data, itemsKey);
+  if (Array.isArray(items)) return items.length;
   if (data !== null && data !== undefined) return 1;
   return 0;
 }
@@ -1035,8 +1046,12 @@ export function evaluate(
     status = 'fail';
     reason = 'expected failure, got ok';
   } else if (testCase.expect.errorCode && response.error?.code !== testCase.expect.errorCode) {
-    status = 'fail';
-    reason = `expected errorCode ${testCase.expect.errorCode}, got ${response.error?.code ?? 'unknown'}`;
+    // Same as the positive branch: with a seed marker unresolved the case never ran as written, so a
+    // different rejection (usually the omitted id) is not a verdict on the business rule.
+    status = unresolved.length > 0 ? 'inconclusive' : 'fail';
+    reason = unresolved.length > 0
+      ? unresolvedReason
+      : `expected errorCode ${testCase.expect.errorCode}, got ${response.error?.code ?? 'unknown'}`;
   } else {
     const expectedField = fieldUnderTest(testCase);
     const actualField = expectedField ? rejectedField(response) : null;
