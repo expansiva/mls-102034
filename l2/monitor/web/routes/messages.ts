@@ -19,9 +19,23 @@ import {
   messagesLogsCanLoadMore,
   messagesLogsBody,
   messagesLogsCopyText,
+  messagesLogsStartAtContext,
+  startAtIsoToLocal,
   startAtLocalToIso,
   type MessagesLogsState,
 } from '/_102034_/l2/monitor/web/routes/messagesLogsState.js';
+import { messagesPageCopyLabels, messagesPageText } from '/_102034_/l2/monitor/web/routes/messagesText.js';
+
+const MESSAGE_LOG_SOURCES: ReadonlyArray<{
+  app: MonitorLogApp;
+  stream: MonitorLogStream;
+  label: 'apiStandardOutput' | 'apiErrorOutput' | 'workerStandardOutput' | 'workerErrorOutput';
+}> = [
+  { app: 'msg', stream: 'out', label: 'apiStandardOutput' },
+  { app: 'msg', stream: 'error', label: 'apiErrorOutput' },
+  { app: 'msg-worker', stream: 'out', label: 'workerStandardOutput' },
+  { app: 'msg-worker', stream: 'error', label: 'workerErrorOutput' },
+];
 
 function formatUptime(uptimeMs: number | null): string {
   if (uptimeMs == null || uptimeMs < 0) return '—';
@@ -50,10 +64,13 @@ export class MonitorWebDesktopMessagesPage extends LitElement {
   busy = false;
   payload: MonitorMessagesStatusResponse | null = null;
   logs: MessagesLogsState = createMessagesLogsState();
-  draftStartAt = '';
+  /** Same instant as `logs.query.startAt`, fixed when this screen is created. */
+  draftStartAt = startAtIsoToLocal(this.logs.query.startAt);
   draftText = '';
   startAtError = '';
   copyNotice = '';
+  private static sourceSeq = 0;
+  private readonly sourceGroup = `monitor-messages-log-source-${++MonitorWebDesktopMessagesPage.sourceSeq}`;
 
   createRenderRoot() {
     return this;
@@ -101,7 +118,7 @@ export class MonitorWebDesktopMessagesPage extends LitElement {
   private applyFilters() {
     const parsed = startAtLocalToIso(this.draftStartAt);
     if (!parsed.ok) {
-      this.startAtError = parsed.error;
+      this.startAtError = messagesPageText().invalidStartAt;
       return;
     }
     this.startAtError = '';
@@ -155,13 +172,14 @@ export class MonitorWebDesktopMessagesPage extends LitElement {
   }
 
   private async copyLogs() {
-    const text = messagesLogsCopyText(this.logs);
+    const labels = messagesPageText();
+    const text = messagesLogsCopyText(this.logs, messagesPageCopyLabels(labels));
     if (!text) return;
     try {
       await navigator.clipboard.writeText(text);
-      this.copyNotice = 'Copied';
+      this.copyNotice = labels.copied;
     } catch {
-      this.copyNotice = 'Copy failed (clipboard unavailable)';
+      this.copyNotice = labels.copyFailed;
     }
   }
 
@@ -203,6 +221,8 @@ export class MonitorWebDesktopMessagesPage extends LitElement {
     const statusFailed = !this.busy && payload == null && this.status !== 'Loading collab-messages...';
     const healthWord = payload == null ? (statusFailed ? 'error' : '—') : (healthOk ? 'ok' : 'error');
     const failureText = errorCode ?? (statusFailed ? this.status : undefined);
+    const text = messagesPageText();
+    const zone = messagesLogsStartAtContext(this.logs.query.startAt || new Date().toISOString());
     return html`
       <section class="min-w-0 space-y-4">
         <header class="flex items-center justify-between gap-4">
@@ -285,72 +305,30 @@ export class MonitorWebDesktopMessagesPage extends LitElement {
               </article>
 
               <article class="min-w-0 max-w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
-                <div class="mb-3 flex flex-wrap items-start justify-between gap-4">
-                  <div>
-                    <h2 class="text-lg font-semibold text-slate-900">pm2 logs</h2>
-                    <p class="mt-1 text-xs text-slate-500">
-                      ${this.logs.file || (this.logs.phase === 'loading' ? 'Loading log source...' : 'No log file')}
-                      ${this.logs.entries.length > 0 ? ` · Showing ${this.logs.entries.length}` : ''}
-                      ${this.logs.limited ? ' · Read limit reached' : ''}
-                    </p>
-                  </div>
-                  <button
-                    class="rounded-full bg-slate-100 px-4 py-2 text-sm hover:bg-slate-200 disabled:opacity-50"
-                    ?disabled=${!messagesLogsCanCopy(this.logs)}
-                    @click=${() => { void this.copyLogs(); }}
-                  >Copy</button>
+                <div class="mb-3">
+                  <h2 class="text-lg font-semibold text-slate-900">pm2 logs</h2>
+                  <p class="mt-1 text-xs text-slate-500">
+                    ${this.logs.file || (this.logs.phase === 'loading' ? 'Loading log source...' : 'No log file')}
+                    ${this.logs.entries.length > 0 ? ` · Showing ${this.logs.entries.length}` : ''}
+                    ${this.logs.limited ? ' · Read limit reached' : ''}
+                  </p>
                 </div>
-                ${this.copyNotice
-                  ? html`<p class="mb-3 text-sm text-slate-600">${this.copyNotice}</p>`
-                  : null}
-                <div class="mb-4 flex flex-wrap items-end gap-4 text-sm">
-                  <label class="flex flex-col gap-1 text-slate-700">
-                    Process
-                    <select
-                      class="rounded-xl border border-slate-200 bg-white px-3 py-2"
-                      .value=${this.logs.query.app}
-                      @change=${(event: Event) => {
-                        const value = (event.currentTarget as HTMLSelectElement).value;
-                        if (value === 'msg' || value === 'msg-worker') this.selectLogs(value, this.logs.query.stream);
-                      }}
-                    >
-                      <option value="msg" ?selected=${this.logs.query.app === 'msg'}>API</option>
-                      <option value="msg-worker" ?selected=${this.logs.query.app === 'msg-worker'}>Worker</option>
-                    </select>
-                  </label>
-                  <label class="flex flex-col gap-1 text-slate-700">
-                    Output
-                    <select
-                      class="rounded-xl border border-slate-200 bg-white px-3 py-2"
-                      .value=${this.logs.query.stream}
-                      @change=${(event: Event) => {
-                        const value = (event.currentTarget as HTMLSelectElement).value;
-                        if (value === 'out' || value === 'error') this.selectLogs(this.logs.query.app, value);
-                      }}
-                    >
-                      <option value="out" ?selected=${this.logs.query.stream === 'out'}>Standard output</option>
-                      <option value="error" ?selected=${this.logs.query.stream === 'error'}>Error output</option>
-                    </select>
-                  </label>
-                  <label class="flex flex-col gap-1 text-slate-700">
-                    Start at (UTC)
+                <div class="flex min-w-0 flex-wrap items-end gap-4 text-sm">
+                  <label class="flex min-w-0 flex-col gap-1 text-slate-700">
+                    ${text.startAt}
                     <input
-                      class="rounded-xl border border-slate-200 px-3 py-2"
+                      class="w-full min-w-[12rem] rounded-xl border border-slate-200 px-3 py-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-400"
                       type="datetime-local"
                       step="1"
                       .value=${this.draftStartAt}
                       @input=${(event: Event) => { this.draftStartAt = (event.currentTarget as HTMLInputElement).value; }}
                       @keydown=${(event: KeyboardEvent) => { this.onFilterKeydown(event); }}
                     />
-                    <span class="text-xs text-slate-500">UTC</span>
-                    ${this.startAtError
-                      ? html`<span class="text-xs text-rose-700">${this.startAtError}</span>`
-                      : null}
                   </label>
-                  <label class="flex flex-col gap-1 text-slate-700">
+                  <label class="flex min-w-0 flex-col gap-1 text-slate-700">
                     Message contains
                     <input
-                      class="rounded-xl border border-slate-200 px-3 py-2"
+                      class="w-full min-w-[12rem] rounded-xl border border-slate-200 px-3 py-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-400"
                       type="text"
                       placeholder="[config_error]"
                       .value=${this.draftText}
@@ -359,43 +337,78 @@ export class MonitorWebDesktopMessagesPage extends LitElement {
                     />
                   </label>
                   <button
-                    class="rounded-full bg-slate-100 px-4 py-2 text-sm hover:bg-slate-200"
+                    class="rounded-full bg-slate-100 px-4 py-2 text-sm hover:bg-slate-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-400"
                     @click=${() => { this.applyFilters(); }}
                   >Apply filters</button>
                   <button
-                    class="rounded-full bg-slate-100 px-4 py-2 text-sm hover:bg-slate-200"
+                    class="rounded-full bg-slate-100 px-4 py-2 text-sm hover:bg-slate-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-400"
                     @click=${() => { this.clearFilters(); }}
                   >Clear filters</button>
                 </div>
-                <button
-                  class="mb-3 rounded-full bg-slate-100 px-4 py-2 text-sm hover:bg-slate-200 disabled:opacity-50"
-                  ?disabled=${!messagesLogsCanLoadMore(this.logs)}
-                  @click=${() => { void this.loadOlder(); }}
-                >Load more</button>
-                <p class="mb-3 text-xs text-slate-500">Loads earlier log entries.</p>
+                <p class="mt-2 min-h-[1.25rem] text-xs text-slate-500">
+                  ${text.startAtHelp}: ${zone}
+                  ${this.startAtError
+                    ? html`<span class="mt-1 block text-rose-700">${this.startAtError}</span>`
+                    : null}
+                </p>
+                <fieldset class="mt-3 min-w-0 max-w-full border-0 p-0">
+                  <legend class="sr-only">${text.logSource}</legend>
+                  <div class="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2 text-sm text-slate-800" role="presentation">
+                    ${MESSAGE_LOG_SOURCES.map((source) => html`
+                      <label class="inline-flex max-w-full items-center gap-2">
+                        <input
+                          class="focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-400"
+                          type="radio"
+                          name=${this.sourceGroup}
+                          .checked=${this.logs.query.app === source.app && this.logs.query.stream === source.stream}
+                          @change=${() => { this.selectLogs(source.app, source.stream); }}
+                        />
+                        <span>${text[source.label]}</span>
+                      </label>
+                    `)}
+                  </div>
+                </fieldset>
                 ${this.logs.phase === 'source-changed'
-                  ? html`<p class="mb-3 text-sm text-amber-800">${this.logs.errorMessage}</p>`
+                  ? html`<p class="mb-3 mt-3 text-sm text-amber-800">${this.logs.errorMessage}</p>`
                   : null}
                 ${this.logs.phase === 'error'
-                  ? html`<p class="mb-3 text-sm text-rose-700">${this.logs.errorMessage}</p>`
+                  ? html`<p class="mb-3 mt-3 text-sm text-rose-700">${this.logs.errorMessage}</p>`
                   : null}
                 ${this.logs.phase !== 'error' && this.logs.phase !== 'source-changed' && this.logs.errorMessage
-                  ? html`<p class="mb-3 text-sm text-rose-700">${this.logs.errorMessage}</p>`
+                  ? html`<p class="mb-3 mt-3 text-sm text-rose-700">${this.logs.errorMessage}</p>`
                   : null}
                 ${this.logs.phase === 'empty' && this.logs.hasMore
-                  ? html`<p class="mb-3 text-sm text-slate-600">No matches in the section read.</p>`
+                  ? html`<p class="mb-3 mt-3 text-sm text-slate-600">No matches in the section read.</p>`
                   : null}
                 ${this.logs.phase === 'empty' && !this.logs.hasMore
-                  ? html`<p class="mb-3 text-sm text-slate-600">No log entries.</p>`
+                  ? html`<p class="mb-3 mt-3 text-sm text-slate-600">No log entries.</p>`
                   : null}
-                ${this.logs.phase === 'limited'
-                  ? html`<p class="mb-3 text-sm text-slate-600">Search stopped at the read limit. Load more continues earlier history.</p>`
-                  : null}
-                ${this.logs.phase === 'result' && !this.logs.hasMore
-                  ? html`<p class="mb-3 text-sm text-slate-600">End of log.</p>`
-                  : null}
+                <div class="mb-2 mt-3 flex min-w-0 flex-wrap items-center gap-3">
+                  <button
+                    class="rounded-full bg-slate-100 px-4 py-2 text-sm hover:bg-slate-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-400 disabled:opacity-50"
+                    ?disabled=${!messagesLogsCanCopy(this.logs)}
+                    @click=${() => { void this.copyLogs(); }}
+                  >Copy</button>
+                  ${this.copyNotice
+                    ? html`<p class="text-sm text-slate-600">${this.copyNotice}</p>`
+                    : null}
+                </div>
                 <div class="min-w-0 max-w-full">
                   <pre data-messages-log class="h-[62vh] min-h-[12rem] w-full min-w-0 overflow-x-auto overflow-y-auto whitespace-pre rounded-2xl bg-slate-950 p-4 font-mono text-xs leading-relaxed text-slate-100 lg:min-h-[24rem]">${messagesLogsBody(this.logs)}</pre>
+                </div>
+                <div class="mt-3 flex min-w-0 flex-wrap items-center gap-3">
+                  <button
+                    class="rounded-full bg-slate-100 px-4 py-2 text-sm hover:bg-slate-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-400 disabled:opacity-50"
+                    ?disabled=${!messagesLogsCanLoadMore(this.logs)}
+                    @click=${() => { void this.loadOlder(); }}
+                  >Load more</button>
+                  <p class="text-xs text-slate-500">
+                    ${this.logs.phase === 'limited'
+                      ? 'Search stopped at the read limit. Load more continues earlier history.'
+                      : this.logs.phase === 'result' && !this.logs.hasMore
+                        ? 'End of log.'
+                        : 'Loads earlier log entries.'}
+                  </p>
                 </div>
               </article>
             `
