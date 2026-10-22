@@ -32,19 +32,27 @@ export interface MessagesLogsState {
   pendingCursor: string | null;
 }
 
-const defaultQuery = (): MessagesLogsQuery => ({
+const HOUR_MS = 60 * 60 * 1000;
+
+/** Start at fixed when a screen is created: one hour before `now`, whole seconds, ISO UTC. */
+export function messagesLogsInitialStartAt(now: Date): string {
+  const seconds = Math.floor(now.getTime() / 1000) * 1000;
+  return new Date(seconds - HOUR_MS).toISOString().replace('.000Z', 'Z');
+}
+
+const defaultQuery = (now: Date): MessagesLogsQuery => ({
   app: 'msg',
-  stream: 'error',
-  startAt: '',
+  stream: 'out',
+  startAt: messagesLogsInitialStartAt(now),
   text: '',
 });
 
-export function createMessagesLogsState(): MessagesLogsState {
+export function createMessagesLogsState(now: Date = new Date()): MessagesLogsState {
   return {
     generation: 0,
     mounted: false,
     phase: 'loading',
-    query: defaultQuery(),
+    query: defaultQuery(now),
     entries: [],
     nextCursor: null,
     hasMore: false,
@@ -209,32 +217,62 @@ export function failMessagesLogsLoadMore(
 }
 
 const LOCAL_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/;
+const LOCAL_DATE_TIME_ERROR = 'Enter a valid local date and time.';
 
-/** datetime-local value is a UTC wall clock. Empty means no time filter. */
+function pad2(value: number): string {
+  return String(value).padStart(2, '0');
+}
+
+/** datetime-local components are the browser's local wall clock. Empty means no time filter. */
 export function startAtLocalToIso(value: string): { ok: true; iso: string } | { ok: false; error: string } {
   const trimmed = value.trim();
   if (!trimmed) return { ok: true, iso: '' };
   const match = LOCAL_DATE_TIME.exec(trimmed);
-  if (!match) return { ok: false, error: 'Enter a valid UTC date and time.' };
+  if (!match) return { ok: false, error: LOCAL_DATE_TIME_ERROR };
   const year = Number(match[1]);
   const month = Number(match[2]);
   const day = Number(match[3]);
   const hour = Number(match[4]);
   const minute = Number(match[5]);
   const second = Number(match[6] ?? '0');
-  if (month < 1 || month > 12 || hour > 23 || minute > 59 || second > 59) {
-    return { ok: false, error: 'Enter a valid UTC date and time.' };
+  if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59) {
+    return { ok: false, error: LOCAL_DATE_TIME_ERROR };
   }
-  const utc = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  // One local interpretation. Date folds a DST gap forward; that mismatch is a rejection.
+  const local = new Date(year, month - 1, day, hour, minute, second);
   if (
-    utc.getUTCFullYear() !== year
-    || utc.getUTCMonth() !== month - 1
-    || utc.getUTCDate() !== day
+    Number.isNaN(local.getTime())
+    || local.getFullYear() !== year
+    || local.getMonth() !== month - 1
+    || local.getDate() !== day
+    || local.getHours() !== hour
+    || local.getMinutes() !== minute
+    || local.getSeconds() !== second
   ) {
-    return { ok: false, error: 'Enter a valid UTC date and time.' };
+    return { ok: false, error: LOCAL_DATE_TIME_ERROR };
   }
-  const iso = utc.toISOString().replace('.000Z', 'Z');
+  const iso = local.toISOString().replace('.000Z', 'Z');
   return { ok: true, iso };
+}
+
+/** `YYYY-MM-DDTHH:mm:ss` in the browser's local zone, for a datetime-local field. */
+export function startAtIsoToLocal(iso: string): string {
+  if (!iso) return '';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '';
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}T${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`;
+}
+
+/** Zone name and the offset of this instant. Empty when `iso` is not a time. */
+export function messagesLogsStartAtContext(iso: string): string {
+  if (!iso) return '';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '';
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const minutesEast = -date.getTimezoneOffset();
+  const sign = minutesEast >= 0 ? '+' : '-';
+  const abs = Math.abs(minutesEast);
+  return `${zone} UTC${sign}${pad2(Math.floor(abs / 60))}:${pad2(abs % 60)}`;
 }
 
 /** One displayed line block: the UTC timestamp (when the source had one) and the message. Copy uses the same text. */
@@ -246,13 +284,33 @@ export function messagesLogsBody(state: MessagesLogsState): string {
   return state.entries.map(messagesLogsEntryLine).join('\n');
 }
 
-export function messagesLogsCopyText(state: MessagesLogsState): string {
+export const messagesLogsCopyLabelsEn = {
+  processApi: 'API',
+  processWorker: 'Worker',
+  outputStandard: 'Standard output',
+  outputError: 'Error output',
+  startAtLocal: 'Start at',
+  startAtUtc: 'Start at (UTC)',
+  messageContains: 'Message contains',
+} as const;
+
+export type MessagesLogsCopyLabels = { [K in keyof typeof messagesLogsCopyLabelsEn]: string };
+
+export function messagesLogsCopyText(
+  state: MessagesLogsState,
+  labels: MessagesLogsCopyLabels = messagesLogsCopyLabelsEn,
+): string {
   if (state.phase === 'loading' || state.entries.length === 0) return '';
-  const process = state.query.app === 'msg' ? 'API' : 'Worker';
-  const output = state.query.stream === 'out' ? 'Standard output' : 'Error output';
+  const process = state.query.app === 'msg' ? labels.processApi : labels.processWorker;
+  const output = state.query.stream === 'out' ? labels.outputStandard : labels.outputError;
   const lines = [`Process: ${process}`, `Output: ${output}`];
-  if (state.query.startAt) lines.push(`Start at (UTC): ${state.query.startAt}`);
-  if (state.query.text) lines.push(`Message contains: ${state.query.text}`);
+  if (state.query.startAt) {
+    const local = startAtIsoToLocal(state.query.startAt);
+    const context = messagesLogsStartAtContext(state.query.startAt);
+    if (local && context) lines.push(`${labels.startAtLocal}: ${local} (${context})`);
+    lines.push(`${labels.startAtUtc}: ${state.query.startAt}`);
+  }
+  if (state.query.text) lines.push(`${labels.messageContains}: ${state.query.text}`);
   const body = messagesLogsBody(state);
   return `${lines.join('\n')}\n\n${body}`;
 }
