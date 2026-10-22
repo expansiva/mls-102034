@@ -199,3 +199,101 @@ test('ctx.organization.countryCode is the installation country, never derived fr
 function getMdmModuleTypesFrom(details: MdmDetailRecord): string[] {
   return Array.isArray(details.moduleTypes) ? details.moduleTypes : [];
 }
+
+const subtypeFixtures: ReadonlyArray<{
+  subtype: string;
+  fields: Record<string, unknown>;
+  field: string;
+}> = [
+  {
+    subtype: 'AssetVehicle',
+    fields: { plate: 'ABC1234', vin: '1HGCM82633A004352', year: 2020, color: 'blue', fuelType: 'Gasoline' },
+    field: 'vin',
+  },
+  {
+    subtype: 'Animal',
+    fields: { species: 'dog', breed: 'collie', sex: 'Female', color: 'sable', microchip: '9001', registrationNumber: 'AKC-1', isNeutered: true },
+    field: 'microchip',
+  },
+  {
+    subtype: 'AssetProperty',
+    fields: { propertyType: 'Residential', areaSqft: 1200, areaM2: 111, taxParcelId: 'parcel-1', registrationNumber: 'deed-1' },
+    field: 'taxParcelId',
+  },
+  {
+    subtype: 'Document',
+    fields: {
+      originModule: 'academia',
+      docCategory: 'Contract',
+      storageBucket: 'docs',
+      storagePath: 'deeds/1.pdf',
+      fileName: '1.pdf',
+      fileSizeKb: 12,
+      issuedAt: '2026-01-01',
+      expiresAt: '2027-01-01',
+      issuer: 'Clerk',
+    },
+    field: 'issuer',
+  },
+];
+
+for (const fixture of subtypeFixtures) {
+  test(`platform subtype ${fixture.subtype} field stays visible and writable; foreign namespace does not`, async () => {
+    const runtime = createMemoryDataRuntime();
+    const platform = createRequestContext(runtime);
+    const academia = createRequestContext(runtime, { moduleId: 'academia' });
+
+    const created = await academia.mdm.entity.create({
+      details: {
+        subtype: fixture.subtype,
+        name: fixture.subtype,
+        general: { segment: 'vip' },
+        academia: { plan: 'monthly' },
+        ...fixture.fields,
+      },
+    });
+    const createdDetails = created.details as Record<string, unknown>;
+    assert.equal(createdDetails[fixture.field], fixture.fields[fixture.field]);
+    assert.deepEqual(createdDetails.general, { segment: 'vip' });
+    assert.deepEqual(createdDetails.academia, { plan: 'monthly' });
+
+    const read = await academia.mdm.entity.get({ mdmId: created.mdmId });
+    const readDetails = read.details as Record<string, unknown>;
+    assert.equal(readDetails[fixture.field], fixture.fields[fixture.field]);
+    assert.deepEqual(readDetails.general, { segment: 'vip' });
+    assert.deepEqual(readDetails.academia, { plan: 'monthly' });
+
+    const updated = await academia.mdm.entity.update({
+      mdmId: created.mdmId,
+      expectedVersion: created.version,
+      patch: { [fixture.field]: fixture.fields[fixture.field] },
+    });
+    assert.equal((updated.details as Record<string, unknown>)[fixture.field], fixture.fields[fixture.field]);
+
+    const withForeign = {
+      ...createdDetails,
+      clinica: { allergy: 'penicillin' },
+    } as unknown as MdmDetailRecord;
+    const projected = projectDetailsForModule(withForeign, 'academia') as Record<string, unknown>;
+    assert.equal(projected[fixture.field], fixture.fields[fixture.field]);
+    assert.equal('clinica' in projected, false);
+    assert.deepEqual(projected.academia, { plan: 'monthly' });
+    assert.deepEqual(projected.general, { segment: 'vip' });
+
+    await assert.rejects(
+      () => platform.mdm.entity.create({
+        details: {
+          subtype: fixture.subtype,
+          name: `${fixture.subtype}-foreign`,
+          ...fixture.fields,
+          clinica: { allergy: 'penicillin' },
+        },
+      }).then((record) => academia.mdm.entity.update({
+        mdmId: record.mdmId,
+        expectedVersion: record.version,
+        patch: { clinica: { allergy: 'latex' } },
+      })),
+      (error: unknown) => error instanceof AppError && error.code === 'MDM_FOREIGN_NAMESPACE',
+    );
+  });
+}
