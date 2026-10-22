@@ -28,6 +28,16 @@ import {
   MDM_GENERAL_NAMESPACE,
   MDM_ORGANIZATION_MODULE_ID,
 } from '/_102034_/l1/mdm/module.js';
+import {
+  isMdmComputedDetailKey,
+  isMdmPlatformDetailKey,
+} from '/_102034_/l1/mdm/defs/platformDetailKeys.js';
+
+export {
+  MDM_PLATFORM_DETAIL_KEYS,
+  isMdmComputedDetailKey,
+  isMdmPlatformDetailKey,
+} from '/_102034_/l1/mdm/defs/platformDetailKeys.js';
 import type {
   AttachFileParams,
   DetachFileParams,
@@ -250,30 +260,6 @@ export interface MdmFacade {
   identity: MdmIdentity;
 }
 
-/**
- * Typed platform keys of BaseMdmDetailRecord and the *DetailRecord variants.
- * Anything else in `details` is a module namespace (or the reserved `general`).
- */
-const MDM_PLATFORM_DETAIL_KEYS = new Set<string>([
-  'mdmId', 'subtype', 'name', 'status', 'moduleTypes', 'docType', 'docId',
-  'countryCode', 'tags', 'aliases', 'contacts', 'relationshipRefs', 'addresses',
-  'mergedInto', 'registrationDraft', 'createdAt', 'updatedAt',
-  'privacyConsent', 'birthDate', 'gender', 'nationality', 'occupation', 'photoUrl', 'notes',
-  'companyKind', 'parentCompanyId', 'externalCode', 'legalName', 'tradeName', 'legalType',
-  'foundingDate', 'taxRegime', 'industryCode', 'website',
-  'sku', 'productType', 'category', 'brand', 'unitOfMeasure', 'isInventoried',
-  'serviceCode', 'serviceKind', 'parentServiceId', 'serviceType', 'durationMinutes', 'deliveryMode',
-  'locationType', 'locationCode', 'parentLocationId', 'capacity', 'propertyAddress',
-  'assetCategory', 'serialNumber', 'manufacturer', 'model',
-  'contactType', 'value', 'isVerified', 'verifiedAt',
-  'storageBucket', 'storagePath', 'originModule', 'docCategory', 'fileName', 'mimeType',
-  'bankRoutingNumber', 'bankName', 'accountNumber', 'accountType', 'swift', 'iban',
-  'pixKey', 'pixKeyType',
-  'promotionSource', 'promotedTo', 'ttlExpiresAt',
-]);
-
-const MDM_COMPUTED_DETAIL_KEYS = new Set<string>(['namespaces']);
-
 export function isUnrestrictedMdmCaller(moduleId?: string | null): boolean {
   return !moduleId || moduleId === MDM_ORGANIZATION_MODULE_ID;
 }
@@ -288,10 +274,10 @@ export function projectDetailsForModule(
   const projected: Record<string, unknown> = {};
 
   for (const [key, value] of Object.entries(source)) {
-    if (MDM_COMPUTED_DETAIL_KEYS.has(key)) {
+    if (isMdmComputedDetailKey(key)) {
       continue;
     }
-    if (MDM_PLATFORM_DETAIL_KEYS.has(key) || key === MDM_GENERAL_NAMESPACE) {
+    if (isMdmPlatformDetailKey(key) || key === MDM_GENERAL_NAMESPACE) {
       projected[key] = value;
       continue;
     }
@@ -315,10 +301,10 @@ function assertWritableMdmNamespaces(
     return;
   }
   for (const key of Object.keys(details)) {
-    if (MDM_COMPUTED_DETAIL_KEYS.has(key)) {
+    if (isMdmComputedDetailKey(key)) {
       continue;
     }
-    if (MDM_PLATFORM_DETAIL_KEYS.has(key) || key === MDM_GENERAL_NAMESPACE || key === moduleId) {
+    if (isMdmPlatformDetailKey(key) || key === MDM_GENERAL_NAMESPACE || key === moduleId) {
       continue;
     }
     throw new AppError(

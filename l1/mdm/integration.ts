@@ -1,14 +1,16 @@
 /// <mls fileReference="_102034_/l1/mdm/integration.ts" enhancement="_blank" />
 import type { MdmStatus, MdmSubtype, RelationshipType } from './defs/ontology.js';
-import type {
-  CompactRelationshipRefs,
-  CompanyKind,
-  MdmDetailRecord,
-  MdmEntityIndexRecord,
-  MdmModuleNamespaceValue,
-  MdmProspectIndexRecord,
-  MdmRelationshipRecord,
-  ServiceKind,
+import { isMdmComputedDetailKey, isMdmPlatformDetailKey } from './defs/platformDetailKeys.js';
+import {
+  MDM_GENERAL_NAMESPACE,
+  type CompactRelationshipRefs,
+  type CompanyKind,
+  type MdmDetailRecord,
+  type MdmEntityIndexRecord,
+  type MdmModuleNamespaceValue,
+  type MdmProspectIndexRecord,
+  type MdmRelationshipRecord,
+  type ServiceKind,
 } from '/_102034_/l1/mdm/module.js';
 
 export type MdmSubtypeRef = MdmSubtype;
@@ -84,43 +86,14 @@ export function toMdmLookupResult(
   detail: MdmDetailRecord,
   summary?: Partial<MdmRecordSummary>,
 ): MdmLookupResult {
-  const reservedKeys = new Set([
-    'mdmId',
-    'subtype',
-    'name',
-    'status',
-    'docType',
-    'docId',
-    'countryCode',
-    'tags',
-    'aliases',
-    'contacts',
-    'relationshipRefs',
-    'addresses',
-    'mergedInto',
-    'createdAt',
-    'updatedAt',
-    'companyKind',
-    'parentCompanyId',
-    'externalCode',
-    'serviceCode',
-    'serviceKind',
-    'parentServiceId',
-    'serviceType',
-    'durationMinutes',
-    'deliveryMode',
-    'privacyConsent',
-    'legalName',
-    'contactType',
-    'value',
-    'storageBucket',
-    'storagePath',
-    'promotionSource',
-    'promotedTo',
-    'ttlExpiresAt',
-  ]);
   const moduleNamespaces = Object.fromEntries(
-    Object.entries(detail).filter(([key, value]) => !reservedKeys.has(key) && value && typeof value === 'object'),
+    Object.entries(detail).filter(([key, value]) =>
+      !isMdmComputedDetailKey(key)
+      && !isMdmPlatformDetailKey(key)
+      && key !== MDM_GENERAL_NAMESPACE
+      && value
+      && typeof value === 'object'
+    ),
   ) as Record<string, MdmModuleNamespaceValue>;
 
   return {
