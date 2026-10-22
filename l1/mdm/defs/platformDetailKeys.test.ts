@@ -133,6 +133,13 @@ test('platform detail keys match ontology belonging, with contract extras named 
 
   for (const name of derivedCatalogNames(producers)) {
     assert.equal(MDM_PLATFORM_DETAIL_KEYS.has(name), true, `${name} belongs even when derived`);
+    assert.equal(MDM_ENGINE_COMPAT_DETAIL_KEYS.includes(name as typeof MDM_ENGINE_COMPAT_DETAIL_KEYS[number]), false);
+  }
+
+  const documented = Object.values(mdm.knownDivergences).join('\n');
+  for (const name of MDM_ENGINE_COMPAT_DETAIL_KEYS) {
+    assert.equal(producers.has(name), false, `${name} is an engine extra, not a catalog field`);
+    assert.equal(documented.includes(name), true, `${name} is not named in knownDivergences`);
   }
 
   const diff = unexplainedDiff(
@@ -154,6 +161,23 @@ test('parity fails when a platform field exists only on the catalog', () => {
     MDM_PLATFORM_DETAIL_KEYS,
   );
   assert.equal(diff.some((line) => line.startsWith('catalog-only onlyOnCatalog from subtype:AssetVehicle')), true);
+});
+
+test('parity fails when a field of any subtype is removed from the classifier', () => {
+  const producers = catalogDetailProducers();
+  for (const [subtypeName, subtype] of Object.entries(mdm.subtypes as Record<string, SubtypeDef>)) {
+    const fieldName = Object.keys(subtype.fields ?? {})[0];
+    assert.ok(fieldName, `${subtypeName} declares a field`);
+    const removed = MDM_CATALOG_PLATFORM_DETAIL_KEYS.filter((name) => name !== fieldName);
+    const platform = new Set(MDM_PLATFORM_DETAIL_KEYS);
+    platform.delete(fieldName);
+    const diff = unexplainedDiff(producers, removed, MDM_ENGINE_COMPAT_DETAIL_KEYS, platform);
+    assert.equal(
+      diff.some((line) => line.startsWith(`catalog-only ${fieldName} from `) && line.includes(`subtype:${subtypeName}`)),
+      true,
+      fieldName,
+    );
+  }
 });
 
 test('parity fails when a classifier key is removed', () => {

@@ -19,6 +19,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { MDM_ENGINE_COMPAT_DETAIL_KEYS } from '/_102034_/l1/mdm/defs/platformDetailKeys.js';
 import { tableDefinitions } from '/_102034_/l1/mdm/persistence.js';
 import type { MdmSubtype } from '/_102034_/l1/mdm/defs/ontology.js';
 import type { InferMdmRecord, MdmSubtypeName } from '/_102034_/l1/mdm/defs/ontologyTypes.js';
@@ -183,6 +184,25 @@ test('the branches of `details` are the ones `record` announces', () => {
     if ('open' in group) assert.ok(!('fields' in group), `${name} is open and still declares fields`);
     else assert.ok('fields' in group, `${name} is closed and declares no fields`);
   }
+});
+
+test('engine extras stay out of the catalog and the flat document stays distinct from the grouped target', () => {
+  const catalogFields = new Set<string>([
+    ...Object.keys(mdm.groups.identification.fields),
+    ...Object.keys(mdm.groups.base.fields),
+    ...Object.values(mdm.subtypes).flatMap((subtype) => Object.keys(subtype.fields)),
+  ]);
+  for (const name of MDM_ENGINE_COMPAT_DETAIL_KEYS) {
+    assert.equal(catalogFields.has(name), false, `${name} is not a universal or subtype input`);
+  }
+  assert.equal(mdm.groups.base.fields.contacts.derived, true);
+  assert.match(mdm.knownDivergences['contacts-written-from-input'], /derived/);
+  assert.match(mdm.knownDivergences['grouped-document'], /target/);
+  assert.match(mdm.knownDivergences['grouped-document'], /FLAT/);
+  assert.match(mdm.knownDivergences['registration-draft'], /registrationDraft/);
+  assert.match(mdm.knownDivergences['prospect-lifecycle-fields'], /promotionSource/);
+  assert.match(mdm.knownDivergences['prospect-lifecycle-fields'], /not universal inputs/);
+  assert.match(mdm.knownDivergences['platform-detail-keys-copy'], /platformDetailKeys\.ts/);
 });
 
 test('the catalogs point at things that exist', () => {
