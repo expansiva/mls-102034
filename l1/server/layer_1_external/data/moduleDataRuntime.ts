@@ -517,6 +517,16 @@ export function copyEligibleSeedRows(
   }).map((row) => ({ ...row }));
 }
 
+/** A disposable sandbox run: initial and test rows in any mode (initial still wins a key clash). */
+export function copySandboxSeedRows(definition: ResolvedTableDefinition): Record<string, unknown>[] {
+  return selectEligibleSeedRows(definition, {
+    tableName: definition.tableName,
+    logicalTableName: definition.logicalTableName,
+    projectMode: 'development',
+    serverMode: 'development',
+  }).map((row) => ({ ...row }));
+}
+
 class MemoryModuleDataRuntime implements IModuleDataRuntime {
   private readonly store = new Map<string, object[]>();
 

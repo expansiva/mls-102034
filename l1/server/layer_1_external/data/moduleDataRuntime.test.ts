@@ -230,3 +230,20 @@ test('memory stores follow seed purpose: initial in every mode, test only in tes
     }
   }
 });
+
+test('a sandbox run loads initial and test rows whatever the mode; initial wins a key clash', async () => {
+  const { copySandboxSeedRows } = await import('/_102034_/l1/server/layer_1_external/data/moduleDataRuntime.js');
+  const definition = {
+    tableName: 'mdm_entity_index',
+    logicalTableName: 'mdm_entity_index',
+    projectId: 'not-a-declared-project',
+    storageProfile: 'postgresOnly',
+    columns: [{ name: 'mdm_id', nullable: false }, { name: 'name' }],
+    primaryKey: ['mdm_id'],
+    seedRows: [{ mdm_id: 'actor-1', name: 'test' }, { mdm_id: 'shared', name: 'test' }],
+    initialSeedRows: [{ mdm_id: 'shared', name: 'initial' }],
+  } as never;
+  const rows = copySandboxSeedRows(definition);
+  assert.deepEqual(rows.map((row) => row.mdm_id).sort(), ['actor-1', 'shared']);
+  assert.equal(rows.find((row) => row.mdm_id === 'shared')?.name, 'initial');
+});

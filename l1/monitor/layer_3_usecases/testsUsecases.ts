@@ -266,7 +266,10 @@ async function discoverTestFiles(filter: { moduleId?: string; page?: string } = 
   for (const [projectId, project] of Object.entries(config.projects)) {
     for (const moduleConfig of project.modules ?? []) {
       if (filter.moduleId && moduleConfig.moduleId !== filter.moduleId) continue;
-      for (const path of moduleConfig.frontend?.pageTests ?? []) {
+      const backendPageTests = Array.isArray(moduleConfig.backend?.pageTests)
+        ? (moduleConfig.backend.pageTests as unknown[]).filter((item): item is string => typeof item === 'string')
+        : [];
+      for (const path of [...(moduleConfig.frontend?.pageTests ?? []), ...backendPageTests]) {
         let tests: PageTestsFile | null = null;
         let loadError: string | undefined;
         try {
@@ -577,7 +580,8 @@ export async function listPageTests(): Promise<TestListResult> {
     appEnv: reported.appEnv,
     appEnvSource: reported.appEnvSource,
     serverAppEnv: reported.serverAppEnv,
-    executionEnabled: env.testsEnabled,
+    // Every run is a disposable in-memory sandbox (runPageTests), so execution is always available.
+    executionEnabled: true,
     modules: [...byModule.values()],
     recentRuns: getRecentRuns({}, 10),
   };
@@ -1117,7 +1121,7 @@ export async function runPageTests(input: { moduleId?: string; page?: string; sk
   // need no transaction/rollback because the whole store is discarded with the run.
   // ONE runtime for the whole run; every context below shares it, so the store (and the harvested ids)
   // are the same no matter which actor a page runs as.
-  const dataRuntime = createMemoryDataRuntime();
+  const dataRuntime = createMemoryDataRuntime({ sandbox: true });
   const baseCtx = createRequestContext(dataRuntime, { sandbox: true });
   const cases: TestCaseResult[] = [];
 

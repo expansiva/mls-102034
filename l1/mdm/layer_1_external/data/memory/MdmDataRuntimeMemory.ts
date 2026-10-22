@@ -3,7 +3,7 @@ import { AppError } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import type { AppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { projectsConfigExists } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
-import { copyEligibleSeedRows, createMemoryModuleDataRuntime } from '/_102034_/l1/server/layer_1_external/data/moduleDataRuntime.js';
+import { copyEligibleSeedRows, copySandboxSeedRows, createMemoryModuleDataRuntime } from '/_102034_/l1/server/layer_1_external/data/moduleDataRuntime.js';
 import { findResolvedTableDefinition } from '/_102034_/l1/server/layer_1_external/persistence/registry.js';
 import { createMemoryMdmIdentityUsersReader } from '/_102034_/l1/mdm/layer_1_external/data/memory/MdmIdentityUsersMemory.js';
 import type {
@@ -29,14 +29,14 @@ import type {
   MdmTagRecord,
 } from '/_102034_/l1/mdm/module.js';
 
-async function loadSeedRows<TRecord>(env: AppEnv, repositoryName: string): Promise<TRecord[]> {
+async function loadSeedRows<TRecord>(env: AppEnv, repositoryName: string, sandbox = false): Promise<TRecord[]> {
   if (!projectsConfigExists()) {
     return [];
   }
 
   try {
     const definition = await findResolvedTableDefinition(repositoryName, env);
-    return copyEligibleSeedRows(definition, env) as TRecord[];
+    return (sandbox ? copySandboxSeedRows(definition) : copyEligibleSeedRows(definition, env)) as TRecord[];
   } catch {
     return [];
   }
@@ -259,15 +259,17 @@ function bindTransactionRuntime(runtime: IDataRuntime): IDataRuntime {
   return bound;
 }
 
-export function createMemoryDataRuntime(): IDataRuntime {
+/** `sandbox`: a disposable run (the monitor) loads initial and test seed rows whatever the mode. */
+export function createMemoryDataRuntime(options: { sandbox?: boolean } = {}): IDataRuntime {
+  const sandbox = options.sandbox === true;
   const env = readAppEnv();
   const keyedTails = new Map<string, Promise<void>>();
   const runtime: IDataRuntime = {
     mode: 'memory',
-    mdmDocument: new DocumentRuntimeMemory(() => loadSeedRows<MdmDocumentRecord>(env, 'mdmDocumentCache')),
-    mdmEntityIndex: new TableRuntimeMemory<MdmEntityIndexRecord>(() => loadSeedRows<MdmEntityIndexRecord>(env, 'mdmEntityIndex')),
+    mdmDocument: new DocumentRuntimeMemory(() => loadSeedRows<MdmDocumentRecord>(env, 'mdmDocumentCache', sandbox)),
+    mdmEntityIndex: new TableRuntimeMemory<MdmEntityIndexRecord>(() => loadSeedRows<MdmEntityIndexRecord>(env, 'mdmEntityIndex', sandbox)),
     mdmProspectIndex: new TableRuntimeMemory<MdmProspectIndexRecord>(),
-    mdmRelationship: new TableRuntimeMemory<MdmRelationshipRecord>(() => loadSeedRows<MdmRelationshipRecord>(env, 'mdmRelationship')),
+    mdmRelationship: new TableRuntimeMemory<MdmRelationshipRecord>(() => loadSeedRows<MdmRelationshipRecord>(env, 'mdmRelationship', sandbox)),
     mdmProspectRelationship: new TableRuntimeMemory<MdmRelationshipRecord>(),
     mdmAuditLog: new TableRuntimeMemory<MdmAuditLogIndexRecord>(),
     mdmComment: new TableRuntimeMemory<MdmCommentRecord>(),
