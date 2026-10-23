@@ -1050,38 +1050,117 @@ function lookupSpareField(
   return (moduleId ? pool[`spare:${moduleId}.${fieldRef}`] : undefined) ?? pool[`spare:${fieldRef}`];
 }
 
+/** Own-property write: a `__proto__` key in the params stays a plain field, never the object's prototype. */
+function setOwn(target: Record<string, unknown>, key: string, value: unknown): void {
+  Object.defineProperty(target, key, { value, enumerable: true, writable: true, configurable: true });
+}
+
+/**
+ * The fieldRef a leaf declares: the exact dotted path first (`items.0.productId`, array index included
+ * when the map declares it), then the same path without array indexes (`items.productId`).
+ */
+function fieldRefAt(paramFieldRefs: Record<string, string> | undefined, path: string, pathNoIndex: string): string | undefined {
+  if (!paramFieldRefs) return undefined;
+  if (Object.prototype.hasOwnProperty.call(paramFieldRefs, path)) return paramFieldRefs[path];
+  if (pathNoIndex !== path && Object.prototype.hasOwnProperty.call(paramFieldRefs, pathNoIndex)) return paramFieldRefs[pathNoIndex];
+  return undefined;
+}
+
+/**
+ * Resolve the seed markers of a case's params — at any depth (`details.identification.countryCode`,
+ * `items.0.productId`). Only a value that IS a marker is resolved; a string merely containing one is
+ * left as written. The input is never mutated: a fresh tree is returned.
+ *
+ * Each leaf is looked up by the fieldRef its dotted path declares. The bare-name fallback (no
+ * fieldRef) applies to TOP-LEVEL keys only, as files generated before paramFieldRefs expect; a nested
+ * leaf is never matched by its field name alone (that would hand another entity's id to it).
+ * `unresolved` lists the full path of every marker left without a value — the caller must not run the
+ * case then (a request without that value is not the case as written).
+ */
 export function resolveParams(
   params: Record<string, unknown>,
   pool: Record<string, unknown>,
   paramFieldRefs?: Record<string, string>,
   moduleId?: string,
 ): ResolvedParams {
-  const resolved: Record<string, unknown> = {};
   const unresolved: string[] = [];
-  for (const [key, value] of Object.entries(params)) {
+  const NONE = Symbol('unresolved');
+  const resolveLeaf = (value: string, path: string, pathNoIndex: string, topLevel: boolean): unknown => {
+    const fieldRef = fieldRefAt(paramFieldRefs, path, pathNoIndex);
+    let found: unknown;
     if (value === SEED_REF_MARKER) {
-      const fieldRef = paramFieldRefs?.[key];
-      const entity = entityOfFieldRef(fieldRef);
-      const found = entity
-        ? lookupEntityField(pool, fieldRef, moduleId)
-        : (fieldIdOfFieldRef(fieldRef) ? pool[fieldIdOfFieldRef(fieldRef)] : undefined) ?? pool[key];
-      // unresolved seedRef -> omit the key (the runner cannot invent a valid id) and remember it:
-      // the request no longer matches the case, so the verdict cannot be trusted.
-      if (found === undefined) unresolved.push(key);
-      else resolved[key] = found;
+      if (entityOfFieldRef(fieldRef)) found = lookupEntityField(pool, fieldRef, moduleId);
+      else {
+        const fieldId = fieldIdOfFieldRef(fieldRef);
+        found = (fieldId ? pool[fieldId] : undefined) ?? (topLevel ? pool[path] : undefined);
+      }
     } else if (value === SEED_VALUE_MARKER) {
-      const found = lookupEntityField(pool, paramFieldRefs?.[key], moduleId);
-      if (found === undefined) unresolved.push(key);
-      else resolved[key] = found;
-    } else if (value === SEED_SPARE_MARKER) {
-      const found = lookupSpareField(pool, paramFieldRefs?.[key], moduleId);
-      if (found === undefined) unresolved.push(key);
-      else resolved[key] = found;
+      found = lookupEntityField(pool, fieldRef, moduleId);
     } else {
-      resolved[key] = value;
+      found = lookupSpareField(pool, fieldRef, moduleId);
     }
+    if (found === undefined) {
+      unresolved.push(path);
+      return NONE;
+    }
+    return found;
+  };
+  const walk = (value: unknown, path: string, pathNoIndex: string, topLevel: boolean): unknown => {
+    if (value === SEED_REF_MARKER || value === SEED_VALUE_MARKER || value === SEED_SPARE_MARKER) {
+      return resolveLeaf(value, path, pathNoIndex, topLevel);
+    }
+    if (Array.isArray(value)) {
+      const out: unknown[] = [];
+      value.forEach((item, index) => {
+        const next = walk(item, `${path}.${index}`, pathNoIndex, false);
+        if (next !== NONE) out.push(next);
+      });
+      return out;
+    }
+    if (isRecord(value)) {
+      const out: Record<string, unknown> = {};
+      for (const [key, item] of Object.entries(value)) {
+        const next = walk(item, `${path}.${key}`, `${pathNoIndex}.${key}`, false);
+        if (next !== NONE) setOwn(out, key, next);
+      }
+      return out;
+    }
+    return value;
+  };
+  const resolved: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(params)) {
+    const next = walk(value, key, key, true);
+    if (next !== NONE) setOwn(resolved, key, next);
   }
   return { params: resolved, unresolved };
+}
+
+/**
+ * The verdict of a case whose params still carry an unresolved seed marker: 'inconclusive', decided
+ * BEFORE the request is sent. Sending it without the value (or with the literal marker) would make
+ * any rejection — 401/403, required, not found — look like the case's own verdict.
+ */
+export function unresolvedCaseResult(
+  testCase: PageTestCase,
+  module: string,
+  page: string,
+  unresolved: string[],
+  notes: string[] = [],
+): TestCaseResult {
+  const reason = [`unverifiable: seed marker not resolved for ${unresolved.join(', ')} (case not executed)`, ...notes.filter(Boolean)].join('; ');
+  return {
+    module,
+    page,
+    id: testCase.id,
+    routine: testCase.routine,
+    status: 'inconclusive',
+    ok: false,
+    statusCode: 0,
+    durationMs: 0,
+    errorCode: null,
+    errorMessage: null,
+    reason,
+  };
 }
 
 // A non-mutating success case is a read query — run first so its output feeds the seed pool that
@@ -1318,7 +1397,8 @@ function companyEntitiesOf(companyTags: string[]): Set<string> {
 export function organizationNote(unresolved: string[], paramFieldRefs: Record<string, string> | undefined, org: RunOrganization): string {
   if (org.ok || unresolved.length === 0) return '';
   const companyEntities = companyEntitiesOf(org.companyTags);
-  return unresolved.some(key => companyEntities.has(entityOfFieldRef(paramFieldRefs?.[key]))) ? org.reason : '';
+  // `key` is a leaf path (s4): `items.0.companyId` also matches a map declared without the index.
+  return unresolved.some(key => companyEntities.has(entityOfFieldRef(fieldRefAt(paramFieldRefs, key, key.split('.').filter(part => !/^\d+$/u.test(part)).join('.'))))) ? org.reason : '';
 }
 
 interface MdmAnchorCandidate {
@@ -1506,16 +1586,14 @@ export async function runPageTests(input: { moduleId?: string; page?: string; sk
       };
     }
     const { params, unresolved } = resolveParams(testCase.params, pool, testCase.paramFieldRefs, file.moduleId);
+    if (unresolved.length > 0) {
+      return unresolvedCaseResult(testCase, file.moduleId, tests.page, unresolved, [organizationNote(unresolved, testCase.paramFieldRefs, organization), anchorNote]);
+    }
     const request: BffRequest = { routine: testCase.routine, params, meta: { source: 'test', traceId, requestId: createUuidV7() } };
     const startedMs = Date.now();
     const exec = await execBff(request, session.ctx);
     if (exec.response.ok) harvestRows(pool, exec.response.data, file.moduleId, entityIndex, harvestCompany);
-    const result = evaluate(testCase, file.moduleId, tests.page, exec, Math.max(0, Date.now() - startedMs), unresolved);
-    if (result.status === 'inconclusive' && unresolved.length > 0) {
-      const notes = [organizationNote(unresolved, testCase.paramFieldRefs, organization), anchorNote].filter(Boolean);
-      if (notes.length > 0) result.reason = `${result.reason}; ${notes.join('; ')}`;
-    }
-    return result;
+    return evaluate(testCase, file.moduleId, tests.page, exec, Math.max(0, Date.now() - startedMs), unresolved);
   };
 
   // Both phases are GLOBAL (all files, then all files) — not per file. Hoisting the pool alone would

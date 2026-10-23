@@ -5,7 +5,7 @@
 // falling back to `items`.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applySeedAnchors, applySeedSpares, checkShape, coercePageTestsFile, countItems, evaluate, harvestRows, itemsAt, ontologyEntityName, reportAppEnv, type ModuleEntityIndex, PAGE11_VARIANT_POLICY, resolveParams, selectMonitorSeedRows, untestedPageEntries } from '/_102034_/l1/monitor/layer_3_usecases/testsUsecases.js';
+import { applySeedAnchors, applySeedSpares, checkShape, coercePageTestsFile, countItems, evaluate, harvestRows, itemsAt, ontologyEntityName, reportAppEnv, type ModuleEntityIndex, PAGE11_VARIANT_POLICY, resolveParams, selectMonitorSeedRows, unresolvedCaseResult, untestedPageEntries } from '/_102034_/l1/monitor/layer_3_usecases/testsUsecases.js';
 
 const menuEnvelope = { menuItems: [{ menuItemId: 'a' }, { menuItemId: 'b' }], total: 2 };
 
@@ -446,4 +446,76 @@ test('traversal stops at the depth cap', () => {
   const pool: Record<string, unknown> = {};
   harvestRows(pool, deep, 'listaB', petitionIndex);
   assert.equal(pool['listaB.Petition.petitionId'], undefined);
+});
+
+// rt126 s4 — recursive marker resolution, and no verdict for a case that still carries a marker.
+
+test('nested markers resolve by the fieldRef of their dotted path; literals and the original stay intact', () => {
+  const pool = {
+    'onb.Country.countryCode': 'BR',
+    'onb.PrivacyConsent.privacyConsentId': 'pc-1',
+    'onb.Product.productId': 'prod-1',
+    'spare:onb.Product.name': 'Spare name',
+  };
+  const params = {
+    details: { identification: { countryCode: '<seedValue>', document: '' }, active: false, count: 0 },
+    privacyConsent: { id: '<seedRef>' },
+    items: [{ productId: '<seedRef>', qty: 0 }, { productId: '<seedRef>', name: '<seedSpare>' }],
+    note: 'see <seedRef> here',
+    tags: ['a', '', 0, false],
+  };
+  const original = structuredClone(params);
+  const refs = {
+    'details.identification.countryCode': 'Country.countryCode',
+    'privacyConsent.id': 'PrivacyConsent.privacyConsentId',
+    'items.productId': 'Product.productId',
+    'items.1.name': 'Product.name',
+  };
+  const result = resolveParams(params, pool, refs, 'onb');
+  assert.deepEqual(result.unresolved, []);
+  assert.deepEqual(result.params, {
+    details: { identification: { countryCode: 'BR', document: '' }, active: false, count: 0 },
+    privacyConsent: { id: 'pc-1' },
+    items: [{ productId: 'prod-1', qty: 0 }, { productId: 'prod-1', name: 'Spare name' }],
+    note: 'see <seedRef> here',
+    tags: ['a', '', 0, false],
+  });
+  assert.deepEqual(params, original);
+});
+
+test('a nested marker is never resolved by its bare field name; unresolved names the full path', () => {
+  const pool = { personId: 'other-module-person', 'Person.personId': 'unqualified' };
+  const result = resolveParams({ personId: '<seedRef>', owner: { personId: '<seedRef>' }, list: [{ personId: '<seedRef>' }] }, pool, undefined, 'onb');
+  assert.deepEqual(result.unresolved, ['owner.personId', 'list.0.personId']);
+  assert.deepEqual(result.params, { personId: 'other-module-person', owner: {}, list: [{}] });
+  assert.ok(!JSON.stringify(result.params).includes('<seed'));
+});
+
+test('a __proto__ key in params stays an own field, never the prototype', () => {
+  const params = JSON.parse('{"__proto__": {"polluted": "<seedRef>"}}') as Record<string, unknown>;
+  const result = resolveParams(params, { 'Flag.flagId': 'f-1' }, { '__proto__.polluted': 'Flag.flagId' });
+  assert.ok(Object.prototype.hasOwnProperty.call(result.params, '__proto__'));
+  assert.equal(Object.getPrototypeOf(result.params), Object.prototype);
+  assert.equal(({} as Record<string, unknown>).polluted, undefined);
+  assert.deepEqual(result.unresolved, []);
+});
+
+test('a case with an unresolved marker is inconclusive before execution, with path and notes', () => {
+  const negative = { id: 'cadastrar.forbidden', routine: 'onb.p.cadastrar', params: { details: { identification: { countryCode: '<seedValue>' } } }, expect: { ok: false, errorCode: 'FORBIDDEN' }, mutating: true };
+  const { unresolved } = resolveParams(negative.params, {}, { 'details.identification.countryCode': 'Country.countryCode' }, 'onb');
+  const result = unresolvedCaseResult(negative as never, 'onb', 'p', unresolved, ['', 'org note']);
+  assert.equal(result.status, 'inconclusive');
+  assert.equal(result.statusCode, 0);
+  assert.match(result.reason, /details\.identification\.countryCode/);
+  assert.match(result.reason, /\(case not executed\); org note$/);
+});
+
+test('a resolved negative case is judged on its own business error, not on any 4xx', () => {
+  const conflictCase = { id: 'abrir.conflict', routine: 'm.p.abrir', params: { mesa: { mesaId: '<seedRef>' } }, expect: { ok: false, errorCode: 'CONFLICT' }, mutating: true };
+  const { unresolved } = resolveParams(conflictCase.params, { 'm.Mesa.mesaId': 'mesa-1' }, { 'mesa.mesaId': 'Mesa.mesaId' }, 'm');
+  assert.deepEqual(unresolved, []);
+  const hit = evaluate(conflictCase as never, 'm', 'p', { response: { ok: false, data: null, error: { code: 'CONFLICT', message: 'busy' } }, statusCode: 409 }, 1, unresolved);
+  assert.equal(hit.status, 'pass');
+  const other = evaluate(conflictCase as never, 'm', 'p', { response: { ok: false, data: null, error: { code: 'FORBIDDEN', message: 'no' } }, statusCode: 403 }, 1, unresolved);
+  assert.equal(other.status, 'fail');
 });
