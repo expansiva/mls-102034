@@ -187,7 +187,7 @@ describe('createServerMessagesClient', () => {
     const ensure = { ...ensureInput(), action: 'nope', userId: 'body-user' };
     await postModule(ensure, { ...ensureInput(), action: 'ensureModuleThread', userId: 'user-a' }, (client, input) => client.ensureModuleThread('  user-a  ', input));
     const open = { ...openInput(), action: 'nope', userId: 'body-user' };
-    await postModule(open, { ...openInput(), action: 'openModuleTask', userId: 'user-a' }, (client, input) => client.openModuleTask('  user-a  ', input));
+    await postModule(open, { ...openInput(), action: 'openModuleTask' }, (client, input) => client.openModuleTask('  user-a  ', input));
   });
 
   it('posts each action with caller identity and leaves input intact', async () => {

@@ -28,6 +28,8 @@ const TOKEN_GLOBAL = 'sentinel-rt102-global-token';
 const ENV_USER = 'human-from-env';
 const DECOY_EMAIL = 'decoy@telemetry.test';
 const ACTIONS = new Set(['getModuleTask', 'openModuleTask', 'applyIntents', 'linkModulePerson', 'resolveModulePeople']);
+/** collab-messages open/get/list schemas have no body userId (additionalProperties: false); x-user-id carries it. */
+const BODY_WITHOUT_USER_ID: ReadonlySet<string> = new Set(['openModuleTask', 'getModuleTask', 'listModuleTasks']);
 
 type Seen = {
   action: string;
@@ -566,7 +568,9 @@ test('real factory links through server login and resumes the canonical plan', a
       let opened = false;
       const loop = await bindLoopback((body) => {
         const action = String(body.action);
-        assert.equal(body.userId, `app:${item.project}`);
+        const bodyHasUserId = !BODY_WITHOUT_USER_ID.has(action);
+        assert.equal('userId' in body, bodyHasUserId);
+        if (bodyHasUserId) assert.equal(body.userId, `app:${item.project}`);
         assert.equal(JSON.stringify(body).includes(DECOY_EMAIL), false);
         assert.equal(JSON.stringify(body).includes(ENV_USER), false);
         if (action === 'linkModulePerson') {
@@ -753,7 +757,7 @@ test('real factory links through server login and resumes the canonical plan', a
         assert.equal(hit.authorization === `Bearer ${TOKEN_GLOBAL}`, false);
         assert.equal(hit.userHeader, `app:${item.project}`);
         assert.equal(hit.userHeader === ENV_USER, false);
-        assert.equal(hit.body.userId, `app:${item.project}`);
+        assert.equal(hit.body.userId, BODY_WITHOUT_USER_ID.has(hit.action) ? undefined : `app:${item.project}`);
         assert.equal(hit.orgHeader, item.org);
         assert.equal(hit.appHeader, item.project);
         assert.equal(hit.cookie, undefined);

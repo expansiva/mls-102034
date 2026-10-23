@@ -28,6 +28,8 @@ const ORG_ENV = 'org-from-env';
 const USER = 'cm-user-tech';
 const TIMEOUT_MS = 200;
 const SECRETS = [TOKEN_A, TOKEN_B, TOKEN_ROTATED, TOKEN_GLOBAL];
+/** collab-messages open/get/list schemas have no body userId (additionalProperties: false); identity rides x-user-id. */
+const BODY_WITHOUT_USER_ID: ReadonlySet<string> = new Set(['openModuleTask', 'getModuleTask', 'listModuleTasks']);
 
 type Seen = {
   action: unknown;
@@ -299,7 +301,7 @@ describe('module messages client loopback', () => {
     for (const row of moduleCalls) {
       assert.equal(row.cookie, undefined);
       assert.equal(row.userHeader, USER);
-      assert.equal(row.userId, USER);
+      assert.equal(row.userId, BODY_WITHOUT_USER_ID.has(String(row.action)) ? undefined : USER);
       assert.notEqual(row.authorization, `Bearer ${TOKEN_GLOBAL}`);
       assert.notEqual(row.orgHeader, ORG_ENV);
       if (row.appHeader === APP_A) {
@@ -340,6 +342,41 @@ describe('module messages client loopback', () => {
     }
     assert.equal(moduleCalls.some((row) => row.action === 'ensureModuleThread'), true);
     assert.equal(moduleCalls.some((row) => row.action === 'getModuleTask'), true);
+  });
+
+  it('sends body userId only to the actions whose collab-messages schema carries it', async () => {
+    const dir = projectFilesDir();
+    writeAppFile(dir, APP_A, TOKEN_A, ORG_A);
+    const seen: Seen[] = [];
+    const server = await listen(async (req, res) => {
+      seen.push(capture(req, await readBody(req)));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ statusCode: 200 }));
+    });
+    const client = clientFor(server.port, APP_A);
+    await client.openModuleTask(USER, openInput(APP_A));
+    await client.getModuleTask(USER, { ref: ref(APP_A) });
+    await client.listModuleTasks(USER, listInput(APP_A));
+    await client.ensureModuleThread(USER, ensureInput(APP_A));
+    await client.advanceModuleTask(USER, advanceIntent());
+    await client.applyIntents(USER, { intents: [] });
+    await client.linkModulePerson(USER, { mdmId: 'mdm-1', loginEmail: 'a@app.test' });
+    await client.resolveModulePeople(USER, { mdmIds: ['mdm-1'] });
+
+    const byAction = seen.map((row) => [row.action, 'userId' in row.body, row.userHeader]);
+    assert.deepEqual(byAction, [
+      ['openModuleTask', false, USER],
+      ['getModuleTask', false, USER],
+      ['listModuleTasks', false, USER],
+      ['ensureModuleThread', true, USER],
+      ['applyIntents', true, USER],
+      ['applyIntents', true, USER],
+      ['linkModulePerson', true, USER],
+      ['resolveModulePeople', true, USER],
+    ]);
+    for (const row of seen) {
+      if ('userId' in row.body) assert.equal(row.userId, USER);
+    }
   });
 
   it('rereads a newer file and sends nothing after the configuration is removed or corrupt', async () => {

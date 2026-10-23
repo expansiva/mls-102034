@@ -200,7 +200,10 @@ describe('module messages client', () => {
       assert.equal(call.url, 'http://cm.test/msg');
       assert.equal('cookie' in call.headers, false);
       assert.equal(call.headers['x-user-id'], USER);
-      assert.equal(call.body.userId, USER);
+      // collab-messages open/get/list schemas have no body userId (additionalProperties: false).
+      const bodyHasUserId = !['openModuleTask', 'getModuleTask', 'listModuleTasks'].includes(String(call.body.action));
+      assert.equal(call.body.userId, bodyHasUserId ? USER : undefined);
+      assert.equal('userId' in call.body, bodyHasUserId);
       assert.notEqual(call.headers.authorization, `Bearer ${GLOBAL_TOKEN}`);
       assert.notEqual(call.headers['x-org-id'], ORG_ENV);
       if (app === APP_A) {

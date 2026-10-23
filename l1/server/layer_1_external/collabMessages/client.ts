@@ -43,6 +43,23 @@ type ActionName =
   | 'linkModulePerson'
   | 'resolveModulePeople';
 
+/**
+ * Actions whose collab-messages schema has no body `userId` (additionalProperties: false rejects it).
+ * Contract: collab-messages src/layer_2_controllers/moduleTasks.ts (open/get/list schemas) and
+ * src/local.ts `bindAppActingUser` — on the app path the acting user travels only in `x-user-id`.
+ */
+const ACTIONS_WITHOUT_BODY_USER_ID: ReadonlySet<ActionName> = new Set<ActionName>([
+  'openModuleTask',
+  'getModuleTask',
+  'listModuleTasks',
+]);
+
+function bodyOf(action: ActionName, input: object, userId: string): Record<string, unknown> {
+  const body: Record<string, unknown> = { ...input, action, userId };
+  if (ACTIONS_WITHOUT_BODY_USER_ID.has(action)) delete body.userId;
+  return body;
+}
+
 export type MessagesCallResult<T> = {
   httpStatus: number;
   body: ResponseBase & Partial<T> & { code?: string };
@@ -238,7 +255,7 @@ export function createServerMessagesClient(options: ServerMessagesClientOptions 
       const response = await bounded(fetchImpl(`${msgProxyTarget(capturedEnv)}/msg`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ ...input, action, userId }),
+        body: JSON.stringify(bodyOf(action, input, userId)),
         redirect: 'manual',
         signal: ac.signal,
       })).catch((err: unknown): never => {
