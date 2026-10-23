@@ -661,53 +661,101 @@ function entityOfIdField(fieldId: string): string {
   return base.charAt(0).toUpperCase() + base.slice(1);
 }
 
-// The row's own identifier is the longest scalar `*Id` key. A signature row carries both
-// `petitionSignatureId` (own) and `petitionId` (FK); the longer key is the entity we harvested.
-function ownIdFieldOf(row: Record<string, unknown>): string {
-  let best = '';
-  for (const [key, value] of Object.entries(row)) {
-    if (!key.endsWith('Id') || key.length < 3) continue;
-    if (value === null || value === undefined || Array.isArray(value) || isRecord(value)) continue;
-    if (key.length > best.length) best = key;
-  }
-  return best;
-}
-
 function putPool(pool: Record<string, unknown>, key: string, value: unknown): void {
   if (!key || pool[key] !== undefined || value === null || value === undefined) return;
   if (Array.isArray(value) || isRecord(value)) return;
   pool[key] = value;
 }
 
-function harvestRecord(pool: Record<string, unknown>, row: unknown, moduleId?: string): void {
-  if (!isRecord(row)) return;
-  const ownId = ownIdFieldOf(row);
-  const entity = ownId ? entityOfIdField(ownId) : '';
+/** A table/entity of one module, as its metadata declares it: the entity's own id and its columns. */
+export interface EntityIndexEntry {
+  entity: string;
+  pkFieldId: string;
+  columnFieldIds: string[];
+}
+
+/** Entity index per moduleId: a module's metadata never qualifies another module's rows. */
+export type ModuleEntityIndex = Map<string, EntityIndexEntry[]>;
+
+/** The organization Company of the run: an MDM `Company` row with this mdmId is one of these entities. */
+export interface HarvestCompany {
+  companyMdmId: string;
+  entities: Set<string>;
+}
+
+function isScalar(value: unknown): boolean {
+  return value !== null && value !== undefined && !Array.isArray(value) && !isRecord(value);
+}
+
+/**
+ * The entity a harvested record PROVABLY belongs to, or '' when nothing proves it. Proof is metadata only:
+ * the record carries an indexed entity's own id and every other indexed own id in it is a column of that
+ * entity (a signature row carries `petitionId` as FK, so it cannot be the Petition). Or it is the run's
+ * organization Company (MDM subtype + mdmId). Never the name of the wrapper key, never "the longest *Id":
+ * zero or several survivors leave the record unqualified.
+ */
+function provenEntityOf(row: Record<string, unknown>, entries: EntityIndexEntry[], company?: HarvestCompany): string[] {
+  if (company && row.subtype === 'Company' && row.mdmId === company.companyMdmId) return [...company.entities];
+  const present = entries.filter(entry => isScalar(row[entry.pkFieldId]));
+  const survivors = present.filter(entry => present.every(other =>
+    other.pkFieldId === entry.pkFieldId || entry.columnFieldIds.includes(other.pkFieldId)));
+  const names = new Set(survivors.map(entry => entry.entity));
+  return names.size === 1 ? [...names] : [];
+}
+
+function harvestRecord(
+  pool: Record<string, unknown>,
+  row: Record<string, unknown>,
+  entities: string[],
+  bare: boolean,
+  moduleId?: string,
+): void {
   for (const [key, value] of Object.entries(row)) {
-    if (value === null || value === undefined || Array.isArray(value) || isRecord(value)) continue;
-    if (entity) {
-      putPool(pool, `${entity}.${key}`, value);
+    if (!isScalar(value)) continue;
+    for (const entity of entities) {
       if (moduleId) putPool(pool, `${moduleId}.${entity}.${key}`, value);
+      putPool(pool, `${entity}.${key}`, value);
     }
-    putPool(pool, key, value);
+    if (bare) putPool(pool, key, value);
   }
 }
 
-// Harvest every scalar the response exposes: the envelope itself plus the rows of ANY array it
-// carries. Collections are named after the entity on this wire (`{ menuItems: [...] }`,
-// `{ orders: [...] }`), not `items`, so descending only into `data.items` harvested the envelope
-// counters and never the ids the <seedRef> params need.
-function harvestRows(pool: Record<string, unknown>, data: unknown, moduleId?: string): void {
+/**
+ * Harvest a successful response into the pool, without touching it. Bare keys (the legacy lookup without
+ * fieldRef) come from the same levels as always: the envelope and the rows of its top-level arrays.
+ * Entity-qualified keys come from records at ANY depth (DTOs nest `company`, `member`, `people.items`),
+ * but only when `provenEntityOf` proves the entity from the module's metadata. Traversal stops at the
+ * FIELD_PATHS_* caps used for the observed field paths. Existing keys are never overwritten, so a seed
+ * anchor is not replaced by a later response.
+ */
+export function harvestRows(
+  pool: Record<string, unknown>,
+  data: unknown,
+  moduleId?: string,
+  index?: ModuleEntityIndex,
+  company?: HarvestCompany,
+): void {
+  const entries = (moduleId ? index?.get(moduleId) : undefined) ?? [];
+  let visited = 0;
+  const walk = (value: unknown, depth: number, bare: boolean): void => {
+    if (depth > FIELD_PATHS_MAX_DEPTH || visited >= FIELD_PATHS_MAX_COUNT) return;
+    visited += 1;
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item, depth + 1, bare);
+      return;
+    }
+    if (!isRecord(value)) return;
+    harvestRecord(pool, value, provenEntityOf(value, entries, company), bare, moduleId);
+    for (const child of Object.values(value)) {
+      if (Array.isArray(child)) walk(child, depth + 1, bare && depth === 0);
+      else if (isRecord(child)) walk(child, depth + 1, false);
+    }
+  };
   if (Array.isArray(data)) {
-    for (const row of data) harvestRecord(pool, row, moduleId);
+    for (const row of data) walk(row, 1, true);
     return;
   }
-  if (!isRecord(data)) return;
-  harvestRecord(pool, data, moduleId);
-  for (const value of Object.values(data)) {
-    if (!Array.isArray(value)) continue;
-    for (const row of value) harvestRecord(pool, row, moduleId);
-  }
+  walk(data, 0, true);
 }
 
 function columnToField(column: string): string {
@@ -735,14 +783,28 @@ function snakeToPascal(name: string): string {
   return name.split(/[._-]/gu).filter(Boolean).map(part => part.charAt(0).toUpperCase() + part.slice(1)).join('');
 }
 
-function ontologyEntityName(definition: { moduleId?: string; repositoryName?: string; tableName: string; logicalTableName?: string }): string {
-  const moduleId = definition.moduleId ?? '';
+/**
+ * Ontology entity of a table. The repository name is the entity name (`privacyText` → `PrivacyText`,
+ * `itemCardapio` → `ItemCardapio`); tableName/logicalTableName only when it is missing. A legacy
+ * `<moduleId><Entity>` repository name is cut ONLY when the table's own id or a declared own-id fieldRef
+ * (`Petition.petitionId`) proves the shorter name — a module id that merely prefixes a normal name is kept.
+ * Both names proved → ambiguous → '' (no entity is anchored for that table).
+ */
+export function ontologyEntityName(
+  definition: { moduleId?: string; repositoryName?: string; tableName: string; logicalTableName?: string; primaryKey?: string[] },
+  declaredOwnIdEntities?: ReadonlySet<string>,
+): string {
   const repo = definition.repositoryName ?? '';
-  if (moduleId && repo.startsWith(moduleId) && repo.length > moduleId.length) {
-    const rest = repo.slice(moduleId.length);
-    if (/^[A-Z]/u.test(rest)) return rest;
-  }
-  return snakeToPascal(definition.logicalTableName || definition.tableName);
+  const full = snakeToPascal(repo || definition.logicalTableName || definition.tableName);
+  const moduleId = definition.moduleId ?? '';
+  const rest = moduleId && repo.startsWith(moduleId) ? repo.slice(moduleId.length) : '';
+  if (!/^[A-Z]/u.test(rest)) return full;
+  const pk = definition.primaryKey?.length === 1 ? entityOfIdField(columnToField(definition.primaryKey[0])) : '';
+  const proves = (name: string): boolean => pk === name || (declaredOwnIdEntities?.has(name) ?? false);
+  const provedFull = proves(full);
+  const provedRest = proves(rest);
+  if (provedFull && provedRest) return '';
+  return provedRest ? rest : full;
 }
 
 /**
@@ -765,7 +827,7 @@ export function applySeedAnchors(
 ): void {
   const entity = input.entity.trim();
   const fieldId = input.fieldId.trim();
-  if (!entity || !fieldId) return;
+  if (!fieldId) return;
   const seeded = input.seedRowIds.filter(value => value !== undefined && value !== null);
   if (seeded.length === 0) return;
   const named = Object.values(input.namedIds ?? {}).filter(value => value !== undefined && value !== null);
@@ -774,12 +836,13 @@ export function applySeedAnchors(
   const chosenRow = pkColumn
     ? (input.seedRows ?? []).find(row => row?.[pkColumn] === preferred)
     : undefined;
-  if (chosenRow) {
+  // An ambiguous entity (ontologyEntityName returned '') keeps only the legacy bare key below.
+  if (entity && chosenRow) {
     for (const [fieldId, value] of scalarEntriesOfSeedRow(chosenRow)) {
       putPool(pool, `${entity}.${fieldId}`, value);
       if (input.moduleId) putPool(pool, `${input.moduleId}.${entity}.${fieldId}`, value);
     }
-  } else {
+  } else if (entity) {
     putPool(pool, `${entity}.${fieldId}`, preferred);
     if (input.moduleId) putPool(pool, `${input.moduleId}.${entity}.${fieldId}`, preferred);
   }
@@ -893,7 +956,11 @@ export function selectMonitorSeedRows(table: SeedPolicyTable, input: SeedModeInp
  * (e.g. an already-approved record for an approval command). That is a REAL verdict, not an
  * inconclusive one — which is the point.
  */
-async function fillPoolFromSeedRows(pool: Record<string, unknown>): Promise<void> {
+async function fillPoolFromSeedRows(
+  pool: Record<string, unknown>,
+  declaredOwnIds: Map<string, Set<string>>,
+): Promise<ModuleEntityIndex> {
+  const index: ModuleEntityIndex = new Map();
   try {
     const namedIds = await loadNamedSeedIds();
     const env = readAppEnv();
@@ -910,8 +977,14 @@ async function fillPoolFromSeedRows(pool: Record<string, unknown>): Promise<void
         serverMode,
       });
       const seedRowIds = seedRows.map(row => row?.[column]);
+      const entity = ontologyEntityName(definition, declaredOwnIds.get(definition.moduleId));
+      if (entity) {
+        const entries = index.get(definition.moduleId) ?? [];
+        entries.push({ entity, pkFieldId: fieldId, columnFieldIds: definition.columns.map(col => columnToField(col.name)) });
+        index.set(definition.moduleId, entries);
+      }
       applySeedAnchors(pool, {
-        entity: ontologyEntityName(definition),
+        entity,
         fieldId,
         seedRowIds,
         namedIds,
@@ -924,6 +997,24 @@ async function fillPoolFromSeedRows(pool: Record<string, unknown>): Promise<void
   } catch {
     // Best effort: without it the affected cases stay inconclusive, exactly as before.
   }
+  return index;
+}
+
+/** Per module, the entities a case declares by own-id fieldRef (`Petition.petitionId`). */
+function declaredOwnIdEntities(files: DiscoveredTestFile[]): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  for (const file of files) {
+    for (const testCase of file.tests?.cases ?? []) {
+      for (const fieldRef of Object.values(testCase.paramFieldRefs ?? {})) {
+        const entity = entityOfFieldRef(fieldRef);
+        if (!entity || fieldIdOfFieldRef(fieldRef) !== `${lowerFirst(entity)}Id`) continue;
+        const set = out.get(file.moduleId) ?? new Set<string>();
+        set.add(entity);
+        out.set(file.moduleId, set);
+      }
+    }
+  }
+  return out;
 }
 
 interface ResolvedParams {
@@ -1376,7 +1467,11 @@ export async function runPageTests(input: { moduleId?: string; page?: string; sk
   // planted Petition row even when no prior read of Petition succeeded (or when another entity's
   // read exposed a different `petitionId` first).
   const pool: Record<string, unknown> = {};
-  await fillPoolFromSeedRows(pool);
+  const declaredOwnIds = declaredOwnIdEntities(files);
+  const entityIndex = await fillPoolFromSeedRows(pool, declaredOwnIds);
+  const harvestCompany: HarvestCompany | undefined = organization.ok
+    ? { companyMdmId: organization.companyMdmId, entities: companyEntitiesOf(organization.companyTags) }
+    : undefined;
   // MDM anchors from the rows actually loaded in the sandbox, after the table seeds (those keep their keys).
   let anchorNote = '';
   try {
@@ -1414,7 +1509,7 @@ export async function runPageTests(input: { moduleId?: string; page?: string; sk
     const request: BffRequest = { routine: testCase.routine, params, meta: { source: 'test', traceId, requestId: createUuidV7() } };
     const startedMs = Date.now();
     const exec = await execBff(request, session.ctx);
-    if (exec.response.ok) harvestRows(pool, exec.response.data, file.moduleId);
+    if (exec.response.ok) harvestRows(pool, exec.response.data, file.moduleId, entityIndex, harvestCompany);
     const result = evaluate(testCase, file.moduleId, tests.page, exec, Math.max(0, Date.now() - startedMs), unresolved);
     if (result.status === 'inconclusive' && unresolved.length > 0) {
       const notes = [organizationNote(unresolved, testCase.paramFieldRefs, organization), anchorNote].filter(Boolean);
@@ -1435,7 +1530,7 @@ export async function runPageTests(input: { moduleId?: string; page?: string; sk
   }
 
   // Between the phases: fill the gaps the reads could not cover, from the SEEDED rows.
-  await fillPoolFromSeedRows(pool);
+  await fillPoolFromSeedRows(pool, declaredOwnIds);
 
   // Phase B: negative cases and commands — <seedRef> now resolves from the whole run's pool.
   for (const file of files) {

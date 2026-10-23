@@ -5,7 +5,7 @@
 // falling back to `items`.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applySeedAnchors, applySeedSpares, checkShape, coercePageTestsFile, countItems, evaluate, itemsAt, reportAppEnv, PAGE11_VARIANT_POLICY, resolveParams, selectMonitorSeedRows, untestedPageEntries } from '/_102034_/l1/monitor/layer_3_usecases/testsUsecases.js';
+import { applySeedAnchors, applySeedSpares, checkShape, coercePageTestsFile, countItems, evaluate, harvestRows, itemsAt, ontologyEntityName, reportAppEnv, type ModuleEntityIndex, PAGE11_VARIANT_POLICY, resolveParams, selectMonitorSeedRows, untestedPageEntries } from '/_102034_/l1/monitor/layer_3_usecases/testsUsecases.js';
 
 const menuEnvelope = { menuItems: [{ menuItemId: 'a' }, { menuItemId: 'b' }], total: 2 };
 
@@ -325,4 +325,125 @@ test('an expected business error with an unresolved seed marker is inconclusive,
   const resolvedWrong = evaluate(conflictCase as never, 'm', 'p',
     { response: { ok: false, data: null, error: { code: 'VALIDATION_ERROR', message: 'x' } }, statusCode: 400 }, 1, []);
   assert.equal(resolvedWrong.status, 'fail');
+});
+
+// rt126 s3 — entity names from the repository name, and recursive harvest qualified only by proven origin.
+test('entity name keeps the repository camelCase boundaries; table name only when it is missing', () => {
+  assert.equal(ontologyEntityName({ moduleId: 'privacidade', repositoryName: 'privacyText', tableName: 'mls1_privacidade_privacytext', logicalTableName: 'privacytext' }), 'PrivacyText');
+  assert.equal(ontologyEntityName({ moduleId: 'cardapio', repositoryName: 'itemCardapio', tableName: 'x', logicalTableName: 'itemcardapio' }), 'ItemCardapio');
+  assert.equal(ontologyEntityName({ moduleId: 'm', repositoryName: 'order_line', tableName: 'x' }), 'OrderLine');
+  assert.equal(ontologyEntityName({ moduleId: 'm', repositoryName: '', tableName: 'mls1_m_order', logicalTableName: 'purchase_order' }), 'PurchaseOrder');
+});
+
+test('legacy <moduleId><Entity> is cut only when the own id or a declared fieldRef proves it', () => {
+  // the PK proves the short name
+  assert.equal(ontologyEntityName({ moduleId: 'listaAssinatura', repositoryName: 'listaAssinaturaPetition', tableName: 'x', primaryKey: ['petition_id'] }), 'Petition');
+  // a declared own-id fieldRef proves it
+  assert.equal(ontologyEntityName({ moduleId: 'listaAssinatura', repositoryName: 'listaAssinaturaPetition', tableName: 'x', primaryKey: ['id'] }, new Set(['Petition'])), 'Petition');
+  // a module id that merely prefixes a normal name is kept
+  assert.equal(ontologyEntityName({ moduleId: 'item', repositoryName: 'itemCardapio', tableName: 'x', primaryKey: ['item_cardapio_id'] }), 'ItemCardapio');
+  assert.equal(ontologyEntityName({ moduleId: 'item', repositoryName: 'itemCardapio', tableName: 'x', primaryKey: ['id'] }), 'ItemCardapio');
+  // both names proved: ambiguous, no entity
+  assert.equal(ontologyEntityName({ moduleId: 'item', repositoryName: 'itemCardapio', tableName: 'x', primaryKey: ['cardapio_id'] }, new Set(['ItemCardapio'])), '');
+});
+
+test('an ambiguous table entity anchors only the bare id, never a qualified key', () => {
+  const pool: Record<string, unknown> = {};
+  applySeedAnchors(pool, { entity: '', fieldId: 'cardapioId', seedRowIds: ['c1'], moduleId: 'item' });
+  assert.deepEqual(pool, { cardapioId: 'c1' });
+});
+
+const petitionIndex: ModuleEntityIndex = new Map([
+  ['listaA', [
+    { entity: 'Petition', pkFieldId: 'petitionId', columnFieldIds: ['petitionId', 'title'] },
+    { entity: 'PetitionSignature', pkFieldId: 'petitionSignatureId', columnFieldIds: ['petitionSignatureId', 'petitionId', 'signedAt'] },
+    { entity: 'Company', pkFieldId: 'companyId', columnFieldIds: ['companyId', 'name'] },
+    { entity: 'Member', pkFieldId: 'memberId', columnFieldIds: ['memberId', 'companyId', 'name'] },
+  ]],
+  ['listaB', [
+    { entity: 'Petition', pkFieldId: 'petitionId', columnFieldIds: ['petitionId'] },
+  ]],
+]);
+
+test('nested DTOs: company/member/people.items qualify by metadata, not by the wrapper key', () => {
+  const data = {
+    company: { companyId: 'co-1', name: 'Acme' },
+    member: { memberId: 'm-1', companyId: 'co-1', name: 'Ana' },
+    people: { items: [{ memberId: 'm-2', companyId: 'co-1' }, { personId: 'p-9', name: 'free' }] },
+  };
+  const before = JSON.stringify(data);
+  const pool: Record<string, unknown> = {};
+  harvestRows(pool, data, 'listaA', petitionIndex);
+  assert.equal(JSON.stringify(data), before, 'the response is not altered');
+  assert.equal(pool['listaA.Company.companyId'], 'co-1');
+  assert.equal(pool['listaA.Company.name'], 'Acme');
+  assert.equal(pool['listaA.Member.memberId'], 'm-1');
+  assert.equal(pool['listaA.Member.companyId'], 'co-1');
+  assert.equal(pool['Member.memberId'], 'm-1');
+  // no origin: not promoted to any qualified key; nested scalars are not bare keys either
+  assert.ok(!Object.keys(pool).some(key => key.endsWith('.personId')));
+  assert.ok(!Object.keys(pool).some(key => key.startsWith('People.') || key.startsWith('Items.') || key.startsWith('listaA.People.')));
+  assert.equal(pool.memberId, undefined);
+});
+
+test('id+FK row qualifies only its own entity; the FK never becomes the Petition id', () => {
+  const pool: Record<string, unknown> = {};
+  harvestRows(pool, { signatures: [{ petitionSignatureId: 's-1', petitionId: 'p-1', signedAt: 't' }] }, 'listaA', petitionIndex);
+  assert.equal(pool['listaA.PetitionSignature.petitionSignatureId'], 's-1');
+  assert.equal(pool['listaA.PetitionSignature.petitionId'], 'p-1');
+  assert.equal(pool['listaA.Petition.petitionId'], undefined);
+  assert.equal(pool['Petition.petitionId'], undefined);
+  assert.equal(pool.petitionId, 'p-1', 'legacy bare key of a top-level array row is kept');
+  const hit = resolveParams({ petitionId: '<seedRef>' }, pool, { petitionId: 'Petition.petitionId' }, 'listaA');
+  assert.deepEqual(hit.unresolved, ['petitionId']);
+});
+
+test('a bare id without proven origin stays unresolved and the case inconclusive', () => {
+  const pool: Record<string, unknown> = {};
+  // no metadata for this module: neither the wrapper nor the longest *Id names the entity
+  harvestRows(pool, { member: { memberId: 'm-1', companyId: 'co-1' } }, 'semMeta', petitionIndex);
+  assert.ok(!Object.keys(pool).some(key => key.includes('.')));
+  const testCase = { id: 'c1', routine: 'r', params: { memberId: '<seedRef>' }, paramFieldRefs: { memberId: 'Member.memberId' }, expect: { ok: true }, mutating: false };
+  const { unresolved } = resolveParams(testCase.params, pool, testCase.paramFieldRefs, 'semMeta');
+  assert.deepEqual(unresolved, ['memberId']);
+  const exec = { response: { ok: true, data: {} }, statusCode: 200 } as unknown as Parameters<typeof evaluate>[3];
+  assert.equal(evaluate(testCase, 'semMeta', 'p', exec, 1, unresolved).status, 'inconclusive');
+});
+
+test('two modules with the same entity: file order does not mix them', () => {
+  const runs = [['listaA', 'listaB'], ['listaB', 'listaA']].map(order => {
+    const pool: Record<string, unknown> = {};
+    for (const moduleId of order) harvestRows(pool, [{ petitionId: `${moduleId}-p` }], moduleId, petitionIndex);
+    return pool;
+  });
+  for (const pool of runs) {
+    assert.equal(pool['listaA.Petition.petitionId'], 'listaA-p');
+    assert.equal(pool['listaB.Petition.petitionId'], 'listaB-p');
+    assert.deepEqual(resolveParams({ petitionId: '<seedRef>' }, pool, { petitionId: 'Petition.petitionId' }, 'listaB').params, { petitionId: 'listaB-p' });
+  }
+});
+
+test('a seed anchor is not overwritten by a later response', () => {
+  const pool: Record<string, unknown> = {};
+  applySeedAnchors(pool, { entity: 'Petition', fieldId: 'petitionId', seedRowIds: ['seeded'], moduleId: 'listaA' });
+  harvestRows(pool, { petition: { petitionId: 'late', title: 'x' } }, 'listaA', petitionIndex);
+  assert.equal(pool['listaA.Petition.petitionId'], 'seeded');
+  assert.equal(pool['listaA.Petition.title'], 'x');
+});
+
+test('the run organization Company (MDM subtype + mdmId) qualifies; another Company row does not', () => {
+  const pool: Record<string, unknown> = {};
+  const company = { companyMdmId: 'org-1', entities: new Set(['Company', 'Clinic']) };
+  harvestRows(pool, { org: { mdmId: 'org-1', subtype: 'Company', name: 'Org' }, other: { mdmId: 'x-2', subtype: 'Company' } }, 'listaB', petitionIndex, company);
+  assert.equal(pool['listaB.Company.mdmId'], 'org-1');
+  assert.equal(pool['listaB.Clinic.name'], 'Org');
+  assert.ok(!Object.values(pool).includes('x-2'));
+});
+
+test('traversal stops at the depth cap', () => {
+  let deep: Record<string, unknown> = { petitionId: 'too-deep' };
+  for (let i = 0; i < 10; i += 1) deep = { wrap: deep };
+  const pool: Record<string, unknown> = {};
+  harvestRows(pool, deep, 'listaB', petitionIndex);
+  assert.equal(pool['listaB.Petition.petitionId'], undefined);
 });
