@@ -98,15 +98,15 @@ export const mdm = {
   "types": {
     "Address": {
       "type": { "type": "enum", "required": true, "values": ["Residential", "Commercial", "Billing", "Delivery", "Other"] },
-      "label": { "type": "string" },
-      "line1": { "type": "string", "required": true },
-      "line2": { "type": "string" },
-      "line3": { "type": "string" },
+      "label": { "type": "string", "description": "Short human label for this address. Examples: home, headquarters, warehouse, branch" },
+      "line1": { "type": "string", "required": true, "description": "Primary address line: street and number, PO Box, or rural route. Examples: US \"123 Main St\"; Brazil \"Rua das Flores 100\"; Japan \"1-2-3 Shinjuku\"." },
+      "line2": { "type": "string", "description": "Secondary line: apartment, suite, floor, unit, building. Examples: US \"Apt 4B\"; Brazil \"Apto 42\"; Japan \"Shinjuku-ku\"." },
+      "line3": { "type": "string", "description": "Tertiary line: neighborhood, district, borough, ward. Required in some countries (Brazil, India, Japan). Examples: Brazil \"Jardim Paulista\"; Japan \"Tokyo\"." },
       "city": { "type": "string" },
-      "stateOrProvince": { "type": "string", "description": "State, province, prefecture or canton. In the US, the 2-letter code." },
-      "postalCode": { "type": "string", "description": "ZIP, postcode, CEP, PIN. The format varies by country and the platform does not enforce one." },
-      "countryCode": { "type": "string", "required": true, "maxLength": 2, "pattern": "^[A-Z]{2}$", "default": "US", "description": "ISO 3166-1 alpha-2. Drives how the address is formatted on screen." },
-      "formatted": { "type": "string", "derived": true, "description": "The whole address on one line, as it would appear on an envelope. Built asynchronously." },
+      "stateOrProvince": { "type": "string", "description": "State, province, prefecture, or canton. For US use 2-letter code (CA, NY, TX)." },
+      "postalCode": { "type": "string", "description": "ZIP, postcode, CEP, PIN — format varies by country. MDM does not enforce format." },
+      "countryCode": { "type": "string", "required": true, "maxLength": 2, "pattern": "^[A-Z]{2}$", "default": "US", "description": "ISO 3166-1 alpha-2. Drives address format display in UI." },
+      "formatted": { "type": "string", "derived": true, "description": "Cached full address string as it would appear on an envelope. Async-generated. Avoids per-country format reconstruction at render time." },
       "geolocation": { "type": "object", "of": "GeoPoint" },
       "isPrimary": { "type": "boolean", "required": true }
     },
@@ -116,14 +116,14 @@ export const mdm = {
     },
     "PrivacyConsent": {
       "consentedAt": { "type": "timestamp", "required": true },
-      "consentVersion": { "type": "string", "required": true },
-      "channel": { "type": "string", "required": true, "description": "Where the consent was given: web form, paper, phone." },
+      "consentVersion": { "type": "string", "required": true, "description": "Version of the privacy policy accepted." },
+      "channel": { "type": "string", "required": true, "description": "How consent was obtained. Examples: web-signup, paper-form, whatsapp, verbal" },
       "revokedAt": { "type": "timestamp" },
       "notes": { "type": "string" }
     },
     "ContactSummary": {
-      "mdmId": { "type": "uuid", "required": true, "description": "The ContactChannel record itself." },
-      "title": { "type": "string", "required": true }
+      "mdmId": { "type": "uuid", "required": true, "description": "mdmId of the ContactChannel entity. Required for traceability and cross-module linking." },
+      "title": { "type": "string", "required": true, "description": "Human-readable label for this contact in the context of the parent entity. Examples: Work email, Mobile, Support line, Personal WhatsApp" }
     }
   },
 
