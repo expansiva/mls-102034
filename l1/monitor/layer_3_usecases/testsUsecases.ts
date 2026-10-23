@@ -32,7 +32,9 @@
 // Results are captured directly from execBff's return value and kept in a small in-memory ring (the
 // execution log/series store only keeps aggregates and Postgres monitor storage is optional in devenv).
 
-import { AppError, type BffRequest, type BffResponse, type RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
+import { AppError, type BffRequest, type BffResponse, type PlatformSessionPerson, type RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
+import type { IDataRuntime } from '/_102034_/l1/server/layer_1_external/data/runtime.js';
+import { MDM_LOGIN_NAMESPACE } from '/_102034_/l1/mdm/layer_3_usecases/identityUsecases.js';
 import { createRequestContext, execBff } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { hasDeclaredProjectMode, readProjectMode } from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
@@ -1091,25 +1093,62 @@ export function evaluate(
   };
 }
 
+/** The session a declared actor's cases run with — or why they cannot run at all. */
+export type ActorSessionResolution =
+  | { ok: true; sessionContext: { actorId: string; actorScope: string[]; person: PlatformSessionPerson } }
+  | { ok: false; reason: string };
+
+/** Cache key of an actor session: the SAME actorRef in two modules is two different fixtures. */
+export function actorSessionKey(moduleId: string, actorRef: string): string {
+  return `${moduleId}\u0000${actorRef}`;
+}
+
 /**
- * The mdmId of the seeded platform identity for an l4 actor, resolved BY DATA: agentCbSeeds emits one MDM
- * Person per actor tagged ['<module>.Person', '<module>', 'actor', '<actorId>'], so the tags alone
+ * The test session of an l4 actor, resolved BY DATA in the run's own sandbox runtime: agentCbSeeds emits
+ * one MDM Person per actor tagged ['<module>.Person', '<module>', 'actor', '<actorRef>'], so the tags alone
  * identify it. Deliberately NOT recomputing the seed's stableUuid hash — that convention has one owner
  * (cbSeedsCore in mls-102021) and duplicating it here would create a second.
- * Empty when the module seeded no identity for that actor (the caller then runs with no actor session).
+ * - `moduleName` is what the seeds tag with; `moduleId` is what the platform qualifies authorities with
+ *   (`<moduleId>:<actorRef>`, the same format `withAlphaAuthorities` grants real traffic).
+ * - The scope is ONLY that one authority — never every authority of the module — so the case exercises the
+ *   actor it declared. The fixture only picks the identity inside the sandbox; it grants nothing to real traffic.
+ * - `person` keeps the public PlatformSessionPerson shape. `email` is the fixture's login row when it declares
+ *   one; otherwise '' — a simulated identity of a `source: 'test'` run, never an invented e-mail.
+ * - Absent, ambiguous or inconsistent (index × document) → not ok, with the reason: the cases are blocked,
+ *   never run anonymous.
  */
-async function resolveSeededActorMdmId(ctx: RequestContext, moduleName: string, actorId: string): Promise<string> {
-  if (!actorId) return '';
+export async function resolveActorSession(
+  data: IDataRuntime,
+  input: { moduleId: string; moduleName: string; actorRef: string },
+): Promise<ActorSessionResolution> {
+  const { moduleId, moduleName, actorRef } = input;
+  const who = `actor '${actorRef}' declared by module '${moduleName || moduleId}'`;
   try {
-    const rows = await ctx.data.mdmEntityIndex.findMany({ where: {} });
-    const match = rows.find((row: { mdmId?: string; tags?: string[] }) => {
+    const rows = await data.mdmEntityIndex.findMany({ where: {} });
+    const matches = rows.filter(row => {
       const tags = Array.isArray(row.tags) ? row.tags : [];
-      return tags.includes('actor') && tags.includes(actorId) && (!moduleName || tags.includes(moduleName));
+      return tags.includes(`${moduleName}.Person`) && tags.includes(moduleName) && tags.includes('actor') && tags.includes(actorRef);
     });
-    return typeof match?.mdmId === 'string' ? match.mdmId : '';
-  } catch {
-    // The identity lookup must never break a run: without it the cases simply run unauthenticated.
-    return '';
+    if (matches.length === 0) return { ok: false, reason: `${who} has no seeded identity — not run anonymous` };
+    if (matches.length > 1) return { ok: false, reason: `${who} matches ${matches.length} seeded identities — ambiguous, not run` };
+    const row = matches[0];
+    if (row.subtype !== 'Person') return { ok: false, reason: `${who}: seeded identity ${row.mdmId} is indexed as '${row.subtype}', not Person` };
+    const document = await data.mdmDocument.get({ mdmId: row.mdmId });
+    if (!document) return { ok: false, reason: `${who}: seeded identity ${row.mdmId} has an index row but no document` };
+    if (document.details.subtype !== 'Person' || document.details.mdmId !== row.mdmId) {
+      return { ok: false, reason: `${who}: document of ${row.mdmId} does not match its index row (subtype '${document.details.subtype}', mdmId '${document.details.mdmId}')` };
+    }
+    const login = await data.mdmTag.findOne({ where: { entityId: row.mdmId, namespace: MDM_LOGIN_NAMESPACE } });
+    return {
+      ok: true,
+      sessionContext: {
+        actorId: row.mdmId,
+        actorScope: [`${moduleId}:${actorRef}`],
+        person: { mdmId: row.mdmId, email: login?.tag ?? '', name: document.details.name },
+      },
+    };
+  } catch (error) {
+    return { ok: false, reason: `${who}: identity lookup failed — ${error instanceof Error ? error.message : String(error)}` };
   }
 }
 
@@ -1140,31 +1179,29 @@ export async function runPageTests(input: { moduleId?: string; page?: string; sk
   const baseCtx = createRequestContext(dataRuntime, { sandbox: true });
   const cases: TestCaseResult[] = [];
 
-  // A context per page ACTOR (cached by actorId): the page's routes see a real seeded identity in the
-  // session. Falls back to the anonymous baseCtx only when the page declares no actor at all. When the
-  // page DOES declare an actor but the module seeded no identity for it, the case must not run silently
-  // as anonymous (that produced a false red for "defect" when the real problem was a missing seed) — the
-  // actorId is recorded here so `runOne` can report the case 'blocked' instead of executing it.
-  const ctxByActor = new Map<string, RequestContext>();
-  const missingIdentityByActor = new Map<string, { actorId: string; moduleName: string }>();
-  const contextFor = async (file: DiscoveredTestFile): Promise<RequestContext> => {
-    const actorId = typeof file.tests?.actor === 'string' ? file.tests.actor.trim() : '';
-    if (!actorId) return baseCtx;
-    const cached = ctxByActor.get(actorId);
+  // A context per (module, ACTOR) pair: the page's routes see the seeded Person of THAT module as the
+  // session, with the qualified authority `<moduleId>:<actorRef>` — the shape `enforceActors` accepts —
+  // never the bare actorRef (that 403'd every route) and never an empty "permissive" scope. Cached by the
+  // pair: two modules declaring the same actorRef are two fixtures. No declared actor → the anonymous
+  // baseCtx, as before. A declared actor whose Person is absent, ambiguous or inconsistent → `blocked`
+  // with the reason, never run anonymous (that produced a false "defect" red for a missing seed).
+  const sessionByActor = new Map<string, { ctx: RequestContext; mdmId: string } | { blocked: string }>();
+  const contextFor = async (file: DiscoveredTestFile): Promise<{ ctx: RequestContext; mdmId?: string } | { blocked: string }> => {
+    const actorRef = typeof file.tests?.actor === 'string' ? file.tests.actor.trim() : '';
+    if (!actorRef) return { ctx: baseCtx };
+    const key = actorSessionKey(file.moduleId, actorRef);
+    const cached = sessionByActor.get(key);
     if (cached) return cached;
-    const moduleName = file.tests?.moduleName ?? '';
-    const mdmId = await resolveSeededActorMdmId(baseCtx, moduleName, actorId);
-    // actorId ONLY — deliberately no actorScope. The generated controllers gate on scope with
-    // `enforceActors`, which treats an EMPTY scope as permissive by design ("bff.actor.no-scope") but
-    // rejects a non-empty scope that does not intersect its ALLOWED list, whose entries are
-    // `<module>:<actorId>` role scopes. Sending the bare actorId as a scope 403'd every route
-    // (FORBIDDEN_ACTOR on all 14 cases). Providing an identity is B's job; exercising authorization is not.
-    const ctx = mdmId
-      ? createRequestContext(dataRuntime, { sandbox: true, sessionContext: { actorId: mdmId } })
-      : baseCtx;
-    if (!mdmId) missingIdentityByActor.set(actorId, { actorId, moduleName });
-    ctxByActor.set(actorId, ctx);
-    return ctx;
+    const resolved = await resolveActorSession(dataRuntime, {
+      moduleId: file.moduleId,
+      moduleName: file.tests?.moduleName || file.moduleId,
+      actorRef,
+    });
+    const entry = resolved.ok
+      ? { ctx: createRequestContext(dataRuntime, { sandbox: true, sessionContext: resolved.sessionContext }), mdmId: resolved.sessionContext.actorId }
+      : { blocked: resolved.reason };
+    sessionByActor.set(key, entry);
+    return entry;
   };
 
   // ONE pool per RUN, not per page: the sandbox store is created once above, so an id harvested by any
@@ -1183,12 +1220,10 @@ export async function runPageTests(input: { moduleId?: string; page?: string; sk
   // fails its shape assertion still carries the ids the later cases need.
   const runOne = async (file: DiscoveredTestFile, testCase: PageTestCase): Promise<TestCaseResult> => {
     const tests = file.tests!;
-    const ctx = await contextFor(file);
-    const declaredActorId = typeof tests.actor === 'string' ? tests.actor.trim() : '';
-    const missingIdentity = declaredActorId ? missingIdentityByActor.get(declaredActorId) : undefined;
-    if (missingIdentity) {
+    const session = await contextFor(file);
+    if ('blocked' in session) {
       // Never fall through to baseCtx for a case that declared an actor: that ran it anonymous and
-      // reported a false app-defect red. The real cause is the missing seed, so the case is 'blocked',
+      // reported a false app-defect red. The real cause is the fixture, so the case is 'blocked',
       // not run, and the reason names the actor and module so it can be fixed at the source.
       return {
         module: file.moduleId,
@@ -1201,13 +1236,13 @@ export async function runPageTests(input: { moduleId?: string; page?: string; sk
         durationMs: 0,
         errorCode: null,
         errorMessage: null,
-        reason: `actor '${missingIdentity.actorId}' declared by module '${missingIdentity.moduleName || file.moduleId}' has no seeded identity — not run anonymous`,
+        reason: session.blocked,
       };
     }
     const { params, unresolved } = resolveParams(testCase.params, pool, testCase.paramFieldRefs, file.moduleId);
     const request: BffRequest = { routine: testCase.routine, params, meta: { source: 'test', traceId, requestId: createUuidV7() } };
     const startedMs = Date.now();
-    const exec = await execBff(request, ctx);
+    const exec = await execBff(request, session.ctx);
     if (exec.response.ok) harvestRows(pool, exec.response.data, file.moduleId);
     return evaluate(testCase, file.moduleId, tests.page, exec, Math.max(0, Date.now() - startedMs), unresolved);
   };
@@ -1306,6 +1341,32 @@ export async function runPageTests(input: { moduleId?: string; page?: string; sk
           });
           continue;
         }
+        const session = await contextFor({
+          projectId: file.projectId,
+          moduleId: file.moduleId,
+          path: file.path,
+          tests: { moduleName: file.catalog.moduleName, page: scenario.scenarioId, variant: scenario.handlerId, actor: item.actorId, cases: [] },
+        });
+        if ('blocked' in session) {
+          // Same rule as the page cases: a declared actor without a valid seeded Person is not run anonymous.
+          cases.push({
+            module: file.moduleId,
+            page: scenario.scenarioId,
+            id: item.caseId,
+            routine: item.routine,
+            status: 'blocked',
+            ok: false,
+            statusCode: 0,
+            durationMs: 0,
+            errorCode: null,
+            errorMessage: null,
+            reason: session.blocked,
+            stage,
+            expectationSource: item.source,
+            expectation: item.expectation,
+          });
+          continue;
+        }
         const startedMs = Date.now();
         let observation: M1Observation;
         try {
@@ -1318,18 +1379,14 @@ export async function runPageTests(input: { moduleId?: string; page?: string; sk
               verifiedAuthorities: caller.authorities,
               traceId,
               requestId: createUuidV7(),
-              // Telemetry/back-compat only. With `source: 'http'` the declared identity of a meta is
-              // discarded by `trustedIdentityClaims` (execBff.ts:110-123): the identity that reaches the
-              // handler is the one `contextFor` put in the session, which is the trusted channel.
-              actorId: item.actorId || undefined,
+              // Telemetry/back-compat only, and the RESOLVED mdmId, not the actorRef: for `source: 'test'`
+              // execBff promotes meta.actorId over the session's, so the bare actorRef would replace the
+              // seeded Person. With `source: 'http'` it is discarded by `trustedIdentityClaims`; either way
+              // the identity that reaches the handler is the one `contextFor` put in the session.
+              actorId: session.mdmId,
             },
           };
-          const exec = await execBff(request, await contextFor({
-            projectId: file.projectId,
-            moduleId: file.moduleId,
-            path: file.path,
-            tests: { moduleName: file.catalog.moduleName, page: scenario.scenarioId, variant: scenario.handlerId, actor: item.actorId, cases: [] },
-          }));
+          const exec = await execBff(request, session.ctx);
           observation = observationFromExec(item.caseId, Math.max(0, Date.now() - startedMs), exec, {
             actorField: item.expect.isolatedActorField,
           });

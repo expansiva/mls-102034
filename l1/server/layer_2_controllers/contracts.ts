@@ -179,7 +179,12 @@ export interface RequestOrganizationContext {
   timezone?: string;
 }
 
-/** Person resolved from the login row of `mdm_tag`. Absent when the e-mail has no login. */
+/**
+ * Typed projection of the signed-in Person onto the session — public contract, not the MDM document.
+ * Resolved from the login row of `mdm_tag` for a verified e-mail; absent when the e-mail has no login.
+ * The monitor test runner (`source: 'test'`) sets it from the sandbox fixture's seeded Person, with
+ * `email` '' when that fixture declares no login (a simulated identity, never an invented e-mail).
+ */
 export interface PlatformSessionPerson {
   mdmId: string;
   email: string;
@@ -197,12 +202,13 @@ export interface CollabAuthInviteClient {
 }
 
 export interface RequestSessionContext {
+  /** The Company the session acts for, resolved by the platform for the organization; it is not the signed-in Person. */
   activeCompanyId?: string;
   activeUnitId?: string;
   actorId?: string;
   actorScope?: string[];
   workspaceId?: string;
-  /** Set when `mdm.identity.findByLogin` resolves the verified e-mail. */
+  /** Typed projection of the Person: set when `mdm.identity.findByLogin` resolves the verified e-mail, or by the monitor runner from its sandbox fixture. */
   person?: PlatformSessionPerson;
   businessContext: RequestBusinessContext;
   actorSession: RequestActorSession;
