@@ -35,6 +35,9 @@
 import { AppError, type BffRequest, type BffResponse, type PlatformSessionPerson, type RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import type { IDataRuntime } from '/_102034_/l1/server/layer_1_external/data/runtime.js';
 import { MDM_LOGIN_NAMESPACE } from '/_102034_/l1/mdm/layer_3_usecases/identityUsecases.js';
+import { ensureOrganizationIdentity } from '/_102034_/l1/mdm/layer_3_usecases/organizationBootstrap.js';
+import { readOnboardingConfig, resolveOrganizationBinding, type OrganizationBinding } from '/_102034_/l1/server/layer_1_external/config/onboardingConfig.js';
+import type { MdmDocumentRecord, MdmEntityIndexRecord } from '/_102034_/l1/mdm/module.js';
 import { createRequestContext, execBff } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { hasDeclaredProjectMode, readProjectMode } from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
@@ -1152,6 +1155,160 @@ export async function resolveActorSession(
   }
 }
 
+/** Where the run's organization comes from: the configured binding and the Company role tags it declares. */
+export interface RunOrganizationSource {
+  binding: OrganizationBinding | null;
+  /** `onboarding.companyType` (`<module>.<Entity>`) when configured: the entity the org Company plays. */
+  companyTags: string[];
+}
+
+/** The organization Company of ONE run, prepared inside that run's sandbox — or why there is none. */
+export type RunOrganization =
+  | { ok: true; companyMdmId: string; companyTags: string[] }
+  | { ok: false; reason: string; companyTags: string[] };
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** Same resolver the boot uses (`initializeOrganizationForProcess`), read only — nothing is published. */
+export function readRunOrganizationSource(): RunOrganizationSource {
+  const projects = readProjectsConfig();
+  const onboarding = readOnboardingConfig(projects);
+  return { binding: resolveOrganizationBinding(projects), companyTags: onboarding ? [onboarding.companyType] : [] };
+}
+
+/**
+ * The organization Company the session acts for, created by the platform's own `ensureOrganizationIdentity`
+ * against the run's disposable runtime (reservation, transaction and Company live and die there). Never the
+ * process initializer: that one writes the shared store and publishes the process-wide Company id.
+ * No valid binding → not ok with the reason; no organization is invented.
+ */
+export async function prepareRunOrganization(
+  data: IDataRuntime,
+  readSource: () => RunOrganizationSource = readRunOrganizationSource,
+): Promise<RunOrganization> {
+  let source: RunOrganizationSource;
+  try {
+    source = readSource();
+  } catch (error) {
+    return { ok: false, reason: `organization Company unavailable: binding not resolved — ${errorText(error)}`, companyTags: [] };
+  }
+  if (!source.binding) {
+    return { ok: false, reason: 'organization Company unavailable: no organization binding configured (none is invented)', companyTags: source.companyTags };
+  }
+  try {
+    const ctx = createRequestContext(data, { sandbox: true });
+    const { companyMdmId } = await ensureOrganizationIdentity(ctx, source.binding);
+    return { ok: true, companyMdmId, companyTags: source.companyTags };
+  } catch (error) {
+    return { ok: false, reason: `organization Company unavailable: sandbox bootstrap failed — ${errorText(error)}`, companyTags: source.companyTags };
+  }
+}
+
+function splitModuleTag(tag: string): { moduleName: string; entity: string } | null {
+  const dot = tag.indexOf('.');
+  if (dot <= 0) return null;
+  const entity = tag.slice(dot + 1);
+  return /^[A-Z][A-Za-z0-9]*$/u.test(entity) ? { moduleName: tag.slice(0, dot), entity } : null;
+}
+
+/** Entities whose anchor is the organization Company: the subtype itself and the role tags the config declares. */
+function companyEntitiesOf(companyTags: string[]): Set<string> {
+  const entities = new Set(['Company']);
+  for (const tag of companyTags) {
+    const split = splitModuleTag(tag);
+    if (split) entities.add(split.entity);
+  }
+  return entities;
+}
+
+/** Why a case's unresolved Company marker stayed unresolved, when the run had no organization Company. */
+export function organizationNote(unresolved: string[], paramFieldRefs: Record<string, string> | undefined, org: RunOrganization): string {
+  if (org.ok || unresolved.length === 0) return '';
+  const companyEntities = companyEntitiesOf(org.companyTags);
+  return unresolved.some(key => companyEntities.has(entityOfFieldRef(paramFieldRefs?.[key]))) ? org.reason : '';
+}
+
+interface MdmAnchorCandidate {
+  index: MdmEntityIndexRecord;
+  document: MdmDocumentRecord;
+}
+
+function lowerFirst(name: string): string {
+  return name.charAt(0).toLowerCase() + name.slice(1);
+}
+
+function putScalars(pool: Record<string, unknown>, prefix: string, record: unknown): void {
+  if (!isRecord(record)) return;
+  for (const [key, value] of Object.entries(record)) putPool(pool, `${prefix}${key}`, value);
+}
+
+/**
+ * Anchors for MDM-backed entities, read from the rows ACTUALLY in the run's sandbox (index + document), before
+ * any read case runs. An entity is MDM only by origin: the row carries the tag `<moduleName>.<Entity>` of a
+ * module in the run. Keys are always `<moduleId>.<Entity>.<field>` — never an unqualified id, so the same UUID
+ * is not published as the id of every entity. Per entity: the module namespace (`details.<moduleName>`), the
+ * document version, the detail scalars, and the own-id wire alias `<entity>Id` → mdmId. First row wins
+ * (named seedIds first, then store order); existing keys are never overwritten. The `Company` subtype and the
+ * configured company role are anchored ONLY to the run's organization Company, never to another row or a
+ * Person. Nothing is created here: a fixture the module does not provide stays unresolved.
+ */
+export async function harvestMdmAnchors(
+  pool: Record<string, unknown>,
+  data: IDataRuntime,
+  input: { moduleIdByName: Map<string, string>; organization: RunOrganization; namedIds?: Record<string, unknown> },
+): Promise<void> {
+  const { moduleIdByName, organization } = input;
+  const companyMdmId = organization.ok ? organization.companyMdmId : undefined;
+  const companyEntities = companyEntitiesOf(organization.companyTags);
+  const named = new Set(Object.values(input.namedIds ?? {}));
+  const indexRows = await data.mdmEntityIndex.findMany({ where: {} });
+  const ordered = [...indexRows.filter(row => named.has(row.mdmId)), ...indexRows.filter(row => !named.has(row.mdmId))];
+  const groups = new Map<string, { moduleId: string; moduleName: string; entity: string; chosen: MdmAnchorCandidate }>();
+  const offer = (moduleName: string, entity: string, candidate: MdmAnchorCandidate): void => {
+    const moduleId = moduleIdByName.get(moduleName);
+    if (!moduleId) return;
+    const key = `${moduleId}\u0000${entity}`;
+    if (!groups.has(key)) groups.set(key, { moduleId, moduleName, entity, chosen: candidate });
+  };
+
+  if (companyMdmId) {
+    const index = indexRows.find(row => row.mdmId === companyMdmId);
+    const document = await data.mdmDocument.get({ mdmId: companyMdmId });
+    if (index && document && index.subtype === 'Company' && document.details.subtype === 'Company') {
+      const candidate = { index, document };
+      for (const moduleName of moduleIdByName.keys()) offer(moduleName, 'Company', candidate);
+      for (const tag of organization.companyTags) {
+        const split = splitModuleTag(tag);
+        if (split) offer(split.moduleName, split.entity, candidate);
+      }
+    }
+  }
+
+  for (const index of ordered) {
+    if (index.mdmId === companyMdmId) continue;
+    const tagged = (Array.isArray(index.tags) ? index.tags : [])
+      .map(splitModuleTag)
+      .filter((split): split is { moduleName: string; entity: string } => split !== null && moduleIdByName.has(split.moduleName))
+      .filter(split => !companyEntities.has(split.entity));
+    if (tagged.length === 0) continue;
+    const document = await data.mdmDocument.get({ mdmId: index.mdmId });
+    if (!document || document.mdmId !== index.mdmId || document.details.subtype !== index.subtype) continue;
+    for (const split of tagged) offer(split.moduleName, split.entity, { index, document });
+  }
+
+  for (const { moduleId, moduleName, entity, chosen } of groups.values()) {
+    const prefix = `${moduleId}.${entity}.`;
+    const details = chosen.document.details as unknown as Record<string, unknown>;
+    putScalars(pool, prefix, details[moduleName]);
+    putPool(pool, `${prefix}mdmId`, chosen.index.mdmId);
+    putPool(pool, `${prefix}version`, chosen.document.version);
+    putScalars(pool, prefix, details);
+    putPool(pool, `${prefix}${lowerFirst(entity)}Id`, chosen.index.mdmId);
+  }
+}
+
 export async function runPageTests(input: { moduleId?: string; page?: string; skipMutating?: boolean } = {}): Promise<TestRunSummary> {
   const env = readAppEnv();
   // Commented out by the new version: the hard TESTS_ENABLED/appEnv server-side
@@ -1176,7 +1333,12 @@ export async function runPageTests(input: { moduleId?: string; page?: string; sk
   // ONE runtime for the whole run; every context below shares it, so the store (and the harvested ids)
   // are the same no matter which actor a page runs as.
   const dataRuntime = createMemoryDataRuntime({ sandbox: true });
-  const baseCtx = createRequestContext(dataRuntime, { sandbox: true });
+  // The organization Company every context acts for (activeCompanyId), prepared in THIS sandbox by the
+  // platform's own bootstrap — never the process-wide one. Without a binding the cases still run; the ones
+  // whose Company marker cannot resolve say why.
+  const organization = await prepareRunOrganization(dataRuntime);
+  const companySession = organization.ok ? { activeCompanyId: organization.companyMdmId } : {};
+  const baseCtx = createRequestContext(dataRuntime, { sandbox: true, sessionContext: companySession });
   const cases: TestCaseResult[] = [];
 
   // A context per (module, ACTOR) pair: the page's routes see the seeded Person of THAT module as the
@@ -1198,7 +1360,7 @@ export async function runPageTests(input: { moduleId?: string; page?: string; sk
       actorRef,
     });
     const entry = resolved.ok
-      ? { ctx: createRequestContext(dataRuntime, { sandbox: true, sessionContext: resolved.sessionContext }), mdmId: resolved.sessionContext.actorId }
+      ? { ctx: createRequestContext(dataRuntime, { sandbox: true, sessionContext: { ...resolved.sessionContext, ...companySession } }), mdmId: resolved.sessionContext.actorId }
       : { blocked: resolved.reason };
     sessionByActor.set(key, entry);
     return entry;
@@ -1215,6 +1377,15 @@ export async function runPageTests(input: { moduleId?: string; page?: string; sk
   // read exposed a different `petitionId` first).
   const pool: Record<string, unknown> = {};
   await fillPoolFromSeedRows(pool);
+  // MDM anchors from the rows actually loaded in the sandbox, after the table seeds (those keep their keys).
+  let anchorNote = '';
+  try {
+    const moduleIdByName = new Map<string, string>();
+    for (const file of files) moduleIdByName.set(file.tests!.moduleName || file.moduleId, file.moduleId);
+    await harvestMdmAnchors(pool, dataRuntime, { moduleIdByName, organization, namedIds: await loadNamedSeedIds() });
+  } catch (error) {
+    anchorNote = `MDM anchors not harvested — ${errorText(error)}`;
+  }
 
   // Every successful response feeds the pool, whatever the case's own verdict was — a read that
   // fails its shape assertion still carries the ids the later cases need.
@@ -1244,7 +1415,12 @@ export async function runPageTests(input: { moduleId?: string; page?: string; sk
     const startedMs = Date.now();
     const exec = await execBff(request, session.ctx);
     if (exec.response.ok) harvestRows(pool, exec.response.data, file.moduleId);
-    return evaluate(testCase, file.moduleId, tests.page, exec, Math.max(0, Date.now() - startedMs), unresolved);
+    const result = evaluate(testCase, file.moduleId, tests.page, exec, Math.max(0, Date.now() - startedMs), unresolved);
+    if (result.status === 'inconclusive' && unresolved.length > 0) {
+      const notes = [organizationNote(unresolved, testCase.paramFieldRefs, organization), anchorNote].filter(Boolean);
+      if (notes.length > 0) result.reason = `${result.reason}; ${notes.join('; ')}`;
+    }
+    return result;
   };
 
   // Both phases are GLOBAL (all files, then all files) — not per file. Hoisting the pool alone would
