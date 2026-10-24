@@ -1,6 +1,6 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.test.ts" enhancement="_blank" />
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -13,6 +13,7 @@ import {
   buildDenoArgs,
   draftDatabaseUrl,
   ensureDevProcess,
+  setDevIdentitySecretForTests,
   ensureDevReaper,
   findAncestorDenoConfig,
   isDevPidAlive,
@@ -258,6 +259,61 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
       await waitDead(first.pid);
       assert.equal(isDevPidAlive(first.pid), false);
       assert.equal(JSON.parse(readFileSync(join(base, 'drafts', SLUG, 'dev.json'), 'utf8')).pid, restarted[0].pid);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  await t.test('the identity secret is per process, reaches the child env, and is never written to dev.json', () => {
+    const base = mkdtempSync(join(tmpdir(), 'cbe-dev-'));
+    try {
+      writeFileSync(join(base, 'config.json'), '{"release":true}\n');
+      mkdirSync(join(base, 'drafts', SLUG, 'mls-102047'), { recursive: true });
+      const secrets: string[] = [];
+      const spawnDev: DevSpawn = (_command, _args, options) => {
+        secrets.push(options.env.COLLAB_DRAFT_IDENTITY_SECRET);
+        return { pid: dummyPid(pids) };
+      };
+      const opts = { base, slug: SLUG, clientProjectId: 102047, spawn: spawnDev, now: () => 1, writeConfig: () => {} };
+      const first = ensureDevProcess(opts);
+      assert.match(secrets[0], /^[0-9a-f]{64}$/u);
+      assert.equal(first.identitySecret, secrets[0]);
+      assert.equal(readFileSync(join(base, 'drafts', SLUG, 'dev.json'), 'utf8').includes(secrets[0]), false);
+      const again = ensureDevProcess(opts);
+      assert.equal(secrets.length, 1);
+      assert.equal(again.identitySecret, secrets[0]);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  await t.test('a live child whose secret the parent lost (parent restart) is replaced, not reused', () => {
+    const base = mkdtempSync(join(tmpdir(), 'cbe-dev-'));
+    try {
+      writeFileSync(join(base, 'config.json'), '{"release":true}\n');
+      mkdirSync(join(base, 'drafts', SLUG, 'mls-102047'), { recursive: true });
+      // Reparented like the real dev process (detached under init), so a SIGTERM leaves no zombie behind.
+      const launched = spawnSync('sh', ['-c', `${process.execPath} -e 'setInterval(() => {}, 1000)' >/dev/null 2>&1 & echo $!`], { encoding: 'utf8' });
+      const orphan = Number(launched.stdout.trim());
+      assert.ok(Number.isInteger(orphan) && orphan > 0);
+      pids.push(orphan);
+      writeDev(base, SLUG, { port: 4100, pid: orphan, startedAt: 1, lastRequestAt: 1 });
+      const secrets: string[] = [];
+      const info = ensureDevProcess({
+        base,
+        slug: SLUG,
+        clientProjectId: 102047,
+        now: () => 2,
+        writeConfig: () => {},
+        spawn: (_command, _args, options) => {
+          secrets.push(options.env.COLLAB_DRAFT_IDENTITY_SECRET);
+          return { pid: dummyPid(pids) };
+        },
+      });
+      assert.equal(secrets.length, 1);
+      assert.notEqual(info.pid, orphan);
+      assert.equal(info.identitySecret, secrets[0]);
+      assert.equal(isDevPidAlive(orphan), false);
     } finally {
       rmSync(base, { recursive: true, force: true });
     }
@@ -523,6 +579,7 @@ test('ancestor deno.json blocks a new dev process; a live process skips the guar
     assert.equal(existsDev(base, SLUG), false);
 
     writeDev(base, SLUG, { port: 4100, pid: process.pid, startedAt: 1, lastRequestAt: 2 });
+    setDevIdentitySecretForTests(base, SLUG, 'known-secret');
     const live = ensureDevProcess({ base, slug: SLUG, clientProjectId: 102047, spawn: spawnDev, writeConfig });
     assert.equal(live.pid, process.pid);
     assert.equal(live.port, 4100);
@@ -573,6 +630,7 @@ test('a non-test project mode or a missing DATABASE_URL_TEST refuses a new dev p
     }
 
     writeDev(base, SLUG, { port: 4100, pid: process.pid, startedAt: 1, lastRequestAt: 2 });
+    setDevIdentitySecretForTests(base, SLUG, 'known-secret');
     const calls: string[] = [];
     const live = ensureDevProcess({
       base,

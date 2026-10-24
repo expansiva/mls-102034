@@ -5,6 +5,7 @@
 // shell, same reason as cbeRebuildOnSave: pm2 kills the worker's process tree).
 
 import { spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import {
   closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync,
   readFileSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync,
@@ -25,6 +26,7 @@ const DEFAULT_PORT_RANGE = '4100-4199';
 const DEFAULT_MAX = 8;
 const LOCK_RETRIES = 40;
 const LOCK_RETRY_MS = 50;
+const DEV_EXIT_WAIT_MS = 3000;
 
 /** Keys `readAppEnv` touches in memory mode. `readEnvValue` reads `KEY_<APP_ENV>` first. No `DATABASE_URL`. */
 const MEMORY_ENV_KEYS = [
@@ -92,6 +94,7 @@ const EXTRA_ENV_KEYS = [
   'COLLAB_REBUILD_DEBOUNCE_MS',
   'COLLAB_RUNTIME_MODE',
   'COLLAB_DRAFT',
+  'COLLAB_DRAFT_IDENTITY_SECRET',
   'MSG_PROXY_ENABLED',
   'MSG_PROXY_ORG_ID',
   'MSG_PROXY_TARGET',
@@ -206,6 +209,8 @@ export interface DevProcessInfo {
   lastRequestAt: number;
   /** Draft database name. Present on records written when the process starts. */
   database?: string;
+  /** Per-process secret. Parent memory only — never written to `dev.json`. */
+  identitySecret?: string;
 }
 
 export interface DevSpawnOptions {
@@ -444,7 +449,24 @@ export function linkSharedProjects(base: string, slug: string, clientProjectId: 
   }
 }
 
-function childEnv(port: number, slug: string, clientProjectId: number, databaseUrlTest: string): Record<string, string> {
+const draftIdentitySecrets = new Map<string, string>();
+
+function identityKey(base: string, slug: string): string {
+  return `${base}\0${slug}`;
+}
+
+/** Tests only: a live record the parent "already knows", as if it had spawned it. */
+export function setDevIdentitySecretForTests(base: string, slug: string, secret: string): void {
+  draftIdentitySecrets.set(identityKey(base, slug), secret);
+}
+
+function childEnv(
+  port: number,
+  slug: string,
+  clientProjectId: number,
+  databaseUrlTest: string,
+  identitySecret: string,
+): Record<string, string> {
   return {
     PATH: process.env.PATH ?? '',
     APP_ENV: 'development',
@@ -453,6 +475,7 @@ function childEnv(port: number, slug: string, clientProjectId: number, databaseU
     DATABASE_URL_TEST: databaseUrlTest,
     COLLAB_DRAFT: slug,
     COLLAB_PROJECT_ID: String(clientProjectId),
+    COLLAB_DRAFT_IDENTITY_SECRET: identitySecret,
   };
 }
 
@@ -576,7 +599,17 @@ function ensureUnlocked(opts: EnsureDevProcessOpts): DevProcessInfo {
   linkSharedProjects(base, slug, clientProjectId);
   const path = devJsonPath(base, slug);
   const existing = readDevJson(path);
-  if (existing && isDevPidAlive(existing.pid)) return existing;
+  if (existing && isDevPidAlive(existing.pid)) {
+    const identitySecret = draftIdentitySecrets.get(identityKey(base, slug));
+    if (identitySecret) return { ...existing, identitySecret };
+    // The parent restarted and its in-memory secret is gone; a live child cannot be given a new one, and
+    // without it every logged-in call would reach the draft as anonymous. Replace the child, same port.
+    console.error(`[cbe] dev ${slug}: identity secret lost after a parent restart; replacing the process`);
+    killDevPid(existing.pid);
+    for (let waited = 0; waited < DEV_EXIT_WAIT_MS && isDevPidAlive(existing.pid); waited += LOCK_RETRY_MS) {
+      sleepMs(LOCK_RETRY_MS);
+    }
+  }
   if (existsSync(path)) rmSync(path, { force: true });
 
   const draftDir = draftDirOf(base, slug);
@@ -608,10 +641,12 @@ function ensureUnlocked(opts: EnsureDevProcessOpts): DevProcessInfo {
   const port = choosePort(base, slug);
   const logPath = join(base, 'logs', `dev-${slug}.log`);
   mkdirSync(join(base, 'logs'), { recursive: true });
+  const identitySecret = randomBytes(32).toString('hex');
+  draftIdentitySecrets.set(identityKey(base, slug), identitySecret);
   const spawn = opts.spawn ?? defaultDevSpawn;
   const spawned = spawn('deno', buildDenoArgs(base, slug, port, databaseUrl), {
     cwd: draftDir,
-    env: childEnv(port, slug, clientProjectId, databaseUrl),
+    env: childEnv(port, slug, clientProjectId, databaseUrl, identitySecret),
     logPath,
   });
   if (!Number.isInteger(spawned.pid) || spawned.pid <= 0) {
@@ -624,9 +659,12 @@ function ensureUnlocked(opts: EnsureDevProcessOpts): DevProcessInfo {
     startedAt: now(),
     lastRequestAt: now(),
     database,
+    identitySecret,
   };
   try {
-    writeFileSync(path, `${JSON.stringify(record)}\n`);
+    const persisted: DevProcessInfo = { ...record };
+    delete persisted.identitySecret;
+    writeFileSync(path, `${JSON.stringify(persisted)}\n`);
   } catch (err) {
     console.error(`[cbe] dev ${slug}: failed to write ${path}: ${(err as Error).message}`);
     killDevPid(spawned.pid);

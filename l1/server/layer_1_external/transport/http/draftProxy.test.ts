@@ -2,10 +2,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { FastifyReply, FastifyRequest } from 'fastify';
+import type { CollabAuthClaims } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
 import {
   applyDraftExecBff,
   draftDownBody,
   draftSlugForProxy,
+  planDraftExecBff,
   type DraftSessionView,
 } from '/_102034_/l1/server/layer_1_external/transport/http/draftProxy.js';
 
@@ -345,4 +347,80 @@ test('a worktree failure answers 503 DRAFT_DOWN and does not start the dev proce
   assert.equal(ensured, 0);
   assert.equal(reply.statusCode, 503);
   assert.deepEqual(reply.sent, draftDownBody());
+});
+
+const IDENTITY_SECRET = 'a'.repeat(64);
+const VERIFIED_CLAIMS: CollabAuthClaims = {
+  sub: 'persona-1',
+  email: 'responsavel@example.com',
+  authorities: ['comandaRestaurante:garcom'],
+};
+
+function identityHeaders(headers: Record<string, string> | undefined): { secret?: string; claims?: unknown } {
+  const encoded = headers?.['x-collab-draft-identity'];
+  return {
+    secret: headers?.['x-collab-draft-identity-secret'],
+    claims: encoded ? JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) : undefined,
+  };
+}
+
+test('planDraftExecBff returns verified claims and source on the proxy action', async () => {
+  delete process.env.COLLAB_DRAFT;
+  const plan = await planDraftExecBff(`collab-draft=${SLUG}`, async () => ({
+    reject: false,
+    claims: VERIFIED_CLAIMS,
+    source: 'local-test',
+  }));
+  assert.deepEqual(plan, {
+    action: 'proxy',
+    slug: SLUG,
+    claims: VERIFIED_CLAIMS,
+    source: 'local-test',
+  });
+});
+
+test('draft proxy drops a browser identity header and forwards the verified one', async () => {
+  delete process.env.COLLAB_DRAFT;
+  const forged = Buffer.from(JSON.stringify({ sub: 'forged', email: 'x@y.z' })).toString('base64url');
+
+  async function capture(session: DraftSessionView, forgedHeaders: boolean): Promise<Record<string, string>> {
+    let headers: Record<string, string> = {};
+    await applyDraftExecBff({
+      request: fakeRequest({ routine: 'x.y.z' }, {
+        cookie: `collab-draft=${SLUG}`,
+        ...(forgedHeaders ? {
+          'x-collab-draft-identity': forged,
+          'x-collab-draft-identity-secret': 'browser-secret',
+          'x-collab-draft-identity-extra': 'also-forged',
+        } : {}),
+      }),
+      reply: fakeReply(),
+      base: BASE,
+      clientProjectId: '102047',
+      resolveSession: async () => session,
+      refreshedAuthCookie: (token) => token,
+      resolveRequestDraftImpl: async () => readyDraft(),
+      ensureDevProcessImpl: () => ({ ...devInfo(), identitySecret: IDENTITY_SECRET }),
+      touchDevProcessImpl: () => {},
+      fetchImpl: async (_url, init) => {
+        headers = init?.headers as Record<string, string>;
+        return new Response(JSON.stringify({ ok: true, data: null, error: null }), { status: 200 });
+      },
+    });
+    return headers;
+  }
+
+  const forgedOnly = await capture({ reject: false }, true);
+  assert.equal(forgedOnly['x-collab-draft-identity'], undefined);
+  assert.equal(forgedOnly['x-collab-draft-identity-secret'], undefined);
+  assert.equal(forgedOnly['x-collab-draft-identity-extra'], undefined);
+
+  const verified = await capture({ reject: false, claims: VERIFIED_CLAIMS, source: 'local-test' }, true);
+  assert.equal(verified['x-collab-draft-identity-secret'], IDENTITY_SECRET);
+  assert.deepEqual(identityHeaders(verified).claims, VERIFIED_CLAIMS);
+  assert.equal(verified['x-collab-draft-identity-extra'], undefined);
+
+  const anonymous = await capture({ reject: false }, false);
+  assert.equal(anonymous['x-collab-draft-identity'], undefined);
+  assert.equal(anonymous['x-collab-draft-identity-secret'], undefined);
 });

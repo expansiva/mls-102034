@@ -3,6 +3,7 @@
 // COLLAB_DRAFT set means this process IS the dev process: never proxy, or the cookie loops.
 
 import type { FastifyReply, FastifyRequest } from 'fastify';
+import type { CollabAuthClaims } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
 import { parseCookies } from '/_102034_/l1/server/layer_1_external/cbe/cbeAuthJwt.js';
 import { parseDraftSlug, resolveRequestDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
 import {
@@ -23,10 +24,12 @@ const DRAFT_DOWN_MESSAGE = 'The draft server is down. Try again in a moment.';
 export interface DraftSessionView {
   reject: boolean;
   newAccessToken?: string;
+  claims?: CollabAuthClaims;
+  source?: 'local-test';
 }
 
 export type DraftExecPlan =
-  | { action: 'proxy'; slug: string; newAccessToken?: string }
+  | { action: 'proxy'; slug: string; newAccessToken?: string; claims?: CollabAuthClaims; source?: 'local-test' }
   | { action: 'unauthorized'; statusCode: 401 }
   | { action: 'local' };
 
@@ -69,6 +72,8 @@ export async function planDraftExecBff(
     action: 'proxy',
     slug,
     ...(session.newAccessToken ? { newAccessToken: session.newAccessToken } : {}),
+    ...(session.claims ? { claims: session.claims } : {}),
+    ...(session.source ? { source: session.source } : {}),
   };
 }
 
@@ -78,11 +83,19 @@ function clientProjectNumber(raw: string): number | null {
   return Number.isSafeInteger(projectId) ? projectId : null;
 }
 
-function requestHeaders(request: FastifyRequest): Record<string, string> {
+function requestHeaders(
+  request: FastifyRequest,
+  identity?: { secret: string; claims: CollabAuthClaims },
+): Record<string, string> {
   const headers: Record<string, string> = {};
   for (const [name, value] of Object.entries(request.headers)) {
-    if (HOP_BY_HOP.has(name.toLowerCase()) || value === undefined) continue;
+    const lower = name.toLowerCase();
+    if (HOP_BY_HOP.has(lower) || lower.startsWith('x-collab-draft-identity') || value === undefined) continue;
     headers[name] = Array.isArray(value) ? value.join(', ') : String(value);
+  }
+  if (identity) {
+    headers['x-collab-draft-identity-secret'] = identity.secret;
+    headers['x-collab-draft-identity'] = Buffer.from(JSON.stringify(identity.claims)).toString('base64url');
   }
   return headers;
 }
@@ -100,6 +113,7 @@ export async function proxyExecBff(args: {
   slug: string;
   base: string;
   clientProjectId: number;
+  claims?: CollabAuthClaims;
 } & DraftExecDeps): Promise<void> {
   const ensure = args.ensureDevProcessImpl ?? ensureDevProcess;
   const touch = args.touchDevProcessImpl ?? touchDevProcess;
@@ -137,9 +151,14 @@ export async function proxyExecBff(args: {
   }
 
   const body = JSON.stringify(args.request.body ?? {});
+  let identity: { secret: string; claims: CollabAuthClaims } | undefined;
+  if (args.claims) {
+    if (info.identitySecret) identity = { secret: info.identitySecret, claims: args.claims };
+    else console.error(`[draftProxy] dev ${args.slug}: identity secret missing`);
+  }
   const post = (): Promise<Response> => doFetch(url(info.port), {
     method: 'POST',
-    headers: requestHeaders(args.request),
+    headers: requestHeaders(args.request, identity),
     body,
     signal: AbortSignal.timeout(10000),
   });
@@ -210,6 +229,7 @@ export async function applyDraftExecBff(args: {
     slug: plan.slug,
     base: args.base,
     clientProjectId,
+    claims: plan.claims,
     fetchImpl: args.fetchImpl,
     ensureDevProcessImpl: args.ensureDevProcessImpl,
     touchDevProcessImpl: args.touchDevProcessImpl,
