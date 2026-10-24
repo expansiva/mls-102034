@@ -170,7 +170,12 @@ export function createServerMessagesClient(options: ServerMessagesClientOptions 
   const timeoutMs = timeoutMsOf(options.timeoutMs);
   const fetchImpl = options.fetchImpl ?? fetch;
   if (options.env === undefined) ensureEnvFileLoaded();
-  const capturedEnv: NodeJS.ProcessEnv = { ...(options.env ?? process.env) };
+  const source = options.env ?? process.env;
+  const capturedEnv: NodeJS.ProcessEnv = {
+    MSG_PROXY_TARGET: source.MSG_PROXY_TARGET,
+    MSG_PROXY_TOKEN: source.MSG_PROXY_TOKEN,
+    MSG_PROXY_ORG_ID: source.MSG_PROXY_ORG_ID,
+  };
 
   function moduleHeaders(asUserId: string, boundProject: string): Record<string, string> {
     const projectId = options.projectId;

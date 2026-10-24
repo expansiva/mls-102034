@@ -255,6 +255,35 @@ describe('createServerMessagesClient', () => {
     }
   });
 
+  it('reads only named env keys and snapshots them', async () => {
+    const allowed = new Set(['MSG_PROXY_TARGET', 'MSG_PROXY_TOKEN', 'MSG_PROXY_ORG_ID']);
+    const values: NodeJS.ProcessEnv = {
+      MSG_PROXY_TARGET: 'http://cm.test',
+      MSG_PROXY_TOKEN: SENTINEL,
+      MSG_PROXY_ORG_ID: 'org-named',
+    };
+    const env = new Proxy(values, {
+      ownKeys() {
+        throw new Error('ownKeys');
+      },
+      get(target, key) {
+        if (typeof key !== 'string' || !allowed.has(key)) throw new Error(`denied:${String(key)}`);
+        return target[key];
+      },
+    });
+    const { fetchImpl, calls } = mockFetch(() => jsonResponse(200, { statusCode: 200 }));
+    const client = createServerMessagesClient({ env, fetchImpl });
+    values.MSG_PROXY_TARGET = 'http://mutated.example';
+    values.MSG_PROXY_TOKEN = 'mutated-token';
+    values.MSG_PROXY_ORG_ID = 'mutated-org';
+    await client.addMessage('user-a', { threadId: 'th', content: 'hi' });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, 'http://cm.test/msg');
+    assert.equal(calls[0].headers.authorization, `Bearer ${SENTINEL}`);
+    assert.equal(calls[0].headers['x-org-id'], 'org-named');
+    assert.equal(calls[0].headers['x-user-id'], 'user-a');
+  });
+
   it('does not fetch when the token is missing', async () => {
     let fetches = 0;
     const fetchImpl: typeof fetch = async () => {
