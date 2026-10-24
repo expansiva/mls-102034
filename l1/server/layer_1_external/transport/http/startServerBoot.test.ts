@@ -86,6 +86,7 @@ test('bootSteps does not listen when draft migrations fail', async () => {
     assert.equal(exits[0], 1);
     assert.match(logs.join('\n'), /draft migrations failed/);
     assert.match(logs.join('\n'), /schema refused/);
+    assert.match(logs.join('\n'), /\n\s+at /);
   } finally {
     process.exit = origExit;
     console.error = origError;

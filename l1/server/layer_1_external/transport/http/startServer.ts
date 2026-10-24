@@ -938,13 +938,18 @@ export function createServerWorkflowWakeLifecycle(
   };
 }
 
+/** Message plus stack: a permission error such as `Requires env access` names no caller without it. */
+function bootErrorDetail(error: unknown): string {
+  return error instanceof Error ? (error.stack ?? error.message) : String(error);
+}
+
 export async function bootSteps(input: BootStepsInput): Promise<void> {
   if (input.draft) {
     try {
       await input.runMigrations();
     } catch (error) {
       const cause = error instanceof Error ? error.message : String(error);
-      console.error(`[boot] draft migrations failed; refusing to listen: ${cause}`);
+      console.error(`[boot] draft migrations failed; refusing to listen: ${bootErrorDetail(error)}`);
       process.exit(1);
       throw new Error(`[boot] process.exit(1) was ignored after: ${cause}`);
     }
@@ -954,7 +959,7 @@ export async function bootSteps(input: BootStepsInput): Promise<void> {
       await input.initializeOrganization();
     } catch (error) {
       const cause = error instanceof Error ? error.message : String(error);
-      console.error(`[boot] organization bootstrap failed; refusing to listen: ${cause}`);
+      console.error(`[boot] organization bootstrap failed; refusing to listen: ${bootErrorDetail(error)}`);
       process.exit(1);
       throw new Error(`[boot] process.exit(1) was ignored after: ${cause}`);
     }
