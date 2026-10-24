@@ -139,7 +139,7 @@ async function benchForward(request: FastifyRequest): Promise<BenchForward> {
   }
 
   const identity = serviceIdentityHeaders({
-    ...process.env,
+    MSG_PROXY_TOKEN: process.env.MSG_PROXY_TOKEN,
     MSG_PROXY_USER_ID: persona.cmUserId,
     MSG_PROXY_ORG_ID: state.cmOrgId,
   });

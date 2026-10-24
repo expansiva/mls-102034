@@ -111,7 +111,14 @@ test('local bench proxy separates two cookies and refuses a forged body', async 
 
   const app = Fastify();
   registerMsgProxy(app);
+  const realEnv = process.env;
+  process.env = new Proxy(realEnv, {
+    ownKeys() {
+      throw new Error('process.env ownKeys refused');
+    },
+  });
   t.after(async () => {
+    process.env = realEnv;
     setLocalTestConfigLoaderForTests();
     setLocalTestProxyConfigLoaderForTests();
     for (const key of ENV_KEYS) {
