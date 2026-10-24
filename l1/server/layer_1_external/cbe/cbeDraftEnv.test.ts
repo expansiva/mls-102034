@@ -49,13 +49,18 @@ function denoBin(): string {
   return bin;
 }
 
-function runDeno(entry: string, configPath: string): { status: number | null; stdout: string; stderr: string } {
+function runDeno(
+  entry: string,
+  configPath: string,
+  extraEnv: Record<string, string> = {},
+): { status: number | null; stdout: string; stderr: string } {
   const child = spawnSync(denoBin(), denoArgs(entry, configPath), {
     cwd: dirname(entry),
     encoding: 'utf8',
     env: {
       PATH: '/usr/bin:/bin:/usr/local/bin',
       MSG_PROXY_TOKEN: FIXTURE_TOKEN,
+      ...extraEnv,
     },
     timeout: 120_000,
   });
@@ -203,6 +208,70 @@ try {
 }
 `;
 
+const LOCAL_CLAIMS = {
+  sub: 'sub-responsavel',
+  email: 'responsavel@bench.test',
+  name: 'responsavel',
+};
+const JWT_CLAIMS = {
+  sub: 'auth-user-9f3a',
+  email: 'ana@example.com',
+  name: 'Ana',
+  iss: 'https://auth.collab.codes',
+  authorities: ['sites:admin'],
+  active_org: {
+    id: 'org-1',
+    teams: [{ id: 'team-1', name: 'ops', roles: ['comandaRestaurante:garcom'] }],
+  },
+};
+const IDENTITY_SECRET = 'rt131-draft-identity-secret';
+
+function encodeClaims(claims: object): string {
+  return Buffer.from(JSON.stringify(claims)).toString('base64url');
+}
+
+const RT131_ENTRY = `
+const { handleHttpRequest } = await import('/_102034_/l1/server/layer_1_external/transport/http/startServer.ts');
+const body = { routine: 'rt131.probe.ping', meta: { userId: 'forged-client', actorId: 'forged-client' } };
+const localClaims = ${JSON.stringify(encodeClaims(LOCAL_CLAIMS))};
+const jwtClaims = ${JSON.stringify(encodeClaims(JWT_CLAIMS))};
+const secret = ${JSON.stringify(IDENTITY_SECRET)};
+async function call(label, headers) {
+  const result = await handleHttpRequest('POST', '/execBff', body, undefined, headers);
+  const error = result.body && result.body.error;
+  console.log('RT131 ' + JSON.stringify({
+    label,
+    statusCode: result.statusCode,
+    code: error && error.code ? error.code : null,
+  }));
+}
+await call('anon', {});
+await call('forged', {
+  'x-collab-draft-identity-secret': 'forged-secret',
+  'x-collab-draft-identity': localClaims,
+});
+await call('local', {
+  'x-collab-draft-identity-secret': secret,
+  'x-collab-draft-identity': localClaims,
+});
+await call('jwt', {
+  'x-collab-draft-identity-secret': secret,
+  'x-collab-draft-identity': jwtClaims,
+});
+`;
+
+const EXEC_SPY = `
+export { applyVerifiedEmailToSession, createDefaultRequestContext, createRequestContext, createSessionContext, readOrganizationContext, trustedIdentityClaims, withAlphaAuthorities } from ${JSON.stringify(pathToFileURL(join(mlsBase, 'mls-102034/l1/server/layer_2_controllers/execBff.ts')).href)};
+export async function execBff(request) {
+  const meta = request && request.meta ? request.meta : {};
+  console.log('RT131 exec ' + JSON.stringify({
+    verifiedUserId: meta.verifiedUserId ?? null,
+    verifiedEmail: meta.verifiedEmail ?? null,
+  }));
+  return { statusCode: 200, response: { ok: true, data: null, error: null } };
+}
+`;
+
 test('draft deno flags deny global env and still run message paths', async () => {
   const { buildDraftDenoConfig } = await loadDraftDenoConfigModule();
   const draftDir = join(mlsBase, 'drafts', SLUG);
@@ -257,6 +326,61 @@ test('draft deno flags deny global env and still run message paths', async () =>
     assert.equal(report.cookieStripped, true);
     assert.equal(result.stdout.includes(FIXTURE_TOKEN), false);
     assert.equal(result.stderr.includes(FIXTURE_TOKEN), false);
+  } finally {
+    rmSync(draftDir, { recursive: true, force: true });
+  }
+});
+
+test('draft process takes only the identity the parent already verified', async () => {
+  const { buildDraftDenoConfig } = await loadDraftDenoConfigModule();
+  const draftDir = join(mlsBase, 'drafts', 'rt131-identity');
+  mkdirSync(draftDir, { recursive: true });
+  const configPath = join(draftDir, 'deno.json');
+  const entry = join(draftDir, 'rt131Identity.ts');
+  const spy = join(draftDir, 'execBffSpy.ts');
+  const config = buildDraftDenoConfig({
+    base: mlsBase,
+    slug: SLUG,
+    clientProjectId: 102047,
+  });
+  const imports = config.imports as Record<string, string>;
+  imports['/_102034_/l1/server/layer_2_controllers/execBff.js'] = pathToFileURL(spy).href;
+  writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+  writeFileSync(entry, RT131_ENTRY);
+  writeFileSync(spy, EXEC_SPY);
+  try {
+    const result = runDeno(entry, configPath, {
+      APP_ENV: 'development',
+      PORT: '4100',
+      RUNTIME_MODE: 'postgres',
+      DATABASE_URL_TEST: DATABASE_URL,
+      COLLAB_DRAFT: SLUG,
+      COLLAB_PROJECT_ID: PROJECT_ID,
+      COLLAB_DRAFT_IDENTITY_SECRET: IDENTITY_SECRET,
+      CBE_PROJECTS_DIR: mlsBase,
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(result.stdout.includes(IDENTITY_SECRET), false);
+    assert.equal(result.stderr.includes(IDENTITY_SECRET), false);
+    const calls = result.stdout.split('\n')
+      .filter((item) => item.startsWith('RT131 {'))
+      .map((item) => JSON.parse(item.slice('RT131 '.length)) as { label: string; statusCode: number; code: string | null });
+    const execs = result.stdout.split('\n')
+      .filter((item) => item.startsWith('RT131 exec '))
+      .map((item) => JSON.parse(item.slice('RT131 exec '.length)) as { verifiedUserId: string | null; verifiedEmail: string | null });
+    const byLabel = Object.fromEntries(calls.map((item) => [item.label, item]));
+    assert.match(result.stderr, /unauthenticated call \(missing-token\)/);
+    assert.equal(byLabel.anon.statusCode, 200);
+    assert.equal(byLabel.anon.code, null);
+    assert.equal(byLabel.forged.statusCode, 401);
+    assert.equal(byLabel.forged.code, 'UNAUTHENTICATED');
+    assert.equal(byLabel.local.statusCode, 200);
+    assert.equal(byLabel.jwt.statusCode, 200);
+    assert.deepEqual(execs, [
+      { verifiedUserId: null, verifiedEmail: null },
+      { verifiedUserId: LOCAL_CLAIMS.sub, verifiedEmail: LOCAL_CLAIMS.email },
+      { verifiedUserId: JWT_CLAIMS.sub, verifiedEmail: JWT_CLAIMS.email },
+    ]);
   } finally {
     rmSync(draftDir, { recursive: true, force: true });
   }
