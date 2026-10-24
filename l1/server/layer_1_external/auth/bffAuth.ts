@@ -11,6 +11,7 @@
 // the page needs no change at all. The Bearer header stays as the secondary path for callers that do hold
 // a token (server-to-server, the test runner). Never a query parameter.
 
+import { timingSafeEqual } from 'node:crypto';
 import { createRemoteJWKSet, jwtVerify, errors as joseErrors, decodeJwt, type JWTPayload } from 'jose';
 import { activeOrganizationId, parseCookies, resolveJwtSession } from '/_102034_/l1/server/layer_1_external/cbe/cbeAuthJwt.js';
 import { localTestSessionFromHeaders } from '/_102034_/l1/server/layer_1_external/auth/localTestSession.js';
@@ -158,6 +159,50 @@ export interface BffAuthOutcome {
   source?: 'local-test';
 }
 
+const DRAFT_IDENTITY_SECRET_HEADER = 'x-collab-draft-identity-secret';
+const DRAFT_IDENTITY_HEADER = 'x-collab-draft-identity';
+
+function oneHeader(
+  headers: Record<string, string | string[] | undefined> | undefined,
+  name: string,
+): string {
+  const value = headers?.[name];
+  const first = Array.isArray(value) ? value[0] : value;
+  return typeof first === 'string' ? first : '';
+}
+
+function draftSecretsMatch(presented: string, expected: string): boolean {
+  const presentedBytes = Buffer.from(presented);
+  const expectedBytes = Buffer.from(expected);
+  return presentedBytes.length === expectedBytes.length && timingSafeEqual(presentedBytes, expectedBytes);
+}
+
+function draftClaimsFromHeader(encoded: string): CollabAuthClaims | undefined {
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+    return parsed as CollabAuthClaims;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Draft child: the parent already verified the session. This env is the only door. */
+function resolveDraftIdentity(
+  headers: Record<string, string | string[] | undefined> | undefined,
+  expectedSecret: string,
+): BffAuthOutcome {
+  const presentedSecret = oneHeader(headers, DRAFT_IDENTITY_SECRET_HEADER);
+  const encodedClaims = oneHeader(headers, DRAFT_IDENTITY_HEADER);
+  if (!presentedSecret && !encodedClaims) return { reject: false, reason: 'missing-token' };
+  const claims = encodedClaims ? draftClaimsFromHeader(encodedClaims) : undefined;
+  if (!presentedSecret || !draftSecretsMatch(presentedSecret, expectedSecret) || !claims) {
+    console.error('[resolveBffSession] draft identity rejected (invalid-token)');
+    return { reject: true, reason: 'invalid-token' };
+  }
+  return { claims, reject: false, reason: 'ok' };
+}
+
 /**
  * Resolve the session of one `/execBff` call. Never throws: an unverifiable token is an OUTCOME, not an
  * exception, because stage 1 has to keep serving while reporting who would have been rejected.
@@ -165,6 +210,8 @@ export interface BffAuthOutcome {
 export async function resolveBffSession(
   headers: Record<string, string | string[] | undefined> | undefined,
 ): Promise<BffAuthOutcome> {
+  const draftSecret = process.env.COLLAB_DRAFT_IDENTITY_SECRET;
+  if (draftSecret) return resolveDraftIdentity(headers, draftSecret);
   const token = tokenFromRequest(headers);
   if (!token) {
     const local = localTestSessionFromHeaders(headers);
