@@ -198,7 +198,7 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
         `--allow-read=${base},${join(base, 'drafts', SLUG)},${process.env.CBE_PROJECT_FILES_DIR ?? '/etc/collab/projects'}`,
         `--allow-env=${[...memoryModeAllowEnv(), 'DATABASE_URL_TEST', 'PG*', 'USERNAME'].join(',')}`,
         '--allow-net=0.0.0.0:4100,127.0.0.1,127.0.0.1:5432',
-        '--allow-sys=networkInterfaces',
+        '--allow-sys=networkInterfaces,loadavg,systemMemoryInfo,cpus',
         '--config',
         join(base, 'drafts', SLUG, 'deno.json'),
         '--node-modules-dir=manual',

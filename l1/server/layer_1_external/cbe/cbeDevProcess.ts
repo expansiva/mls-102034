@@ -255,7 +255,8 @@ export function buildDenoArgs(base: string, slug: string, port: number, database
     `--allow-read=${base},${draftDir},${projectFilesDir}`,
     `--allow-env=${allowEnv.join(',')}`,
     `--allow-net=0.0.0.0:${port},127.0.0.1,${postgresHostPort(databaseUrl)}`,
-    '--allow-sys=networkInterfaces',
+    // networkInterfaces: the server. loadavg, systemMemoryInfo, cpus: `os.loadavg/freemem/totalmem/cpus` of the monitor collectors.
+    '--allow-sys=networkInterfaces,loadavg,systemMemoryInfo,cpus',
     '--config',
     join(draftDir, 'deno.json'),
     '--node-modules-dir=manual',

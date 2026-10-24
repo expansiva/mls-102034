@@ -92,6 +92,13 @@ const { createRuntimeMessagesTaskPort } = await import('/_102034_/l1/workflow/me
 createRuntimeMessagesTaskPort({ projectId: ${JSON.stringify(PROJECT_ID)}, moduleId: 'rt130' });
 report.client = 'ok';
 
+const os = await import('node:os');
+os.loadavg();
+os.freemem();
+os.totalmem();
+os.cpus();
+report.sys = 'ok';
+
 const { createServer } = await import('node:http');
 const { once } = await import('node:events');
 const hits = [];
@@ -230,6 +237,7 @@ test('draft deno flags deny global env and still run message paths', async () =>
       databaseRead: string;
       named: string;
       client: string;
+      sys: string;
       persona: number;
       user: boolean;
       org: boolean;
@@ -241,6 +249,7 @@ test('draft deno flags deny global env and still run message paths', async () =>
     assert.equal(report.databaseRead, 'denied');
     assert.equal(report.named, 'granted');
     assert.equal(report.client, 'ok');
+    assert.equal(report.sys, 'ok');
     assert.equal(report.persona, 200);
     assert.equal(report.user, true);
     assert.equal(report.org, true);
