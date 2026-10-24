@@ -50,6 +50,14 @@ export async function readAuthorityOverride(ctx: RequestContext, userId: string)
 }
 
 /**
+ * What goes into `mdm_kv.value`. Never null: the column is JSONB NOT NULL, so clearing writes the same
+ * record with an empty list (which `readAuthorityOverride` already reads as "no override").
+ */
+export function storedValue(override: AuthorityOverride): Record<string, unknown> {
+  return { ...override, authorities: [...override.authorities] };
+}
+
+/**
  * Set (or clear, with an empty list) the override of ONE user. The mode is checked here as well as at the
  * route: two defences, because this is the one place that can make a user look like someone else.
  */
@@ -64,7 +72,7 @@ export async function writeAuthorityOverride(
   if (!userId) throw new AppError('UNAUTHENTICATED', 'An authority override needs an authenticated user.', 401);
   const clean = [...new Set(authorities.filter(item => typeof item === 'string' && item.trim().length > 0).map(item => item.trim()))];
   const override: AuthorityOverride = { userId, authorities: clean, setAt: ctx.clock.nowIso() };
-  await putMdmKv(ctx, { key: keyFor(userId), value: clean.length ? { ...override } : null });
+  await putMdmKv(ctx, { key: keyFor(userId), value: storedValue(override) });
   ctx.log.info('auth.override.set', { userId, authorities: clean, appEnv: mode });
   return clean.length ? override : null;
 }

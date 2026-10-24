@@ -8,7 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequestContext } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
 import {
-  effectiveAuthorities, readAuthorityOverride, refuseOverride, writeAuthorityOverride,
+  effectiveAuthorities, readAuthorityOverride, refuseOverride, storedValue, writeAuthorityOverride,
 } from '/_102034_/l1/server/layer_1_external/auth/authorityOverride.js';
 
 test('only development and presentation allow an override', () => {
@@ -50,4 +50,11 @@ test('what the session acts with never hides what the user really has', () => {
   );
   // An override with an empty list is not an override.
   assert.deepEqual(effectiveAuthorities(real, { userId: 'u', authorities: [], setAt: 'now' }).overridden, false);
+});
+
+test('clearing stores a record, never null: mdm_kv.value is JSONB NOT NULL', () => {
+  const cleared = storedValue({ userId: 'user-1', authorities: [], setAt: 'now' });
+  assert.notEqual(cleared, null);
+  assert.deepEqual(cleared, { userId: 'user-1', authorities: [], setAt: 'now' });
+  assert.deepEqual(storedValue({ userId: 'user-1', authorities: ['m:a'], setAt: 'now' }).authorities, ['m:a']);
 });
