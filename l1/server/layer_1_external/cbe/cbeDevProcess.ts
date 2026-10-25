@@ -5,11 +5,12 @@
 // shell, same reason as cbeRebuildOnSave: pm2 kills the worker's process tree).
 
 import { spawnSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import {
-  closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync,
+  chmodSync, closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync,
   readFileSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync,
 } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { draftSourceRoot, parseDraftSlug } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
 import {
@@ -209,7 +210,7 @@ export interface DevProcessInfo {
   lastRequestAt: number;
   /** Draft database name. Present on records written when the process starts. */
   database?: string;
-  /** Per-process secret. Parent memory only — never written to `dev.json`. */
+  /** Per-process secret. Shared secret file only — never written to `dev.json`. */
   identitySecret?: string;
 }
 
@@ -449,15 +450,43 @@ export function linkSharedProjects(base: string, slug: string, clientProjectId: 
   }
 }
 
-const draftIdentitySecrets = new Map<string, string>();
+function draftSecretsDir(): string {
+  const getuid = process.getuid;
+  if (!getuid) {
+    console.error('[cbe] dev identity secret dir requires getuid');
+    throw new Error('dev identity secret dir requires getuid');
+  }
+  const uid = getuid();
+  const dir = join(tmpdir(), `collab-draft-secrets-${uid}`);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  chmodSync(dir, 0o700);
+  return dir;
+}
 
-function identityKey(base: string, slug: string): string {
-  return `${base}\0${slug}`;
+function identitySecretPath(base: string, slug: string): string {
+  const name = createHash('sha256').update(`${base}\0${slug}`).digest('hex');
+  return join(draftSecretsDir(), name);
+}
+
+function readIdentitySecret(base: string, slug: string): string | undefined {
+  const path = identitySecretPath(base, slug);
+  if (!existsSync(path)) return undefined;
+  return readFileSync(path, 'utf8');
+}
+
+function writeIdentitySecret(base: string, slug: string, secret: string): void {
+  const path = identitySecretPath(base, slug);
+  writeFileSync(path, secret, { mode: 0o600 });
+  chmodSync(path, 0o600);
+}
+
+function removeIdentitySecret(base: string, slug: string): void {
+  rmSync(identitySecretPath(base, slug), { force: true });
 }
 
 /** Tests only: a live record the parent "already knows", as if it had spawned it. */
 export function setDevIdentitySecretForTests(base: string, slug: string, secret: string): void {
-  draftIdentitySecrets.set(identityKey(base, slug), secret);
+  writeIdentitySecret(base, slug, secret);
 }
 
 function childEnv(
@@ -580,10 +609,12 @@ function stopDevUnlocked(base: string, slug: string): void {
   const record = readDevJson(path);
   if (!record) {
     if (existsSync(path)) rmSync(path, { force: true });
+    removeIdentitySecret(base, slug);
     return;
   }
   if (isDevPidAlive(record.pid)) killDevPid(record.pid);
   rmSync(path, { force: true });
+  removeIdentitySecret(base, slug);
 }
 
 function ensureUnlocked(opts: EnsureDevProcessOpts): DevProcessInfo {
@@ -600,10 +631,10 @@ function ensureUnlocked(opts: EnsureDevProcessOpts): DevProcessInfo {
   const path = devJsonPath(base, slug);
   const existing = readDevJson(path);
   if (existing && isDevPidAlive(existing.pid)) {
-    const identitySecret = draftIdentitySecrets.get(identityKey(base, slug));
-    if (identitySecret) return { ...existing, identitySecret };
-    // The parent restarted and its in-memory secret is gone; a live child cannot be given a new one, and
-    // without it every logged-in call would reach the draft as anonymous. Replace the child, same port.
+    const identitySecret = readIdentitySecret(base, slug);
+    if (identitySecret !== undefined) return { ...existing, identitySecret };
+    // The secret file is gone while the child is still alive (parent restarted after cleanup). A live child
+    // cannot be given a new secret, and without it every logged-in call would reach the draft as anonymous.
     console.error(`[cbe] dev ${slug}: identity secret lost after a parent restart; replacing the process`);
     killDevPid(existing.pid);
     for (let waited = 0; waited < DEV_EXIT_WAIT_MS && isDevPidAlive(existing.pid); waited += LOCK_RETRY_MS) {
@@ -611,6 +642,7 @@ function ensureUnlocked(opts: EnsureDevProcessOpts): DevProcessInfo {
     }
   }
   if (existsSync(path)) rmSync(path, { force: true });
+  removeIdentitySecret(base, slug);
 
   const draftDir = draftDirOf(base, slug);
   const ancestor = findAncestorDenoConfig(draftDir);
@@ -642,7 +674,6 @@ function ensureUnlocked(opts: EnsureDevProcessOpts): DevProcessInfo {
   const logPath = join(base, 'logs', `dev-${slug}.log`);
   mkdirSync(join(base, 'logs'), { recursive: true });
   const identitySecret = randomBytes(32).toString('hex');
-  draftIdentitySecrets.set(identityKey(base, slug), identitySecret);
   const spawn = opts.spawn ?? defaultDevSpawn;
   const spawned = spawn('deno', buildDenoArgs(base, slug, port, databaseUrl), {
     cwd: draftDir,
@@ -662,6 +693,7 @@ function ensureUnlocked(opts: EnsureDevProcessOpts): DevProcessInfo {
     identitySecret,
   };
   try {
+    writeIdentitySecret(base, slug, identitySecret);
     const persisted: DevProcessInfo = { ...record };
     delete persisted.identitySecret;
     writeFileSync(path, `${JSON.stringify(persisted)}\n`);

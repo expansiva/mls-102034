@@ -1,7 +1,8 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.test.ts" enhancement="_blank" />
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, lstatSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +15,7 @@ import {
   draftDatabaseUrl,
   ensureDevProcess,
   setDevIdentitySecretForTests,
+  stopDevProcess,
   ensureDevReaper,
   findAncestorDenoConfig,
   isDevPidAlive,
@@ -745,6 +747,112 @@ test('ensureDevProcess spawns when no ancestor deno config exists', () => {
     rmSync(base, { recursive: true, force: true });
   }
 });
+
+function secretPathOf(base: string, slug: string): string {
+  const name = createHash('sha256').update(`${base}\0${slug}`).digest('hex');
+  const getuid = process.getuid;
+  if (!getuid) throw new Error('dev identity secret dir requires getuid');
+  return join(tmpdir(), `collab-draft-secrets-${getuid()}`, name);
+}
+
+test('two node processes share the draft secret and do not replace a live child', () => {
+  const base = mkdtempSync(join(tmpdir(), 'cbe-dev-workers-'));
+  const sleeper = spawn('sleep', ['60'], { detached: true, stdio: 'ignore' });
+  sleeper.unref();
+  const prevRange = process.env.COLLAB_DEV_PORT_RANGE;
+  const prevTestDatabase = process.env.DATABASE_URL_TEST;
+  process.env.COLLAB_DEV_PORT_RANGE = '4100-4199';
+  process.env.DATABASE_URL_TEST = PARENT_TEST_URL;
+  try {
+    assert.ok(sleeper.pid);
+    writeFileSync(join(base, 'config.json'), '{"release":true}\n');
+    mkdirSync(join(base, 'drafts', SLUG, 'mls-102047'), { recursive: true });
+    const first = runEnsureInOtherProcess(base, sleeper.pid);
+    const second = runEnsureInOtherProcess(base, sleeper.pid);
+    assert.equal(first.pid, sleeper.pid);
+    assert.equal(second.pid, sleeper.pid);
+    assert.equal(first.identitySecret, second.identitySecret);
+    assert.match(first.identitySecret, /^[0-9a-f]{64}$/u);
+    assert.equal(isDevPidAlive(sleeper.pid), true);
+  } finally {
+    if (sleeper.pid) {
+      try { process.kill(sleeper.pid, 'SIGTERM'); } catch { /* already gone */ }
+    }
+    if (prevRange === undefined) delete process.env.COLLAB_DEV_PORT_RANGE;
+    else process.env.COLLAB_DEV_PORT_RANGE = prevRange;
+    if (prevTestDatabase === undefined) delete process.env.DATABASE_URL_TEST;
+    else process.env.DATABASE_URL_TEST = prevTestDatabase;
+    rmSync(secretPathOf(base, SLUG), { force: true });
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('stopDev removes the secret file; the file is 0600, the dir is 0700, and the path is outside --allow-read', async () => {
+  const base = mkdtempSync(join(tmpdir(), 'cbe-dev-secret-'));
+  const prevRange = process.env.COLLAB_DEV_PORT_RANGE;
+  const prevTestDatabase = process.env.DATABASE_URL_TEST;
+  process.env.COLLAB_DEV_PORT_RANGE = '4100-4199';
+  process.env.DATABASE_URL_TEST = PARENT_TEST_URL;
+  const pids: number[] = [];
+  try {
+    writeFileSync(join(base, 'config.json'), '{"release":true}\n');
+    mkdirSync(join(base, 'drafts', SLUG, 'mls-102047'), { recursive: true });
+    const info = ensureDevProcess({
+      base,
+      slug: SLUG,
+      clientProjectId: 102047,
+      now: () => 1,
+      writeConfig: () => {},
+      spawn: () => ({ pid: dummyPid(pids) }),
+    });
+    const secretPath = secretPathOf(base, SLUG);
+    assert.equal(readFileSync(secretPath, 'utf8'), info.identitySecret);
+    assert.equal(statSync(secretPath).mode & 0o777, 0o600);
+    assert.equal(statSync(dirname(secretPath)).mode & 0o777, 0o700);
+    const allow = buildDenoArgs(base, SLUG, 4100, draftDatabaseUrl(PARENT_TEST_URL, SLUG))
+      .find((arg) => arg.startsWith('--allow-read='));
+    assert.ok(allow);
+    const roots = allow.slice('--allow-read='.length).split(',');
+    for (const root of roots) {
+      assert.equal(secretPath === root || secretPath.startsWith(root.endsWith('/') ? root : `${root}/`), false);
+    }
+    stopDevProcess(base, SLUG);
+    assert.equal(existsSync(secretPath), false);
+    await waitDead(info.pid);
+    assert.equal(isDevPidAlive(info.pid), false);
+  } finally {
+    killPids(pids);
+    if (prevRange === undefined) delete process.env.COLLAB_DEV_PORT_RANGE;
+    else process.env.COLLAB_DEV_PORT_RANGE = prevRange;
+    if (prevTestDatabase === undefined) delete process.env.DATABASE_URL_TEST;
+    else process.env.DATABASE_URL_TEST = prevTestDatabase;
+    rmSync(secretPathOf(base, SLUG), { force: true });
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+function runEnsureInOtherProcess(base: string, pid: number): { pid: number; identitySecret: string } {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const monorepoRoot = join(here, '..', '..', '..', '..', '..');
+  const layerRoot = join(monorepoRoot, 'mls-102034', 'l1');
+  const result = spawnSync(join(monorepoRoot, 'node_modules', '.bin', 'tsx'), [
+    '--import', join(monorepoRoot, 'test', 'register-hooks.mjs'),
+    '--import', join(monorepoRoot, 'test', 'setup-l1.ts'),
+    join(here, 'cbeDevProcessTwoWorkers.ts'),
+    base,
+    SLUG,
+    String(pid),
+  ], {
+    cwd: layerRoot,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      TSX_TSCONFIG_PATH: join(monorepoRoot, 'test', 'tsconfig.runtime.json'),
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  return JSON.parse(result.stdout) as { pid: number; identitySecret: string };
+}
 
 function existsDev(base: string, slug: string): boolean {
   try {
