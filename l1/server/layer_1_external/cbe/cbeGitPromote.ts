@@ -75,7 +75,7 @@ export type DraftDiffResult =
   | { status: 400; code: 'BAD_DRAFT' }
   | { status: 400; code: 'BAD_PATH' }
   | { status: 'diff'; text: string }
-  | { status: 'files'; head: string; files: DraftDiffFile[] }
+  | { status: 'files'; head: string; main: string; files: DraftDiffFile[] }
   | { status: 500; code: 'GIT_ERROR' };
 
 export type SyncDraftResult =
@@ -455,5 +455,10 @@ export async function draftDiff(opts: {
     logGitFailure(`draftDiff rev-parse (${parsed.branch})`, head);
     return { status: 500, code: 'GIT_ERROR' };
   }
-  return { status: 'files', head: head.stdout.trim(), files: parseNameStatus(diff.stdout) };
+  const main = await run(['rev-parse', 'main']);
+  if (main.code !== 0) {
+    logGitFailure('draftDiff rev-parse (main)', main);
+    return { status: 500, code: 'GIT_ERROR' };
+  }
+  return { status: 'files', head: head.stdout.trim(), main: main.stdout.trim(), files: parseNameStatus(diff.stdout) };
 }

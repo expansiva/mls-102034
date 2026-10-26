@@ -417,6 +417,7 @@ test('draftDiff with names lists each file and the draft head', async () => {
       };
     }
     if (cmd[0] === 'rev-parse' && cmd[1] === branch) return { stdout: head, code: 0 };
+    if (cmd[0] === 'rev-parse' && cmd[1] === 'main') return { stdout: 'feedface\n', code: 0 };
     throw new Error(`unexpected git ${cmd.join(' ')}`);
   });
 
@@ -425,6 +426,7 @@ test('draftDiff with names lists each file and the draft head', async () => {
   assert.deepEqual(result, {
     status: 'files',
     head: head.trim(),
+    main: 'feedface',
     files: [
       { status: 'M', path: 'l2/a.ts', sha: shaM },
       { status: 'A', path: 'l2/b.ts', sha: shaA },
@@ -434,7 +436,27 @@ test('draftDiff with names lists each file and the draft head', async () => {
   });
   assert.deepEqual(innerArgs(calls[0].args), ['diff', '--raw', '--no-abbrev', `main...${branch}`]);
   assert.deepEqual(innerArgs(calls[1].args), ['rev-parse', branch]);
+  assert.deepEqual(innerArgs(calls[2].args), ['rev-parse', 'main']);
   assert.equal(calls[0].cwd, repo);
+});
+
+test('draftDiff with names returns GIT_ERROR when rev-parse main fails', async () => {
+  const { git } = promoteGit((cmd) => {
+    if (cmd[0] === 'diff') return { stdout: '', code: 0 };
+    if (cmd[0] === 'rev-parse' && cmd[1] === branch) return { stdout: 'abc123def\n', code: 0 };
+    if (cmd[0] === 'rev-parse' && cmd[1] === 'main') return { stdout: '', stderr: 'fatal: ambiguous argument', code: 128 };
+    throw new Error(`unexpected git ${cmd.join(' ')}`);
+  });
+  const errors: string[] = [];
+  const orig = console.error;
+  console.error = (...args: unknown[]) => { errors.push(args.map(String).join(' ')); };
+  try {
+    const result = await draftDiff({ base, projectId, slug, names: true, git });
+    assert.deepEqual(result, { status: 500, code: 'GIT_ERROR' });
+    assert.match(errors.join('\n'), /draftDiff rev-parse \(main\)/);
+  } finally {
+    console.error = orig;
+  }
 });
 
 test('captureGit returns a non-zero exit instead of throwing', async () => {

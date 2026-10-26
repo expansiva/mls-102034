@@ -1015,7 +1015,7 @@ async function handleDraftDiff(request: FastifyRequest, body: CbeRequestDraftDif
     return;
   }
   if (result.status === 'files') {
-    reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, status: 'files', head: result.head, files: result.files });
+    reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, status: 'files', head: result.head, main: result.main, files: result.files });
     return;
   }
   reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, status: 'diff', text: result.text });

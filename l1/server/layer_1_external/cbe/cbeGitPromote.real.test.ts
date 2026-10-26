@@ -16,6 +16,7 @@ import {
   promoteDraft,
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitPromote.js';
 import { ensureDraftWorktree } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
+import { readHistoryContent } from '/_102034_/l1/server/layer_1_external/cbe/cbeGit.js';
 
 function g(cwd: string, ...args: string[]): string {
   return execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' }).trim();
@@ -76,6 +77,28 @@ test('promote, list, diff and discard against a real repository', async () => {
 
   assert.deepEqual(await discardDraft({ base, projectId: 1, slug }), { status: 'discarded' });
   assert.equal(g(wt, 'rev-parse', 'HEAD'), g(repo, 'rev-parse', 'main'));
+});
+
+test('draftDiff names returns the published main commit', async () => {
+  const base = mkdtempSync(join(tmpdir(), 'promo-main-'));
+  const repo = join(base, 'mls-1');
+  mkdirSync(repo, { recursive: true });
+  g(repo, 'init', '-b', 'main');
+  writeFileSync(join(repo, 'a.txt'), 'published\n');
+  g(repo, 'add', '.');
+  g(repo, 'commit', '-m', 'init');
+
+  const slug = 'team-1';
+  const wt = await ensureDraftWorktree({ base, projectId: 1, slug, branch: 'team/1' });
+  writeFileSync(join(wt, 'a.txt'), 'draft\n');
+  g(wt, 'add', '.');
+  g(wt, 'commit', '-m', 'draft change');
+
+  const listed = await draftDiff({ base, projectId: 1, slug, names: true });
+  assert.equal(listed.status, 'files');
+  if (listed.status !== 'files') return;
+  assert.equal(listed.main, g(repo, 'rev-parse', 'main'));
+  assert.equal(readHistoryContent(1, 'a.txt', listed.main, wt), 'published\n');
 });
 
 test('fastForwardDraft and mergeMainIntoDraft against a real draft worktree', async () => {
