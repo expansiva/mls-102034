@@ -2,13 +2,14 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import {
   AncestorDenoConfigError,
+  DenoMissingError,
   DraftDatabaseError,
   DraftWorktreeMissingError,
   buildDenoArgs,
@@ -675,6 +676,74 @@ test('a non-test project mode or a missing DATABASE_URL_TEST refuses a new dev p
     else process.env.COLLAB_DEV_PORT_RANGE = prevRange;
     if (prevTestDatabase === undefined) delete process.env.DATABASE_URL_TEST;
     else process.env.DATABASE_URL_TEST = prevTestDatabase;
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('ensureDevProcess refuses when deno is missing from PATH and spawns when a fake deno is executable', () => {
+  const base = mkdtempSync(join(tmpdir(), 'cbe-dev-deno-path-'));
+  const prevRange = process.env.COLLAB_DEV_PORT_RANGE;
+  const prevTestDatabase = process.env.DATABASE_URL_TEST;
+  const prevPath = process.env.PATH;
+  process.env.COLLAB_DEV_PORT_RANGE = '4100-4199';
+  process.env.DATABASE_URL_TEST = PARENT_TEST_URL;
+  const errors: string[] = [];
+  const origError = console.error;
+  console.error = (...args: unknown[]) => {
+    errors.push(args.map(String).join(' '));
+  };
+  try {
+    writeFileSync(join(base, 'config.json'), '{"release":true}\n');
+    mkdirSync(join(base, 'drafts', SLUG, 'mls-102047'), { recursive: true });
+    writeProjectMode(base, SLUG, 102047, 'development');
+    const emptyDir = join(base, 'empty-bin');
+    mkdirSync(emptyDir);
+    process.env.PATH = emptyDir;
+    const started = Date.now();
+    assert.throws(
+      () => ensureDevProcess({
+        base,
+        slug: SLUG,
+        clientProjectId: 102047,
+        writeConfig: () => {},
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof DenoMissingError);
+        assert.equal(
+          (err as DenoMissingError).message,
+          'deno not found on PATH; install it with collab-runtime/scripts/06b-install-deno.sh',
+        );
+        return true;
+      },
+    );
+    assert.equal(Date.now() - started < 10_000, true);
+    assert.ok(errors.some((line) => line.includes('[cbe] dev team-102047: deno not found on PATH; install it with collab-runtime/scripts/06b-install-deno.sh')));
+    assert.equal(existsDev(base, SLUG), false);
+
+    const fakeDir = join(base, 'fake-bin');
+    mkdirSync(fakeDir);
+    const fakeDeno = join(fakeDir, 'deno');
+    writeFileSync(fakeDeno, '#!/bin/sh\nexit 0\n');
+    chmodSync(fakeDeno, 0o755);
+    process.env.PATH = `${fakeDir}${prevPath ? `:${prevPath}` : ''}`;
+    const info = ensureDevProcess({
+      base,
+      slug: SLUG,
+      clientProjectId: 102047,
+      writeConfig: () => {},
+    });
+    assert.equal(Number.isInteger(info.pid) && info.pid > 0, true);
+    assert.equal(existsDev(base, SLUG), true);
+    try { process.kill(info.pid, 'SIGTERM'); } catch { /* already gone */ }
+  } finally {
+    console.error = origError;
+    stopDevProcess(base, SLUG);
+    if (prevRange === undefined) delete process.env.COLLAB_DEV_PORT_RANGE;
+    else process.env.COLLAB_DEV_PORT_RANGE = prevRange;
+    if (prevTestDatabase === undefined) delete process.env.DATABASE_URL_TEST;
+    else process.env.DATABASE_URL_TEST = prevTestDatabase;
+    if (prevPath === undefined) delete process.env.PATH;
+    else process.env.PATH = prevPath;
     rmSync(base, { recursive: true, force: true });
   }
 });

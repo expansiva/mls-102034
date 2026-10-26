@@ -7,11 +7,11 @@
 import { spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import {
-  chmodSync, closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync,
+  accessSync, chmodSync, closeSync, constants, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync,
   readFileSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { draftSourceRoot, parseDraftSlug } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
 import {
   DEFAULT_PROJECT_MODE,
@@ -136,6 +136,24 @@ export class AncestorDenoConfigError extends Error {}
 export class DraftDatabaseError extends Error {}
 
 export class DraftWorktreeMissingError extends Error {}
+
+export class DenoMissingError extends Error {}
+
+function denoOnPath(pathEnv = process.env.PATH): boolean {
+  if (!pathEnv) return false;
+  for (const dir of pathEnv.split(delimiter)) {
+    if (!dir) continue;
+    const bin = join(dir, 'deno');
+    if (!existsSync(bin)) continue;
+    try {
+      accessSync(bin, constants.X_OK);
+      return true;
+    } catch {
+      continue;
+    }
+  }
+  return false;
+}
 
 const DRAFT_DATABASE_PREFIX = 'collab_app_draft_';
 const DRAFT_DATABASE_MAX = 40;
@@ -675,6 +693,11 @@ function ensureUnlocked(opts: EnsureDevProcessOpts): DevProcessInfo {
   mkdirSync(join(base, 'logs'), { recursive: true });
   const identitySecret = randomBytes(32).toString('hex');
   const spawn = opts.spawn ?? defaultDevSpawn;
+  if (!opts.spawn && !denoOnPath()) {
+    const message = 'deno not found on PATH; install it with collab-runtime/scripts/06b-install-deno.sh';
+    console.error(`[cbe] dev ${slug}: ${message}`);
+    throw new DenoMissingError(message);
+  }
   const spawned = spawn('deno', buildDenoArgs(base, slug, port, databaseUrl), {
     cwd: draftDir,
     env: childEnv(port, slug, clientProjectId, databaseUrl, identitySecret),

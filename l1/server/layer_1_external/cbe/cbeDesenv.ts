@@ -4,7 +4,7 @@
 
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { parseDraftSlug, ensureDraftWorktree } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
-import { AncestorDenoConfigError, DraftDatabaseError, DraftWorktreeMissingError, ensureDevProcess, stopDevProcess, waitForDevReady } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
+import { AncestorDenoConfigError, DenoMissingError, DraftDatabaseError, DraftWorktreeMissingError, ensureDevProcess, stopDevProcess, waitForDevReady } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
 import { fastForwardDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitPromote.js';
 import { getProjectsBaseDir } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
 import { readProjectsConfig } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
@@ -122,7 +122,7 @@ export async function runDesenvEnter(input: {
     port = desenvIo.ensureDevProcess({ base, slug: parsed.slug, clientProjectId: projectId }).port;
   } catch (err) {
     console.error(`[cbe] /desenv: draft ${parsed.slug} failed: ${(err as Error).message}`);
-    if (err instanceof AncestorDenoConfigError || err instanceof DraftDatabaseError || err instanceof DraftWorktreeMissingError) {
+    if (err instanceof AncestorDenoConfigError || err instanceof DraftDatabaseError || err instanceof DraftWorktreeMissingError || err instanceof DenoMissingError) {
       return jsonResult(503, 'draft unavailable: ' + err.message);
     }
     return jsonResult(CBE_HTTP_SERVER_ERROR, 'draft unavailable');
