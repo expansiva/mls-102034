@@ -10,6 +10,7 @@ import {
   draftSourceRoot,
   ensureDraftWorktree,
   parseDraftSlug,
+  requestDraftValue,
   type DraftGit,
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
 
@@ -32,6 +33,19 @@ test('parseDraftSlug: 6 valid/invalid cases', () => {
   assert.equal(parseDraftSlug(''), null);
   assert.equal(parseDraftSlug('TEAM-102047'), null);
   assert.equal(parseDraftSlug(`team-${'a'.repeat(65)}`), null);
+});
+
+test('requestDraftValue prefers x-collab-draft and does not fall through when that header is invalid', () => {
+  const slug = 'team-102047';
+  const cookie = `cauth=abc; collab-draft=${slug}`;
+  assert.equal(requestDraftValue({ 'x-collab-draft': 'user-ada_collab_codes', cookie }), 'user-ada_collab_codes');
+  assert.equal(requestDraftValue({ 'x-collab-draft': 'not-a-slug', cookie }), 'not-a-slug');
+  assert.equal(requestDraftValue({ 'x-collab-draft': '', cookie }), slug);
+  assert.equal(requestDraftValue({ cookie }), slug);
+  assert.equal(requestDraftValue({}), undefined);
+  assert.equal(requestDraftValue(undefined), undefined);
+  assert.equal(parseDraftSlug(requestDraftValue({ 'x-collab-draft': 'not-a-slug', cookie })), null);
+  assert.equal(parseDraftSlug(requestDraftValue({ cookie }))?.slug, slug);
 });
 
 test('draftSourceRoot is <base>/drafts/<slug>/mls-<id>', () => {

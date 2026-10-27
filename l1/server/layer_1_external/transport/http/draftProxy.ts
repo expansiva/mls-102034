@@ -4,8 +4,7 @@
 
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { CollabAuthClaims } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
-import { parseCookies } from '/_102034_/l1/server/layer_1_external/cbe/cbeAuthJwt.js';
-import { parseDraftSlug, resolveRequestDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
+import { parseDraftSlug, requestDraftValue, resolveRequestDraft, type DraftRequestHeaders } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
 import {
   ensureDevProcess,
   touchDevProcess,
@@ -57,11 +56,10 @@ export function draftDownBody(): { ok: false; data: null; error: { code: 'DRAFT_
   };
 }
 
-/** Slug from `collab-draft`, or null when this process is already the draft dev server. */
-export function draftSlugForProxy(cookieHeader: string | string[] | undefined): string | null {
+/** Slug from this call (`x-collab-draft`, else `collab-draft`), or null when this process is already the draft dev server. */
+export function draftSlugForProxy(headers: DraftRequestHeaders | undefined): string | null {
   if (process.env.COLLAB_DRAFT !== undefined) return null;
-  const header = Array.isArray(cookieHeader) ? cookieHeader[0] : cookieHeader;
-  return parseDraftSlug(parseCookies(header)['collab-draft'])?.slug ?? null;
+  return parseDraftSlug(requestDraftValue(headers))?.slug ?? null;
 }
 
 /**
@@ -69,10 +67,10 @@ export function draftSlugForProxy(cookieHeader: string | string[] | undefined): 
  * Rejected session falls through to the normal `/execBff` 401. No slug stays on the local server.
  */
 export async function planDraftExecBff(
-  cookieHeader: string | string[] | undefined,
+  headers: DraftRequestHeaders | undefined,
   resolveSession: () => Promise<DraftSessionView>,
 ): Promise<DraftExecPlan> {
-  const slug = draftSlugForProxy(cookieHeader);
+  const slug = draftSlugForProxy(headers);
   if (!slug) return { action: 'local' };
   const session = await resolveSession();
   if (session.reject) return { action: 'unauthorized', statusCode: 401, slug, reason: session.reason ?? 'invalid-token' };
@@ -195,7 +193,7 @@ export async function proxyExecBff(args: {
   const url = (port: number) => `http://127.0.0.1:${port}/execBff`;
 
   try {
-    const draft = await resolve(args.request.headers.cookie, args.base, args.clientProjectId);
+    const draft = await resolve(args.request.headers, args.base, args.clientProjectId);
     if (draft === null) {
       console.error(`[draftProxy] draft ${args.slug} worktree failed: cookie has no valid draft`);
       args.reply.code(503).send(draftDownBody());
@@ -297,7 +295,7 @@ export async function applyDraftExecBff(args: {
   resolveSession: () => Promise<DraftSessionView>;
   refreshedAuthCookie: (token: string) => string;
 } & DraftExecDeps): Promise<{ handled: boolean; statusCode?: 401 }> {
-  const plan = await planDraftExecBff(args.request.headers.cookie, args.resolveSession);
+  const plan = await planDraftExecBff(args.request.headers, args.resolveSession);
   if (plan.action === 'unauthorized') {
     logDraftForward({
       slug: plan.slug,

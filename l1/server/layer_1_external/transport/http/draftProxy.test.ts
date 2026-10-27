@@ -63,22 +63,79 @@ function readyDraft() {
   };
 }
 
-test('draftSlugForProxy reads collab-draft and stays null inside the dev process or without a valid cookie', () => {
+test('draftSlugForProxy reads the header first, then the cookie, and stays null inside the dev process', () => {
   const previous = process.env.COLLAB_DRAFT;
   delete process.env.COLLAB_DRAFT;
   try {
+    const cookie = `cauth=abc; collab-draft=${SLUG}`;
     assert.equal(draftSlugForProxy(undefined), null);
-    assert.equal(draftSlugForProxy(''), null);
-    assert.equal(draftSlugForProxy('cauth=abc'), null);
-    assert.equal(draftSlugForProxy('collab-draft=not-a-slug'), null);
-    assert.equal(draftSlugForProxy(`cauth=abc; collab-draft=${SLUG}`), SLUG);
+    assert.equal(draftSlugForProxy({}), null);
+    assert.equal(draftSlugForProxy({ cookie: '' }), null);
+    assert.equal(draftSlugForProxy({ cookie: 'cauth=abc' }), null);
+    assert.equal(draftSlugForProxy({ cookie: 'collab-draft=not-a-slug' }), null);
+    assert.equal(draftSlugForProxy({ cookie }), SLUG);
+    assert.equal(draftSlugForProxy({ 'x-collab-draft': 'user-ada_collab_codes', cookie }), 'user-ada_collab_codes');
+    assert.equal(draftSlugForProxy({ 'x-collab-draft': 'not-a-slug', cookie }), null);
+    assert.equal(draftSlugForProxy({ 'x-collab-draft': SLUG }), SLUG);
+    // The service worker passes only the cookie, so a header on the same request cannot choose it.
+    assert.equal(draftSlugForProxy({ cookie }), SLUG);
 
     process.env.COLLAB_DRAFT = SLUG;
-    assert.equal(draftSlugForProxy(`collab-draft=${SLUG}`), null);
+    assert.equal(draftSlugForProxy({ 'x-collab-draft': SLUG, cookie }), null);
   } finally {
     if (previous === undefined) delete process.env.COLLAB_DRAFT;
     else process.env.COLLAB_DRAFT = previous;
   }
+});
+
+test('/execBff uses x-collab-draft ahead of the cookie and ignores the cookie when the header is invalid', async () => {
+  delete process.env.COLLAB_DRAFT;
+  const cookie = `collab-draft=${SLUG}`;
+  const session = async () => ({ reject: false });
+  const deps = {
+    base: BASE,
+    clientProjectId: '102047',
+    resolveSession: session,
+    refreshedAuthCookie: (token: string) => token,
+    resolveRequestDraftImpl: async () => readyDraft(),
+    ensureDevProcessImpl: () => devInfo(),
+    touchDevProcessImpl: () => {},
+    fetchImpl: async () => new Response(JSON.stringify({ ok: true, data: null, error: null }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  };
+
+  const headerWins = fakeReply();
+  const won = await applyDraftExecBff({
+    ...deps,
+    request: fakeRequest({ routine: 'x.y.z' }, { cookie, 'x-collab-draft': 'user-ada_collab_codes' }),
+    reply: headerWins,
+  });
+  assert.equal(won.handled, true);
+  assert.equal(headerWins.statusCode, 200);
+
+  const invalidHeader = fakeReply();
+  let resolved = 0;
+  const lost = await applyDraftExecBff({
+    ...deps,
+    request: fakeRequest({ routine: 'x.y.z' }, { cookie, 'x-collab-draft': 'not-a-slug' }),
+    reply: invalidHeader,
+    resolveRequestDraftImpl: async () => {
+      resolved += 1;
+      return readyDraft();
+    },
+  });
+  assert.deepEqual(lost, { handled: false });
+  assert.equal(resolved, 0);
+  assert.equal(invalidHeader.statusCode, 0);
+
+  const neither = await applyDraftExecBff({
+    ...deps,
+    request: fakeRequest({ routine: 'x.y.z' }, {}),
+    reply: fakeReply(),
+  });
+  assert.deepEqual(neither, { handled: false });
 });
 
 test('a valid draft cookie with an accepted session proxies /execBff to the dev process', async () => {
@@ -293,9 +350,9 @@ test('a valid draft cookie prepares the worktree before starting the dev process
     clientProjectId: '102047',
     resolveSession: async () => ({ reject: false }),
     refreshedAuthCookie: (token) => token,
-    resolveRequestDraftImpl: async (cookieHeader, base, projectId) => {
+    resolveRequestDraftImpl: async (headers, base, projectId) => {
       order.push('resolve');
-      assert.equal(cookieHeader, `collab-draft=${SLUG}`);
+      assert.equal(headers?.cookie, `collab-draft=${SLUG}`);
       assert.equal(base, BASE);
       assert.equal(projectId, 102047);
       return readyDraft();
@@ -366,7 +423,7 @@ function identityHeaders(headers: Record<string, string> | undefined): { secret?
 
 test('planDraftExecBff returns verified claims and source on the proxy action', async () => {
   delete process.env.COLLAB_DRAFT;
-  const plan = await planDraftExecBff(`collab-draft=${SLUG}`, async () => ({
+  const plan = await planDraftExecBff({ cookie: `collab-draft=${SLUG}` }, async () => ({
     reject: false,
     claims: VERIFIED_CLAIMS,
     source: 'local-test',

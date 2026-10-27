@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify from 'fastify';
@@ -97,6 +97,26 @@ test('setContents: draft cookie commits on the draft branch and skips the releas
     assert.equal(readDraft.statusCode, 200);
     assert.equal(readDraft.json().files[0].content, 'export const draft = 1;\n');
     assert.deepEqual(readDraft.json().draft, { slug: SLUG, branch: BRANCH });
+
+    const headerWins = await app.inject({
+      method: 'POST',
+      url: '/exec',
+      headers: { cookie: 'collab-draft=user-other_example_com', 'x-collab-draft': SLUG },
+      payload: { action: 'getContents', project: PROJECT_ID, shortPaths: ['l2/draft.ts'] },
+    });
+    assert.equal(headerWins.statusCode, 200);
+    assert.equal(headerWins.json().files[0].content, 'export const draft = 1;\n');
+    assert.deepEqual(headerWins.json().draft, { slug: SLUG, branch: BRANCH });
+
+    const invalidHeader = await app.inject({
+      method: 'POST',
+      url: '/exec',
+      headers: { cookie: `collab-draft=${SLUG}`, 'x-collab-draft': 'not-a-slug' },
+      payload: { action: 'getContents', project: PROJECT_ID, shortPaths: ['l2/draft.ts'] },
+    });
+    assert.equal(invalidHeader.statusCode, 200);
+    assert.equal(invalidHeader.json().draft, null);
+    assert.equal(invalidHeader.json().files.length, 0);
 
     const viewed = await app.inject({
       method: 'GET',
@@ -212,5 +232,32 @@ test('setContents: draft cookie commits on the draft branch and skips the releas
     if (prev.login === undefined) delete process.env.CBE_REQUIRE_LOGIN;
     else process.env.CBE_REQUIRE_LOGIN = prev.login;
     rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('the service worker never follows the x-collab-draft header: only the cookie picks its cache name', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cbe-sw-header-'));
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'mlsServiceWorker.js'), 'var MLSSERVICEWORKERVERSION = 12;\n  var CACHE_NAME = "mls-v2";\n');
+  const prevStatic = process.env.CBE_STATIC_DIR;
+  const prevDraft = process.env.COLLAB_DRAFT;
+  process.env.CBE_STATIC_DIR = dir;
+  delete process.env.COLLAB_DRAFT;
+  const app = Fastify();
+  registerCbeRoutes(app);
+  try {
+    const plain = await app.inject({ method: 'GET', url: '/mlsServiceWorker.js' });
+    const byHeader = await app.inject({ method: 'GET', url: '/mlsServiceWorker.js', headers: { 'x-collab-draft': SLUG } });
+    const byCookie = await app.inject({ method: 'GET', url: '/mlsServiceWorker.js', headers: { cookie: `collab-draft=${SLUG}` } });
+    assert.equal(plain.statusCode, 200);
+    assert.equal(byHeader.body, plain.body, 'the header must not change the service worker served');
+    assert.equal(byHeader.body.includes(`-d${SLUG}`), false);
+    assert.equal(byCookie.body.includes(`-d${SLUG}`), true, 'the cookie still does (today\'s flow until the new service worker)');
+  } finally {
+    await app.close();
+    if (prevStatic === undefined) delete process.env.CBE_STATIC_DIR;
+    else process.env.CBE_STATIC_DIR = prevStatic;
+    if (prevDraft !== undefined) process.env.COLLAB_DRAFT = prevDraft;
+    rmSync(dir, { recursive: true, force: true });
   }
 });

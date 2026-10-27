@@ -146,16 +146,37 @@ export async function ensureDraftWorktree(opts: {
   }
 }
 
+export interface DraftRequestHeaders {
+  cookie?: string | string[] | undefined;
+  'x-collab-draft'?: string | string[] | undefined;
+}
+
+function firstHeader(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
 /**
- * Draft named by the `collab-draft` cookie, with its worktree ready.
+ * Raw draft mark for this call. A non-empty `x-collab-draft` wins;
+ * an empty or absent header falls through to the `collab-draft` cookie.
+ * The caller validates with `parseDraftSlug`: an invalid header is null and does not use the cookie.
+ */
+export function requestDraftValue(headers: DraftRequestHeaders | undefined): string | undefined {
+  if (!headers) return undefined;
+  const marked = firstHeader(headers['x-collab-draft']);
+  if (marked !== undefined && marked !== '') return marked;
+  return parseCookies(firstHeader(headers.cookie))['collab-draft'];
+}
+
+/**
+ * Draft named by this call (`x-collab-draft`, else the `collab-draft` cookie), with its worktree ready.
  * Missing or invalid slug is null — the caller keeps today's paths.
  */
 export async function resolveRequestDraft(
-  cookieHeader: string | undefined,
+  headers: DraftRequestHeaders | undefined,
   base: string,
   projectId: number,
 ): Promise<RequestDraft | null> {
-  const parsed = parseDraftSlug(parseCookies(cookieHeader)['collab-draft']);
+  const parsed = parseDraftSlug(requestDraftValue(headers));
   if (!parsed) return null;
   const sourceRoot = resolve(draftSourceRoot(base, parsed.slug, projectId));
   try {

@@ -379,7 +379,7 @@ async function handleGetContents(request: FastifyRequest, body: CbeRequestGetCon
     reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, msg: 'invalid project or shortPaths' });
     return;
   }
-  const draft = await resolveRequestDraft(request.headers.cookie as string | undefined, getProjectsBaseDir(), project);
+  const draft = await resolveRequestDraft(request.headers, getProjectsBaseDir(), project);
   const files = readSources(project, body.shortPaths, draft?.sourceRoot);
   reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, msg: 'ok', files, draft: draftBody(draft) });
 }
@@ -420,7 +420,7 @@ async function handleSetContents(request: FastifyRequest, body: CbeRequestSetCon
     reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, msg: 'invalid project' });
     return;
   }
-  const draft = await resolveRequestDraft(request.headers.cookie as string | undefined, getProjectsBaseDir(), project);
+  const draft = await resolveRequestDraft(request.headers, getProjectsBaseDir(), project);
   const rc = writeSources(project, body.files ?? [], body.deletes ?? [], { sourceRoot: draft?.sourceRoot });
   if (!rc.ok) {
     reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, msg: rc.msg ?? 'invalid request' });
@@ -490,7 +490,7 @@ async function handleLoadFilesInfo(request: FastifyRequest, body: CbeRequestLoad
     reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, msg: 'invalid project' });
     return;
   }
-  const draft = await resolveRequestDraft(request.headers.cookie as string | undefined, getProjectsBaseDir(), project);
+  const draft = await resolveRequestDraft(request.headers, getProjectsBaseDir(), project);
   reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, msg: 'ok', filesInfo: listSources(project, draft?.sourceRoot), draft: draftBody(draft) });
 }
 
@@ -505,7 +505,7 @@ async function handleGetHistory(request: FastifyRequest, body: CbeRequestGetHist
     reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, msg: 'invalid project or shortPath' });
     return;
   }
-  const draft = await resolveRequestDraft(request.headers.cookie as string | undefined, getProjectsBaseDir(), project);
+  const draft = await resolveRequestDraft(request.headers, getProjectsBaseDir(), project);
   // A project without .git, an untracked file or a rejected path all mean "no
   // history" — an empty list, not an error: the studio must degrade quietly.
   reply.code(CBE_HTTP_OK).send({
@@ -526,7 +526,7 @@ async function handleGetHistoryContent(request: FastifyRequest, body: CbeRequest
     reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, msg: 'invalid project, shortPath or ref' });
     return;
   }
-  const draft = await resolveRequestDraft(request.headers.cookie as string | undefined, getProjectsBaseDir(), project);
+  const draft = await resolveRequestDraft(request.headers, getProjectsBaseDir(), project);
   // An unacceptable ref (the UI's 'local' sentinel, anything non-hex) comes back
   // as null content, not 400: the diff panel asks for it on an ordinary click.
   const content = readHistoryContent(project, body.shortPath, body.ref, draft?.sourceRoot);
@@ -551,7 +551,7 @@ async function handleSourceView(request: FastifyRequest, reply: FastifyReply): P
     reply.code(CBE_HTTP_BAD_REQUEST).type('text/plain; charset=utf-8').send('invalid project or path');
     return;
   }
-  const draft = await resolveRequestDraft(request.headers.cookie as string | undefined, getProjectsBaseDir(), project);
+  const draft = await resolveRequestDraft(request.headers, getProjectsBaseDir(), project);
 
   // readSources drops a rejected path and a missing file alike — both are "not
   // here" to a reader, and telling them apart would report on the file system.
@@ -1167,7 +1167,8 @@ async function handleExec(request: FastifyRequest, reply: FastifyReply): Promise
 
 async function handleStatic(request: FastifyRequest, reply: FastifyReply): Promise<void> {
   const clientETag = (request.headers['if-none-match'] as string | undefined) ?? '';
-  const rc = await getCbeStaticFile(request.raw.url ?? '', clientETag, draftSlugForProxy(request.headers.cookie));
+  // One script for every tab: the per-call x-collab-draft header must not choose the service worker.
+  const rc = await getCbeStaticFile(request.raw.url ?? '', clientETag, draftSlugForProxy({ cookie: request.headers.cookie }));
 
   if (rc.statusCode === CBE_HTTP_NOT_MODIFIED) {
     reply.code(CBE_HTTP_NOT_MODIFIED).send();
