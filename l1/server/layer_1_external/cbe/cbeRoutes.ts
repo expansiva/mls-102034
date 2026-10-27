@@ -65,6 +65,7 @@ import {
   type CbeRequestPromote,
   type CbeRequestSetContents,
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeTypes.js';
+import { handleProviderToken } from '/_102034_/l1/server/layer_1_external/cbe/cbeProviderToken.js';
 
 // Bump on every change to the cbe module. Exposed via the x-cbe-version
 // response header and the {action:'ping'} probe so a deploy can be verified:
@@ -1086,6 +1087,11 @@ async function handleExec(request: FastifyRequest, reply: FastifyReply): Promise
       case 'draftSync':
         await handleDraftSync(request, body as CbeRequestDraftSync, reply);
         return;
+      case 'providerToken': {
+        const session = await resolveSession(request);
+        await handleProviderToken(request, body, reply, session);
+        return;
+      }
       case 'login': {
         const start = Date.now();
         const session = await resolveSession(request);
