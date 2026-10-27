@@ -26,11 +26,19 @@ export interface DraftSessionView {
   newAccessToken?: string;
   claims?: CollabAuthClaims;
   source?: 'local-test';
+  reason?: 'ok' | 'missing-token' | 'invalid-token';
 }
 
 export type DraftExecPlan =
-  | { action: 'proxy'; slug: string; newAccessToken?: string; claims?: CollabAuthClaims; source?: 'local-test' }
-  | { action: 'unauthorized'; statusCode: 401 }
+  | {
+      action: 'proxy';
+      slug: string;
+      newAccessToken?: string;
+      claims?: CollabAuthClaims;
+      source?: 'local-test';
+      reason?: 'ok' | 'missing-token' | 'invalid-token';
+    }
+  | { action: 'unauthorized'; statusCode: 401; slug: string; reason: 'ok' | 'missing-token' | 'invalid-token' }
   | { action: 'local' };
 
 export interface DraftExecDeps {
@@ -67,13 +75,14 @@ export async function planDraftExecBff(
   const slug = draftSlugForProxy(cookieHeader);
   if (!slug) return { action: 'local' };
   const session = await resolveSession();
-  if (session.reject) return { action: 'unauthorized', statusCode: 401 };
+  if (session.reject) return { action: 'unauthorized', statusCode: 401, slug, reason: session.reason ?? 'invalid-token' };
   return {
     action: 'proxy',
     slug,
     ...(session.newAccessToken ? { newAccessToken: session.newAccessToken } : {}),
     ...(session.claims ? { claims: session.claims } : {}),
     ...(session.source ? { source: session.source } : {}),
+    ...(session.reason ? { reason: session.reason } : {}),
   };
 }
 
@@ -100,6 +109,66 @@ function requestHeaders(
   return headers;
 }
 
+/** A value from the request body or from the draft process must never forge a log line: safe characters only. */
+function logSafe(value: string, max = 80): string {
+  return value.slice(0, max).replace(/[^A-Za-z0-9_.:-]/gu, '?');
+}
+
+function routineName(body: unknown): string | undefined {
+  if (!body || typeof body !== 'object' || !('routine' in body)) return undefined;
+  const routine = (body as { routine: unknown }).routine;
+  return typeof routine === 'string' && routine.length > 0 ? logSafe(routine) : undefined;
+}
+
+function loggedSource(
+  claims: CollabAuthClaims | undefined,
+  source: 'local-test' | undefined,
+): 'jwt' | 'local-test' | 'none' {
+  if (source === 'local-test') return 'local-test';
+  if (claims) return 'jwt';
+  return 'none';
+}
+
+function childErrorCode(payload: Buffer): string | undefined {
+  try {
+    const parsed: unknown = JSON.parse(payload.toString('utf8'));
+    if (!parsed || typeof parsed !== 'object' || !('error' in parsed)) return undefined;
+    const error = (parsed as { error: unknown }).error;
+    if (!error || typeof error !== 'object' || !('code' in error)) return undefined;
+    const code = (error as { code: unknown }).code;
+    return typeof code === 'string' && code.length > 0 ? logSafe(code, 64) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function logDraftForward(args: {
+  slug: string;
+  routine?: string;
+  identity: boolean;
+  reason: string;
+  source: 'jwt' | 'local-test' | 'none';
+  renewed: boolean;
+  status: number;
+  by: 'principal' | 'child';
+  errorCode?: string;
+}): void {
+  const line = [
+    `[draftProxy] ${new Date().toISOString()}`,
+    `slug=${args.slug}`,
+    ...(args.routine ? [`routine=${args.routine}`] : []),
+    `identity: ${args.identity ? 'yes' : 'no'}`,
+    `reason: ${args.reason}`,
+    `source: ${args.source}`,
+    `renewed: ${args.renewed ? 'yes' : 'no'}`,
+    `status=${args.status}`,
+    `by=${args.by}`,
+    ...(args.errorCode ? [`error=${args.errorCode}`] : []),
+  ].join(' ');
+  if (args.status >= 200 && args.status < 300) console.info(line);
+  else console.error(line);
+}
+
 function priorSetCookies(reply: FastifyReply): string[] {
   const existing = reply.getHeader('set-cookie');
   if (existing === undefined || existing === null) return [];
@@ -114,6 +183,9 @@ export async function proxyExecBff(args: {
   base: string;
   clientProjectId: number;
   claims?: CollabAuthClaims;
+  reason?: 'ok' | 'missing-token' | 'invalid-token';
+  source?: 'local-test';
+  renewed?: boolean;
 } & DraftExecDeps): Promise<void> {
   const ensure = args.ensureDevProcessImpl ?? ensureDevProcess;
   const touch = args.touchDevProcessImpl ?? touchDevProcess;
@@ -200,7 +272,20 @@ export async function proxyExecBff(args: {
   ];
   if (cookies.length === 1) args.reply.header('set-cookie', cookies[0]);
   else if (cookies.length > 1) args.reply.header('set-cookie', cookies);
-  args.reply.send(Buffer.from(await response.arrayBuffer()));
+  const payload = Buffer.from(await response.arrayBuffer());
+  const ok = response.status >= 200 && response.status < 300;
+  logDraftForward({
+    slug: args.slug,
+    routine: routineName(args.request.body),
+    identity: args.claims !== undefined,
+    reason: args.reason ?? (args.claims ? 'ok' : 'missing-token'),
+    source: loggedSource(args.claims, args.source),
+    renewed: args.renewed === true,
+    status: response.status,
+    by: 'child',
+    ...(ok ? {} : { errorCode: childErrorCode(payload) }),
+  });
+  args.reply.send(payload);
 }
 
 /** Runs the draft branch of POST /execBff. `handled: false` means the caller keeps today's flow. */
@@ -213,7 +298,19 @@ export async function applyDraftExecBff(args: {
   refreshedAuthCookie: (token: string) => string;
 } & DraftExecDeps): Promise<{ handled: boolean; statusCode?: 401 }> {
   const plan = await planDraftExecBff(args.request.headers.cookie, args.resolveSession);
-  if (plan.action === 'unauthorized') return { handled: false, statusCode: 401 };
+  if (plan.action === 'unauthorized') {
+    logDraftForward({
+      slug: plan.slug,
+      routine: routineName(args.request.body),
+      identity: false,
+      reason: plan.reason,
+      source: 'none',
+      renewed: false,
+      status: plan.statusCode,
+      by: 'principal',
+    });
+    return { handled: false, statusCode: 401 };
+  }
   if (plan.action !== 'proxy') return { handled: false };
 
   if (plan.newAccessToken) args.reply.header('set-cookie', args.refreshedAuthCookie(plan.newAccessToken));
@@ -230,6 +327,9 @@ export async function applyDraftExecBff(args: {
     base: args.base,
     clientProjectId,
     claims: plan.claims,
+    reason: plan.reason,
+    source: plan.source,
+    renewed: plan.newAccessToken !== undefined,
     fetchImpl: args.fetchImpl,
     ensureDevProcessImpl: args.ensureDevProcessImpl,
     touchDevProcessImpl: args.touchDevProcessImpl,

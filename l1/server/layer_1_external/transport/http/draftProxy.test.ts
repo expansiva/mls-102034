@@ -424,3 +424,175 @@ test('draft proxy drops a browser identity header and forwards the verified one'
   assert.equal(anonymous['x-collab-draft-identity'], undefined);
   assert.equal(anonymous['x-collab-draft-identity-secret'], undefined);
 });
+
+const TOKEN = 'renewed-access-token';
+const COOKIE = `cauth=${TOKEN}; collab-draft=${SLUG}`;
+
+async function withLogs(run: () => Promise<void>): Promise<string[]> {
+  const lines: string[] = [];
+  const info = console.info;
+  const error = console.error;
+  console.info = (...args: unknown[]) => {
+    lines.push(args.map((part) => String(part)).join(' '));
+  };
+  console.error = (...args: unknown[]) => {
+    lines.push(args.map((part) => String(part)).join(' '));
+  };
+  try {
+    await run();
+  } finally {
+    console.info = info;
+    console.error = error;
+  }
+  return lines;
+}
+
+function assertLogHasNoSecrets(lines: string[]): void {
+  const text = lines.join('\n');
+  assert.equal(text.includes(TOKEN), false);
+  assert.equal(text.includes(IDENTITY_SECRET), false);
+  assert.equal(text.includes('cauth'), false);
+  assert.equal(text.includes(VERIFIED_CLAIMS.email), false);
+  assert.equal(text.includes(VERIFIED_CLAIMS.sub), false);
+}
+
+test('draft forward logs identity yes and reason ok when the session has claims', async () => {
+  delete process.env.COLLAB_DRAFT;
+  const lines = await withLogs(async () => {
+    const result = await applyDraftExecBff({
+      request: fakeRequest({ routine: 'cafe.page.load' }, { cookie: COOKIE }),
+      reply: fakeReply(),
+      base: BASE,
+      clientProjectId: '102047',
+      resolveSession: async () => ({
+        reject: false,
+        claims: VERIFIED_CLAIMS,
+        reason: 'ok',
+        newAccessToken: TOKEN,
+        source: 'local-test',
+      }),
+      refreshedAuthCookie: (token) => `cauth=${token}; Path=/; HttpOnly`,
+      resolveRequestDraftImpl: async () => readyDraft(),
+      ensureDevProcessImpl: () => ({ ...devInfo(), identitySecret: IDENTITY_SECRET }),
+      touchDevProcessImpl: () => {},
+      fetchImpl: async () => new Response(JSON.stringify({ ok: true, data: null, error: null }), { status: 200 }),
+    });
+    assert.equal(result.handled, true);
+  });
+  const line = lines.find((entry) => entry.includes('[draftProxy]') && entry.includes('identity: yes'));
+  assert.ok(line);
+  assert.match(line, /reason: ok/);
+  assert.match(line, /source: local-test/);
+  assert.match(line, /renewed: yes/);
+  assert.match(line, /routine=cafe\.page\.load/);
+  assert.match(line, /status=200/);
+  assertLogHasNoSecrets(lines);
+});
+
+test('draft forward logs identity no and missing-token when there is no cauth', async () => {
+  delete process.env.COLLAB_DRAFT;
+  const lines = await withLogs(async () => {
+    await applyDraftExecBff({
+      request: fakeRequest({ routine: 'cafe.page.load' }, { cookie: `collab-draft=${SLUG}` }),
+      reply: fakeReply(),
+      base: BASE,
+      clientProjectId: '102047',
+      resolveSession: async () => ({ reject: false, reason: 'missing-token' }),
+      refreshedAuthCookie: (token) => token,
+      resolveRequestDraftImpl: async () => readyDraft(),
+      ensureDevProcessImpl: () => ({ ...devInfo(), identitySecret: IDENTITY_SECRET }),
+      touchDevProcessImpl: () => {},
+      fetchImpl: async () => new Response(JSON.stringify({ ok: true, data: null, error: null }), { status: 200 }),
+    });
+  });
+  const line = lines.find((entry) => entry.includes('[draftProxy]') && entry.includes('identity: no'));
+  assert.ok(line);
+  assert.match(line, /reason: missing-token/);
+  assert.match(line, /source: none/);
+  assert.match(line, /renewed: no/);
+  assertLogHasNoSecrets(lines);
+});
+
+test('draft forward logs status and error code when the child answers 401', async () => {
+  delete process.env.COLLAB_DRAFT;
+  const reply = fakeReply();
+  const lines = await withLogs(async () => {
+    await applyDraftExecBff({
+      request: fakeRequest({ routine: 'cafe.page.load' }, { cookie: COOKIE }),
+      reply,
+      base: BASE,
+      clientProjectId: '102047',
+      resolveSession: async () => ({ reject: false, reason: 'missing-token' }),
+      refreshedAuthCookie: (token) => `cauth=${token}`,
+      resolveRequestDraftImpl: async () => readyDraft(),
+      ensureDevProcessImpl: () => devInfo(),
+      touchDevProcessImpl: () => {},
+      fetchImpl: async () => new Response(
+        JSON.stringify({ ok: false, data: null, error: { code: 'UNAUTHENTICATED', message: 'no' } }),
+        { status: 401, headers: { 'content-type': 'application/json' } },
+      ),
+    });
+  });
+  const line = lines.find((entry) => entry.includes('status=401'));
+  assert.ok(line);
+  assert.match(line, /error=UNAUTHENTICATED/);
+  assert.equal(reply.statusCode, 401);
+  assert.equal(
+    Buffer.isBuffer(reply.sent) ? reply.sent.toString() : '',
+    '{"ok":false,"data":null,"error":{"code":"UNAUTHENTICATED","message":"no"}}',
+  );
+  assertLogHasNoSecrets(lines);
+});
+
+test('a session the parent rejects leaves a line saying the PRINCIPAL answered 401 and never calls the child', async () => {
+  delete process.env.COLLAB_DRAFT;
+  let childCalls = 0;
+  const lines = await withLogs(async () => {
+    const result = await applyDraftExecBff({
+      request: fakeRequest({ routine: 'cafe.page.load' }, { cookie: COOKIE }),
+      reply: fakeReply(),
+      base: BASE,
+      clientProjectId: '102047',
+      resolveSession: async () => ({ reject: true, reason: 'invalid-token' }),
+      refreshedAuthCookie: (token) => token,
+      resolveRequestDraftImpl: async () => readyDraft(),
+      ensureDevProcessImpl: () => ({ ...devInfo(), identitySecret: IDENTITY_SECRET }),
+      touchDevProcessImpl: () => {},
+      fetchImpl: async () => { childCalls += 1; return new Response('{}', { status: 200 }); },
+    });
+    assert.deepEqual(result, { handled: false, statusCode: 401 });
+  });
+  assert.equal(childCalls, 0);
+  const line = lines.find((entry) => entry.includes('[draftProxy]') && entry.includes('by=principal'));
+  assert.ok(line, lines.join('\n'));
+  assert.match(line, /status=401/);
+  assert.match(line, /reason: invalid-token/);
+  assert.match(line, /identity: no/);
+  assertLogHasNoSecrets(lines);
+});
+
+test('a routine name and a child error code with line breaks cannot forge log lines', async () => {
+  delete process.env.COLLAB_DRAFT;
+  const forgedRoutine = 'x\n[draftProxy] 2026-01-01T00:00:00.000Z slug=team-1 identity: yes by=child status=200';
+  const forgedCode = 'UNAUTHENTICATED\n[draftProxy] forged identity: yes';
+  const lines = await withLogs(async () => {
+    await applyDraftExecBff({
+      request: fakeRequest({ routine: forgedRoutine }, { cookie: `collab-draft=${SLUG}` }),
+      reply: fakeReply(),
+      base: BASE,
+      clientProjectId: '102047',
+      resolveSession: async () => ({ reject: false, reason: 'missing-token' }),
+      refreshedAuthCookie: (token) => token,
+      resolveRequestDraftImpl: async () => readyDraft(),
+      ensureDevProcessImpl: () => ({ ...devInfo(), identitySecret: IDENTITY_SECRET }),
+      touchDevProcessImpl: () => {},
+      fetchImpl: async () => new Response(JSON.stringify({ ok: false, data: null, error: { code: forgedCode } }), { status: 401 }),
+    });
+  });
+  const draftLines = lines.filter((entry) => entry.includes('[draftProxy]'));
+  assert.equal(draftLines.length, 1, 'exactly one log line per forward, none forged: ' + lines.join(' | '));
+  assert.equal(draftLines[0].includes('\n'), false);
+  assert.match(draftLines[0], /identity: no/);
+  assert.match(draftLines[0], /status=401/);
+  assert.match(draftLines[0], /error=UNAUTHENTICATED\?/);
+});
