@@ -42,7 +42,7 @@ import { authorFromSession, commitSavedSources } from '/_102034_/l1/server/layer
 import { discardDraft, draftDiff, fastForwardDraft, listDrafts, mergeMainIntoDraft, promoteDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitPromote.js';
 import { resolveRequestDraft, type RequestDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
 import { draftDatabaseUrl, ensureDevReaper, restartDevProcess, stopDevProcess } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
-import { desenvIo, handleDesenvEnter, handleDesenvExit } from '/_102034_/l1/server/layer_1_external/cbe/cbeDesenv.js';
+import { desenvIo, handleDesenvEnter, handleDesenvExit, handleDraftEnter } from '/_102034_/l1/server/layer_1_external/cbe/cbeDesenv.js';
 import { getRunningRelease } from '/_102034_/l1/server/layer_1_external/cbe/cbeRelease.js';
 import {
   CBE_HTTP_BAD_REQUEST,
@@ -1086,6 +1086,9 @@ async function handleExec(request: FastifyRequest, reply: FastifyReply): Promise
         return;
       case 'draftSync':
         await handleDraftSync(request, body as CbeRequestDraftSync, reply);
+        return;
+      case 'draftEnter':
+        await handleDraftEnter(request, body, reply);
         return;
       case 'providerToken': {
         const session = await resolveSession(request);

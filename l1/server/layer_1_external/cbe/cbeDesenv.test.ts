@@ -477,3 +477,76 @@ test('GET /desenv still enters when fast-forward fails', async () => {
     await app.close();
   }
 });
+
+test('POST /exec draftEnter returns JSON and never sets the draft cookie', async () => {
+  const prevLogin = process.env.CBE_REQUIRE_LOGIN;
+  delete process.env.CBE_REQUIRE_LOGIN;
+
+  const worktrees: string[] = [];
+  const origWorktree = desenvIo.ensureDraftWorktree;
+  const origFastForward = desenvIo.fastForwardDraft;
+  const origStop = desenvIo.stopDevProcess;
+  const origDev = desenvIo.ensureDevProcess;
+  const origReady = desenvIo.waitForDevReady;
+  const origProject = desenvIo.resolveClientProjectId;
+  desenvIo.resolveClientProjectId = () => String(PROJECT_ID);
+  desenvIo.stopDevProcess = () => {};
+  desenvIo.fastForwardDraft = async () => ({ status: 'fast_forwarded', ref: 'abc123' });
+  desenvIo.ensureDraftWorktree = async (opts) => {
+    worktrees.push(opts.slug);
+    return '/tmp/draft';
+  };
+  desenvIo.ensureDevProcess = () => ({ port: 4100, pid: 1, startedAt: 0, lastRequestAt: 0 });
+  desenvIo.waitForDevReady = async () => true;
+
+  const app = Fastify();
+  registerCbeRoutes(app);
+  const post = (payload: { action: string; project: number | string; draft: string }, host: string) => app.inject({
+    method: 'POST',
+    url: '/exec',
+    headers: { host, 'content-type': 'application/json' },
+    payload,
+  });
+
+  try {
+    const noSession = await post({ action: 'draftEnter', project: PROJECT_ID, draft: SLUG }, REAL_HOST);
+    assert.equal(noSession.statusCode, 401);
+    assert.equal(noSession.json().msg, 'login required');
+    assert.equal(headerValue(noSession.headers['set-cookie']), '');
+    assert.equal(worktrees.length, 0);
+
+    const badSlug = await post({ action: 'draftEnter', project: PROJECT_ID, draft: 'nope' }, 'localhost');
+    assert.equal(badSlug.statusCode, 400);
+    assert.equal(badSlug.json().msg, 'invalid draft');
+    assert.equal(worktrees.length, 0);
+
+    const otherApp = await post({ action: 'draftEnter', project: 102099, draft: SLUG }, 'localhost');
+    assert.equal(otherApp.statusCode, 400);
+    assert.equal(otherApp.json().msg, 'invalid project');
+    assert.equal(headerValue(otherApp.headers['set-cookie']), '');
+    assert.equal(worktrees.length, 0);
+
+    const entered = await post({ action: 'draftEnter', project: PROJECT_ID, draft: SLUG }, 'localhost');
+    assert.equal(entered.statusCode, 200);
+    assert.equal(headerValue(entered.headers['set-cookie']), '');
+    assert.equal(headerValue(entered.headers.location), '');
+    assert.deepEqual(entered.json(), { statusCode: 200, ok: true, slug: SLUG, head: 'abc123' });
+
+    desenvIo.waitForDevReady = async () => false;
+    const down = await post({ action: 'draftEnter', project: String(PROJECT_ID), draft: SLUG }, 'localhost');
+    assert.equal(down.statusCode, 503);
+    assert.equal(down.json().msg, 'draft unavailable: dev not ready');
+    assert.equal(headerValue(down.headers['set-cookie']), '');
+    assert.equal(headerValue(down.headers.location), '');
+  } finally {
+    desenvIo.ensureDraftWorktree = origWorktree;
+    desenvIo.fastForwardDraft = origFastForward;
+    desenvIo.stopDevProcess = origStop;
+    desenvIo.ensureDevProcess = origDev;
+    desenvIo.waitForDevReady = origReady;
+    desenvIo.resolveClientProjectId = origProject;
+    if (prevLogin === undefined) delete process.env.CBE_REQUIRE_LOGIN;
+    else process.env.CBE_REQUIRE_LOGIN = prevLogin;
+    await app.close();
+  }
+});

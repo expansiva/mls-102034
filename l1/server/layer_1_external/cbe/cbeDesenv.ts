@@ -10,6 +10,7 @@ import { getProjectsBaseDir } from '/_102034_/l1/server/layer_1_external/cbe/cbe
 import { readProjectsConfig } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import {
   CBE_HTTP_BAD_REQUEST,
+  CBE_HTTP_OK,
   CBE_HTTP_SERVER_ERROR,
   CBE_HTTP_UNAUTHORIZED,
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeTypes.js';
@@ -21,7 +22,15 @@ export interface DesenvResult {
   status: number;
   location?: string;
   setCookie?: string;
-  body?: { statusCode: number; msg: string };
+  body?: { statusCode: number; msg: string } | { statusCode: number; ok: true; slug: string; head?: string };
+}
+
+type DraftRefusal = { ok: false; status: number; msg: string };
+
+interface OpenedDraft {
+  ok: true;
+  slug: string;
+  head?: string;
 }
 
 /**
@@ -83,32 +92,42 @@ function jsonResult(status: number, msg: string): DesenvResult {
   return { status, body: { statusCode: status, msg } };
 }
 
-export async function runDesenvEnter(input: {
+function sameClientProject(project: unknown): boolean {
+  const client = desenvIo.resolveClientProjectId();
+  if (typeof project === 'string') return project === client;
+  if (typeof project === 'number' && Number.isSafeInteger(project)) return String(project) === client;
+  return false;
+}
+
+/** Session, slug, worktree, fast-forward and a ready dev process. Both doors call this. */
+async function enterDraft(input: {
   allowed: boolean;
   draft: string | undefined;
-  to: string | undefined;
-}): Promise<DesenvResult> {
-  if (!input.allowed) return jsonResult(CBE_HTTP_UNAUTHORIZED, 'login required');
+  gate?: () => DraftRefusal | undefined;
+}): Promise<DraftRefusal | OpenedDraft> {
+  if (!input.allowed) return { ok: false, status: CBE_HTTP_UNAUTHORIZED, msg: 'login required' };
 
   const parsed = parseDraftSlug(input.draft);
-  if (!parsed) return jsonResult(CBE_HTTP_BAD_REQUEST, 'invalid draft');
+  if (!parsed) return { ok: false, status: CBE_HTTP_BAD_REQUEST, msg: 'invalid draft' };
 
-  const location = draftReturnPath(input.to);
-  if (!location) return jsonResult(CBE_HTTP_BAD_REQUEST, 'invalid redirect');
+  const gated = input.gate?.();
+  if (gated) return gated;
 
   const projectId = clientProjectNumber(desenvIo.resolveClientProjectId());
   if (projectId === null) {
     console.error(`[cbe] /desenv: client project id is not an integer: ${desenvIo.resolveClientProjectId()}`);
-    return jsonResult(CBE_HTTP_SERVER_ERROR, 'draft unavailable');
+    return { ok: false, status: CBE_HTTP_SERVER_ERROR, msg: 'draft unavailable' };
   }
 
   const base = desenvIo.getProjectsBaseDir();
   let port: number;
+  let head: string | undefined;
   try {
     await desenvIo.ensureDraftWorktree({ base, projectId, slug: parsed.slug, branch: parsed.branch });
     try {
       const sync = await desenvIo.fastForwardDraft({ base, projectId, slug: parsed.slug });
       if (sync.status === 'fast_forwarded') {
+        head = sync.ref;
         desenvIo.stopDevProcess(base, parsed.slug);
         console.info(`[cbe] /desenv: draft ${parsed.slug} fast-forwarded to ${sync.ref}`);
       } else if (sync.status !== 'up_to_date' && sync.status !== 'diverged') {
@@ -123,18 +142,59 @@ export async function runDesenvEnter(input: {
   } catch (err) {
     console.error(`[cbe] /desenv: draft ${parsed.slug} failed: ${(err as Error).message}`);
     if (err instanceof AncestorDenoConfigError || err instanceof DraftDatabaseError || err instanceof DraftWorktreeMissingError || err instanceof DenoMissingError) {
-      return jsonResult(503, 'draft unavailable: ' + err.message);
+      return { ok: false, status: 503, msg: 'draft unavailable: ' + err.message };
     }
-    return jsonResult(CBE_HTTP_SERVER_ERROR, 'draft unavailable');
+    return { ok: false, status: CBE_HTTP_SERVER_ERROR, msg: 'draft unavailable' };
   }
 
   const ready = await desenvIo.waitForDevReady(port);
   if (!ready) {
     console.error(`[cbe] /desenv: draft ${parsed.slug} dev not ready on port ${port}`);
-    return jsonResult(503, 'draft unavailable: dev not ready');
+    return { ok: false, status: 503, msg: 'draft unavailable: dev not ready' };
   }
 
-  return { status: HTTP_FOUND, location, setCookie: draftCookie(parsed.slug) };
+  return { ok: true, slug: parsed.slug, head };
+}
+
+export async function runDesenvEnter(input: {
+  allowed: boolean;
+  draft: string | undefined;
+  to: string | undefined;
+}): Promise<DesenvResult> {
+  const entered = await enterDraft({
+    allowed: input.allowed,
+    draft: input.draft,
+    gate: () => {
+      const location = draftReturnPath(input.to);
+      if (!location) return { ok: false, status: CBE_HTTP_BAD_REQUEST, msg: 'invalid redirect' };
+      return undefined;
+    },
+  });
+  if (!entered.ok) return jsonResult(entered.status, entered.msg);
+  return { status: HTTP_FOUND, location: draftReturnPath(input.to) ?? '/', setCookie: draftCookie(entered.slug) };
+}
+
+export async function runDraftEnter(input: {
+  allowed: boolean;
+  draft: string | undefined;
+  project: unknown;
+}): Promise<DesenvResult> {
+  const entered = await enterDraft({
+    allowed: input.allowed,
+    draft: input.draft,
+    gate: () => {
+      if (!sameClientProject(input.project)) return { ok: false, status: CBE_HTTP_BAD_REQUEST, msg: 'invalid project' };
+      return undefined;
+    },
+  });
+  if (!entered.ok) return jsonResult(entered.status, entered.msg);
+  const body: { statusCode: number; ok: true; slug: string; head?: string } = {
+    statusCode: CBE_HTTP_OK,
+    ok: true,
+    slug: entered.slug,
+  };
+  if (entered.head !== undefined) body.head = entered.head;
+  return { status: CBE_HTTP_OK, body };
 }
 
 export function runDesenvExit(input: { to: string | undefined }): DesenvResult {
@@ -152,6 +212,21 @@ function sendDesenv(reply: FastifyReply, result: DesenvResult): void {
     return;
   }
   reply.send();
+}
+
+export async function handleDraftEnter(
+  request: FastifyRequest,
+  body: object,
+  reply: FastifyReply,
+): Promise<void> {
+  const fields = body as { project?: unknown; draft?: unknown };
+  const result = await runDraftEnter({
+    allowed: await desenvIo.isAllowed(request),
+    draft: typeof fields.draft === 'string' ? fields.draft : undefined,
+    project: fields.project,
+  });
+  reply.code(result.status);
+  reply.send(result.body);
 }
 
 export async function handleDesenvEnter(request: FastifyRequest, reply: FastifyReply): Promise<void> {
