@@ -1,37 +1,31 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/cbe/cbeProviderToken.test.ts" enhancement="_blank" />
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import { handleProviderToken, type ProviderTokenReply } from '/_102034_/l1/server/layer_1_external/cbe/cbeProviderToken.js';
 
-const ENV_KEYS = [
-  'COLLAB_GITHUB_CLIENT_ID',
-  'COLLAB_GITHUB_CLIENT_SECRET',
-  'COLLAB_GITLAB_CLIENT_ID',
-  'COLLAB_GITLAB_CLIENT_SECRET',
-] as const;
-
-const saved: Record<string, string | undefined> = {};
-
-function saveEnv(): void {
-  for (const key of ENV_KEYS) saved[key] = process.env[key];
-}
+const savedAppconfig = process.env.COLLAB_APPCONFIG_FILE;
+const tempDirs: string[] = [];
 
 function restoreEnv(): void {
-  for (const key of ENV_KEYS) {
-    if (saved[key] === undefined) delete process.env[key];
-    else process.env[key] = saved[key];
-  }
+  if (savedAppconfig === undefined) delete process.env.COLLAB_APPCONFIG_FILE;
+  else process.env.COLLAB_APPCONFIG_FILE = savedAppconfig;
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 }
 
-function setEnv(): void {
-  process.env.COLLAB_GITHUB_CLIENT_ID = 'gh-id';
-  process.env.COLLAB_GITHUB_CLIENT_SECRET = 'gh-secret';
-  process.env.COLLAB_GITLAB_CLIENT_ID = 'gl-id';
-  process.env.COLLAB_GITLAB_CLIENT_SECRET = 'gl-secret';
+function writeAppconfig(value: unknown): string {
+  const dir = mkdtempSync(join(tmpdir(), 'provider-token-'));
+  tempDirs.push(dir);
+  const file = join(dir, 'appconfig.json');
+  writeFileSync(file, typeof value === 'string' ? value : JSON.stringify(value));
+  process.env.COLLAB_APPCONFIG_FILE = file;
+  return file;
 }
 
-function clearEnv(): void {
-  for (const key of ENV_KEYS) delete process.env[key];
+function providersFile(github: { clientId: string; clientSecret: string }, gitlab = github): string {
+  return writeAppconfig({ oauthProviders: { github, gitlab } });
 }
 
 function capture(): { sent: { status?: number; body?: unknown }; reply: ProviderTokenReply } {
@@ -45,14 +39,19 @@ function capture(): { sent: { status?: number; body?: unknown }; reply: Provider
   return { sent, reply };
 }
 
-saveEnv();
+function captureErrors(): { errors: string[]; restore: () => void } {
+  const errors: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => { errors.push(args.map(String).join(' ')); };
+  return { errors, restore: () => { console.error = original; } };
+}
+
 afterEach(() => {
   restoreEnv();
 });
 
 describe('providerToken', () => {
   it('returns 401 without a collab-auth email', async () => {
-    setEnv();
     const { sent, reply } = capture();
     await handleProviderToken(
       { headers: { host: '102047.collabcodes.com' } },
@@ -64,7 +63,6 @@ describe('providerToken', () => {
   });
 
   it('returns 400 when the redirect host differs', async () => {
-    setEnv();
     const { sent, reply } = capture();
     let called = false;
     await handleProviderToken(
@@ -78,12 +76,10 @@ describe('providerToken', () => {
     assert.equal(called, false);
   });
 
-  it('returns 503 and names the missing key', async () => {
-    clearEnv();
-    process.env.COLLAB_GITHUB_CLIENT_ID = 'gh-id';
-    const errors: string[] = [];
-    const original = console.error;
-    console.error = (...args: unknown[]) => { errors.push(args.map(String).join(' ')); };
+  it('returns 503 and names the path when the appconfig file is missing', async () => {
+    const missing = join(tmpdir(), 'provider-token-absent', 'appconfig.json');
+    process.env.COLLAB_APPCONFIG_FILE = missing;
+    const { errors, restore } = captureErrors();
     try {
       const { sent, reply } = capture();
       await handleProviderToken(
@@ -93,19 +89,81 @@ describe('providerToken', () => {
         { email: 'a@collab.codes' },
       );
       assert.equal(sent.status, 503);
-      assert.deepEqual((sent.body as { error: string }).error, 'PROVIDER_NOT_CONFIGURED');
-      assert.ok(errors.some((line) => line.includes('COLLAB_GITHUB_CLIENT_SECRET')));
-      assert.equal(errors.some((line) => line.includes('gh-id')), false);
+      assert.equal((sent.body as { error: string }).error, 'PROVIDER_NOT_CONFIGURED');
+      assert.ok(errors.some((line) => line.includes(missing)));
     } finally {
-      console.error = original;
+      restore();
+    }
+  });
+
+  it('returns 503 and does not log the file when the JSON is invalid', async () => {
+    const file = writeAppconfig('{"oauthProviders": not-json secret-in-file}');
+    const { errors, restore } = captureErrors();
+    try {
+      const { sent, reply } = capture();
+      await handleProviderToken(
+        { headers: { host: '102047.collabcodes.com' } },
+        { source: 'github', code: 'abc', redirectUri: 'https://102047.collabcodes.com?source=github' },
+        reply,
+        { email: 'a@collab.codes' },
+      );
+      assert.equal(sent.status, 503);
+      assert.equal((sent.body as { error: string }).error, 'PROVIDER_NOT_CONFIGURED');
+      const log = errors.join('\n');
+      assert.ok(log.includes(file));
+      assert.ok(log.includes('invalid JSON'));
+      assert.equal(log.includes('secret-in-file'), false);
+    } finally {
+      restore();
+    }
+  });
+
+  it('returns 503 and says it cannot read the path when it is not a readable file', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'provider-token-dir-'));
+    process.env.COLLAB_APPCONFIG_FILE = dir;
+    const { errors, restore } = captureErrors();
+    try {
+      const { sent, reply } = capture();
+      await handleProviderToken(
+        { headers: { host: '102047.collabcodes.com' } },
+        { source: 'github', code: 'abc', redirectUri: 'https://102047.collabcodes.com?source=github' },
+        reply,
+        { email: 'a@collab.codes' },
+      );
+      assert.equal(sent.status, 503);
+      assert.ok(errors.join('\n').includes(`cannot read ${dir} (EISDIR)`));
+    } finally {
+      restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns 503 and names the missing field', async () => {
+    const file = writeAppconfig({
+      oauthProviders: { github: { clientId: 'gh-id-must-not-log' } },
+    });
+    const { errors, restore } = captureErrors();
+    try {
+      const { sent, reply } = capture();
+      await handleProviderToken(
+        { headers: { host: '102047.collabcodes.com' } },
+        { source: 'github', code: 'abc', redirectUri: 'https://102047.collabcodes.com?source=github' },
+        reply,
+        { email: 'a@collab.codes' },
+      );
+      assert.equal(sent.status, 503);
+      assert.equal((sent.body as { error: string }).error, 'PROVIDER_NOT_CONFIGURED');
+      const log = errors.join('\n');
+      assert.ok(log.includes(`${file} oauthProviders.github.clientSecret`));
+      assert.equal(log.includes('gh-id-must-not-log'), false);
+    } finally {
+      restore();
     }
   });
 
   it('returns 502 when the provider omits access_token and does not log the body', async () => {
-    setEnv();
-    const errors: string[] = [];
-    const original = console.error;
-    console.error = (...args: unknown[]) => { errors.push(args.map(String).join(' ')); };
+    providersFile({ clientId: 'gh-id', clientSecret: 'gh-secret' });
+    const { errors, restore } = captureErrors();
     try {
       const { sent, reply } = capture();
       await handleProviderToken(
@@ -125,15 +183,13 @@ describe('providerToken', () => {
       assert.equal(log.includes('token-must-not-appear'), false);
       assert.equal(log.includes('gh-secret'), false);
     } finally {
-      console.error = original;
+      restore();
     }
   });
 
   it('returns 502 when the exchange throws and logs only the error name', async () => {
-    setEnv();
-    const errors: string[] = [];
-    const original = console.error;
-    console.error = (...args: unknown[]) => { errors.push(args.map(String).join(' ')); };
+    providersFile({ clientId: 'gh-id', clientSecret: 'gh-secret' });
+    const { errors, restore } = captureErrors();
     try {
       const { sent, reply } = capture();
       await handleProviderToken(
@@ -150,25 +206,51 @@ describe('providerToken', () => {
       assert.equal(log.includes('gh-secret'), false);
       assert.equal(log.includes('the-code'), false);
     } finally {
-      console.error = original;
+      restore();
     }
   });
 
-  it('returns the GitHub token and posts the same redirect_uri', async () => {
+  it('returns the GitHub token and posts the id and secret from the file', async () => {
     await expectExchange('github', 'https://github.com/login/oauth/access_token', undefined);
   });
 
-  it('returns the GitLab token and posts grant_type plus redirect_uri', async () => {
+  it('returns the GitLab token and posts grant_type plus the file credentials', async () => {
     await expectExchange('gitlab', 'https://gitlab.com/oauth/token', 'authorization_code');
+  });
+
+  it('reads the file again on the next call', async () => {
+    const file = providersFile({ clientId: 'id-1', clientSecret: 'secret-1' });
+    const posted: string[] = [];
+    const fetchImpl: typeof fetch = (_input, init) => {
+      posted.push((JSON.parse(String(init?.body)) as { client_id: string }).client_id);
+      return Promise.resolve(new Response(JSON.stringify({ access_token: 'tok' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    };
+    const call = () => handleProviderToken(
+      { headers: { host: '102047.collabcodes.com' } },
+      { source: 'github', code: 'the-code', redirectUri: 'https://102047.collabcodes.com?source=github' },
+      capture().reply,
+      { email: 'a@collab.codes' },
+      fetchImpl,
+    );
+    await call();
+    writeFileSync(file, JSON.stringify({
+      oauthProviders: { github: { clientId: 'id-2', clientSecret: 'secret-2' } },
+    }));
+    await call();
+    assert.deepEqual(posted, ['id-1', 'id-2']);
   });
 });
 
 async function expectExchange(source: 'github' | 'gitlab', url: string, grant: string | undefined): Promise<void> {
-  setEnv();
+  providersFile(
+    { clientId: 'gh-id', clientSecret: 'gh-secret' },
+    { clientId: 'gl-id', clientSecret: 'gl-secret' },
+  );
   const token = `token-value-${source}`;
-  const errors: string[] = [];
-  const original = console.error;
-  console.error = (...args: unknown[]) => { errors.push(args.map(String).join(' ')); };
+  const { errors, restore } = captureErrors();
   let posted: { url?: string; body?: unknown } = {};
   try {
     const { sent, reply } = capture();
@@ -201,6 +283,6 @@ async function expectExchange(source: 'github' | 'gitlab', url: string, grant: s
     assert.equal(log.includes('gh-secret'), false);
     assert.equal(log.includes('gl-secret'), false);
   } finally {
-    console.error = original;
+    restore();
   }
 }

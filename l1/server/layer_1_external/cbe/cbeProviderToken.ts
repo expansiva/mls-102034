@@ -3,11 +3,13 @@
 // The collab-auth session is required; the token is returned to the browser
 // and is never stored or written to the log.
 
+import { readFile } from 'node:fs/promises';
 import { CBE_HTTP_BAD_REQUEST, CBE_HTTP_OK, CBE_HTTP_UNAUTHORIZED } from '/_102034_/l1/server/layer_1_external/cbe/cbeTypes.js';
 
 const HTTP_BAD_GATEWAY = 502;
 const HTTP_UNAVAILABLE = 503;
 const EXCHANGE_TIMEOUT_MS = 10_000;
+const DEFAULT_APPCONFIG_FILE = '/etc/collab/appconfig.json';
 
 export type ProviderSource = 'github' | 'gitlab';
 
@@ -27,18 +29,68 @@ export interface ProviderTokenReply {
 
 type ProviderFetch = typeof fetch;
 
-const PROVIDERS: Record<ProviderSource, { idKey: string; secretKey: string; url: string }> = {
-  github: {
-    idKey: 'COLLAB_GITHUB_CLIENT_ID',
-    secretKey: 'COLLAB_GITHUB_CLIENT_SECRET',
-    url: 'https://github.com/login/oauth/access_token',
-  },
-  gitlab: {
-    idKey: 'COLLAB_GITLAB_CLIENT_ID',
-    secretKey: 'COLLAB_GITLAB_CLIENT_SECRET',
-    url: 'https://gitlab.com/oauth/token',
-  },
+const PROVIDERS: Record<ProviderSource, { url: string }> = {
+  github: { url: 'https://github.com/login/oauth/access_token' },
+  gitlab: { url: 'https://gitlab.com/oauth/token' },
 };
+
+interface OAuthClient {
+  clientId: string;
+  clientSecret: string;
+}
+
+function appconfigPath(): string {
+  const fromEnv = process.env.COLLAB_APPCONFIG_FILE;
+  return typeof fromEnv === 'string' && fromEnv.length > 0 ? fromEnv : DEFAULT_APPCONFIG_FILE;
+}
+
+function stringField(entry: unknown, field: 'clientId' | 'clientSecret'): string {
+  if (!entry || typeof entry !== 'object') return '';
+  const value = (entry as Record<string, unknown>)[field];
+  return typeof value === 'string' ? value : '';
+}
+
+// Read on every call: editing the file applies without a restart and to every worker.
+async function readOAuthClient(source: ProviderSource): Promise<OAuthClient | undefined> {
+  const path = appconfigPath();
+  let text: string;
+  try {
+    text = await readFile(path, 'utf8');
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    console.error(code === 'ENOENT'
+      ? `[cbe] providerToken missing ${path}`
+      : `[cbe] providerToken cannot read ${path} (${typeof code === 'string' ? code : 'unknown'})`);
+    return undefined;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    // Never the parser message: it can echo a piece of the file, which holds the secrets.
+    console.error(`[cbe] providerToken invalid JSON in ${path}`);
+    return undefined;
+  }
+
+  const providers = parsed && typeof parsed === 'object'
+    ? (parsed as { oauthProviders?: unknown }).oauthProviders
+    : undefined;
+  const entry = providers && typeof providers === 'object'
+    ? (providers as Record<string, unknown>)[source]
+    : undefined;
+  const clientId = stringField(entry, 'clientId');
+  const clientSecret = stringField(entry, 'clientSecret');
+  if (clientId.length === 0) {
+    console.error(`[cbe] providerToken missing ${path} oauthProviders.${source}.clientId`);
+    return undefined;
+  }
+  if (clientSecret.length === 0) {
+    console.error(`[cbe] providerToken missing ${path} oauthProviders.${source}.clientSecret`);
+    return undefined;
+  }
+  return { clientId, clientSecret };
+}
 
 function hostHeader(request: ProviderTokenRequest): string | undefined {
   const host = request.headers.host;
@@ -91,16 +143,15 @@ export async function handleProviderToken(
   }
 
   const provider = PROVIDERS[input.source];
-  const missing = [provider.idKey, provider.secretKey].filter((key) => !process.env[key]);
-  if (missing.length > 0) {
-    for (const key of missing) console.error(`[cbe] providerToken missing ${key}`);
+  const client = await readOAuthClient(input.source);
+  if (!client) {
     reply.code(HTTP_UNAVAILABLE).send({ statusCode: HTTP_UNAVAILABLE, error: 'PROVIDER_NOT_CONFIGURED' });
     return;
   }
 
   const payload: Record<string, string> = {
-    client_id: process.env[provider.idKey] as string,
-    client_secret: process.env[provider.secretKey] as string,
+    client_id: client.clientId,
+    client_secret: client.clientSecret,
     code: input.code,
     redirect_uri: input.redirectUri,
   };
