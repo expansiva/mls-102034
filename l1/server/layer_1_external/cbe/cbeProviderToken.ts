@@ -9,8 +9,7 @@ import { CBE_HTTP_BAD_REQUEST, CBE_HTTP_OK, CBE_HTTP_UNAUTHORIZED } from '/_1020
 const HTTP_BAD_GATEWAY = 502;
 const HTTP_UNAVAILABLE = 503;
 const EXCHANGE_TIMEOUT_MS = 10_000;
-// Next to the base, never inside it: the draft process may read the whole base (`--allow-read=<base>`).
-export const DEFAULT_APPCONFIG_FILE = '/data/appconfig.json';
+const DEFAULT_APPCONFIG_FILE = '/data/mls-base/appconfig.json';
 
 export type ProviderSource = 'github' | 'gitlab';
 

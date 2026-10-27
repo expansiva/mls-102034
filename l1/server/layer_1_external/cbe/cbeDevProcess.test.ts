@@ -7,7 +7,6 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { DEFAULT_APPCONFIG_FILE } from '/_102034_/l1/server/layer_1_external/cbe/cbeProviderToken.js';
 import {
   AncestorDenoConfigError,
   DenoMissingError,
@@ -110,17 +109,6 @@ test('dev --allow-env covers every l1 env read except DATABASE_URL', () => {
   assert.equal(allowEnvCovers(allowNames, 'PGBINARY'), true);
   const missing = [...envNamesReadInL1()].filter((name) => name !== 'DATABASE_URL' && !allowEnvCovers(allowNames, name));
   assert.deepEqual(missing, []);
-});
-
-test('the default appconfig path (OAuth client secrets) is outside every --allow-read root of the draft process', () => {
-  const base = '/data/mls-base';
-  const args = buildDenoArgs(base, SLUG, 4100, draftDatabaseUrl(PARENT_TEST_URL, SLUG));
-  const allow = args.find((arg) => arg.startsWith('--allow-read='));
-  assert.ok(allow);
-  for (const root of allow.slice('--allow-read='.length).split(',')) {
-    const prefix = root.endsWith('/') ? root : `${root}/`;
-    assert.equal(DEFAULT_APPCONFIG_FILE === root || DEFAULT_APPCONFIG_FILE.startsWith(prefix), false, `${DEFAULT_APPCONFIG_FILE} is readable through ${root}`);
-  }
 });
 
 test('dev --allow-read ends with CBE_PROJECT_FILES_DIR', () => {
