@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -137,6 +137,56 @@ test('dev --allow-read ends with CBE_PROJECT_FILES_DIR', () => {
   }
 });
 
+test('draft --allow-read uses the real project path and keeps appconfig outside it', () => {
+  const root = mkdtempSync(join(tmpdir(), 'cbe-allow-'));
+  const dataEtc = join(root, 'data', 'etc');
+  const projects = join(dataEtc, 'projects');
+  mkdirSync(projects, { recursive: true });
+  writeFileSync(join(dataEtc, 'appconfig.json'), '{}\n');
+  const etcCollab = join(root, 'etc', 'collab');
+  mkdirSync(dirname(etcCollab), { recursive: true });
+  symlinkSync(dataEtc, etcCollab);
+  const linkedProjects = join(etcCollab, 'projects');
+  const linkedAppconfig = join(etcCollab, 'appconfig.json');
+  const missing = join(root, 'missing', 'projects');
+  const previousProjects = process.env.CBE_PROJECT_FILES_DIR;
+  const previousAppconfig = process.env.COLLAB_APPCONFIG_FILE;
+  const databaseUrl = draftDatabaseUrl(PARENT_TEST_URL, SLUG);
+  try {
+    process.env.CBE_PROJECT_FILES_DIR = missing;
+    const missingAllow = buildDenoArgs('/tmp/base', SLUG, 4100, databaseUrl)
+      .find((arg) => arg.startsWith('--allow-read='));
+    assert.ok(missingAllow);
+    assert.equal(missingAllow.endsWith(`,${missing}`), true);
+    assert.equal(process.env.CBE_PROJECT_FILES_DIR, missing);
+
+    process.env.CBE_PROJECT_FILES_DIR = linkedProjects;
+    process.env.COLLAB_APPCONFIG_FILE = linkedAppconfig;
+    const allow = buildDenoArgs('/tmp/base', SLUG, 4100, databaseUrl)
+      .find((arg) => arg.startsWith('--allow-read='));
+    assert.ok(allow);
+    const realProjects = realpathSync(linkedProjects);
+    const roots = allow.slice('--allow-read='.length).split(',');
+    assert.equal(roots.includes(linkedProjects), true, 'the link path must be allowed: Deno does not resolve it first');
+    assert.equal(roots.includes(realProjects), true);
+    assert.equal(process.env.CBE_PROJECT_FILES_DIR, linkedProjects);
+    const appconfig = process.env.COLLAB_APPCONFIG_FILE;
+    const appconfigReal = realpathSync(appconfig);
+    for (const entry of allow.slice('--allow-read='.length).split(',')) {
+      const prefix = entry.endsWith('/') ? entry : `${entry}/`;
+      assert.equal(appconfig === entry || appconfig.startsWith(prefix), false, `${appconfig} is readable through ${entry}`);
+      assert.equal(appconfigReal === entry || appconfigReal.startsWith(prefix), false, `${appconfigReal} is readable through ${entry}`);
+      assert.equal(DEFAULT_APPCONFIG_FILE === entry || DEFAULT_APPCONFIG_FILE.startsWith(prefix), false);
+    }
+  } finally {
+    if (previousProjects === undefined) delete process.env.CBE_PROJECT_FILES_DIR;
+    else process.env.CBE_PROJECT_FILES_DIR = previousProjects;
+    if (previousAppconfig === undefined) delete process.env.COLLAB_APPCONFIG_FILE;
+    else process.env.COLLAB_APPCONFIG_FILE = previousAppconfig;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 function dummyPid(pids: number[]): number {
   const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
     detached: true,
@@ -209,9 +259,11 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
       assert.equal(calls.length, 1);
       assert.equal(calls[0].command, 'deno');
       assert.deepEqual(calls[0].args, buildDenoArgs(base, SLUG, 4100, draftUrl));
+      const projectFilesDir = process.env.CBE_PROJECT_FILES_DIR ?? '/etc/collab/projects';
+      const projectFilesAllow = [...new Set([projectFilesDir, ...(existsSync(projectFilesDir) ? [realpathSync(projectFilesDir)] : [])])];
       assert.deepEqual(calls[0].args, [
         'run',
-        `--allow-read=${base},${join(base, 'drafts', SLUG)},${process.env.CBE_PROJECT_FILES_DIR ?? '/etc/collab/projects'}`,
+        `--allow-read=${base},${join(base, 'drafts', SLUG)},${projectFilesAllow.join(',')}`,
         `--allow-env=${[...memoryModeAllowEnv(), 'DATABASE_URL_TEST', 'PG*', 'USERNAME'].join(',')}`,
         '--allow-net=0.0.0.0:4100,127.0.0.1,127.0.0.1:5432',
         '--allow-sys=networkInterfaces,loadavg,systemMemoryInfo,cpus',

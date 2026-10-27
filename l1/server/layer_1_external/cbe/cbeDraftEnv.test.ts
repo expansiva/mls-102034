@@ -1,7 +1,8 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/cbe/cbeDraftEnv.test.ts" enhancement="_blank" />
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
@@ -383,5 +384,43 @@ test('draft process takes only the identity the parent already verified', async 
     ]);
   } finally {
     rmSync(draftDir, { recursive: true, force: true });
+  }
+});
+
+test('real Deno: with /etc/collab linked to the data disk, the draft reads projects/<id>.json through the link and never appconfig.json', async () => {
+  const { buildDraftDenoConfig } = await loadDraftDenoConfigModule();
+  const draftDir = join(mlsBase, 'drafts', 'rt137-link');
+  const root = mkdtempSync(join(tmpdir(), 'rt137-link-'));
+  const dataEtc = join(root, 'data', 'etc');
+  const etcCollab = join(root, 'etc', 'collab');
+  mkdirSync(join(dataEtc, 'projects'), { recursive: true });
+  mkdirSync(dirname(etcCollab), { recursive: true });
+  symlinkSync(dataEtc, etcCollab);
+  writeFileSync(join(dataEtc, 'projects', '102047.json'), '{"ok":true}\n');
+  writeFileSync(join(dataEtc, 'appconfig.json'), '{"oauthProviders":{}}\n');
+  mkdirSync(draftDir, { recursive: true });
+  const configPath = join(draftDir, 'deno.json');
+  const entry = join(draftDir, 'readViaLink.ts');
+  writeFileSync(configPath, `${JSON.stringify(buildDraftDenoConfig({ base: mlsBase, slug: 'rt137-link', clientProjectId: 102047 }), null, 2)}\n`);
+  writeFileSync(entry, `
+async function tryRead(label: string, path: string) {
+  try { await Deno.readTextFile(path); console.log('RT137 ' + label + ' read'); }
+  catch (error) { console.log('RT137 ' + label + ' ' + (error instanceof Error ? error.name : 'error')); }
+}
+await tryRead('projects', ${JSON.stringify(join(etcCollab, 'projects', '102047.json'))});
+await tryRead('appconfig', ${JSON.stringify(join(etcCollab, 'appconfig.json'))});
+`);
+  const previous = process.env.CBE_PROJECT_FILES_DIR;
+  process.env.CBE_PROJECT_FILES_DIR = join(etcCollab, 'projects');
+  try {
+    const result = runDeno(entry, configPath);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /RT137 projects read/);
+    assert.match(result.stdout, /RT137 appconfig NotCapable/);
+  } finally {
+    if (previous === undefined) delete process.env.CBE_PROJECT_FILES_DIR;
+    else process.env.CBE_PROJECT_FILES_DIR = previous;
+    rmSync(draftDir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
   }
 });

@@ -8,7 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import {
   accessSync, chmodSync, closeSync, constants, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync,
-  readFileSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync,
+  readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
@@ -272,12 +272,15 @@ export function memoryModeAllowEnv(): string[] {
 export function buildDenoArgs(base: string, slug: string, port: number, databaseUrl: string): string[] {
   const draftDir = draftDirOf(base, slug);
   const projectFilesDir = process.env.CBE_PROJECT_FILES_DIR ?? '/etc/collab/projects';
+  // Deno checks the path as given and does not resolve links first (measured, 2.4.5): `/etc/collab` is a link to the data
+  // disk, so the link path must be allowed for the read to pass. The real path is added for a Deno that does resolve.
+  const projectFilesAllow = [...new Set([projectFilesDir, ...(existsSync(projectFilesDir) ? [realpathSync(projectFilesDir)] : [])])];
   const allowEnv = memoryModeAllowEnv();
   // pg reads `process.env['PG' + key]` (PGBINARY, PGSSLMODE, …) plus USERNAME. Deno ≥ 2.1 accepts the suffix `*`.
   allowEnv.push('DATABASE_URL_TEST', 'PG*', 'USERNAME');
   return [
     'run',
-    `--allow-read=${base},${draftDir},${projectFilesDir}`,
+    `--allow-read=${base},${draftDir},${projectFilesAllow.join(',')}`,
     `--allow-env=${allowEnv.join(',')}`,
     `--allow-net=0.0.0.0:${port},127.0.0.1,${postgresHostPort(databaseUrl)}`,
     // networkInterfaces: the server. loadavg, systemMemoryInfo, cpus: `os.loadavg/freemem/totalmem/cpus` of the monitor collectors.
