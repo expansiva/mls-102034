@@ -24,6 +24,7 @@ import {
   linkSharedProjects,
   memoryModeAllowEnv,
   reapIdle,
+  releaseAliasOf,
   restartDevProcess,
   touchDevProcess,
   waitForDevReady,
@@ -35,6 +36,12 @@ const IDLE_MS = 30 * 60 * 1000;
 const SLUG = 'team-102047';
 const PARENT_TEST_URL = 'postgres://collab:secret@127.0.0.1:5432/collab_app_test';
 const DRAFT_DATABASE = 'collab_app_draft_team_102047';
+
+function writeOwnReleaseConfig(base: string, projectId = 102047, body = '{"release":true}\n'): void {
+  const dir = join(base, `current-${projectId}`);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'config.json'), body);
+}
 
 test('draftDatabaseUrl keeps the parent connection and swaps only the database name', () => {
   const url = draftDatabaseUrl(PARENT_TEST_URL, SLUG);
@@ -242,7 +249,7 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
   await t.test('first ensure spawns once with the measured flags; second does not', () => {
     const base = mkdtempSync(join(tmpdir(), 'cbe-dev-'));
     try {
-      writeFileSync(join(base, 'config.json'), '{"release":true}\n');
+      writeOwnReleaseConfig(base);
       mkdirSync(join(base, 'drafts', SLUG, 'mls-102047'), { recursive: true });
       const calls: Array<{ command: string; args: string[]; options: DevSpawnOptions }> = [];
       const spawnDev: DevSpawn = (command, args, options) => {
@@ -306,7 +313,7 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
   await t.test('restart kills and re-spawns once per burst', async () => {
     const base = mkdtempSync(join(tmpdir(), 'cbe-dev-'));
     try {
-      writeFileSync(join(base, 'config.json'), '{"release":true}\n');
+      writeOwnReleaseConfig(base);
       mkdirSync(join(base, 'drafts', SLUG, 'mls-102047'), { recursive: true });
       const calls: number[] = [];
       const spawnDev: DevSpawn = () => {
@@ -334,7 +341,7 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
   await t.test('the identity secret is per process, reaches the child env, and is never written to dev.json', () => {
     const base = mkdtempSync(join(tmpdir(), 'cbe-dev-'));
     try {
-      writeFileSync(join(base, 'config.json'), '{"release":true}\n');
+      writeOwnReleaseConfig(base);
       mkdirSync(join(base, 'drafts', SLUG, 'mls-102047'), { recursive: true });
       const secrets: string[] = [];
       const spawnDev: DevSpawn = (_command, _args, options) => {
@@ -357,7 +364,7 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
   await t.test('a live child whose secret the parent lost (parent restart) is replaced, not reused', () => {
     const base = mkdtempSync(join(tmpdir(), 'cbe-dev-'));
     try {
-      writeFileSync(join(base, 'config.json'), '{"release":true}\n');
+      writeOwnReleaseConfig(base);
       mkdirSync(join(base, 'drafts', SLUG, 'mls-102047'), { recursive: true });
       // Reparented like the real dev process (detached under init), so a SIGTERM leaves no zombie behind.
       const launched = spawnSync('sh', ['-c', `${process.execPath} -e 'setInterval(() => {}, 1000)' >/dev/null 2>&1 & echo $!`], { encoding: 'utf8' });
@@ -389,7 +396,7 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
   await t.test('restart of a dead pid only clears dev.json, then spawns', async () => {
     const base = mkdtempSync(join(tmpdir(), 'cbe-dev-'));
     try {
-      writeFileSync(join(base, 'config.json'), '{"release":true}\n');
+      writeOwnReleaseConfig(base);
       mkdirSync(join(base, 'drafts', SLUG, 'mls-102047'), { recursive: true });
       writeDev(base, SLUG, { port: 4100, pid: 2_147_483_646, startedAt: 1, lastRequestAt: 1 });
       let spawned = 0;
@@ -415,7 +422,7 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
   await t.test('writeConfig runs once before the first spawn and a failure does not spawn or write dev.json', () => {
     const base = mkdtempSync(join(tmpdir(), 'cbe-dev-'));
     try {
-      writeFileSync(join(base, 'config.json'), '{"release":true}\n');
+      writeOwnReleaseConfig(base);
       mkdirSync(join(base, 'drafts', SLUG, 'mls-102047'), { recursive: true });
       const order: string[] = [];
       const now = () => 1_700_000_000_000;
@@ -623,7 +630,7 @@ test('ancestor deno.json blocks a new dev process; a live process skips the guar
   const prevRange = process.env.COLLAB_DEV_PORT_RANGE;
   process.env.COLLAB_DEV_PORT_RANGE = '4100-4199';
   try {
-    writeFileSync(join(base, 'config.json'), '{"release":true}\n');
+    writeOwnReleaseConfig(base);
     writeFileSync(join(base, 'deno.json'), '{}\n');
     mkdirSync(join(base, 'drafts', SLUG, 'mls-102047'), { recursive: true });
     const calls: string[] = [];
@@ -671,7 +678,7 @@ test('a non-test project mode or a missing DATABASE_URL_TEST refuses a new dev p
   process.env.COLLAB_DEV_PORT_RANGE = '4100-4199';
   process.env.DATABASE_URL_TEST = PARENT_TEST_URL;
   try {
-    writeFileSync(join(base, 'config.json'), '{"release":true}\n');
+    writeOwnReleaseConfig(base);
     for (const mode of ['production', 'homologation'] as const) {
       writeProjectMode(base, SLUG, 102047, mode);
       const calls: string[] = [];
@@ -757,7 +764,7 @@ test('ensureDevProcess refuses when deno is missing from PATH and spawns when a 
     errors.push(args.map(String).join(' '));
   };
   try {
-    writeFileSync(join(base, 'config.json'), '{"release":true}\n');
+    writeOwnReleaseConfig(base);
     mkdirSync(join(base, 'drafts', SLUG, 'mls-102047'), { recursive: true });
     writeProjectMode(base, SLUG, 102047, 'development');
     const emptyDir = join(base, 'empty-bin');
@@ -815,7 +822,7 @@ test('ensureDevProcess refuses when deno is missing from PATH and spawns when a 
 test('ensureDevProcess refuses to start when the draft worktree is missing', () => {
   const base = mkdtempSync(join(tmpdir(), 'cbe-dev-missing-'));
   try {
-    writeFileSync(join(base, 'config.json'), '{"release":true}\n');
+    writeOwnReleaseConfig(base);
     let spawned = 0;
     assert.throws(
       () => ensureDevProcess({
@@ -852,7 +859,7 @@ test('ensureDevProcess spawns when no ancestor deno config exists', () => {
   process.env.COLLAB_DEV_PORT_RANGE = '4100-4199';
   process.env.DATABASE_URL_TEST = PARENT_TEST_URL;
   try {
-    writeFileSync(join(base, 'config.json'), '{"release":true}\n');
+    writeOwnReleaseConfig(base);
     mkdirSync(join(base, 'drafts', SLUG, 'mls-102047'), { recursive: true });
     const calls: Array<{ command: string; args: string[] }> = [];
     const spawnDev: DevSpawn = (command, args) => {
@@ -898,7 +905,7 @@ test('two node processes share the draft secret and do not replace a live child'
   process.env.DATABASE_URL_TEST = PARENT_TEST_URL;
   try {
     assert.ok(sleeper.pid);
-    writeFileSync(join(base, 'config.json'), '{"release":true}\n');
+    writeOwnReleaseConfig(base);
     mkdirSync(join(base, 'drafts', SLUG, 'mls-102047'), { recursive: true });
     const first = runEnsureInOtherProcess(base, sleeper.pid);
     const second = runEnsureInOtherProcess(base, sleeper.pid);
@@ -928,7 +935,7 @@ test('stopDev removes the secret file; the file is 0600, the dir is 0700, and th
   process.env.DATABASE_URL_TEST = PARENT_TEST_URL;
   const pids: number[] = [];
   try {
-    writeFileSync(join(base, 'config.json'), '{"release":true}\n');
+    writeOwnReleaseConfig(base);
     mkdirSync(join(base, 'drafts', SLUG, 'mls-102047'), { recursive: true });
     const info = ensureDevProcess({
       base,
@@ -962,6 +969,83 @@ test('stopDev removes the secret file; the file is 0600, the dir is 0700, and th
     rmSync(secretPathOf(base, SLUG), { force: true });
     rmSync(base, { recursive: true, force: true });
   }
+});
+
+test('draft copies the project release config, not the shared base config', () => {
+  const base = mkdtempSync(join(tmpdir(), 'cbe-dev-own-release-'));
+  const prevRange = process.env.COLLAB_DEV_PORT_RANGE;
+  const prevTestDatabase = process.env.DATABASE_URL_TEST;
+  process.env.COLLAB_DEV_PORT_RANGE = '4100-4199';
+  process.env.DATABASE_URL_TEST = PARENT_TEST_URL;
+  const pids: number[] = [];
+  try {
+    writeFileSync(join(base, 'config.json'), '{"project":102047}\n');
+    writeOwnReleaseConfig(base, 102056, '{"project":102056}\n');
+    mkdirSync(join(base, 'drafts', SLUG, 'mls-102056'), { recursive: true });
+    ensureDevProcess({
+      base,
+      slug: SLUG,
+      clientProjectId: 102056,
+      spawn: () => ({ pid: dummyPid(pids) }),
+      now: () => 1,
+      writeConfig: () => {},
+    });
+    assert.equal(readFileSync(join(base, 'drafts', SLUG, 'config.json'), 'utf8'), '{"project":102056}\n');
+  } finally {
+    killPids(pids);
+    if (prevRange === undefined) delete process.env.COLLAB_DEV_PORT_RANGE;
+    else process.env.COLLAB_DEV_PORT_RANGE = prevRange;
+    if (prevTestDatabase === undefined) delete process.env.DATABASE_URL_TEST;
+    else process.env.DATABASE_URL_TEST = prevTestDatabase;
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('a missing project release config fails with that path', () => {
+  const base = mkdtempSync(join(tmpdir(), 'cbe-dev-own-release-missing-'));
+  const prevRange = process.env.COLLAB_DEV_PORT_RANGE;
+  const prevTestDatabase = process.env.DATABASE_URL_TEST;
+  process.env.COLLAB_DEV_PORT_RANGE = '4100-4199';
+  process.env.DATABASE_URL_TEST = PARENT_TEST_URL;
+  const errors: string[] = [];
+  const origError = console.error;
+  console.error = (...args: unknown[]) => {
+    errors.push(args.map(String).join(' '));
+  };
+  const src = join(base, 'current-102056', 'config.json');
+  try {
+    writeFileSync(join(base, 'config.json'), '{"project":102047}\n');
+    mkdirSync(join(base, 'drafts', SLUG, 'mls-102056'), { recursive: true });
+    assert.throws(
+      () => ensureDevProcess({
+        base,
+        slug: SLUG,
+        clientProjectId: 102056,
+        spawn: () => ({ pid: 1 }),
+        writeConfig: () => {},
+      }),
+      (err: unknown) => {
+        assert.equal((err as Error).message, `release config.json missing at ${src}`);
+        return true;
+      },
+    );
+    assert.equal(errors.includes(`[cbe] dev ${SLUG}: release config.json missing at ${src}`), true);
+    assert.equal(existsSync(join(base, 'drafts', SLUG, 'config.json')), false);
+  } finally {
+    console.error = origError;
+    if (prevRange === undefined) delete process.env.COLLAB_DEV_PORT_RANGE;
+    else process.env.COLLAB_DEV_PORT_RANGE = prevRange;
+    if (prevTestDatabase === undefined) delete process.env.DATABASE_URL_TEST;
+    else process.env.DATABASE_URL_TEST = prevTestDatabase;
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('releaseAliasOf matches scripts/runtime/projectPorts.mjs', async () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const ports = await import(join(here, '..', '..', '..', '..', '..', 'scripts', 'runtime', 'projectPorts.mjs'));
+  assert.equal(releaseAliasOf(102056), ports.releaseAliasOf(102056));
+  assert.equal(releaseAliasOf(' 102047 '), ports.releaseAliasOf(' 102047 '));
 });
 
 function runEnsureInOtherProcess(base: string, pid: number): { pid: number; identitySecret: string } {

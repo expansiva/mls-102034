@@ -419,8 +419,14 @@ function choosePort(base: string, slug: string): number {
   throw new Error(`no free port in ${start}-${end}`);
 }
 
-function copyReleaseConfig(base: string, slug: string): void {
-  const src = join(base, 'config.json');
+/** Same rule as scripts/runtime/projectPorts.mjs releaseAliasOf. */
+export function releaseAliasOf(projectId: number | string): string {
+  return `current-${String(projectId).trim()}`;
+}
+
+function copyReleaseConfig(base: string, slug: string, clientProjectId: number): void {
+  // <base>/config.json is rewritten by whichever client built last.
+  const src = join(base, releaseAliasOf(clientProjectId), 'config.json');
   const dest = join(draftDirOf(base, slug), 'config.json');
   if (!existsSync(src)) {
     console.error(`[cbe] dev ${slug}: release config.json missing at ${src}`);
@@ -648,7 +654,7 @@ function ensureUnlocked(opts: EnsureDevProcessOpts): DevProcessInfo {
     throw new DraftWorktreeMissingError(message);
   }
   const now = opts.now ?? (() => Date.now());
-  copyReleaseConfig(base, slug);
+  copyReleaseConfig(base, slug, clientProjectId);
   linkSharedProjects(base, slug, clientProjectId);
   const path = devJsonPath(base, slug);
   const existing = readDevJson(path);
