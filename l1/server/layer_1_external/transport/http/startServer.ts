@@ -329,6 +329,14 @@ async function resolveDefaultFrontendLocation() {
   return preferredApp ? `${preferredApp.basePath}/index.html` : '/health';
 }
 
+/** Copy the raw query of `url` onto `location`. Empty query stays off the destination. */
+export function withQuery(location: string, url: string): string {
+  const mark = url.indexOf('?');
+  if (mark < 0 || mark === url.length - 1) return location;
+  const query = url.slice(mark + 1);
+  return location.includes('?') ? `${location}&${query}` : `${location}?${query}`;
+}
+
 /**
  * Body of `GET /session/info`. Authorities come from `claimAuthorities` (top-level ∪
  * `active_org.teams[].roles`); the unused `authorities` field is not emitted.
@@ -520,8 +528,8 @@ export function buildHttpServer() {
       litImportMap,
     );
   });
-  app.get('/', async (_request, reply) => {
-    reply.redirect(await resolveDefaultFrontendLocation());
+  app.get('/', async (request, reply) => {
+    reply.redirect(withQuery(await resolveDefaultFrontendLocation(), request.url));
   });
   // The single door of a generated app: every action of every screen posts here, so authenticating THIS
   // route authenticates the whole app. The headers travel into the handler because the identity rides in
@@ -662,8 +670,8 @@ export async function handleHttpRequest(
   ctx?: RequestContext,
   headers?: Record<string, string | string[] | undefined>,
 ) {
-  if (method === 'GET' && url === '/') {
-    const defaultFrontendLocation = await resolveDefaultFrontendLocation();
+  if (method === 'GET' && (url === '/' || url.startsWith('/?'))) {
+    const defaultFrontendLocation = withQuery(await resolveDefaultFrontendLocation(), url);
     return {
       statusCode: 302,
       body: '',
