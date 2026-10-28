@@ -277,7 +277,7 @@ export function buildDenoArgs(base: string, slug: string, port: number, database
   const projectFilesAllow = [...new Set([projectFilesDir, ...(existsSync(projectFilesDir) ? [realpathSync(projectFilesDir)] : [])])];
   const allowEnv = memoryModeAllowEnv();
   // pg reads `process.env['PG' + key]` (PGBINARY, PGSSLMODE, …) plus USERNAME. Deno ≥ 2.1 accepts the suffix `*`.
-  allowEnv.push('DATABASE_URL_TEST', 'PG*', 'USERNAME');
+  allowEnv.push('DATABASE_URL_TEST', 'PG*', 'USERNAME', 'MDM_DATABASE_URL');
   return [
     'run',
     `--allow-read=${base},${draftDir},${projectFilesAllow.join(',')}`,
@@ -523,6 +523,7 @@ function childEnv(
   clientProjectId: number,
   databaseUrlTest: string,
   identitySecret: string,
+  mdmDatabaseUrl: string,
 ): Record<string, string> {
   return {
     PATH: process.env.PATH ?? '',
@@ -530,6 +531,7 @@ function childEnv(
     PORT: String(port),
     RUNTIME_MODE: 'postgres',
     DATABASE_URL_TEST: databaseUrlTest,
+    MDM_DATABASE_URL: mdmDatabaseUrl,
     COLLAB_DRAFT: slug,
     COLLAB_PROJECT_ID: String(clientProjectId),
     COLLAB_DRAFT_IDENTITY_SECRET: identitySecret,
@@ -710,7 +712,7 @@ function ensureUnlocked(opts: EnsureDevProcessOpts): DevProcessInfo {
   }
   const spawned = spawn('deno', buildDenoArgs(base, slug, port, databaseUrl), {
     cwd: draftDir,
-    env: childEnv(port, slug, clientProjectId, databaseUrl, identitySecret),
+    env: childEnv(port, slug, clientProjectId, databaseUrl, identitySecret, testUrl),
     logPath,
   });
   if (!Number.isInteger(spawned.pid) || spawned.pid <= 0) {

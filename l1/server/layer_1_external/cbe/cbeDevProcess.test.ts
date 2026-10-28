@@ -271,7 +271,7 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
       assert.deepEqual(calls[0].args, [
         'run',
         `--allow-read=${base},${join(base, 'drafts', SLUG)},${projectFilesAllow.join(',')}`,
-        `--allow-env=${[...memoryModeAllowEnv(), 'DATABASE_URL_TEST', 'PG*', 'USERNAME'].join(',')}`,
+        `--allow-env=${[...memoryModeAllowEnv(), 'DATABASE_URL_TEST', 'PG*', 'USERNAME', 'MDM_DATABASE_URL'].join(',')}`,
         '--allow-net=0.0.0.0:4100,127.0.0.1,127.0.0.1:5432',
         '--allow-sys=networkInterfaces,loadavg,systemMemoryInfo,cpus',
         '--config',
@@ -295,6 +295,9 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
       assert.equal(calls[0].options.env.RUNTIME_MODE, 'postgres');
       assert.equal(calls[0].options.env.DATABASE_URL_TEST, draftUrl);
       assert.equal(new URL(calls[0].options.env.DATABASE_URL_TEST).pathname, `/${DRAFT_DATABASE}`);
+      assert.equal(calls[0].options.env.MDM_DATABASE_URL, PARENT_TEST_URL);
+      assert.equal(new URL(calls[0].options.env.MDM_DATABASE_URL).pathname, '/collab_app_test');
+      assert.equal(calls[0].args.some((arg) => arg.startsWith('--allow-net=') && arg.includes('127.0.0.1:5432')), true);
       assert.equal(calls[0].options.env.COLLAB_RUNTIME_MODE, undefined);
       assert.equal(calls[0].options.env.COLLAB_DRAFT, SLUG);
       assert.equal(calls[0].options.env.COLLAB_PROJECT_ID, '102047');

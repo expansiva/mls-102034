@@ -387,6 +387,57 @@ test('draft process takes only the identity the parent already verified', async 
   }
 });
 
+const RT147_ENTRY = `
+const { readAppEnv } = await import('/_102034_/l1/server/layer_1_external/config/env.ts');
+const { getMdmPgPool, getSharedPgPool } = await import('/_102034_/l1/server/layer_1_external/data/postgres/pg.ts');
+const env = readAppEnv();
+const mdm = getMdmPgPool(env);
+const shared = getSharedPgPool(env);
+console.log('RT147 ' + JSON.stringify({
+  separate: mdm !== shared,
+  mdmDatabase: new URL(mdm.options.connectionString).pathname,
+  moduleDatabase: new URL(shared.options.connectionString).pathname,
+}));
+`;
+
+test('real Deno: the draft reads MDM_DATABASE_URL (app database) and keeps the module pool on DATABASE_URL_TEST (draft database)', async () => {
+  const { buildDraftDenoConfig } = await loadDraftDenoConfigModule();
+  const draftDir = join(mlsBase, 'drafts', 'rt147-mdm');
+  mkdirSync(draftDir, { recursive: true });
+  const configPath = join(draftDir, 'deno.json');
+  const entry = join(draftDir, 'rt147Mdm.ts');
+  writeFileSync(configPath, `${JSON.stringify(buildDraftDenoConfig({
+    base: mlsBase,
+    slug: SLUG,
+    clientProjectId: 102047,
+  }), null, 2)}\n`);
+  writeFileSync(entry, RT147_ENTRY);
+  try {
+    const result = runDeno(entry, configPath, {
+      APP_ENV: 'development',
+      PORT: '4100',
+      RUNTIME_MODE: 'postgres',
+      DATABASE_URL_TEST: DATABASE_URL,
+      MDM_DATABASE_URL: 'postgres://127.0.0.1:5432/collab_app_test',
+      COLLAB_DRAFT: SLUG,
+      COLLAB_PROJECT_ID: PROJECT_ID,
+      CBE_PROJECTS_DIR: mlsBase,
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const line = result.stdout.split('\n').find((item) => item.startsWith('RT147 {'));
+    assert.ok(line, result.stdout);
+    assert.deepEqual(JSON.parse(line.slice('RT147 '.length)), {
+      separate: true,
+      mdmDatabase: '/collab_app_test',
+      moduleDatabase: '/collab_app_draft_rt130_env',
+    });
+    assert.equal(result.stdout.includes('postgres://'), false);
+    assert.equal(result.stderr.includes('NotCapable'), false);
+  } finally {
+    rmSync(draftDir, { recursive: true, force: true });
+  }
+});
+
 test('real Deno: with /etc/collab linked to the data disk, the draft reads projects/<id>.json through the link and never appconfig.json', async () => {
   const { buildDraftDenoConfig } = await loadDraftDenoConfigModule();
   const draftDir = join(mlsBase, 'drafts', 'rt137-link');
