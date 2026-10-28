@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import {
   getCbeStaticFile,
   patchServiceWorkerForRuntime,
-  resetPatchServiceWorkerWarnings,
+  
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeStaticFiles.js';
 
 const MISS_BLOCK = `    totalNotFound += 1;
@@ -39,7 +39,6 @@ function captureWarns(fn: () => void): string[] {
 }
 
 test('bundle real: CACHE_NAME fica mls-v2 sem release e o patch do miss continua', () => {
-  resetPatchServiceWorkerWarnings();
   const out = patchServiceWorkerForRuntime(Buffer.from(BUNDLE, 'utf8'), '20261009120000').toString('utf8');
   assert.match(out, /var CACHE_NAME = "mls-v2";/u);
   assert.doesNotMatch(out, /mls-v2-r/u);
@@ -49,7 +48,6 @@ test('bundle real: CACHE_NAME fica mls-v2 sem release e o patch do miss continua
 });
 
 test('miss grava a resposta ok sob a mesma url, só /local/ ou /_', () => {
-  resetPatchServiceWorkerWarnings();
   const out = patchServiceWorkerForRuntime(Buffer.from(BUNDLE, 'utf8'), '20261009120000').toString('utf8');
   assert.match(out, /caches\.open\(CACHE_NAME\)/u);
   assert.match(out, /url\.startsWith\('\/local\/'\) \|\| url\.startsWith\('\/_'\)/u);
@@ -62,7 +60,6 @@ test('miss grava a resposta ok sob a mesma url, só /local/ ou /_', () => {
 });
 
 test('duas releases: os mesmos bytes e o mesmo ETag', () => {
-  resetPatchServiceWorkerWarnings();
   const a = patchServiceWorkerForRuntime(Buffer.from(BUNDLE, 'utf8'), '20261009120000');
   const b = patchServiceWorkerForRuntime(Buffer.from(BUNDLE, 'utf8'), '20261009120001');
   const a2 = patchServiceWorkerForRuntime(Buffer.from(BUNDLE, 'utf8'), '20261009120000');
@@ -73,7 +70,6 @@ test('duas releases: os mesmos bytes e o mesmo ETag', () => {
 });
 
 test('null deixa CACHE_NAME intacto e não avisa por release', () => {
-  resetPatchServiceWorkerWarnings();
   const first = captureWarns(() => {
     const out = patchServiceWorkerForRuntime(Buffer.from(BUNDLE, 'utf8'), null).toString('utf8');
     assert.match(out, /var CACHE_NAME = "mls-v2";/u);
@@ -83,7 +79,6 @@ test('null deixa CACHE_NAME intacto e não avisa por release', () => {
 });
 
 test('id com aspas ou ponto-e-vírgula não entra', () => {
-  resetPatchServiceWorkerWarnings();
   for (const bad of ['foo"bar', 'foo;bar', 'x";alert(1)']) {
     const out = patchServiceWorkerForRuntime(Buffer.from(BUNDLE, 'utf8'), bad).toString('utf8');
     assert.match(out, /var CACHE_NAME = "mls-v2";/u);
@@ -92,72 +87,16 @@ test('id com aspas ou ponto-e-vírgula não entra', () => {
   }
 });
 
-test('sem linha CACHE_NAME: serve, com o aviso', () => {
-  resetPatchServiceWorkerWarnings();
-  const src = `var MLSSERVICEWORKERVERSION = 12;\n${MISS_BLOCK}\n    });`;
-  const warns = captureWarns(() => {
-    const out = patchServiceWorkerForRuntime(Buffer.from(src, 'utf8'), '20261009120000', 'team-102047').toString('utf8');
-    assert.equal(/CACHE_NAME\s*=/u.test(out), false);
-    assert.match(out, /const networkResponse = await fetch\(event\.request\);/u);
-  });
-  assert.equal(warns.some((l) => l.includes('CACHE_NAME assignment not found')), true);
-});
-
 test('MLSSERVICEWORKERVERSION sai igual ao de entrada', () => {
-  resetPatchServiceWorkerWarnings();
   const out = patchServiceWorkerForRuntime(Buffer.from(BUNDLE, 'utf8'), '20261009120000').toString('utf8');
   assert.match(out, /var MLSSERVICEWORKERVERSION = 12;/u);
 });
 
 test('sem slug: CACHE_NAME fica mls-v2, sem release', () => {
-  resetPatchServiceWorkerWarnings();
-  const out = patchServiceWorkerForRuntime(Buffer.from(BUNDLE, 'utf8'), '20261009120000', null).toString('utf8');
+  const out = patchServiceWorkerForRuntime(Buffer.from(BUNDLE, 'utf8'), '20261009120000').toString('utf8');
   assert.match(out, /var CACHE_NAME = "mls-v2";/u);
   assert.doesNotMatch(out, /mls-v2-r/u);
   assert.doesNotMatch(out, /-d/u);
-});
-
-test('com slug: CACHE_NAME ganha -d<slug> e não a release', () => {
-  resetPatchServiceWorkerWarnings();
-  const out = patchServiceWorkerForRuntime(Buffer.from(BUNDLE, 'utf8'), '20261009120000', 'team-102047').toString('utf8');
-  assert.match(out, /var CACHE_NAME = "mls-v2-dteam-102047";/u);
-  assert.doesNotMatch(out, /mls-v2-r/u);
-});
-
-test('com slug e sem release: CACHE_NAME ganha -d<slug>', () => {
-  resetPatchServiceWorkerWarnings();
-  const out = patchServiceWorkerForRuntime(Buffer.from(BUNDLE, 'utf8'), null, 'team-102047').toString('utf8');
-  assert.match(out, /var CACHE_NAME = "mls-v2-dteam-102047";/u);
-  assert.doesNotMatch(out, /-r/u);
-});
-
-test('getCbeStaticFile: ETag com slug difere do ETag sem slug; outro arquivo ignora o slug', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'cbe-static-draft-'));
-  const prev = process.env.CBE_STATIC_DIR;
-  process.env.CBE_STATIC_DIR = dir;
-  try {
-    writeFileSync(join(dir, 'mlsServiceWorker.js'), BUNDLE);
-    const libsDir = join(dir, 'libs');
-    mkdirSync(libsDir);
-    const libBody = 'var lib = 1;\n';
-    writeFileSync(join(libsDir, 'x.js'), libBody);
-    const plain = await getCbeStaticFile('/mlsServiceWorker.js', '');
-    const drafted = await getCbeStaticFile('/mlsServiceWorker.js', '', 'team-102047');
-    assert.equal(plain.statusCode, 200);
-    assert.equal(drafted.statusCode, 200);
-    assert.notEqual(plain.eTag, drafted.eTag);
-    assert.match(drafted.content!.toString('utf8'), /var CACHE_NAME = "[^"]*-dteam-102047";/u);
-    const libPlain = await getCbeStaticFile('/libs/x.js', '');
-    const libDraft = await getCbeStaticFile('/libs/x.js', '', 'team-102047');
-    assert.equal(libPlain.eTag, libDraft.eTag);
-    assert.equal(libDraft.content!.toString('utf8'), libBody);
-    const onDisk = readFileSync(join(dir, 'mlsServiceWorker.js'), 'utf8');
-    assert.equal(onDisk, BUNDLE);
-  } finally {
-    if (prev === undefined) delete process.env.CBE_STATIC_DIR;
-    else process.env.CBE_STATIC_DIR = prev;
-    rmSync(dir, { recursive: true, force: true });
-  }
 });
 
 test('getCbeStaticFile: mesma release, mesmo ETag (arquivo no disco intacto)', async () => {
@@ -173,6 +112,26 @@ test('getCbeStaticFile: mesma release, mesmo ETag (arquivo no disco intacto)', a
     assert.equal(first.eTag, etag(first.content!));
     const onDisk = readFileSync(join(dir, 'mlsServiceWorker.js'), 'utf8');
     assert.equal(onDisk, BUNDLE);
+  } finally {
+    if (prev === undefined) delete process.env.CBE_STATIC_DIR;
+    else process.env.CBE_STATIC_DIR = prev;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('getCbeStaticFile: o service worker servido é o mesmo para todas as abas (sem sufixo de rascunho)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cbe-static-one-'));
+  const prev = process.env.CBE_STATIC_DIR;
+  process.env.CBE_STATIC_DIR = dir;
+  try {
+    writeFileSync(join(dir, 'mlsServiceWorker.js'), BUNDLE);
+    const a = await getCbeStaticFile('/mlsServiceWorker.js', '');
+    const b = await getCbeStaticFile('/mlsServiceWorker.js', '');
+    assert.equal(a.statusCode, 200);
+    assert.equal(a.eTag, b.eTag);
+    assert.match(a.content!.toString('utf8'), /var CACHE_NAME = "mls-v2";/u);
+    assert.doesNotMatch(a.content!.toString('utf8'), /-d/u);
+    assert.equal(readFileSync(join(dir, 'mlsServiceWorker.js'), 'utf8'), BUNDLE);
   } finally {
     if (prev === undefined) delete process.env.CBE_STATIC_DIR;
     else process.env.CBE_STATIC_DIR = prev;

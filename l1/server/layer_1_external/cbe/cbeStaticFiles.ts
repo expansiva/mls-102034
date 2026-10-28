@@ -129,16 +129,7 @@ const SW_MISS_PATCHED = `    totalNotFound += 1;
     return new Response(null, {
       status: 404,`;
 
-const CACHE_NAME_ASSIGN = /(\bCACHE_NAME\s*=\s*)(["'])([^"']+)\2/u;
-
-let warnedMissingCacheName = false;
-
-/** Tests reset the once-per-process warnings. */
-export function resetPatchServiceWorkerWarnings(): void {
-  warnedMissingCacheName = false;
-}
-
-export function patchServiceWorkerForRuntime(content: Buffer, releaseId: string | null, draftSlug?: string | null): Buffer {
+export function patchServiceWorkerForRuntime(content: Buffer, releaseId: string | null): Buffer {
   void releaseId;
   let source = content.toString('utf8');
   if (!source.includes(SW_MISS_ORIGINAL)) {
@@ -147,21 +138,8 @@ export function patchServiceWorkerForRuntime(content: Buffer, releaseId: string 
     source = source.replace(SW_MISS_ORIGINAL, SW_MISS_PATCHED);
   }
 
-  // Release no longer scopes the cache (rt65). A draft still gets its own name.
-  let cacheSuffix = '';
-  if (draftSlug) cacheSuffix += `-d${draftSlug}`;
-
-  if (cacheSuffix) {
-    if (!CACHE_NAME_ASSIGN.test(source)) {
-      if (!warnedMissingCacheName) {
-        warnedMissingCacheName = true;
-        console.warn('[cbe] mlsServiceWorker.js: CACHE_NAME assignment not found — serving without release-scoped cache (check upstream SW changes)');
-      }
-    } else {
-      source = source.replace(CACHE_NAME_ASSIGN, `$1$2$3${cacheSuffix}$2`);
-    }
-  }
-
+  // One service worker for every tab: neither the release (rt65) nor the draft scopes the cache name. The draft now
+  // lives in the service worker per file version (st32 c1), so the cookie no longer varies what is served.
   return Buffer.from(source, 'utf8');
 }
 
@@ -174,7 +152,7 @@ export function logCbeStaticConfig(): void {
  * Serves a cbe static asset: disk cache -> remote origin (written back to
  * disk). Returns 304 when the client ETag still matches.
  */
-export async function getCbeStaticFile(rawUrlPath: string, clientETag: string, draftSlug?: string | null): Promise<CbeStaticFileResult> {
+export async function getCbeStaticFile(rawUrlPath: string, clientETag: string): Promise<CbeStaticFileResult> {
   const urlPath = rawUrlPath.replace(/\?.*$/u, '');
   if (!isAllowedPath(urlPath) || urlPath.includes('..')) {
     return { statusCode: CBE_HTTP_BAD_REQUEST, msg: `invalid path ${urlPath}` };
@@ -205,7 +183,7 @@ export async function getCbeStaticFile(rawUrlPath: string, clientETag: string, d
   }
 
   if (urlPath === '/mlsServiceWorker.js') {
-    content = patchServiceWorkerForRuntime(content, getRunningRelease()?.id ?? null, draftSlug);
+    content = patchServiceWorkerForRuntime(content, getRunningRelease()?.id ?? null);
   }
 
   const eTag = computeETag(content);

@@ -235,7 +235,7 @@ test('setContents: draft cookie commits on the draft branch and skips the releas
   }
 });
 
-test('the service worker never follows the x-collab-draft header: only the cookie picks its cache name', async () => {
+test('the served service worker is the same with or without a draft cookie or x-collab-draft header', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'cbe-sw-header-'));
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'mlsServiceWorker.js'), 'var MLSSERVICEWORKERVERSION = 12;\n  var CACHE_NAME = "mls-v2";\n');
@@ -250,9 +250,9 @@ test('the service worker never follows the x-collab-draft header: only the cooki
     const byHeader = await app.inject({ method: 'GET', url: '/mlsServiceWorker.js', headers: { 'x-collab-draft': SLUG } });
     const byCookie = await app.inject({ method: 'GET', url: '/mlsServiceWorker.js', headers: { cookie: `collab-draft=${SLUG}` } });
     assert.equal(plain.statusCode, 200);
-    assert.equal(byHeader.body, plain.body, 'the header must not change the service worker served');
-    assert.equal(byHeader.body.includes(`-d${SLUG}`), false);
-    assert.equal(byCookie.body.includes(`-d${SLUG}`), true, 'the cookie still does (today\'s flow until the new service worker)');
+    assert.equal(byHeader.body, plain.body);
+    assert.equal(byCookie.body, plain.body, 'the draft cookie no longer varies the service worker (st32 c1)');
+    assert.equal(plain.body.includes('-d'), false);
   } finally {
     await app.close();
     if (prevStatic === undefined) delete process.env.CBE_STATIC_DIR;

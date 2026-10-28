@@ -15,7 +15,6 @@ import { Pool } from 'pg';
 import { executeCbeLogin, readProjectFile } from '/_102034_/l1/server/layer_1_external/cbe/cbeLogin.js';
 import { getProjectsBaseDir } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
 import { getCbeStaticFile, logCbeStaticConfig } from '/_102034_/l1/server/layer_1_external/cbe/cbeStaticFiles.js';
-import { draftSlugForProxy } from '/_102034_/l1/server/layer_1_external/transport/http/draftProxy.js';
 import {
   activeOrganizationId,
   availableOrganizations,
@@ -1170,8 +1169,7 @@ async function handleExec(request: FastifyRequest, reply: FastifyReply): Promise
 
 async function handleStatic(request: FastifyRequest, reply: FastifyReply): Promise<void> {
   const clientETag = (request.headers['if-none-match'] as string | undefined) ?? '';
-  // One script for every tab: the per-call x-collab-draft header must not choose the service worker.
-  const rc = await getCbeStaticFile(request.raw.url ?? '', clientETag, draftSlugForProxy({ cookie: request.headers.cookie }));
+  const rc = await getCbeStaticFile(request.raw.url ?? '', clientETag);
 
   if (rc.statusCode === CBE_HTTP_NOT_MODIFIED) {
     reply.code(CBE_HTTP_NOT_MODIFIED).send();
