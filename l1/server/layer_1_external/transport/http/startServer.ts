@@ -171,11 +171,7 @@ function readStaticFile(filePath: string) {
   };
 }
 
-async function buildBootConfigScript(app: FrontendAppRegistration) {
-  if (!app.routes.length) {
-    return '';
-  }
-
+export async function buildBootConfig(app: FrontendAppRegistration) {
   let onboarding: { entryPath: string; moduleBasePath: string } | undefined;
   try {
     const projects = readProjectsConfig();
@@ -192,7 +188,7 @@ async function buildBootConfigScript(app: FrontendAppRegistration) {
     if (error instanceof OnboardingConfigError) throw error;
   }
 
-  const payload = JSON.stringify({
+  return {
     projectId: app.projectId,
     // O projeto do cliente, sempre — mesmo servindo um modulo de plataforma. Quem quer saber
     // "de quem e' este modulo" continua lendo `projectId`.
@@ -217,7 +213,15 @@ async function buildBootConfigScript(app: FrontendAppRegistration) {
     // (that is deployment config, read from the project's l5/project.json at boot).
     appEnv: readProjectMode(app.projectId),
     ...(onboarding ? { onboarding } : {}),
-  }).replace(/</gu, '\\u003c');
+  };
+}
+
+export async function buildBootConfigScript(app: FrontendAppRegistration) {
+  if (!app.routes.length) {
+    return '';
+  }
+
+  const payload = JSON.stringify(await buildBootConfig(app)).replace(/</gu, '\\u003c');
 
   // window.latest mirrors the studio index.html (versions from the central
   // latest.json — see cbeLatestJson): the client loads versioned libs with it.
@@ -225,6 +229,14 @@ async function buildBootConfigScript(app: FrontendAppRegistration) {
   const latestScript = latestJson ? `window.latest=${latestJson.replace(/</gu, '\\u003c')};` : '';
   const fechoScript = `window.collabFecho=${buildCollabFechoJson()};`;
   return `<script>window.collabBoot=${payload};${latestScript}${fechoScript}</script>`;
+}
+
+export async function resolveModuleBoot(basePath: string) {
+  const app = await getFrontendAppByBasePath(basePath);
+  if (!app || app.basePath !== basePath) {
+    return { status: 404, body: { statusCode: 404, msg: 'Not found' } };
+  }
+  return { status: 200, body: await buildBootConfig(app) };
 }
 
 // Closure of this app plus each project's lastModified, so the page can drop
@@ -498,6 +510,12 @@ export function buildHttpServer() {
   const app = Fastify({ logger: false });
 
   app.get('/health', async () => ({ ok: true }));
+  app.get('/_moduleBoot', async (request, reply) => {
+    const basePath = String((request.query as { basePath?: string }).basePath ?? '');
+    const result = await resolveModuleBoot(basePath);
+    reply.status(result.status).header('cache-control', 'no-store');
+    return result.body;
+  });
   // cbe-compatible endpoints (login + mls lib assets) for the runtime VM.
   // Registered before the catch-all GET /* so /libs/* wins the route match.
   initCbeLatestJson();

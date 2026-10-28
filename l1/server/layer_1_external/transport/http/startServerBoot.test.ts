@@ -2,7 +2,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { bootSteps, failFrontendRegistryBoot } from '/_102034_/l1/server/layer_1_external/transport/http/startServer.js';
+import {
+  bootSteps,
+  buildBootConfig,
+  buildBootConfigScript,
+  failFrontendRegistryBoot,
+  resolveModuleBoot,
+} from '/_102034_/l1/server/layer_1_external/transport/http/startServer.js';
+import { getFrontendAppRegistrations } from '/_102034_/l1/server/layer_1_external/frontend/appRegistry.js';
 
 test('boot catch wires failFrontendRegistryBoot so a registry throw never becomes a zombie', () => {
   const source = readFileSync(new URL('./startServer.ts', import.meta.url), 'utf8');
@@ -58,6 +65,31 @@ test('bootSteps does not run migrations without COLLAB_DRAFT', async () => {
   });
   assert.equal(migrated, false);
   assert.equal(listened, true);
+});
+
+test('GET /_moduleBoot JSON equals the collabBoot object injected in HTML', async () => {
+  const apps = await getFrontendAppRegistrations();
+  const app = apps.find((candidate) => candidate.routes.length > 0);
+  assert.ok(app, 'expected a registered frontend app with routes');
+  const obj = await buildBootConfig(app);
+  const script = await buildBootConfigScript(app);
+  const marker = 'window.collabBoot=';
+  const payloadStart = script.indexOf(marker);
+  assert.ok(payloadStart >= 0, 'expected collabBoot payload in boot script');
+  const jsonStart = payloadStart + marker.length;
+  const jsonEnd = script.indexOf(';window.', jsonStart);
+  assert.ok(jsonEnd > jsonStart, 'expected collabBoot payload terminator');
+  const fromHtml = JSON.parse(script.slice(jsonStart, jsonEnd).replace(/\\u003c/gu, '<'));
+  assert.deepEqual(fromHtml, JSON.parse(JSON.stringify(obj)));
+  const viaRoute = await resolveModuleBoot(app.basePath);
+  assert.equal(viaRoute.status, 200);
+  assert.deepEqual(viaRoute.body, obj);
+});
+
+test('GET /_moduleBoot unknown basePath is 404 JSON', async () => {
+  const result = await resolveModuleBoot('/__no_such_module__');
+  assert.equal(result.status, 404);
+  assert.deepEqual(result.body, { statusCode: 404, msg: 'Not found' });
 });
 
 test('bootSteps does not listen when draft migrations fail', async () => {
