@@ -240,7 +240,16 @@ class QueueRuntimePostgres implements IQueueRuntime {
   }
 }
 
-function createPostgresRuntimeWithExecutor(env: AppEnv, executor: PgExecutor): IDataRuntime {
+/**
+ * `executor` carries the MDM tables and the identity directory. `moduleExecutor` carries the module tables
+ * (`moduleData`). They are the same pool everywhere except the draft process (`MDM_DATABASE_URL`): there the
+ * MDM reads the app database and the business data stays in the draft database.
+ */
+function createPostgresRuntimeWithExecutor(
+  env: AppEnv,
+  executor: PgExecutor,
+  moduleExecutor: PgExecutor = executor,
+): IDataRuntime {
   const tableNames = getMdmTableNames(env.appEnv);
   const runtime: IDataRuntime = {
     mode: 'postgres',
@@ -271,7 +280,7 @@ function createPostgresRuntimeWithExecutor(env: AppEnv, executor: PgExecutor): I
     mdmTag: new TableRuntimePostgres<MdmTagRecord>(executor, tableNames.tag),
     mdmOutbox: new TableRuntimePostgres<MdmOutboxRecord>(executor, tableNames.outbox),
     pgQueue: new QueueRuntimePostgres(executor, tableNames.outbox),
-    moduleData: createPostgresModuleDataRuntime(env, executor),
+    moduleData: createPostgresModuleDataRuntime(env, moduleExecutor),
     mdmIdentityUsers: createPostgresMdmIdentityUsersReader(env, executor),
     async runInTransaction<TValue>() {
       throw new AppError('INVALID_RUNTIME', 'Nested transaction runtime is not supported directly', 500);
@@ -301,13 +310,27 @@ function createPostgresRuntimeWithExecutor(env: AppEnv, executor: PgExecutor): I
           [options.lockKey],
         );
       }
-      return callback(createPostgresRuntimeWithExecutor(env, client));
+      if (moduleExecutor === executor) {
+        return callback(createPostgresRuntimeWithExecutor(env, client));
+      }
+      if ('release' in moduleExecutor) {
+        throw new AppError('INVALID_RUNTIME', 'Split runtime needs a module pool outside a transaction', 500);
+      }
+      // Two databases, two transactions: the module one commits first, the MDM one last. They are NOT atomic
+      // with each other (draft process only); an error in the callback rolls both back.
+      return withPgTransaction(moduleExecutor, (moduleClient) =>
+        callback(createPostgresRuntimeWithExecutor(env, client, moduleClient)));
     });
   };
 
   return runtime;
 }
 
-export function createPostgresDataRuntime(env: AppEnv, pool?: Pool): IDataRuntime {
-  return createPostgresRuntimeWithExecutor(env, pool ?? getSharedPgPool(env));
+/**
+ * `pool` is where everything lives. `moduleDataPool` splits the module tables out to another pool
+ * (draft process: the MDM reads the app database, the business data stays in the draft database).
+ */
+export function createPostgresDataRuntime(env: AppEnv, pool?: Pool, moduleDataPool?: Pool): IDataRuntime {
+  const executor = pool ?? getSharedPgPool(env);
+  return createPostgresRuntimeWithExecutor(env, executor, moduleDataPool ?? executor);
 }

@@ -1,6 +1,7 @@
 /// <mls fileReference="_102034_/l1/mdm/layer_1_external/data/runtimeFactory.ts" enhancement="_blank" />
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import type { IDataRuntime } from '/_102034_/l1/server/layer_1_external/data/runtime.js';
+import { getMdmPgPool, getSharedPgPool } from '/_102034_/l1/server/layer_1_external/data/postgres/pg.js';
 import { createMemoryDataRuntime } from '/_102034_/l1/mdm/layer_1_external/data/memory/MdmDataRuntimeMemory.js';
 import { createPostgresDataRuntime } from '/_102034_/l1/mdm/layer_1_external/data/postgres/MdmDataRuntimePostgres.js';
 
@@ -14,7 +15,7 @@ export function getSharedDataRuntime(): IDataRuntime {
   const env = readAppEnv();
   sharedRuntime =
     env.runtimeMode === 'postgres'
-      ? createPostgresDataRuntime(env)
+      ? createPostgresDataRuntime(env, getMdmPgPool(env), getSharedPgPool(env))
       : createMemoryDataRuntime();
 
   return sharedRuntime;

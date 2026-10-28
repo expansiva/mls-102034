@@ -1,5 +1,5 @@
 /// <mls fileReference="_102034_/l1/mdm/layer_3_usecases/numberSequenceUsecases.ts" enhancement="_blank" />
-import { queryRows, withPgTransaction, getSharedPgPool } from '/_102034_/l1/server/layer_1_external/data/postgres/pg.js';
+import { queryRows, withPgTransaction, getMdmPgPool } from '/_102034_/l1/server/layer_1_external/data/postgres/pg.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { AppError, type RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import { AuditLogService, runMonitoredWrite } from '/_102034_/l1/mdm/layer_3_usecases/core/DataRecordService.js';
@@ -49,7 +49,7 @@ export async function nextSequence(ctx: RequestContext, params: NumberSequenceNe
 
     if (ctx.data.mode === 'postgres') {
       const env = readAppEnv();
-      const pool = getSharedPgPool(env);
+      const pool = getMdmPgPool(env);
       const tableNames = getMdmTableNames(env.appEnv);
       return withPgTransaction(pool, async (client) => {
         const rows = await queryRows<MdmNumberSequenceRecord>(

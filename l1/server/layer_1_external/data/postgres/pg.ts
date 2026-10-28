@@ -57,6 +57,20 @@ export function getSharedPgPool(env: AppEnv): Pool {
   return sharedPool;
 }
 
+let mdmPool: Pool | null = null;
+
+/** Draft process: MDM reads the app database. Absent variable keeps today's single pool. */
+export function getMdmPgPool(env: AppEnv): Pool {
+  const url = process.env.MDM_DATABASE_URL;
+  if (!url) {
+    return getSharedPgPool(env);
+  }
+  if (!mdmPool) {
+    mdmPool = new Pool({ connectionString: url });
+  }
+  return mdmPool;
+}
+
 export async function withPgTransaction<TValue>(
   pool: Pool,
   callback: (client: PoolClient) => Promise<TValue>,

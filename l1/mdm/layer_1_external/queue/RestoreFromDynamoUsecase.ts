@@ -2,6 +2,7 @@
 import type { AppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { createPostgresDataRuntime } from '/_102034_/l1/mdm/layer_1_external/data/postgres/MdmDataRuntimePostgres.js';
+import { getMdmPgPool, getSharedPgPool } from '/_102034_/l1/server/layer_1_external/data/postgres/pg.js';
 import { MdmDocumentRemoteRuntimeDynamo } from '/_102034_/l1/mdm/layer_1_external/data/dynamodb/MdmDocumentRemoteRuntimeDynamo.js';
 import { MdmRelationshipRemoteRuntimeDynamo } from '/_102034_/l1/mdm/layer_1_external/data/dynamodb/MdmRelationshipRemoteRuntimeDynamo.js';
 import { buildEntityIndex, buildProspectIndex } from '/_102034_/l1/mdm/layer_3_usecases/mdmSupport.js';
@@ -18,7 +19,7 @@ export class RestoreFromDynamoUsecase {
   private readonly remoteRelationshipRuntime;
 
   public constructor(private readonly env: AppEnv = readAppEnv()) {
-    this.runtime = createPostgresDataRuntime(env);
+    this.runtime = createPostgresDataRuntime(env, getMdmPgPool(env), getSharedPgPool(env));
     this.remoteRuntime = new MdmDocumentRemoteRuntimeDynamo(env);
     this.remoteRelationshipRuntime = new MdmRelationshipRemoteRuntimeDynamo(env);
   }
