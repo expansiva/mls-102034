@@ -469,16 +469,35 @@ void test("lets a declared supersede replace the pointer without a permit and ke
     assert.equal((await candidatePublish({ owner: "alice@example.com", orgId: "org-other" }, next, hubOrgId, table)).statusCode, 403);
 });
 
-void test("rejects a supersede that does not match the current pointer or the same change", async () => {
+void test("lets the same change replace the pointer with a new revision and keeps the prior revision readable", async () => {
+    const table = new SharedTable();
+    const firstInput = proposal("first", "one");
+    const first = await candidatePublish(caller, firstInput, hubOrgId, table);
+    const again = proposal("again", "oneb", first.pointer!.revisionId);
+    again.changeId = first.pointer!.changeId;
+    again.supersede = { changeId: first.pointer!.changeId, revisionId: first.pointer!.revisionId };
+    const replaced = await candidatePublish(caller, again, hubOrgId, table);
+    assert.equal(replaced.status, "committed");
+    assert.equal(replaced.pointer?.supersedes?.changeId, first.pointer!.changeId);
+    const priorFile = table.records.get(
+        `candidate/102047/agendaClinica/changes/${first.pointer!.changeId}/revisions/${first.pointer!.revisionId}/files/ontology/Patient.defs.ts`);
+    assert.equal(Buffer.from(String(priorFile?.contentBase64), "base64").toString(), "first");
+    const late = await candidateMarkResult(caller,
+        resultProposal(first.pointer!, firstInput.snapshot, "late_same"), hubOrgId, table);
+    assert.equal(late.status, "conflict");
+});
+
+void test("rejects a supersede that does not match the current pointer or repeats its revision", async () => {
     const table = new SharedTable();
     const first = await candidatePublish(caller, proposal("first", "one"), hubOrgId, table);
     const mismatch = proposal("second", "two", first.pointer!.revisionId);
     mismatch.supersede = { changeId: "change_other", revisionId: first.pointer!.revisionId };
     assert.equal((await candidatePublish(caller, mismatch, hubOrgId, table)).msg, "candidate.supersede_mismatch");
-    const sameChange = proposal("again", "oneb", first.pointer!.revisionId);
-    sameChange.changeId = first.pointer!.changeId;
-    sameChange.supersede = { changeId: first.pointer!.changeId, revisionId: first.pointer!.revisionId };
-    assert.equal((await candidatePublish(caller, sameChange, hubOrgId, table)).msg, "candidate.supersede_mismatch");
+    const sameRevision = proposal("same_rev", "oneb", first.pointer!.revisionId);
+    sameRevision.changeId = first.pointer!.changeId;
+    sameRevision.revisionId = first.pointer!.revisionId;
+    sameRevision.supersede = { changeId: first.pointer!.changeId, revisionId: first.pointer!.revisionId };
+    assert.equal((await candidatePublish(caller, sameRevision, hubOrgId, table)).msg, "candidate.supersede_mismatch");
     const withPermit = await permitNext(table, first.pointer!, proposal("third", "three", first.pointer!.revisionId));
     withPermit.supersede = { changeId: first.pointer!.changeId, revisionId: first.pointer!.revisionId };
     assert.equal((await candidatePublish(caller, withPermit, hubOrgId, table)).msg, "candidate.supersede_with_permit");

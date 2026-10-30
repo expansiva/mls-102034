@@ -146,12 +146,21 @@ test("commitAllowed refuses a supersede when the pointer moved meanwhile", () =>
     assert.equal(commitAllowed(undefined, supersedeInput()), false);
 });
 
-test("commitAllowed refuses a supersede that carries a permit, skips a revision number or reuses the change", () => {
+test("commitAllowed accepts a supersede of the same change when the revision is new", () => {
+    assert.equal(commitAllowed(supersedePointer, supersedeInput({
+        pointer: { ...newChangePointer, changeId: "change-1", revisionId: "rev-2" },
+    })), true);
+});
+
+test("commitAllowed refuses a supersede that repeats the current revision", () => {
+    assert.equal(commitAllowed(supersedePointer, supersedeInput({
+        pointer: { ...newChangePointer, changeId: "change-1", revisionId: "rev-1" },
+    })), false);
+});
+
+test("commitAllowed refuses a supersede that carries a permit or skips a revision number", () => {
     assert.equal(commitAllowed(supersedePointer, supersedeInput({ permit })), false);
     assert.equal(commitAllowed(supersedePointer, supersedeInput({ pointer: { ...newChangePointer, revisionNumber: 3 } })), false);
-    assert.equal(commitAllowed(supersedePointer, supersedeInput({
-        pointer: { ...newChangePointer, changeId: "change-1" },
-    })), false);
 });
 
 test("without supersede the permit is still required to replace a pointer", () => {

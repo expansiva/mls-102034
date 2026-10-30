@@ -207,7 +207,7 @@ function parsePointer(item: RecordWithKey | undefined): CandidatePointer | null 
         throw new CandidateError(503, "candidate.corrupt_pointer");
     }
     const source = parsePointerSource(item.source, item.revisionId, item.revisionNumber as number);
-    const supersedes = parsePointerSupersedes(item.supersedes, item.changeId, item.revisionId, item.revisionNumber as number);
+    const supersedes = parsePointerSupersedes(item.supersedes, item.revisionId, item.revisionNumber as number);
     return {
         changeId: item.changeId, revisionId: item.revisionId,
         snapshotHash: item.snapshotHash, revisionNumber: item.revisionNumber,
@@ -244,7 +244,7 @@ function parsePointerSource(value: unknown, pointerRevisionId: unknown, pointerR
     };
 }
 
-function parsePointerSupersedes(value: unknown, pointerChangeId: unknown, pointerRevisionId: unknown,
+function parsePointerSupersedes(value: unknown, pointerRevisionId: unknown,
     pointerRevisionNumber: number): CandidatePointer["supersedes"] {
     if (value === undefined) return undefined;
     if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -255,7 +255,7 @@ function parsePointerSupersedes(value: unknown, pointerChangeId: unknown, pointe
         typeof superseded.revisionId !== "string" || !TOKEN.test(superseded.revisionId) ||
         !Number.isSafeInteger(superseded.revisionNumber) || (superseded.revisionNumber as number) < 1 ||
         (superseded.revisionNumber as number) >= pointerRevisionNumber ||
-        superseded.changeId === pointerChangeId || superseded.revisionId === pointerRevisionId) {
+        superseded.revisionId === pointerRevisionId) {
         throw new CandidateError(503, "candidate.corrupt_pointer");
     }
     return {
@@ -673,7 +673,7 @@ export async function candidatePublish(caller: CandidateCaller, input: Candidate
         }
         if (fixed.expectedRevisionId !== null) {
             if (supersede) {
-                if (!current || supersede.changeId === changeId || supersede.changeId !== current.changeId ||
+                if (!current || revisionId === current.revisionId || supersede.changeId !== current.changeId ||
                     supersede.revisionId !== current.revisionId || current.revisionId !== fixed.expectedRevisionId) {
                     throw new CandidateError(409, "candidate.supersede_mismatch");
                 }

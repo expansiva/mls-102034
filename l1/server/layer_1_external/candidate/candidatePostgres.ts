@@ -22,7 +22,7 @@ export function commitAllowed(currentPointer: PointerRecord, input: CommitInput)
     if (input.expectedRevisionId === null) return currentPointer === undefined;
     const superseded = input.pointer.supersedes;
     if (superseded) {
-        // A new change takes the pointer by declaring EXACTLY the change and revision it replaces; no permit. The
+        // A new revision takes the pointer by declaring EXACTLY the change and revision it replaces; no permit. The
         // check is the same optimistic one: the pointer must still be what was declared when the transaction runs.
         if (!currentPointer || input.permit) return false;
         return currentPointer.changeId === superseded.changeId
@@ -30,7 +30,7 @@ export function commitAllowed(currentPointer: PointerRecord, input: CommitInput)
             && currentPointer.revisionId === input.expectedRevisionId
             && currentPointer.revisionNumber === superseded.revisionNumber
             && input.pointer.revisionNumber === superseded.revisionNumber + 1
-            && input.pointer.changeId !== superseded.changeId;
+            && input.pointer.revisionId !== superseded.revisionId;
     }
     const permit = input.permit;
     if (!currentPointer || !permit) return false;
