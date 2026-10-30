@@ -39,7 +39,7 @@ import { readHistory, readHistoryContent } from '/_102034_/l1/server/layer_1_ext
 import { isRebuildInProgress, scheduleRebuildOnSave } from '/_102034_/l1/server/layer_1_external/cbe/cbeRebuildOnSave.js';
 import { authorFromSession, commitSavedSources } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitCommit.js';
 import { discardDraft, draftDiff, fastForwardDraft, listDrafts, mergeMainIntoDraft, promoteDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitPromote.js';
-import { resolveRequestDraft, type RequestDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
+import { resolveRequestDraft, resolveWriteDraft, type RequestDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
 import { draftDatabaseUrl, ensureDevReaper, restartDevProcess, stopDevProcess } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
 import { desenvIo, handleDesenvEnter, handleDesenvExit, handleDraftEnter } from '/_102034_/l1/server/layer_1_external/cbe/cbeDesenv.js';
 import { getRunningRelease } from '/_102034_/l1/server/layer_1_external/cbe/cbeRelease.js';
@@ -419,62 +419,50 @@ async function handleSetContents(request: FastifyRequest, body: CbeRequestSetCon
     reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, msg: 'invalid project' });
     return;
   }
-  const draft = await resolveRequestDraft(request.headers, getProjectsBaseDir(), project);
-  const rc = writeSources(project, body.files ?? [], body.deletes ?? [], { sourceRoot: draft?.sourceRoot });
+  const draft = await resolveWriteDraft(request.headers, getProjectsBaseDir(), project);
+  const rc = writeSources(project, body.files ?? [], body.deletes ?? [], { sourceRoot: draft.sourceRoot });
   if (!rc.ok) {
     reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, msg: rc.msg ?? 'invalid request' });
     return;
   }
-  // Commit BEFORE scheduling the rebuild: the build reads each file's versionRef
-  // from `git ls-tree -r HEAD`, so a build that runs on an uncommitted write
-  // republishes the OLD versionRef and the browser keeps its cached source (see
-  // cbeGitCommit.ts). It is also what puts these edits in getHistory. Awaited,
-  // never fatal — the files are already on disk. `sourceRoot` is the draft
-  // worktree; omitted, the commit stays on the project's current branch.
+  // Commit so getHistory and versionRef see this write. Awaited, never fatal —
+  // the files are already on disk. `sourceRoot` is the draft worktree.
   const session = await resolveSession(request);
   const commit = await commitSavedSources(project, rc.paths, {
     comments: body.comments ?? undefined,
     author: authorFromSession(session.email ?? session.testUser),
-    sourceRoot: draft?.sourceRoot,
+    sourceRoot: draft.sourceRoot,
   });
   if (commit.status === 'failed') {
     console.warn(`[cbe] setContents project ${project}: commit failed (save kept, versionRef will not move): ${commit.msg}`);
   } else if (commit.status === 'committed') {
     console.info(`[cbe] setContents project ${project}: committed ${commit.ref?.slice(0, 8)}`);
   }
-  // Fire-and-forget: debounced, cross-worker-safe rebuild+redeploy (see
-  // cbeRebuildOnSave.ts). Never blocks this response. The project goes along so
-  // its obj/compiled.zip is refreshed — `pnpm build` alone skips it whenever the
-  // project is inside the release fecho, which the VM's own app always is.
-  // A draft commit stays on its branch: no release rebuild.
-  if (draft) {
-    console.info(`[cbe] draft ${draft.slug}: no release rebuild`);
-    const base = getProjectsBaseDir();
-    draftDevHooks.ensureDevReaper(base);
-    const files = body.files ?? [];
-    const deletes = body.deletes ?? [];
-    const l1Changed = files.some((file) => file.shortPath.startsWith('l1/'))
-      || deletes.some((shortPath) => shortPath.startsWith('l1/'));
-    // l2/l3 are served from the Studio cache; only an l1 change needs a new dev process.
-    if (!l1Changed) {
-      console.info(`[cbe] draft ${draft.slug}: l2/l3 only, no restart`);
-    } else {
-      // Fire-and-forget: the save responds before the debounced restart. A rejection
-      // (or a sync throw from an invalid slug) is logged and never fails this handler.
-      try {
-        void draftDevHooks.restartDevProcess({
-          base,
-          slug: draft.slug,
-          clientProjectId: project,
-        }).catch((err: unknown) => {
-          console.error(`[cbe] draft ${draft.slug}: dev restart failed: ${(err as Error).message}`);
-        });
-      } catch (err) {
-        console.error(`[cbe] draft ${draft.slug}: dev restart failed: ${(err as Error).message}`);
-      }
-    }
+  // setContents never rebuilds the release. A draft dev process restarts only when l1 changes.
+  console.info(`[cbe] draft ${draft.slug}: no release rebuild`);
+  const base = getProjectsBaseDir();
+  draftDevHooks.ensureDevReaper(base);
+  const files = body.files ?? [];
+  const deletes = body.deletes ?? [];
+  const l1Changed = files.some((file) => file.shortPath.startsWith('l1/'))
+    || deletes.some((shortPath) => shortPath.startsWith('l1/'));
+  // l2/l3 are served from the Studio cache; only an l1 change needs a new dev process.
+  if (!l1Changed) {
+    console.info(`[cbe] draft ${draft.slug}: l2/l3 only, no restart`);
   } else {
-    scheduleRebuildOnSave(project);
+    // Fire-and-forget: the save responds before the debounced restart. A rejection
+    // (or a sync throw from an invalid slug) is logged and never fails this handler.
+    try {
+      void draftDevHooks.restartDevProcess({
+        base,
+        slug: draft.slug,
+        clientProjectId: project,
+      }).catch((err: unknown) => {
+        console.error(`[cbe] draft ${draft.slug}: dev restart failed: ${(err as Error).message}`);
+      });
+    } catch (err) {
+      console.error(`[cbe] draft ${draft.slug}: dev restart failed: ${(err as Error).message}`);
+    }
   }
   reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, msg: 'ok', commit, draft: draftBody(draft) });
 }

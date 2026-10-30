@@ -167,17 +167,7 @@ export function requestDraftValue(headers: DraftRequestHeaders | undefined): str
   return parseCookies(firstHeader(headers.cookie))['collab-draft'];
 }
 
-/**
- * Draft named by this call (`x-collab-draft`, else the `collab-draft` cookie), with its worktree ready.
- * Missing or invalid slug is null — the caller keeps today's paths.
- */
-export async function resolveRequestDraft(
-  headers: DraftRequestHeaders | undefined,
-  base: string,
-  projectId: number,
-): Promise<RequestDraft | null> {
-  const parsed = parseDraftSlug(requestDraftValue(headers));
-  if (!parsed) return null;
+async function materializeDraft(base: string, projectId: number, parsed: DraftSlug): Promise<RequestDraft> {
   const sourceRoot = resolve(draftSourceRoot(base, parsed.slug, projectId));
   try {
     await mkdir(dirname(sourceRoot), { recursive: true });
@@ -192,4 +182,45 @@ export async function resolveRequestDraft(
     throw err;
   }
   return { slug: parsed.slug, branch: parsed.branch, sourceRoot };
+}
+
+/**
+ * Draft named by this call (`x-collab-draft`, else the `collab-draft` cookie), with its worktree ready.
+ * Missing or invalid slug is null — the caller keeps today's paths.
+ */
+export async function resolveRequestDraft(
+  headers: DraftRequestHeaders | undefined,
+  base: string,
+  projectId: number,
+): Promise<RequestDraft | null> {
+  const parsed = parseDraftSlug(requestDraftValue(headers));
+  if (!parsed) return null;
+  return materializeDraft(base, projectId, parsed);
+}
+
+/**
+ * Draft for a source write. A valid mark wins. Missing or invalid marks write to
+ * `team-<projectId>`, creating that worktree when it does not exist.
+ */
+export async function resolveWriteDraft(
+  headers: DraftRequestHeaders | undefined,
+  base: string,
+  projectId: number,
+): Promise<RequestDraft> {
+  const marked = requestDraftValue(headers);
+  const parsed = parseDraftSlug(marked);
+  if (parsed) return materializeDraft(base, projectId, parsed);
+  const teamSlug = `team-${projectId}`;
+  if (marked !== undefined && marked !== '') {
+    console.warn(`[cbe] setContents project ${projectId}: refused draft ${marked}, using ${teamSlug}`);
+  } else {
+    console.info(`[cbe] setContents project ${projectId}: no draft, using ${teamSlug}`);
+  }
+  const team = parseDraftSlug(teamSlug);
+  if (!team) {
+    const msg = `[cbe] setContents project ${projectId}: team draft slug ${teamSlug} is not valid`;
+    console.error(msg);
+    throw new Error(msg);
+  }
+  return materializeDraft(base, projectId, team);
 }

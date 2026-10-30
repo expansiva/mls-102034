@@ -36,10 +36,16 @@ test('setContents: draft cookie commits on the draft branch and skips the releas
   process.env.CBE_REQUIRE_LOGIN = 'never';
 
   const logs: string[] = [];
+  const warns: string[] = [];
   const origInfo = console.info;
+  const origWarn = console.warn;
   console.info = (...args: unknown[]) => {
     logs.push(args.map((part) => String(part)).join(' '));
     origInfo.apply(console, args);
+  };
+  console.warn = (...args: unknown[]) => {
+    warns.push(args.map((part) => String(part)).join(' '));
+    origWarn.apply(console, args);
   };
 
   const app = Fastify();
@@ -62,6 +68,30 @@ test('setContents: draft cookie commits on the draft branch and skips the releas
     git(projectRoot, ['config', 'commit.gpgsign', 'false']);
     git(projectRoot, ['commit', '--allow-empty', '-m', 'init', '--no-verify']);
     const mainAtStart = head(projectRoot);
+    assert.equal(existsSync(draftRoot), false);
+
+    const unmarked = await app.inject({
+      method: 'POST',
+      url: '/exec',
+      payload: {
+        action: 'setContents',
+        project: PROJECT_ID,
+        files: [{ shortPath: 'l2/plain.ts', content: 'export const plain = 1;\n', encoding: 'utf8' }],
+        comments: 'team save',
+      },
+    });
+    assert.equal(unmarked.statusCode, 200, unmarked.body);
+    assert.equal(unmarked.json().commit.status, 'committed');
+    assert.deepEqual(unmarked.json().draft, { slug: SLUG, branch: BRANCH });
+    assert.equal(readFileSync(join(draftRoot, 'l2/plain.ts'), 'utf8'), 'export const plain = 1;\n');
+    assert.equal(existsSync(join(projectRoot, 'l2/plain.ts')), false);
+    assert.equal(git(draftRoot, ['rev-parse', '--abbrev-ref', 'HEAD']), BRANCH);
+    assert.equal(git(draftRoot, ['log', '-1', '--format=%s']), 'team save');
+    assert.equal(head(projectRoot), mainAtStart);
+    assert.ok(logs.some((line) => line === `[cbe] setContents project ${PROJECT_ID}: no draft, using ${SLUG}`));
+    assert.ok(logs.some((line) => line === `[cbe] draft ${SLUG}: no release rebuild`));
+    assert.deepEqual(restarts, []);
+    reaperBases.length = 0;
 
     const draftRes = await app.inject({
       method: 'POST',
@@ -142,30 +172,9 @@ test('setContents: draft cookie commits on the draft branch and skips the releas
     });
     assert.equal(atRef.json().content, 'export const draft = 1;\n');
 
-    logs.length = 0;
-    const plain = await app.inject({
-      method: 'POST',
-      url: '/exec',
-      payload: {
-        action: 'setContents',
-        project: PROJECT_ID,
-        files: [{ shortPath: 'l2/plain.ts', content: 'export const plain = 1;\n', encoding: 'utf8' }],
-        comments: 'main save',
-      },
-    });
-    assert.equal(plain.statusCode, 200, plain.body);
-    assert.equal(plain.json().commit.status, 'committed');
-    assert.equal(plain.json().draft, null);
-    assert.equal(readFileSync(join(projectRoot, 'l2/plain.ts'), 'utf8'), 'export const plain = 1;\n');
-    assert.equal(git(projectRoot, ['rev-parse', '--abbrev-ref', 'HEAD']), 'main');
-    assert.equal(git(projectRoot, ['log', '-1', '--format=%s']), 'main save');
-    assert.notEqual(head(projectRoot), mainAtStart);
-    assert.equal(logs.some((line) => line.includes('no release rebuild')), false);
-    assert.deepEqual(restarts, []);
-    assert.deepEqual(reaperBases, [base]);
-
     const mainBeforeInvalid = head(projectRoot);
     logs.length = 0;
+    warns.length = 0;
     const invalid = await app.inject({
       method: 'POST',
       url: '/exec',
@@ -178,13 +187,37 @@ test('setContents: draft cookie commits on the draft branch and skips the releas
       },
     });
     assert.equal(invalid.statusCode, 200, invalid.body);
-    assert.equal(invalid.json().draft, null);
+    assert.deepEqual(invalid.json().draft, { slug: SLUG, branch: BRANCH });
     assert.equal(invalid.json().commit.status, 'committed');
-    assert.equal(readFileSync(join(projectRoot, 'l2/bad.ts'), 'utf8'), 'export const bad = 1;\n');
+    assert.equal(readFileSync(join(draftRoot, 'l2/bad.ts'), 'utf8'), 'export const bad = 1;\n');
+    assert.equal(existsSync(join(projectRoot, 'l2/bad.ts')), false);
     assert.equal(git(projectRoot, ['rev-parse', '--abbrev-ref', 'HEAD']), 'main');
-    assert.notEqual(head(projectRoot), mainBeforeInvalid);
+    assert.equal(head(projectRoot), mainBeforeInvalid);
     assert.equal(existsSync(join(base, 'drafts', 'nope')), false);
-    assert.equal(logs.some((line) => line.includes('no release rebuild')), false);
+    assert.ok(logs.some((line) => line === `[cbe] draft ${SLUG}: no release rebuild`));
+    assert.ok(warns.some((line) => line.includes('nope') && line.includes(SLUG)));
+
+    logs.length = 0;
+    const unmarkedDelete = await app.inject({
+      method: 'POST',
+      url: '/exec',
+      payload: {
+        action: 'setContents',
+        project: PROJECT_ID,
+        deletes: ['l2/plain.ts'],
+        comments: 'team delete',
+      },
+    });
+    assert.equal(unmarkedDelete.statusCode, 200, unmarkedDelete.body);
+    assert.deepEqual(unmarkedDelete.json().draft, { slug: SLUG, branch: BRANCH });
+    assert.equal(unmarkedDelete.json().commit.status, 'committed');
+    assert.equal(existsSync(join(draftRoot, 'l2/plain.ts')), false);
+    assert.equal(existsSync(join(projectRoot, 'l2/plain.ts')), false);
+    assert.equal(head(projectRoot), mainAtStart);
+    assert.equal(git(draftRoot, ['log', '-1', '--format=%s']), 'team delete');
+    assert.ok(logs.some((line) => line === `[cbe] setContents project ${PROJECT_ID}: no draft, using ${SLUG}`));
+    assert.ok(logs.some((line) => line === `[cbe] draft ${SLUG}: no release rebuild`));
+    assert.deepEqual(restarts, []);
 
     const l1Save = await app.inject({
       method: 'POST',
@@ -222,6 +255,7 @@ test('setContents: draft cookie commits on the draft branch and skips the releas
     draftDevHooks.restartDevProcess = origRestart;
     draftDevHooks.ensureDevReaper = origReaper;
     console.info = origInfo;
+    console.warn = origWarn;
     await app.close();
     if (prev.dir === undefined) delete process.env.CBE_PROJECTS_DIR;
     else process.env.CBE_PROJECTS_DIR = prev.dir;
