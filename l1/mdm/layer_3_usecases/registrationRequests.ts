@@ -3,7 +3,6 @@ import type { ProjectOnboardingConfig } from '/_102029_/l2/runtimeConfigTypes.js
 import type { OrganizationBinding } from '/_102034_/l1/server/layer_1_external/config/onboardingConfig.js';
 import { identityCacheKey } from '/_102034_/l1/server/layer_1_external/cache/identityCache.js';
 import { AppError, type RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
-import type { MdmKvRecord } from '/_102034_/l1/mdm/module.js';
 import { findRegistrationCandidates, normalizeRegistrationEmail } from '/_102034_/l1/mdm/layer_3_usecases/registrationCandidates.js';
 import { isPersonAccessComplete } from '/_102034_/l1/mdm/layer_3_usecases/mdmSupport.js';
 import type {
@@ -235,7 +234,7 @@ export async function listOrganizationAccessRequests(
   if (typeof organizationKey !== 'string' || organizationKey.length === 0) {
     throw new AppError('VALIDATION_ERROR', 'organizationKey is required', 400, { field: 'organizationKey' });
   }
-  const repository = await ctx.data.moduleData.getTable<MdmKvRecord>('mdmKv');
+  const repository = ctx.data.mdmRegistrationKv;
   const rows = await repository.findMany({});
   const records: AccessRequestRecord[] = [];
   for (const row of rows) {

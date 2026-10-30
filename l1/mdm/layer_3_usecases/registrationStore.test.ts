@@ -87,6 +87,16 @@ test('registration lock key is stable per JSON tuple and changes with the scope'
   assert.notEqual(registrationLockKey(person), registrationLockKey(['company', 'a@b.test']));
 });
 
+test('writing the same registration key twice keeps one row with the new value', async () => {
+  const ctx = createRequestContext(createMemoryDataRuntime());
+  await writeRegistrationStore(ctx, reserved, { n: 1 });
+  await writeRegistrationStore(ctx, reserved, { n: 2 });
+  const rows = await ctx.data.mdmRegistrationKv.findMany({});
+  const mine = rows.filter((row) => row.key === reserved);
+  assert.equal(mine.length, 1);
+  assert.deepEqual(mine[0]?.value, { n: 2 });
+});
+
 test('store roundtrip and invalid payload is not a silent miss', async () => {
   const ctx = createRequestContext(createMemoryDataRuntime());
   assert.equal(await readRegistrationStore(ctx, reserved), null);

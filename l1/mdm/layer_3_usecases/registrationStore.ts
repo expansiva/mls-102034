@@ -3,7 +3,6 @@ import { createHash } from 'node:crypto';
 import { AppError, type RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import { CacheRuntimeMemory } from '/_102034_/l1/server/layer_1_external/cache/CacheRuntimeMemory.js';
 import { createMdmFacade } from '/_102034_/l1/mdm/layer_3_usecases/mdmFacade.js';
-import type { MdmKvRecord } from '/_102034_/l1/mdm/module.js';
 
 /** Platform KV prefix. Public mdm.kv get/put must refuse it. */
 export const REGISTRATION_STORE_PREFIX = 'runtime.onboarding/';
@@ -34,7 +33,7 @@ function isPlatformJson(value: unknown): value is Record<string, unknown> {
 }
 
 async function kvRepository(ctx: RequestContext) {
-  return ctx.data.moduleData.getTable<MdmKvRecord>('mdmKv');
+  return ctx.data.mdmRegistrationKv;
 }
 
 /** Missing row is null. A stored row that is not platform JSON throws. */
@@ -64,7 +63,12 @@ export async function writeRegistrationStore(
     throw new AppError('VALIDATION_ERROR', 'registration store value is invalid', 400, { field: 'value' });
   }
   const repository = await kvRepository(ctx);
-  await repository.upsert({ record: { key: storedKey, value } });
+  const existing = await repository.findOne({ where: { key: storedKey } });
+  if (!existing) {
+    await repository.insert({ record: { key: storedKey, value } });
+    return;
+  }
+  await repository.update({ where: { key: storedKey }, patch: { value } });
 }
 
 /** lockKey = prefix + SHA-256 of the JSON tuple. Same tuple, same key. */

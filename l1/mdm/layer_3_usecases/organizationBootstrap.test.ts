@@ -13,6 +13,7 @@ import { resetResolvedTableDefinitionsCache } from '/_102034_/l1/server/layer_1_
 import { AppError } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import { createRequestContext } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
 import { createMemoryDataRuntime } from '/_102034_/l1/mdm/layer_1_external/data/memory/MdmDataRuntimeMemory.js';
+import type { IDataRuntime } from '/_102034_/l1/server/layer_1_external/data/runtime.js';
 import { createRegistrationEntity } from '/_102034_/l1/mdm/layer_3_usecases/internal/entityPersistence.js';
 import { MdmDocumentEntity } from '/_102034_/l1/mdm/layer_3_usecases/internal/MdmDocumentStore.js';
 import {
@@ -304,6 +305,44 @@ test('identity failure after the reservation resumes the same id', async () => {
   assert.equal(await companyCount(runtime), 1);
   const stored = await storedCompany(runtime, created.companyMdmId);
   assert.equal(stored.details.tags.includes(companyType), false);
+});
+
+function draftOnSharedMdm(shared: IDataRuntime, draft: IDataRuntime): IDataRuntime {
+  return {
+    ...shared,
+    moduleData: draft.moduleData,
+    runInTransaction(callback, options) {
+      return shared.runInTransaction(
+        async (tx) => callback({ ...tx, moduleData: draft.moduleData }),
+        options,
+      );
+    },
+  };
+}
+
+test('two drafts on one split MDM reserve a single Company', async () => {
+  const shared = createMemoryDataRuntime();
+  const draftA = createMemoryDataRuntime();
+  const draftB = createMemoryDataRuntime();
+  const org = binding('org:acme', 'Acme');
+  const first = await ensureOrganizationCompany(
+    createRequestContext(draftOnSharedMdm(shared, draftA)),
+    org,
+    config(),
+  );
+  const second = await ensureOrganizationCompany(
+    createRequestContext(draftOnSharedMdm(shared, draftB)),
+    org,
+    config(),
+  );
+  assert.equal(first.companyMdmId, second.companyMdmId);
+  assert.equal(await companyCount(shared), 1);
+  const key = organizationReservationKey(org.key);
+  const draftKv = await draftA.moduleData.getTable<{ key: string }>('mdmKv');
+  assert.equal(await draftKv.findOne({ where: { key } }), null);
+  const reservation = await shared.mdmRegistrationKv.findOne({ where: { key } });
+  assert.ok(reservation);
+  assert.equal((reservation.value as { companyMdmId: string }).companyMdmId, first.companyMdmId);
 });
 
 test('identity refuses a reservation that points at a Person', async () => {
