@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import { draftSlugForUser } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
 import { DEFAULT_APPCONFIG_FILE } from '/_102034_/l1/server/layer_1_external/cbe/cbeProviderToken.js';
 import {
   AncestorDenoConfigError,
@@ -14,6 +15,7 @@ import {
   DraftDatabaseError,
   DraftWorktreeMissingError,
   buildDenoArgs,
+  draftDatabaseName,
   draftDatabaseUrl,
   ensureDevProcess,
   setDevIdentitySecretForTests,
@@ -44,7 +46,7 @@ function writeOwnReleaseConfig(base: string, projectId = 102047, body = '{"relea
 }
 
 test('draftDatabaseUrl keeps the parent connection and swaps only the database name', () => {
-  const url = draftDatabaseUrl(PARENT_TEST_URL, SLUG);
+  const url = draftDatabaseUrl(PARENT_TEST_URL, SLUG, 102047);
   const parsed = new URL(url);
   assert.equal(parsed.username, 'collab');
   assert.equal(parsed.password, 'secret');
@@ -54,18 +56,34 @@ test('draftDatabaseUrl keeps the parent connection and swaps only the database n
   assert.equal(url, `postgres://collab:secret@127.0.0.1:5432/${DRAFT_DATABASE}`);
   assert.notEqual(parsed.pathname, '/collab_app_test');
 
-  const mixed = new URL(draftDatabaseUrl(PARENT_TEST_URL, 'Team.A@b-9'));
+  const mixed = new URL(draftDatabaseUrl(PARENT_TEST_URL, 'Team.A@b-9', 102047));
   assert.equal(mixed.pathname, '/collab_app_draft_team_a_b_9');
   assert.equal(mixed.username, 'collab');
   assert.equal(mixed.hostname, '127.0.0.1');
   assert.equal(mixed.port, '5432');
 
-  const capped = new URL(draftDatabaseUrl(PARENT_TEST_URL, 'abcdefghijklmnopqrstuvwxyz')).pathname.slice(1);
+  const capped = new URL(draftDatabaseUrl(PARENT_TEST_URL, 'abcdefghijklmnopqrstuvwxyz', 102047)).pathname.slice(1);
   assert.equal(capped.length, 40);
   assert.equal(capped, 'collab_app_draft_abcdefghijklmnopqrstuvw');
 
-  assert.throws(() => draftDatabaseUrl('not a url', SLUG), /invalid database url/);
-  assert.throws(() => draftDatabaseUrl('postgres://collab:secret@127.0.0.1:5432', SLUG), /invalid database url/);
+  assert.throws(() => draftDatabaseUrl('not a url', SLUG, 102047), /invalid database url/);
+  assert.throws(() => draftDatabaseUrl('postgres://collab:secret@127.0.0.1:5432', SLUG, 102047), /invalid database url/);
+});
+
+test('draftDatabaseName: user drafts include project; team name unchanged', () => {
+  const a = draftSlugForUser('ana_b@x.com');
+  const b = draftSlugForUser('ana@b.x.com');
+  const h12a = a.slug.slice('user-'.length, 'user-'.length + 12);
+  const h12b = b.slug.slice('user-'.length, 'user-'.length + 12);
+  assert.notEqual(h12a, h12b);
+  assert.equal(draftDatabaseName(a.slug, 102056), `collab_app_draft_102056_u${h12a}`);
+  assert.equal(draftDatabaseName(a.slug, 102047), `collab_app_draft_102047_u${h12a}`);
+  assert.notEqual(draftDatabaseName(a.slug, 102056), draftDatabaseName(a.slug, 102047));
+  assert.notEqual(draftDatabaseName(a.slug, 102056), draftDatabaseName(b.slug, 102056));
+  assert.equal(draftDatabaseName(a.slug, 102056).length, `collab_app_draft_102056_u${h12a}`.length);
+  assert.equal(draftDatabaseName(draftSlugForUser('ANA_B@X.COM').slug, 102056), draftDatabaseName(a.slug, 102056));
+  assert.equal(draftDatabaseName('team-102056', 102056), 'collab_app_draft_team_102056');
+  assert.equal(draftDatabaseName('team-102047', 999), 'collab_app_draft_team_102047');
 });
 
 test('memoryModeAllowEnv contains the measured env names once', () => {
@@ -107,7 +125,7 @@ function allowEnvCovers(allowNames: ReadonlySet<string>, name: string): boolean 
 }
 
 test('dev --allow-env covers every l1 env read except DATABASE_URL', () => {
-  const allow = buildDenoArgs('/tmp/base', SLUG, 4100, draftDatabaseUrl(PARENT_TEST_URL, SLUG))
+  const allow = buildDenoArgs('/tmp/base', SLUG, 4100, draftDatabaseUrl(PARENT_TEST_URL, SLUG, 102047))
     .find((arg) => arg.startsWith('--allow-env='));
   assert.ok(allow);
   const allowNames = new Set(allow.slice('--allow-env='.length).split(','));
@@ -121,7 +139,7 @@ test('dev --allow-env covers every l1 env read except DATABASE_URL', () => {
 
 test('the default appconfig path (OAuth client secrets) is outside every --allow-read root of the draft process', () => {
   const base = '/data/mls-base';
-  const args = buildDenoArgs(base, SLUG, 4100, draftDatabaseUrl(PARENT_TEST_URL, SLUG));
+  const args = buildDenoArgs(base, SLUG, 4100, draftDatabaseUrl(PARENT_TEST_URL, SLUG, 102047));
   const allow = args.find((arg) => arg.startsWith('--allow-read='));
   assert.ok(allow);
   for (const root of allow.slice('--allow-read='.length).split(',')) {
@@ -134,7 +152,7 @@ test('dev --allow-read ends with CBE_PROJECT_FILES_DIR', () => {
   const previous = process.env.CBE_PROJECT_FILES_DIR;
   process.env.CBE_PROJECT_FILES_DIR = '/x/projects';
   try {
-    const allow = buildDenoArgs('/tmp/base', SLUG, 4100, draftDatabaseUrl(PARENT_TEST_URL, SLUG))
+    const allow = buildDenoArgs('/tmp/base', SLUG, 4100, draftDatabaseUrl(PARENT_TEST_URL, SLUG, 102047))
       .find((arg) => arg.startsWith('--allow-read='));
     assert.ok(allow);
     assert.equal(allow.endsWith(',/x/projects'), true);
@@ -158,7 +176,7 @@ test('draft --allow-read uses the real project path and keeps appconfig outside 
   const missing = join(root, 'missing', 'projects');
   const previousProjects = process.env.CBE_PROJECT_FILES_DIR;
   const previousAppconfig = process.env.COLLAB_APPCONFIG_FILE;
-  const databaseUrl = draftDatabaseUrl(PARENT_TEST_URL, SLUG);
+  const databaseUrl = draftDatabaseUrl(PARENT_TEST_URL, SLUG, 102047);
   try {
     process.env.CBE_PROJECT_FILES_DIR = missing;
     const missingAllow = buildDenoArgs('/tmp/base', SLUG, 4100, databaseUrl)
@@ -258,7 +276,7 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
       };
       const now = () => 1_700_000_000_000;
       const writeConfig = () => {};
-      const draftUrl = draftDatabaseUrl(PARENT_TEST_URL, SLUG);
+      const draftUrl = draftDatabaseUrl(PARENT_TEST_URL, SLUG, 102047);
       process.env.DATABASE_URL_TEST = PARENT_TEST_URL;
       const first = ensureDevProcess({ base, slug: SLUG, clientProjectId: 102047, spawn: spawnDev, now, writeConfig });
       const second = ensureDevProcess({ base, slug: SLUG, clientProjectId: 102047, spawn: spawnDev, now, writeConfig });
@@ -952,7 +970,7 @@ test('stopDev removes the secret file; the file is 0600, the dir is 0700, and th
     assert.equal(readFileSync(secretPath, 'utf8'), info.identitySecret);
     assert.equal(statSync(secretPath).mode & 0o777, 0o600);
     assert.equal(statSync(dirname(secretPath)).mode & 0o777, 0o700);
-    const allow = buildDenoArgs(base, SLUG, 4100, draftDatabaseUrl(PARENT_TEST_URL, SLUG))
+    const allow = buildDenoArgs(base, SLUG, 4100, draftDatabaseUrl(PARENT_TEST_URL, SLUG, 102047))
       .find((arg) => arg.startsWith('--allow-read='));
     assert.ok(allow);
     const roots = allow.slice('--allow-read='.length).split(',');

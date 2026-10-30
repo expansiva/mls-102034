@@ -159,19 +159,23 @@ function denoOnPath(pathEnv = process.env.PATH): boolean {
 const DRAFT_DATABASE_PREFIX = 'collab_app_draft_';
 const DRAFT_DATABASE_MAX = 40;
 
-function draftDatabaseName(slug: string): string {
+export function draftDatabaseName(slug: string, projectId: number): string {
+  const user = /^user-([a-f0-9]{16})$/u.exec(slug);
+  if (user) {
+    return `${DRAFT_DATABASE_PREFIX}${projectId}_u${user[1].slice(0, 12)}`;
+  }
   const normalized = slug.toLowerCase().replace(/[^a-z0-9]/gu, '_');
   return `${DRAFT_DATABASE_PREFIX}${normalized}`.slice(0, DRAFT_DATABASE_MAX);
 }
 
 /** Parent test URL with only the database name swapped for this draft. Invalid URL throws. */
-export function draftDatabaseUrl(testUrl: string, slug: string): string {
+export function draftDatabaseUrl(testUrl: string, slug: string, projectId: number): string {
   if (!parseDatabaseUrl(testUrl)) {
     console.error('[cbe] dev database url is invalid');
     throw new Error('invalid database url');
   }
   const url = new URL(testUrl);
-  url.pathname = `/${draftDatabaseName(slug)}`;
+  url.pathname = `/${draftDatabaseName(slug, projectId)}`;
   return url.toString();
 }
 
@@ -694,7 +698,7 @@ function ensureUnlocked(opts: EnsureDevProcessOpts): DevProcessInfo {
     console.error(`[cbe] dev ${slug}: ${message}`);
     throw new DraftDatabaseError(message);
   }
-  const databaseUrl = draftDatabaseUrl(testUrl, slug);
+  const databaseUrl = draftDatabaseUrl(testUrl, slug, clientProjectId);
   const database = new URL(databaseUrl).pathname.replace(/^\//u, '');
 
   const writeConfig = opts.writeConfig ?? defaultWriteConfig;

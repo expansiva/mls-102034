@@ -2,8 +2,9 @@
 // Resolves the studio draft named by cookie `collab-draft` and ensures its git
 // worktree. Invalid slugs are "no draft" (null), never an error.
 
+import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { mkdir, realpath } from 'node:fs/promises';
+import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { parseCookies } from '/_102034_/l1/server/layer_1_external/cbe/cbeAuthJwt.js';
@@ -12,7 +13,8 @@ const execFileAsync = promisify(execFile);
 
 const GIT_TIMEOUT_MS = 30000;
 const LOCK_RETRY_MS = 200;
-const SLUG_RE = /^(team|user)-([a-z0-9_.-]{1,64})$/;
+const TEAM_SLUG_RE = /^team-([a-z0-9_.-]{1,64})$/;
+const USER_SLUG_RE = /^user-([a-f0-9]{16})$/;
 
 export interface DraftSlug {
   slug: string;
@@ -27,24 +29,55 @@ export interface RequestDraft {
 
 export type DraftGit = (args: string[], cwd: string) => Promise<string>;
 
-/**
- * Cookie-safe email (`@` and `.` stored as `_`) back to `user/<email>`.
- * First `_` is `@`; the rest are `.`.
- */
-function decodeDraftEmail(encoded: string): string {
-  const at = encoded.indexOf('_');
-  if (at < 0) return encoded;
-  return `${encoded.slice(0, at)}@${encoded.slice(at + 1).replaceAll('_', '.')}`;
+/** First 16 hex of sha256(email, lowercase). Same person, same code. */
+export function personCodeForEmail(email: string): string {
+  return createHash('sha256').update(email.trim().toLowerCase(), 'utf8').digest('hex').slice(0, 16);
+}
+
+export function draftSlugForUser(email: string): DraftSlug {
+  const h = personCodeForEmail(email);
+  return { slug: `user-${h}`, branch: `user/${h}` };
 }
 
 export function parseDraftSlug(cookieValue: string | undefined): DraftSlug | null {
   if (cookieValue === undefined) return null;
-  const match = SLUG_RE.exec(cookieValue);
-  if (!match) return null;
-  const kind = match[1];
-  const rest = match[2];
-  const branch = kind === 'team' ? `team/${rest}` : `user/${decodeDraftEmail(rest)}`;
-  return { slug: cookieValue, branch };
+  const team = TEAM_SLUG_RE.exec(cookieValue);
+  if (team) return { slug: cookieValue, branch: `team/${team[1]}` };
+  const user = USER_SLUG_RE.exec(cookieValue);
+  if (user) return { slug: cookieValue, branch: `user/${user[1]}` };
+  return null;
+}
+
+export function draftOwnerPath(base: string, slug: string): string {
+  return join(base, 'drafts', slug, 'owner.json');
+}
+
+export async function writeDraftOwner(base: string, slug: string, email: string): Promise<void> {
+  const dir = join(base, 'drafts', slug);
+  await mkdir(dir, { recursive: true });
+  const body = `${JSON.stringify({ email: email.trim().toLowerCase() })}\n`;
+  await writeFile(draftOwnerPath(base, slug), body, 'utf8');
+}
+
+export async function readDraftOwner(base: string, slug: string): Promise<string | null> {
+  try {
+    const raw = await readFile(draftOwnerPath(base, slug), 'utf8');
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null) {
+      console.error(`[cbe] draft ${slug}: owner.json is not an object`);
+      return null;
+    }
+    const email = (parsed as { email?: unknown }).email;
+    if (typeof email !== 'string' || email.trim() === '') {
+      console.error(`[cbe] draft ${slug}: owner.json has no email`);
+      return null;
+    }
+    return email;
+  } catch (err) {
+    if (isEnoent(err)) return null;
+    console.error(`[cbe] draft ${slug}: owner.json read failed:`, err);
+    return null;
+  }
 }
 
 export function draftSourceRoot(base: string, slug: string, projectId: number): string {

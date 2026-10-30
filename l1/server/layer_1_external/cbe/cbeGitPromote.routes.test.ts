@@ -256,7 +256,7 @@ test('exec promote, discardDraft, listDrafts and draftDiff', async () => {
     writeFileSync(devJson, JSON.stringify({
       port: 4100, pid: 2147483646, startedAt: 0, lastRequestAt: 0, database: DRAFT_DATABASE,
     }));
-    const expected = parseDatabaseUrl(draftDatabaseUrl(PARENT_TEST_URL, SLUG));
+    const expected = parseDatabaseUrl(draftDatabaseUrl(PARENT_TEST_URL, SLUG, PROJECT_ID));
     assert.ok(expected);
     assert.equal(drops.length, 0);
     const discarded = await app.inject({

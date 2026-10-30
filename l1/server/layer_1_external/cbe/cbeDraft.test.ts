@@ -7,10 +7,13 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import {
+  draftSlugForUser,
   draftSourceRoot,
   ensureDraftWorktree,
   parseDraftSlug,
+  readDraftOwner,
   requestDraftValue,
+  writeDraftOwner,
   type DraftGit,
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
 
@@ -23,16 +26,44 @@ function assertSafeDirectory(args: string[], cwd: string): void {
   assert.equal(args[1], `safe.directory=${cwd}`);
 }
 
-test('parseDraftSlug: 6 valid/invalid cases', () => {
+test('parseDraftSlug: team and user-hex; encoded email is invalid', () => {
   assert.deepEqual(parseDraftSlug('team-102047'), { slug: 'team-102047', branch: 'team/102047' });
-  assert.deepEqual(parseDraftSlug('user-alice_collab_codes'), {
-    slug: 'user-alice_collab_codes',
-    branch: 'user/alice@collab.codes',
+  assert.deepEqual(parseDraftSlug('user-0123456789abcdef'), {
+    slug: 'user-0123456789abcdef',
+    branch: 'user/0123456789abcdef',
   });
+  assert.equal(parseDraftSlug('user-alice_collab_codes'), null);
+  assert.equal(parseDraftSlug('user-0123456789abcde'), null);
+  assert.equal(parseDraftSlug('user-0123456789abcdef0'), null);
   assert.equal(parseDraftSlug(undefined), null);
   assert.equal(parseDraftSlug(''), null);
   assert.equal(parseDraftSlug('TEAM-102047'), null);
   assert.equal(parseDraftSlug(`team-${'a'.repeat(65)}`), null);
+});
+
+test('draftSlugForUser: ambiguous emails differ; case folds', () => {
+  const a = draftSlugForUser('ana_b@x.com');
+  const b = draftSlugForUser('ana@b.x.com');
+  const c = draftSlugForUser('user@ex_ample.com');
+  assert.notEqual(a.slug, b.slug);
+  assert.notEqual(a.branch, b.branch);
+  assert.notEqual(a.slug, c.slug);
+  assert.match(a.slug, /^user-[a-f0-9]{16}$/);
+  assert.equal(a.branch, `user/${a.slug.slice('user-'.length)}`);
+  assert.deepEqual(draftSlugForUser('Ana_B@X.COM'), a);
+  assert.deepEqual(parseDraftSlug(a.slug), a);
+});
+
+test('writeDraftOwner / readDraftOwner round-trip', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'cbe-owner-'));
+  try {
+    const { slug } = draftSlugForUser('ana@x.com');
+    await writeDraftOwner(base, slug, 'Ana@X.com');
+    assert.equal(await readDraftOwner(base, slug), 'ana@x.com');
+    assert.equal(await readDraftOwner(base, 'user-0123456789abcdef'), null);
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
 });
 
 test('requestDraftValue prefers x-collab-draft and does not fall through when that header is invalid', () => {

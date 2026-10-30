@@ -637,6 +637,7 @@ function buildDiscardedDraftBody(
 
 async function discardDraftDatabase(
   slug: string,
+  projectId: number,
 ): Promise<{ databaseDropped: true } | { databaseDropped: false; cause: string }> {
   const testUrl = process.env.DATABASE_URL_TEST;
   if (!testUrl) {
@@ -646,7 +647,7 @@ async function discardDraftDatabase(
   }
   let parsed: { database: string; adminUrl: string } | null;
   try {
-    parsed = parseDatabaseUrl(draftDatabaseUrl(testUrl, slug));
+    parsed = parseDatabaseUrl(draftDatabaseUrl(testUrl, slug, projectId));
   } catch (err) {
     const cause = (err as Error).message || String(err);
     console.error(`[cbe] discard draft ${slug}: ${cause}`);
@@ -944,7 +945,7 @@ async function handleDiscardDraft(request: FastifyRequest, body: CbeRequestDisca
   } catch (err) {
     console.error(`[cbe] discard draft ${slug}: stop dev process failed: ${(err as Error).message}`);
   }
-  const drop = await discardDraftDatabase(slug);
+  const drop = await discardDraftDatabase(slug, project);
   reply.code(CBE_HTTP_OK).send(buildDiscardedDraftBody(drop));
 }
 

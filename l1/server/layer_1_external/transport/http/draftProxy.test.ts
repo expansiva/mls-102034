@@ -74,7 +74,7 @@ test('draftSlugForProxy reads the header first, then the cookie, and stays null 
     assert.equal(draftSlugForProxy({ cookie: 'cauth=abc' }), null);
     assert.equal(draftSlugForProxy({ cookie: 'collab-draft=not-a-slug' }), null);
     assert.equal(draftSlugForProxy({ cookie }), SLUG);
-    assert.equal(draftSlugForProxy({ 'x-collab-draft': 'user-ada_collab_codes', cookie }), 'user-ada_collab_codes');
+    assert.equal(draftSlugForProxy({ 'x-collab-draft': 'user-0123456789abcdef', cookie }), 'user-0123456789abcdef');
     assert.equal(draftSlugForProxy({ 'x-collab-draft': 'not-a-slug', cookie }), null);
     assert.equal(draftSlugForProxy({ 'x-collab-draft': SLUG }), SLUG);
     // The service worker passes only the cookie, so a header on the same request cannot choose it.
@@ -109,7 +109,7 @@ test('/execBff uses x-collab-draft ahead of the cookie and ignores the cookie wh
   const headerWins = fakeReply();
   const won = await applyDraftExecBff({
     ...deps,
-    request: fakeRequest({ routine: 'x.y.z' }, { cookie, 'x-collab-draft': 'user-ada_collab_codes' }),
+    request: fakeRequest({ routine: 'x.y.z' }, { cookie, 'x-collab-draft': 'user-0123456789abcdef' }),
     reply: headerWins,
   });
   assert.equal(won.handled, true);
