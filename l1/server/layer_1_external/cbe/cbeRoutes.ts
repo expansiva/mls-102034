@@ -39,9 +39,9 @@ import { readHistory, readHistoryContent } from '/_102034_/l1/server/layer_1_ext
 import { isRebuildInProgress, scheduleRebuildOnSave } from '/_102034_/l1/server/layer_1_external/cbe/cbeRebuildOnSave.js';
 import { authorFromSession, commitSavedSources } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitCommit.js';
 import { discardDraft, draftDiff, fastForwardDraft, listDrafts, mergeMainIntoDraft, promoteDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitPromote.js';
-import { resolveRequestDraft, resolveWriteDraft, type RequestDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
+import { draftSlugForUser, requestDraftValue, resolveRequestDraft, resolveWriteDraft, writeDraftOwner, type RequestDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
 import { draftDatabaseUrl, ensureDevReaper, restartDevProcess, stopDevProcess } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
-import { desenvIo, handleDesenvEnter, handleDesenvExit, handleDraftEnter } from '/_102034_/l1/server/layer_1_external/cbe/cbeDesenv.js';
+import { desenvIo, handleDesenvEnter, handleDesenvExit, handleDraftEnter, runDraftEnter } from '/_102034_/l1/server/layer_1_external/cbe/cbeDesenv.js';
 import { getRunningRelease } from '/_102034_/l1/server/layer_1_external/cbe/cbeRelease.js';
 import {
   CBE_HTTP_BAD_REQUEST,
@@ -176,6 +176,14 @@ async function resolveSession(request: FastifyRequest): Promise<JwtSession & { t
   const testUser = process.env.CBE_TEST_LOGIN_USER;
   return testUser ? { testUser } : {};
 }
+
+/** Tests replace this so a save can name a person without a signed JWT. */
+export const sessionHooks = {
+  emailOf: async (request: FastifyRequest): Promise<string | undefined> => {
+    const session = await resolveSession(request);
+    return session.email;
+  },
+};
 
 function headerString(value: string | string[] | undefined): string {
   return Array.isArray(value) ? value[0] ?? '' : value ?? '';
@@ -419,7 +427,19 @@ async function handleSetContents(request: FastifyRequest, body: CbeRequestSetCon
     reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, msg: 'invalid project' });
     return;
   }
-  const draft = await resolveWriteDraft(request.headers, getProjectsBaseDir(), project);
+  const base = getProjectsBaseDir();
+  const marked = requestDraftValue(request.headers);
+  let headers = request.headers;
+  // No mark: the signed-in person. team-<project> stays the fallback when nobody is identified (rt153).
+  if (marked === undefined || marked === '') {
+    const email = await sessionHooks.emailOf(request);
+    if (email) {
+      const person = draftSlugForUser(email);
+      await writeDraftOwner(base, person.slug, email);
+      headers = { ...request.headers, 'x-collab-draft': person.slug };
+    }
+  }
+  const draft = await resolveWriteDraft(headers, base, project);
   const rc = writeSources(project, body.files ?? [], body.deletes ?? [], { sourceRoot: draft.sourceRoot });
   if (!rc.ok) {
     reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, msg: rc.msg ?? 'invalid request' });
@@ -440,7 +460,6 @@ async function handleSetContents(request: FastifyRequest, body: CbeRequestSetCon
   }
   // setContents never rebuilds the release. A draft dev process restarts only when l1 changes.
   console.info(`[cbe] draft ${draft.slug}: no release rebuild`);
-  const base = getProjectsBaseDir();
   draftDevHooks.ensureDevReaper(base);
   const files = body.files ?? [];
   const deletes = body.deletes ?? [];
@@ -977,6 +996,30 @@ async function handleDraftSync(request: FastifyRequest, body: CbeRequestDraftSyn
   reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, status: result.status });
 }
 
+async function handleDraftEnterAction(request: FastifyRequest, body: object, reply: FastifyReply): Promise<void> {
+  const fields = body as { project?: unknown; draft?: unknown };
+  if (fields.draft !== 'user') {
+    await handleDraftEnter(request, body, reply);
+    return;
+  }
+  const email = await sessionHooks.emailOf(request);
+  if (!email) {
+    reply.code(CBE_HTTP_UNAUTHORIZED).send({ statusCode: CBE_HTTP_UNAUTHORIZED, msg: 'draft.session_required' });
+    return;
+  }
+  const person = draftSlugForUser(email);
+  const result = await runDraftEnter({
+    allowed: await desenvIo.isAllowed(request),
+    draft: person.slug,
+    project: fields.project,
+  });
+  if (result.status === CBE_HTTP_OK) {
+    await writeDraftOwner(desenvIo.getProjectsBaseDir(), person.slug, email);
+  }
+  reply.code(result.status);
+  reply.send(result.body);
+}
+
 async function handleListDrafts(request: FastifyRequest, body: CbeRequestListDrafts, reply: FastifyReply): Promise<void> {
   const project = await requireSourceProject(request, body, reply);
   if (!project) return;
@@ -1076,7 +1119,7 @@ async function handleExec(request: FastifyRequest, reply: FastifyReply): Promise
         await handleDraftSync(request, body as CbeRequestDraftSync, reply);
         return;
       case 'draftEnter':
-        await handleDraftEnter(request, body, reply);
+        await handleDraftEnterAction(request, body, reply);
         return;
       case 'providerToken': {
         const session = await resolveSession(request);

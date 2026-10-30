@@ -348,6 +348,7 @@ test('listDrafts returns ahead/behind, the last commit and the touched files', a
         date: '2026-10-12T00:00:00Z',
         message: 'ship it',
         files: ['l2/a.ts'],
+        owner: 'team',
       },
       {
         branch: 'user/bob@x.com',
@@ -358,6 +359,7 @@ test('listDrafts returns ahead/behind, the last commit and the touched files', a
         date: '2026-10-11T00:00:00Z',
         message: 'wip',
         files: [],
+        owner: null,
       },
     ],
   });

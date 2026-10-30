@@ -11,7 +11,7 @@
 import { execFile } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
-import { draftSourceRoot, parseDraftSlug } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
+import { draftSourceRoot, parseDraftSlug, readDraftOwner } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
 import type { GitCommitAuthor } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitCommit.js';
 import { resolveSourcePath } from '/_102034_/l1/server/layer_1_external/cbe/cbeSources.js';
 
@@ -56,6 +56,8 @@ export interface ListedDraft {
   date: string;
   message: string;
   files: string[];
+  /** Person email, `team`, or null when `owner.json` is missing. Never decoded from the slug. */
+  owner: string | null;
 }
 
 export type ListDraftsResult =
@@ -390,9 +392,25 @@ export async function listDrafts(opts: {
       date: date ?? '',
       message: messageParts.join(FIELD_SEP),
       files: linesOf(names.stdout),
+      owner: await ownerForBranch(opts.base, branch),
     });
   }
   return { status: 'listed', drafts };
+}
+
+/** `team/<id>` → the word `team`. `user/<16 hex>` → email from owner.json. Anything else → null, with a log. */
+async function ownerForBranch(base: string, branch: string): Promise<string | null> {
+  const slash = branch.indexOf('/');
+  const slug = slash > 0 ? `${branch.slice(0, slash)}-${branch.slice(slash + 1)}` : '';
+  const parsed = parseDraftSlug(slug);
+  if (!parsed || parsed.branch !== branch) {
+    console.error(`[cbe] listDrafts: no owner for ${branch}`);
+    return null;
+  }
+  if (parsed.slug.startsWith('team-')) return 'team';
+  const email = await readDraftOwner(base, parsed.slug);
+  if (email === null) console.error(`[cbe] listDrafts: draft ${parsed.slug} has no owner.json`);
+  return email;
 }
 
 function parseNameStatus(stdout: string): DraftDiffFile[] {

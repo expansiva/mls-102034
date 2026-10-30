@@ -1,8 +1,12 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/cbe/cbeDesenv.test.ts" enhancement="_blank" />
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import Fastify from 'fastify';
-import { registerCbeRoutes } from '/_102034_/l1/server/layer_1_external/cbe/cbeRoutes.js';
+import { registerCbeRoutes, sessionHooks } from '/_102034_/l1/server/layer_1_external/cbe/cbeRoutes.js';
+import { draftSlugForUser } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
 import {
   clearDraftCookie,
   desenvIo,
@@ -550,3 +554,70 @@ test('POST /exec draftEnter returns JSON and never sets the draft cookie', async
     await app.close();
   }
 });
+
+test('draftEnter "user" resolves the session and writes nothing without one', async () => {
+  const prevLogin = process.env.CBE_REQUIRE_LOGIN;
+  const prevDir = process.env.CBE_PROJECTS_DIR;
+  delete process.env.CBE_REQUIRE_LOGIN;
+  const base = mkdtempSync(join(tmpdir(), 'cbe-draft-enter-user-'));
+  process.env.CBE_PROJECTS_DIR = base;
+
+  const worktrees: string[] = [];
+  const origWorktree = desenvIo.ensureDraftWorktree;
+  const origFastForward = desenvIo.fastForwardDraft;
+  const origStop = desenvIo.stopDevProcess;
+  const origDev = desenvIo.ensureDevProcess;
+  const origReady = desenvIo.waitForDevReady;
+  const origProject = desenvIo.resolveClientProjectId;
+  const origEmail = sessionHooks.emailOf;
+  let email: string | undefined;
+  sessionHooks.emailOf = async () => email;
+  desenvIo.resolveClientProjectId = () => String(PROJECT_ID);
+  desenvIo.stopDevProcess = () => {};
+  desenvIo.fastForwardDraft = async () => ({ status: 'fast_forwarded', ref: 'abc123' });
+  desenvIo.ensureDraftWorktree = async (opts) => {
+    worktrees.push(opts.slug);
+    return '/tmp/draft';
+  };
+  desenvIo.ensureDevProcess = () => ({ port: 4100, pid: 1, startedAt: 0, lastRequestAt: 0 });
+  desenvIo.waitForDevReady = async () => true;
+
+  const app = Fastify();
+  registerCbeRoutes(app);
+  const post = () => app.inject({
+    method: 'POST',
+    url: '/exec',
+    headers: { host: 'localhost', 'content-type': 'application/json' },
+    payload: { action: 'draftEnter', project: PROJECT_ID, draft: 'user' },
+  });
+
+  try {
+    const missing = await post();
+    assert.equal(missing.statusCode, 401);
+    assert.equal(missing.json().msg, 'draft.session_required');
+    assert.equal(worktrees.length, 0);
+
+    email = 'Ana@X.com';
+    const entered = await post();
+    const person = draftSlugForUser(email);
+    assert.equal(entered.statusCode, 200, entered.body);
+    assert.deepEqual(entered.json(), { statusCode: 200, ok: true, slug: person.slug, head: 'abc123' });
+    assert.deepEqual(worktrees, [person.slug]);
+    assert.equal(readFileSync(join(base, 'drafts', person.slug, 'owner.json'), 'utf8'), '{"email":"ana@x.com"}\n');
+  } finally {
+    sessionHooks.emailOf = origEmail;
+    desenvIo.ensureDraftWorktree = origWorktree;
+    desenvIo.fastForwardDraft = origFastForward;
+    desenvIo.stopDevProcess = origStop;
+    desenvIo.ensureDevProcess = origDev;
+    desenvIo.waitForDevReady = origReady;
+    desenvIo.resolveClientProjectId = origProject;
+    if (prevLogin === undefined) delete process.env.CBE_REQUIRE_LOGIN;
+    else process.env.CBE_REQUIRE_LOGIN = prevLogin;
+    if (prevDir === undefined) delete process.env.CBE_PROJECTS_DIR;
+    else process.env.CBE_PROJECTS_DIR = prevDir;
+    rmSync(base, { recursive: true, force: true });
+    await app.close();
+  }
+});
+

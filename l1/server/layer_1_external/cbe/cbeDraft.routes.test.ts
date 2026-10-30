@@ -6,7 +6,8 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify from 'fastify';
-import { draftDevHooks, registerCbeRoutes } from '/_102034_/l1/server/layer_1_external/cbe/cbeRoutes.js';
+import { draftDevHooks, registerCbeRoutes, sessionHooks } from '/_102034_/l1/server/layer_1_external/cbe/cbeRoutes.js';
+import { draftSlugForUser } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
 
 const PROJECT_ID = 102047;
 const SLUG = 'team-102047';
@@ -293,5 +294,92 @@ test('the served service worker is the same with or without a draft cookie or x-
     else process.env.CBE_STATIC_DIR = prevStatic;
     if (prevDraft !== undefined) process.env.COLLAB_DRAFT = prevDraft;
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('two sessions saving without a mark land in two drafts; no session uses the team draft', async () => {
+  const base = mkdtempSync(join(tmpdir(), 'cbe-person-draft-'));
+  const projectRoot = join(base, `mls-${PROJECT_ID}`);
+  const prev = {
+    dir: process.env.CBE_PROJECTS_DIR,
+    commit: process.env.CBE_COMMIT_ON_SAVE,
+    rebuild: process.env.CBE_REBUILD_ON_SAVE,
+    login: process.env.CBE_REQUIRE_LOGIN,
+  };
+  process.env.CBE_PROJECTS_DIR = base;
+  process.env.CBE_COMMIT_ON_SAVE = 'always';
+  process.env.CBE_REBUILD_ON_SAVE = 'never';
+  process.env.CBE_REQUIRE_LOGIN = 'never';
+  const ana = 'ana@x.com';
+  const bob = 'bob@y.com';
+  let who: string | undefined;
+  const origEmail = sessionHooks.emailOf;
+  sessionHooks.emailOf = async () => who;
+  const origRestart = draftDevHooks.restartDevProcess;
+  draftDevHooks.restartDevProcess = () => new Promise(() => {});
+  const app = Fastify();
+  registerCbeRoutes(app);
+  const save = (content: string) => app.inject({
+    method: 'POST',
+    url: '/exec',
+    payload: {
+      action: 'setContents',
+      project: PROJECT_ID,
+      files: [{ shortPath: 'l2/plain.ts', content, encoding: 'utf8' }],
+      comments: 'save',
+    },
+  });
+  try {
+    git(base, ['init', '-b', 'main', projectRoot]);
+    git(projectRoot, ['config', 'user.name', 'fixture']);
+    git(projectRoot, ['config', 'user.email', 'fixture@test']);
+    git(projectRoot, ['config', 'commit.gpgsign', 'false']);
+    git(projectRoot, ['commit', '--allow-empty', '-m', 'init', '--no-verify']);
+
+    who = ana;
+    const anaRes = await save('export const plain = "ana";\n');
+    assert.equal(anaRes.statusCode, 200, anaRes.body);
+    who = bob;
+    const bobRes = await save('export const plain = "bob";\n');
+    assert.equal(bobRes.statusCode, 200, bobRes.body);
+    const anaSlug = draftSlugForUser(ana);
+    const bobSlug = draftSlugForUser(bob);
+    assert.notEqual(anaSlug.slug, bobSlug.slug);
+    assert.deepEqual(anaRes.json().draft, anaSlug);
+    assert.deepEqual(bobRes.json().draft, bobSlug);
+    assert.equal(readFileSync(join(base, 'drafts', anaSlug.slug, `mls-${PROJECT_ID}`, 'l2/plain.ts'), 'utf8'), 'export const plain = "ana";\n');
+    assert.equal(readFileSync(join(base, 'drafts', bobSlug.slug, `mls-${PROJECT_ID}`, 'l2/plain.ts'), 'utf8'), 'export const plain = "bob";\n');
+
+    who = undefined;
+    const teamRes = await save('export const plain = "team";\n');
+    assert.equal(teamRes.statusCode, 200, teamRes.body);
+    assert.deepEqual(teamRes.json().draft, { slug: SLUG, branch: BRANCH });
+    assert.equal(readFileSync(join(base, 'drafts', SLUG, `mls-${PROJECT_ID}`, 'l2/plain.ts'), 'utf8'), 'export const plain = "team";\n');
+
+    const listed = await app.inject({
+      method: 'POST',
+      url: '/exec',
+      payload: { action: 'listDrafts', project: PROJECT_ID },
+    });
+    assert.equal(listed.statusCode, 200, listed.body);
+    const drafts = listed.json().drafts as Array<{ branch: string; owner: string | null; files: string[] }>;
+    const byOwner = Object.fromEntries(drafts.map((draft) => [draft.owner, draft]));
+    assert.deepEqual(byOwner[ana]?.files, ['l2/plain.ts']);
+    assert.deepEqual(byOwner[bob]?.files, ['l2/plain.ts']);
+    assert.equal(byOwner.team?.branch, BRANCH);
+    assert.deepEqual(byOwner.team?.files, ['l2/plain.ts']);
+  } finally {
+    sessionHooks.emailOf = origEmail;
+    draftDevHooks.restartDevProcess = origRestart;
+    await app.close();
+    if (prev.dir === undefined) delete process.env.CBE_PROJECTS_DIR;
+    else process.env.CBE_PROJECTS_DIR = prev.dir;
+    if (prev.commit === undefined) delete process.env.CBE_COMMIT_ON_SAVE;
+    else process.env.CBE_COMMIT_ON_SAVE = prev.commit;
+    if (prev.rebuild === undefined) delete process.env.CBE_REBUILD_ON_SAVE;
+    else process.env.CBE_REBUILD_ON_SAVE = prev.rebuild;
+    if (prev.login === undefined) delete process.env.CBE_REQUIRE_LOGIN;
+    else process.env.CBE_REQUIRE_LOGIN = prev.login;
+    rmSync(base, { recursive: true, force: true });
   }
 });
