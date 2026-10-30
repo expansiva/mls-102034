@@ -65,7 +65,7 @@ class SharedTable implements CandidatePersistence {
         const revisionNumber = typeof current?.revisionNumber === "number" ? current.revisionNumber : 0;
         if (prior !== input.expectedRevisionId ||
             revisionNumber !== input.pointer.revisionNumber - 1 ||
-            (input.expectedRevisionId !== null && (!input.permit ||
+            (input.expectedRevisionId !== null && input.permit && (
                 current?.snapshotHash !== input.permit.inputSnapshotHash ||
                 current?.resultRevisionId !== input.permit.inputRevisionId ||
                 current?.resultSnapshotHash !== input.permit.inputSnapshotHash ||
@@ -441,6 +441,55 @@ void test("accepts a platform taskId and still rejects slash, empty taskId and a
     const runReply = await candidateMarkResult(caller, dottedRun, hubOrgId, table);
     assert.equal(runReply.statusCode, 400);
     assert.equal(runReply.msg, "candidate.invalid_identifier");
+});
+
+void test("lets a declared supersede replace the pointer without a permit and keeps the prior change readable", async () => {
+    const table = new SharedTable();
+    const first = proposal("first", "one");
+    const published = await candidatePublish(caller, first, hubOrgId, table);
+    assert.equal(published.status, "committed");
+    const next = proposal("second", "two", published.pointer!.revisionId);
+    next.supersede = { changeId: first.changeId, revisionId: first.revisionId };
+    const replaced = await candidatePublish(caller, next, hubOrgId, table);
+    assert.equal(replaced.status, "committed");
+    assert.deepEqual(replaced.pointer?.supersedes, {
+        changeId: first.changeId, revisionId: first.revisionId, revisionNumber: 1,
+    });
+    assert.equal(replaced.pointer?.revisionNumber, 2);
+    const priorFile = table.records.get(
+        `candidate/102047/agendaClinica/changes/${first.changeId}/revisions/${first.revisionId}/files/ontology/Patient.defs.ts`);
+    assert.equal(Buffer.from(String(priorFile?.contentBase64), "base64").toString(), "first");
+    const late = await candidateMarkResult(caller,
+        resultProposal(published.pointer!, first.snapshot, "late_old"), hubOrgId, table);
+    assert.equal(late.status, "conflict");
+    assert.equal((await candidatePublish(caller, next, hubOrgId, table)).pointer?.revisionId, next.revisionId);
+    const reused = proposal("other", "two", published.pointer!.revisionId);
+    reused.supersede = { changeId: first.changeId, revisionId: "revision_other" };
+    assert.equal((await candidatePublish(caller, reused, hubOrgId, table)).msg, "candidate.request_reused");
+    assert.equal((await candidatePublish({ owner: "alice@example.com", orgId: "org-other" }, next, hubOrgId, table)).statusCode, 403);
+});
+
+void test("rejects a supersede that does not match the current pointer or the same change", async () => {
+    const table = new SharedTable();
+    const first = await candidatePublish(caller, proposal("first", "one"), hubOrgId, table);
+    const mismatch = proposal("second", "two", first.pointer!.revisionId);
+    mismatch.supersede = { changeId: "change_other", revisionId: first.pointer!.revisionId };
+    assert.equal((await candidatePublish(caller, mismatch, hubOrgId, table)).msg, "candidate.supersede_mismatch");
+    const sameChange = proposal("again", "oneb", first.pointer!.revisionId);
+    sameChange.changeId = first.pointer!.changeId;
+    sameChange.supersede = { changeId: first.pointer!.changeId, revisionId: first.pointer!.revisionId };
+    assert.equal((await candidatePublish(caller, sameChange, hubOrgId, table)).msg, "candidate.supersede_mismatch");
+    const withPermit = await permitNext(table, first.pointer!, proposal("third", "three", first.pointer!.revisionId));
+    withPermit.supersede = { changeId: first.pointer!.changeId, revisionId: first.pointer!.revisionId };
+    assert.equal((await candidatePublish(caller, withPermit, hubOrgId, table)).msg, "candidate.supersede_with_permit");
+    const raced = proposal("race", "four", first.pointer!.revisionId);
+    raced.supersede = { changeId: first.pointer!.changeId, revisionId: first.pointer!.revisionId };
+    table.records.set("candidate/102047/agendaClinica/active", {
+        key: "candidate/102047/agendaClinica/active",
+        changeId: "change_winner", revisionId: "revision_winner",
+        snapshotHash: "a".repeat(64), revisionNumber: 2,
+    });
+    assert.equal((await candidatePublish(caller, raced, hubOrgId, table)).status, "conflict");
 });
 
 void test("rejects a loose result hash, traversal and completed result without artifacts", async () => {

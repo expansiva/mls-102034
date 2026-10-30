@@ -54,6 +54,11 @@ interface CandidatePointer {
         snapshotHash: string;
         revisionNumber: number;
     };
+    supersedes?: {
+        changeId: string;
+        revisionId: string;
+        revisionNumber: number;
+    };
 }
 interface CandidateSnapshot extends CandidatePointer {
     baseId: string; requestRevision: number; request: string; files: FileMeta[];
@@ -73,7 +78,11 @@ interface PreparedSnapshot {
 interface CandidateOutputSnapshotRecord {
     snapshotHash: string; baseId: string; requestRevision: number; request: string; files: FileMeta[];
 }
-interface CandidateRequest { key: string; owner: string; expectedRevisionId: string | null; pointer: CandidatePointer }
+interface CandidateSupersede { changeId: string; revisionId: string }
+interface CandidateRequest {
+    key: string; owner: string; expectedRevisionId: string | null; pointer: CandidatePointer;
+    supersede?: CandidateSupersede;
+}
 export interface CandidateResultManifest {
     runId: string;
     taskId: string;
@@ -137,6 +146,7 @@ export interface CandidatePublishInput extends CandidateReadInput {
     revisionId: string;
     snapshot: CandidateSnapshotInput;
     permit?: CandidatePublishPermit;
+    supersede?: CandidateSupersede;
 }
 export interface CandidateMarkResultInput extends CandidateReadInput {
     expectedRevisionId: string;
@@ -197,6 +207,7 @@ function parsePointer(item: RecordWithKey | undefined): CandidatePointer | null 
         throw new CandidateError(503, "candidate.corrupt_pointer");
     }
     const source = parsePointerSource(item.source, item.revisionId, item.revisionNumber as number);
+    const supersedes = parsePointerSupersedes(item.supersedes, item.changeId, item.revisionId, item.revisionNumber as number);
     return {
         changeId: item.changeId, revisionId: item.revisionId,
         snapshotHash: item.snapshotHash, revisionNumber: item.revisionNumber,
@@ -208,6 +219,7 @@ function parsePointer(item: RecordWithKey | undefined): CandidatePointer | null 
             resultHash: item.resultHash,
         } : {}),
         ...(source ? { source } : {}),
+        ...(supersedes ? { supersedes } : {}),
     } as CandidatePointer;
 }
 
@@ -230,6 +242,39 @@ function parsePointerSource(value: unknown, pointerRevisionId: unknown, pointerR
         resultId: source.resultId, resultHash: source.resultHash, revisionId: source.revisionId,
         snapshotHash: source.snapshotHash, revisionNumber: source.revisionNumber as number,
     };
+}
+
+function parsePointerSupersedes(value: unknown, pointerChangeId: unknown, pointerRevisionId: unknown,
+    pointerRevisionNumber: number): CandidatePointer["supersedes"] {
+    if (value === undefined) return undefined;
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new CandidateError(503, "candidate.corrupt_pointer");
+    }
+    const superseded = value as Record<string, unknown>;
+    if (typeof superseded.changeId !== "string" || !TOKEN.test(superseded.changeId) ||
+        typeof superseded.revisionId !== "string" || !TOKEN.test(superseded.revisionId) ||
+        !Number.isSafeInteger(superseded.revisionNumber) || (superseded.revisionNumber as number) < 1 ||
+        (superseded.revisionNumber as number) >= pointerRevisionNumber ||
+        superseded.changeId === pointerChangeId || superseded.revisionId === pointerRevisionId) {
+        throw new CandidateError(503, "candidate.corrupt_pointer");
+    }
+    return {
+        changeId: superseded.changeId, revisionId: superseded.revisionId,
+        revisionNumber: superseded.revisionNumber as number,
+    };
+}
+
+function parseSupersede(value: CandidateSupersede | undefined): CandidateSupersede | undefined {
+    if (value === undefined) return undefined;
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new CandidateError(400, "candidate.invalid_identifier");
+    }
+    return { changeId: requireToken(value.changeId, TOKEN), revisionId: requireToken(value.revisionId, TOKEN) };
+}
+
+function sameSupersede(left: CandidateSupersede | undefined, right: CandidateSupersede | undefined): boolean {
+    if (!left || !right) return !left && !right;
+    return left.changeId === right.changeId && left.revisionId === right.revisionId;
 }
 
 function authorizeCaller(caller: CandidateCaller, hubOrgId: string | null): { owner: string } {
@@ -600,8 +645,11 @@ export async function candidatePublish(caller: CandidateCaller, input: Candidate
         const revisionId = requireToken(fixed.revisionId, TOKEN);
         const requestId = requireToken(fixed.requestId, TOKEN);
         if (fixed.expectedRevisionId !== null) requireToken(fixed.expectedRevisionId, TOKEN);
+        const supersede = parseSupersede(fixed.supersede);
+        if (supersede && fixed.permit) throw new CandidateError(400, "candidate.supersede_with_permit");
+        if (supersede && fixed.expectedRevisionId === null) throw new CandidateError(409, "candidate.supersede_mismatch");
         let prepared = prepareSnapshot(fixed);
-        const permit = parsePermit(fixed.permit, fixed.expectedRevisionId !== null);
+        const permit = parsePermit(fixed.permit, fixed.expectedRevisionId !== null && !supersede);
         const access = await authorizeCaller(caller, hubOrgId);
         const root = rootOf(project, moduleName);
         const pointerKey = pointerKeyOf(root);
@@ -610,7 +658,8 @@ export async function candidatePublish(caller: CandidateCaller, input: Candidate
         if (existingRequest) {
             if (existingRequest.owner !== access.owner || existingRequest.expectedRevisionId !== fixed.expectedRevisionId ||
                 existingRequest.pointer?.changeId !== changeId || existingRequest.pointer?.revisionId !== revisionId ||
-                existingRequest.pointer?.snapshotHash !== prepared.hash || !samePermit(existingRequest.permit, permit)) {
+                existingRequest.pointer?.snapshotHash !== prepared.hash || !samePermit(existingRequest.permit, permit) ||
+                !sameSupersede(existingRequest.supersede, supersede)) {
                 throw new CandidateError(409, "candidate.request_reused");
             }
             await verifiedSnapshot(store, root, existingRequest.pointer);
@@ -623,14 +672,24 @@ export async function candidatePublish(caller: CandidateCaller, input: Candidate
             return { statusCode: 409, status: "conflict", pointer: current };
         }
         if (fixed.expectedRevisionId !== null) {
-            if (!current || !permit) throw new CandidateError(409, "candidate.result_permit_required");
-            prepared = await verifyPublishPermit(store, root, current, fixed.expectedRevisionId, prepared, permit);
+            if (supersede) {
+                if (!current || supersede.changeId === changeId || supersede.changeId !== current.changeId ||
+                    supersede.revisionId !== current.revisionId || current.revisionId !== fixed.expectedRevisionId) {
+                    throw new CandidateError(409, "candidate.supersede_mismatch");
+                }
+            } else {
+                if (!current || !permit) throw new CandidateError(409, "candidate.result_permit_required");
+                prepared = await verifyPublishPermit(store, root, current, fixed.expectedRevisionId, prepared, permit);
+            }
         }
         const pointer: CandidatePointer = {
             changeId, revisionId, snapshotHash: prepared.hash, revisionNumber: (current?.revisionNumber ?? 0) + 1,
             ...(permit ? { source: {
                 resultId: permit.resultId, resultHash: permit.resultHash, revisionId: permit.inputRevisionId,
                 snapshotHash: permit.inputSnapshotHash, revisionNumber: permit.inputRevisionNumber,
+            } } : {}),
+            ...(supersede && current ? { supersedes: {
+                changeId: current.changeId, revisionId: current.revisionId, revisionNumber: current.revisionNumber,
             } } : {}),
         };
         // Staging is immutable and isolated. A failed commit may leave recoverable orphan files.
@@ -641,7 +700,7 @@ export async function candidatePublish(caller: CandidateCaller, input: Candidate
                 baseId: prepared.baseId, requestRevision: prepared.requestRevision,
                 request: prepared.request, files: prepared.metadata },
             request: { key: requestKey, owner: access.owner, expectedRevisionId: fixed.expectedRevisionId,
-                pointer, ...(permit ? { permit } : {}) },
+                pointer, ...(permit ? { permit } : {}), ...(supersede ? { supersede } : {}) },
         });
         if (committed) {
             await authorizeCaller(caller, hubOrgId);
@@ -652,7 +711,8 @@ export async function candidatePublish(caller: CandidateCaller, input: Candidate
         if (after) {
             if (after.owner !== access.owner || after.expectedRevisionId !== fixed.expectedRevisionId ||
                 after.pointer?.snapshotHash !== prepared.hash || after.pointer?.revisionId !== revisionId ||
-                after.pointer?.changeId !== changeId || !samePermit(after.permit, permit)) {
+                after.pointer?.changeId !== changeId || !samePermit(after.permit, permit) ||
+                !sameSupersede(after.supersede, supersede)) {
                 throw new CandidateError(409, "candidate.request_reused");
             }
             await verifiedSnapshot(store, root, after.pointer);

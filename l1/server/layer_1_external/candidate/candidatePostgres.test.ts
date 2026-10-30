@@ -120,3 +120,40 @@ test("commitResultAllowed refuses a different revision number", () => {
 test("commitResultAllowed refuses a pointer that already has resultId", () => {
     assert.equal(commitResultAllowed({ ...openPointer, resultId: "result-1" }, resultInput()), false);
 });
+
+// rt150: a new change replaces the pointer by declaring exactly what it replaces (no permit).
+const supersedePointer = {
+    key: "candidate/102047/app", changeId: "change-1", revisionId: "rev-1",
+    snapshotHash: "a".repeat(64), revisionNumber: 1,
+};
+const newChangePointer = {
+    changeId: "change-2", revisionId: "rev-2", snapshotHash: "d".repeat(64), revisionNumber: 2,
+    supersedes: { changeId: "change-1", revisionId: "rev-1", revisionNumber: 1 },
+};
+
+function supersedeInput(patch: Partial<CommitInput> = {}): CommitInput {
+    const base = commitInput({ permit: undefined, pointer: newChangePointer });
+    return { ...base, ...patch };
+}
+
+test("commitAllowed accepts a declared supersede when the pointer is still exactly what was declared", () => {
+    assert.equal(commitAllowed(supersedePointer, supersedeInput()), true);
+});
+
+test("commitAllowed refuses a supersede when the pointer moved meanwhile", () => {
+    assert.equal(commitAllowed({ ...supersedePointer, revisionId: "rev-9", revisionNumber: 2 }, supersedeInput()), false);
+    assert.equal(commitAllowed({ ...supersedePointer, changeId: "change-9" }, supersedeInput()), false);
+    assert.equal(commitAllowed(undefined, supersedeInput()), false);
+});
+
+test("commitAllowed refuses a supersede that carries a permit, skips a revision number or reuses the change", () => {
+    assert.equal(commitAllowed(supersedePointer, supersedeInput({ permit })), false);
+    assert.equal(commitAllowed(supersedePointer, supersedeInput({ pointer: { ...newChangePointer, revisionNumber: 3 } })), false);
+    assert.equal(commitAllowed(supersedePointer, supersedeInput({
+        pointer: { ...newChangePointer, changeId: "change-1" },
+    })), false);
+});
+
+test("without supersede the permit is still required to replace a pointer", () => {
+    assert.equal(commitAllowed(supersedePointer, commitInput({ permit: undefined })), false);
+});

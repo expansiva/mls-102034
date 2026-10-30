@@ -20,6 +20,18 @@ export async function ensureCandidateSchema(pool: Pool): Promise<void> {
 /** Pointer condition of the legacy commit: absent key on first publish, else the eight-field update check. */
 export function commitAllowed(currentPointer: PointerRecord, input: CommitInput): boolean {
     if (input.expectedRevisionId === null) return currentPointer === undefined;
+    const superseded = input.pointer.supersedes;
+    if (superseded) {
+        // A new change takes the pointer by declaring EXACTLY the change and revision it replaces; no permit. The
+        // check is the same optimistic one: the pointer must still be what was declared when the transaction runs.
+        if (!currentPointer || input.permit) return false;
+        return currentPointer.changeId === superseded.changeId
+            && currentPointer.revisionId === superseded.revisionId
+            && currentPointer.revisionId === input.expectedRevisionId
+            && currentPointer.revisionNumber === superseded.revisionNumber
+            && input.pointer.revisionNumber === superseded.revisionNumber + 1
+            && input.pointer.changeId !== superseded.changeId;
+    }
     const permit = input.permit;
     if (!currentPointer || !permit) return false;
     const prior = input.pointer.revisionNumber - 1;
