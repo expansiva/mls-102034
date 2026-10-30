@@ -25,6 +25,7 @@ import type {
   MdmRelationshipRecord,
   MdmStatusHistoryRecord,
   MdmTagRecord,
+  MdmKvRecord,
 } from '/_102034_/l1/mdm/module.js';
 import { getMdmTableNames } from '/_102034_/l1/mdm/tableNames.js';
 import { createPostgresMdmIdentityUsersReader } from '/_102034_/l1/mdm/layer_1_external/data/postgres/MdmIdentityUsersPostgres.js';
@@ -279,6 +280,7 @@ function createPostgresRuntimeWithExecutor(
     ),
     mdmTag: new TableRuntimePostgres<MdmTagRecord>(executor, tableNames.tag),
     mdmOutbox: new TableRuntimePostgres<MdmOutboxRecord>(executor, tableNames.outbox),
+    mdmRegistrationKv: new TableRuntimePostgres<MdmKvRecord>(executor, tableNames.kv),
     pgQueue: new QueueRuntimePostgres(executor, tableNames.outbox),
     moduleData: createPostgresModuleDataRuntime(env, moduleExecutor),
     mdmIdentityUsers: createPostgresMdmIdentityUsersReader(env, executor),

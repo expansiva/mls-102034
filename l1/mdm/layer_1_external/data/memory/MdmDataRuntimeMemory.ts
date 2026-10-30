@@ -3,7 +3,12 @@ import { AppError } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import type { AppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { projectsConfigExists } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
-import { copyEligibleSeedRows, copySandboxSeedRows, createMemoryModuleDataRuntime } from '/_102034_/l1/server/layer_1_external/data/moduleDataRuntime.js';
+import {
+  copyEligibleSeedRows,
+  copySandboxSeedRows,
+  createMemoryModuleDataRuntime,
+  type IModuleDataRuntime,
+} from '/_102034_/l1/server/layer_1_external/data/moduleDataRuntime.js';
 import { findResolvedTableDefinition } from '/_102034_/l1/server/layer_1_external/persistence/registry.js';
 import { createMemoryMdmIdentityUsersReader } from '/_102034_/l1/mdm/layer_1_external/data/memory/MdmIdentityUsersMemory.js';
 import type {
@@ -27,6 +32,7 @@ import type {
   MdmRelationshipRecord,
   MdmStatusHistoryRecord,
   MdmTagRecord,
+  MdmKvRecord,
 } from '/_102034_/l1/mdm/module.js';
 
 async function loadSeedRows<TRecord>(env: AppEnv, repositoryName: string, sandbox = false): Promise<TRecord[]> {
@@ -136,6 +142,50 @@ class TableRuntimeMemory<TRecord> implements ITableRuntime<TRecord> {
     const filtered = this.records.filter((record) => !matchesWhere(record, input.where));
     this.records.length = 0;
     this.records.push(...filtered);
+  }
+}
+
+/** Same rows as `moduleData.getTable('mdmKv')`. */
+class ModuleKvTableRuntime<TRecord extends object> implements ITableRuntime<TRecord> {
+  public constructor(
+    private readonly moduleData: IModuleDataRuntime,
+    private readonly repositoryName: string,
+  ) {}
+
+  private load() {
+    return this.moduleData.getTable<TRecord>(this.repositoryName);
+  }
+
+  public async findOne(input: { where: Partial<TRecord> }): Promise<TRecord | null> {
+    return (await this.load()).findOne(input);
+  }
+
+  public async findMany(input?: {
+    where?: Partial<TRecord>;
+    orderBy?: { field: keyof TRecord; direction: 'asc' | 'desc' };
+    limit?: number;
+  }): Promise<TRecord[]> {
+    return (await this.load()).findMany(input);
+  }
+
+  public async findManyByValues<TKey extends keyof TRecord>(input: {
+    field: TKey;
+    values: Array<NonNullable<TRecord[TKey]>>;
+    limit?: number;
+  }): Promise<TRecord[]> {
+    return (await this.load()).findManyByValues(input);
+  }
+
+  public async insert(input: { record: TRecord }): Promise<void> {
+    await (await this.load()).insert(input);
+  }
+
+  public async update(input: { where: Partial<TRecord>; patch: Partial<TRecord> }): Promise<void> {
+    await (await this.load()).update(input);
+  }
+
+  public async delete(input: { where: Partial<TRecord> }): Promise<void> {
+    await (await this.load()).delete(input);
   }
 }
 
@@ -264,6 +314,7 @@ export function createMemoryDataRuntime(options: { sandbox?: boolean } = {}): ID
   const sandbox = options.sandbox === true;
   const env = readAppEnv();
   const keyedTails = new Map<string, Promise<void>>();
+  const moduleData = createMemoryModuleDataRuntime(env);
   const runtime: IDataRuntime = {
     mode: 'memory',
     mdmDocument: new DocumentRuntimeMemory(() => loadSeedRows<MdmDocumentRecord>(env, 'mdmDocumentCache', sandbox)),
@@ -280,8 +331,9 @@ export function createMemoryDataRuntime(options: { sandbox?: boolean } = {}): ID
     mdmStatusHistory: new TableRuntimeMemory<MdmStatusHistoryRecord>(),
     mdmTag: new TableRuntimeMemory<MdmTagRecord>(),
     mdmOutbox: new TableRuntimeMemory<MdmOutboxRecord>(),
+    mdmRegistrationKv: new ModuleKvTableRuntime<MdmKvRecord>(moduleData, 'mdmKv'),
     pgQueue: new QueueRuntimeMemory(),
-    moduleData: createMemoryModuleDataRuntime(env),
+    moduleData,
     async runInTransaction<TValue>(
       callback: (data: IDataRuntime) => Promise<TValue>,
       options?: { lockKey: string },

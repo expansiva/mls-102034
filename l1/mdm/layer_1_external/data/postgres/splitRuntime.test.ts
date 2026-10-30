@@ -5,6 +5,7 @@ import { Pool } from 'pg';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { getMdmPgPool, getSharedPgPool } from '/_102034_/l1/server/layer_1_external/data/postgres/pg.js';
 import { createPostgresDataRuntime } from '/_102034_/l1/mdm/layer_1_external/data/postgres/MdmDataRuntimePostgres.js';
+import { getMdmTableNames } from '/_102034_/l1/mdm/tableNames.js';
 
 interface Call { pool: Pool; sql: string }
 
@@ -96,6 +97,54 @@ test('rt147: without MDM_DATABASE_URL there is one pool and one transaction, as 
       await runtime.runInTransaction(async () => undefined);
       assert.deepEqual(log.map((call) => call.sql), ['BEGIN', 'COMMIT']);
       assert.ok(log.every((call) => call.pool === shared));
+    } finally {
+      restore();
+    }
+  });
+});
+
+test('rt152: split runtime binds mdmRegistrationKv to the MDM pool, not the module pool', async () => {
+  await withMdmUrl('postgres://mdm-pool/app', async () => {
+    const log: Call[] = [];
+    const restore = fakePools(log);
+    try {
+      const env = readAppEnv();
+      const mdm = getMdmPgPool(env);
+      const shared = getSharedPgPool(env);
+      const runtime = createPostgresDataRuntime(env, mdm, shared);
+      const kv = runtime.mdmRegistrationKv as unknown as { executor: unknown; tableName: string };
+      assert.equal(kv.executor, mdm);
+      assert.notEqual(kv.executor, shared);
+      assert.equal(kv.tableName, getMdmTableNames(env.appEnv).kv);
+      assert.equal((runtime.moduleData as unknown as { executor: unknown }).executor, shared);
+
+      await runtime.runInTransaction(async (tx) => {
+        const txKv = tx.mdmRegistrationKv as unknown as { executor: { release?: unknown }; tableName: string };
+        assert.equal(typeof txKv.executor.release, 'function');
+        assert.equal(txKv.tableName, kv.tableName);
+        await tx.mdmRegistrationKv.findOne({ where: { key: 'runtime.onboarding/org/rt152' } });
+        return undefined;
+      });
+      const kvSelects = log.filter((call) => call.sql.includes('mdm_kv') || call.sql.includes('mdm_kv_test'));
+      assert.ok(kvSelects.length >= 1);
+      assert.ok(kvSelects.every((call) => call.pool === mdm));
+    } finally {
+      restore();
+    }
+  });
+});
+
+test('rt152: unsplit runtime uses the same table name and pool as moduleData mdmKv', async () => {
+  await withMdmUrl(undefined, async () => {
+    const restore = fakePools([]);
+    try {
+      const env = readAppEnv();
+      const shared = getSharedPgPool(env);
+      const runtime = createPostgresDataRuntime(env, shared, shared);
+      const kv = runtime.mdmRegistrationKv as unknown as { executor: unknown; tableName: string };
+      assert.equal(kv.executor, shared);
+      assert.equal(kv.tableName, getMdmTableNames(env.appEnv).kv);
+      assert.equal((runtime.moduleData as unknown as { executor: unknown }).executor, shared);
     } finally {
       restore();
     }

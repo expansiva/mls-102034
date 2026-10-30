@@ -14,6 +14,7 @@ import type {
   MdmRelationshipRecord,
   MdmStatusHistoryRecord,
   MdmTagRecord,
+  MdmKvRecord,
 } from '/_102034_/l1/mdm/module.js';
 import type { MdmIdentityUserReader } from '/_102034_/l1/mdm/layer_3_usecases/identityUsersContracts.js';
 import type { IFindManyInput, IModuleDataRuntime } from '/_102034_/l1/server/layer_1_external/data/moduleDataRuntime.js';
@@ -63,6 +64,8 @@ export interface IDataRuntime {
   mdmStatusHistory: ITableRuntime<MdmStatusHistoryRecord>;
   mdmTag: ITableRuntime<MdmTagRecord>;
   mdmOutbox: ITableRuntime<MdmOutboxRecord>;
+  /** Same physical table as `moduleData.getTable('mdmKv')`; bound to the MDM executor. */
+  mdmRegistrationKv: ITableRuntime<MdmKvRecord>;
   pgQueue: IQueueRuntime;
   moduleData: IModuleDataRuntime;
   /** Optional directory reader. Absence must not open a global pool. */
