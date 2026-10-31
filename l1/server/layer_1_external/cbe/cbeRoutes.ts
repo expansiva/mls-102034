@@ -177,11 +177,17 @@ async function resolveSession(request: FastifyRequest): Promise<JwtSession & { t
   return testUser ? { testUser } : {};
 }
 
-/** Tests replace this so a save can name a person without a signed JWT. */
+/**
+ * The person behind a request: the JWT email wins; otherwise the signed local-test persona
+ * (the lima bench, where there is no JWT). A disabled bench or a bad cookie gives no person.
+ * Tests replace this so a save can name a person without a signed JWT.
+ */
 export const sessionHooks = {
   emailOf: async (request: FastifyRequest): Promise<string | undefined> => {
     const session = await resolveSession(request);
-    return session.email;
+    if (session.email) return session.email;
+    const local = localTestSessionFromHeaders(requestHeaderRecord(request.headers));
+    return local.kind === 'ok' ? local.claims.email : undefined;
   },
 };
 
