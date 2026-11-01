@@ -235,6 +235,8 @@ export interface DevProcessInfo {
   database?: string;
   /** Per-process secret. Shared secret file only — never written to `dev.json`. */
   identitySecret?: string;
+  /** `realpath` of the parent release this child was spawned from. */
+  codeId?: string;
 }
 
 export interface DevSpawnOptions {
@@ -651,6 +653,10 @@ function stopDevUnlocked(base: string, slug: string): void {
   removeIdentitySecret(base, slug);
 }
 
+function parentCodeId(): string {
+  return realpathSync(process.cwd());
+}
+
 function ensureUnlocked(opts: EnsureDevProcessOpts): DevProcessInfo {
   const { base, slug, clientProjectId } = opts;
   const source = draftSourceRoot(base, slug, clientProjectId);
@@ -660,16 +666,21 @@ function ensureUnlocked(opts: EnsureDevProcessOpts): DevProcessInfo {
     throw new DraftWorktreeMissingError(message);
   }
   const now = opts.now ?? (() => Date.now());
+  const codeId = parentCodeId();
   copyReleaseConfig(base, slug, clientProjectId);
   linkSharedProjects(base, slug, clientProjectId);
   const path = devJsonPath(base, slug);
   const existing = readDevJson(path);
   if (existing && isDevPidAlive(existing.pid)) {
     const identitySecret = readIdentitySecret(base, slug);
-    if (identitySecret !== undefined) return { ...existing, identitySecret };
-    // The secret file is gone while the child is still alive (parent restarted after cleanup). A live child
-    // cannot be given a new secret, and without it every logged-in call would reach the draft as anonymous.
-    console.error(`[cbe] dev ${slug}: identity secret lost after a parent restart; replacing the process`);
+    if (identitySecret !== undefined && existing.codeId === codeId) return { ...existing, identitySecret };
+    if (identitySecret !== undefined) {
+      console.error(`[cbe] draft ${slug}: code changed (${existing.codeId ?? ''} → ${codeId}), restarting`);
+    } else {
+      // The secret file is gone while the child is still alive (parent restarted after cleanup). A live child
+      // cannot be given a new secret, and without it every logged-in call would reach the draft as anonymous.
+      console.error(`[cbe] dev ${slug}: identity secret lost after a parent restart; replacing the process`);
+    }
     killDevPid(existing.pid);
     for (let waited = 0; waited < DEV_EXIT_WAIT_MS && isDevPidAlive(existing.pid); waited += LOCK_RETRY_MS) {
       sleepMs(LOCK_RETRY_MS);
@@ -730,6 +741,7 @@ function ensureUnlocked(opts: EnsureDevProcessOpts): DevProcessInfo {
     lastRequestAt: now(),
     database,
     identitySecret,
+    codeId,
   };
   try {
     writeIdentitySecret(base, slug, identitySecret);

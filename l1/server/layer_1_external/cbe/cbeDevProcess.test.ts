@@ -237,7 +237,7 @@ async function waitDead(pid: number): Promise<void> {
   }
 }
 
-function writeDev(base: string, slug: string, record: { port: number; pid: number; startedAt: number; lastRequestAt: number }): void {
+function writeDev(base: string, slug: string, record: { port: number; pid: number; startedAt: number; lastRequestAt: number; codeId?: string }): void {
   const dir = join(base, 'drafts', slug);
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'dev.json'), `${JSON.stringify(record)}\n`);
@@ -323,7 +323,14 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
       assert.equal(calls[0].options.logPath, join(base, 'logs', `dev-${SLUG}.log`));
       assert.equal(readFileSync(join(base, 'drafts', SLUG, 'config.json'), 'utf8'), '{"release":true}\n');
       const stored = JSON.parse(readFileSync(join(base, 'drafts', SLUG, 'dev.json'), 'utf8'));
-      assert.deepEqual(stored, { port: 4100, pid: first.pid, startedAt: now(), lastRequestAt: now(), database: DRAFT_DATABASE });
+      assert.deepEqual(stored, {
+        port: 4100,
+        pid: first.pid,
+        startedAt: now(),
+        lastRequestAt: now(),
+        database: DRAFT_DATABASE,
+        codeId: realpathSync(process.cwd()),
+      });
       assert.equal(second.pid, first.pid);
       assert.equal(isDevPidAlive(first.pid), true);
     } finally {
@@ -377,6 +384,56 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
       const again = ensureDevProcess(opts);
       assert.equal(secrets.length, 1);
       assert.equal(again.identitySecret, secrets[0]);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  await t.test('ensure reuses a live child with the same codeId and restarts once when it differs or is missing', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'cbe-dev-'));
+    try {
+      writeOwnReleaseConfig(base);
+      mkdirSync(join(base, 'drafts', SLUG, 'mls-102047'), { recursive: true });
+      const now = () => 1_700_000_000_000;
+      const writeConfig = () => {};
+      let spawned = 0;
+      const spawnDev: DevSpawn = () => {
+        spawned += 1;
+        return { pid: dummyPid(pids) };
+      };
+      const opts = { base, slug: SLUG, clientProjectId: 102047, spawn: spawnDev, now, writeConfig };
+      const first = ensureDevProcess(opts);
+      const same = ensureDevProcess(opts);
+      assert.equal(spawned, 1);
+      assert.equal(same.pid, first.pid);
+      assert.equal(JSON.parse(readFileSync(join(base, 'drafts', SLUG, 'dev.json'), 'utf8')).codeId, realpathSync(process.cwd()));
+
+      const stale = dummyPid(pids);
+      writeDev(base, SLUG, { port: 4100, pid: stale, startedAt: 1, lastRequestAt: 1, codeId: '/old/release' });
+      setDevIdentitySecretForTests(base, SLUG, 'a'.repeat(64));
+      const changed = ensureDevProcess(opts);
+      assert.equal(spawned, 2);
+      assert.notEqual(changed.pid, stale);
+      assert.equal(JSON.parse(readFileSync(join(base, 'drafts', SLUG, 'dev.json'), 'utf8')).codeId, realpathSync(process.cwd()));
+      await waitDead(stale);
+
+      const missing = dummyPid(pids);
+      writeDev(base, SLUG, { port: 4100, pid: missing, startedAt: 1, lastRequestAt: 1 });
+      setDevIdentitySecretForTests(base, SLUG, 'b'.repeat(64));
+      const without = ensureDevProcess(opts);
+      assert.equal(spawned, 3);
+      assert.notEqual(without.pid, missing);
+      assert.equal(JSON.parse(readFileSync(join(base, 'drafts', SLUG, 'dev.json'), 'utf8')).codeId, realpathSync(process.cwd()));
+      await waitDead(missing);
+
+      const racing = dummyPid(pids);
+      writeDev(base, SLUG, { port: 4100, pid: racing, startedAt: 1, lastRequestAt: 1, codeId: '/old/release' });
+      setDevIdentitySecretForTests(base, SLUG, 'c'.repeat(64));
+      const [a, b] = await Promise.all([ensureDevProcess(opts), ensureDevProcess(opts)]);
+      assert.equal(spawned, 4);
+      assert.equal(a.pid, b.pid);
+      assert.notEqual(a.pid, racing);
+      await waitDead(racing);
     } finally {
       rmSync(base, { recursive: true, force: true });
     }
@@ -673,7 +730,7 @@ test('ancestor deno.json blocks a new dev process; a live process skips the guar
     assert.deepEqual(calls, []);
     assert.equal(existsDev(base, SLUG), false);
 
-    writeDev(base, SLUG, { port: 4100, pid: process.pid, startedAt: 1, lastRequestAt: 2 });
+    writeDev(base, SLUG, { port: 4100, pid: process.pid, startedAt: 1, lastRequestAt: 2, codeId: realpathSync(process.cwd()) });
     setDevIdentitySecretForTests(base, SLUG, 'known-secret');
     const live = ensureDevProcess({ base, slug: SLUG, clientProjectId: 102047, spawn: spawnDev, writeConfig });
     assert.equal(live.pid, process.pid);
@@ -724,7 +781,7 @@ test('a non-test project mode or a missing DATABASE_URL_TEST refuses a new dev p
       assert.equal(existsDev(base, SLUG), false);
     }
 
-    writeDev(base, SLUG, { port: 4100, pid: process.pid, startedAt: 1, lastRequestAt: 2 });
+    writeDev(base, SLUG, { port: 4100, pid: process.pid, startedAt: 1, lastRequestAt: 2, codeId: realpathSync(process.cwd()) });
     setDevIdentitySecretForTests(base, SLUG, 'known-secret');
     const calls: string[] = [];
     const live = ensureDevProcess({
