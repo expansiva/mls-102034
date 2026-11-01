@@ -283,7 +283,10 @@ export function buildDenoArgs(base: string, slug: string, port: number, database
   const projectFilesAllow = [...new Set([projectFilesDir, ...(existsSync(projectFilesDir) ? [realpathSync(projectFilesDir)] : [])])];
   const allowEnv = memoryModeAllowEnv();
   // pg reads `process.env['PG' + key]` (PGBINARY, PGSSLMODE, …) plus USERNAME. Deno ≥ 2.1 accepts the suffix `*`.
-  allowEnv.push('DATABASE_URL_TEST', 'PG*', 'USERNAME', 'MDM_DATABASE_URL');
+  // `AWS_*`: the AWS SDK reads several `AWS_*` names on its own (warning switch, execution env, profile/credential
+  // options); one denied read made `monitor.home.load` and `monitor.dynamodb.load` answer 500 in the draft. The
+  // child env (`childEnv`) sets none of them, so the prefix opens no value.
+  allowEnv.push('DATABASE_URL_TEST', 'PG*', 'AWS_*', 'USERNAME', 'MDM_DATABASE_URL');
   return [
     'run',
     `--allow-read=${base},${draftDir},${projectFilesAllow.join(',')}`,
