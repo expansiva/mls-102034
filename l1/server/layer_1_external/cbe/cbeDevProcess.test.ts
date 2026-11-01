@@ -133,10 +133,6 @@ test('dev --allow-env covers every l1 env read except DATABASE_URL', () => {
   assert.equal(allowNames.has('USERNAME'), true);
   assert.equal(allowNames.has('DATABASE_URL'), false);
   assert.equal(allowEnvCovers(allowNames, 'PGBINARY'), true);
-  // the AWS SDK reads these on its own; one denied read made the monitor home 500 in the draft
-  for (const name of ['AWS_SDK_JS_NODE_VERSION_SUPPORT_WARNING_DISABLED', 'AWS_EXECUTION_ENV', 'AWS_LOGIN_CACHE_DIRECTORY', 'AWS_PROFILE']) {
-    assert.equal(allowEnvCovers(allowNames, name), true, name);
-  }
   const missing = [...envNamesReadInL1()].filter((name) => name !== 'DATABASE_URL' && !allowEnvCovers(allowNames, name));
   assert.deepEqual(missing, []);
 });
@@ -293,7 +289,7 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
       assert.deepEqual(calls[0].args, [
         'run',
         `--allow-read=${base},${join(base, 'drafts', SLUG)},${projectFilesAllow.join(',')}`,
-        `--allow-env=${[...memoryModeAllowEnv(), 'DATABASE_URL_TEST', 'PG*', 'AWS_*', 'USERNAME', 'MDM_DATABASE_URL'].join(',')}`,
+        `--allow-env=${[...memoryModeAllowEnv(), 'DATABASE_URL_TEST', 'PG*', 'USERNAME', 'MDM_DATABASE_URL'].join(',')}`,
         '--allow-net=0.0.0.0:4100,127.0.0.1,127.0.0.1:5432',
         '--allow-sys=networkInterfaces,loadavg,systemMemoryInfo,cpus',
         '--config',

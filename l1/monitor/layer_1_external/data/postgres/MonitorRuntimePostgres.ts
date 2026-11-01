@@ -249,6 +249,15 @@ export function getStatusGroup(statusCode: number) {
   return 'success' as const;
 }
 
+/**
+ * The draft process (`COLLAB_DRAFT`) runs with no AWS door on purpose: env, files and network are closed to its own
+ * database. The AWS SDK then fails inside promises nobody awaits and Deno ends the whole process, so a draft never
+ * calls DynamoDB: it answers like the non-postgres modes (tables listed, `exists: false`).
+ */
+export function dynamoIsReachable(runtimeMode: AppEnv['runtimeMode'], draftSlug: string | undefined): boolean {
+  return runtimeMode === 'postgres' && draftSlug === undefined;
+}
+
 export class MonitorRuntimePostgres {
   private readonly metadata: MonitorPersistenceMetadata;
 
@@ -883,7 +892,7 @@ export class MonitorRuntimePostgres {
         .filter((item) => item.dynamoTableName)
         .map((item) => [item.dynamoTableName as string, item] as const),
     );
-    if (this.env.runtimeMode !== 'postgres') {
+    if (!dynamoIsReachable(this.env.runtimeMode, process.env.COLLAB_DRAFT)) {
       return tableNames.map((tableName) => ({
         tableName,
         description: metadataByTable.get(tableName)?.description ?? null,
@@ -1214,7 +1223,7 @@ export class MonitorRuntimePostgres {
     await this.assertKnownDynamoTable(input.tableName);
     const metadata = await this.metadata.findByDynamoTableName(input.tableName);
 
-    if (this.env.runtimeMode !== 'postgres') {
+    if (!dynamoIsReachable(this.env.runtimeMode, process.env.COLLAB_DRAFT)) {
       return {
         tableName: input.tableName,
         description: metadata?.description ?? null,
@@ -1342,7 +1351,7 @@ export class MonitorRuntimePostgres {
     const metadata = await this.metadata.findByDynamoTableName(input.tableName);
     const filters = normalizeInspectFilters(input.filters);
 
-    if (this.env.runtimeMode !== 'postgres') {
+    if (!dynamoIsReachable(this.env.runtimeMode, process.env.COLLAB_DRAFT)) {
       return {
         tableName: input.tableName,
         description: metadata?.description ?? null,

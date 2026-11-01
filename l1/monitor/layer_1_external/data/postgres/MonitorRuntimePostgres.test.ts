@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   decodeDynamoKey,
+  dynamoIsReachable,
   getStatusGroup,
   isSafeMonitorIdentifier,
   normalizeDynamoKey,
@@ -61,4 +62,10 @@ test('normalizeStringList handles postgres array-like values', () => {
   assert.deepEqual(normalizeStringList('{id,createdAt}'), ['id', 'createdAt']);
   assert.deepEqual(normalizeStringList('id'), ['id']);
   assert.deepEqual(normalizeStringList(null), []);
+});
+
+test('a draft process never reaches DynamoDB (the SDK would end the process); the others keep postgres mode', () => {
+  assert.equal(dynamoIsReachable('postgres', undefined), true);
+  assert.equal(dynamoIsReachable('postgres', 'user-abc'), false);
+  assert.equal(dynamoIsReachable('memory', undefined), false);
 });
