@@ -20,8 +20,6 @@ export interface CollabAuthClaims extends JWTPayload {
   sub: string;
   email: string;
   name?: string;
-  /** Present only on lima persona claims. A collab-auth JWT does not set it. */
-  person_mdm_id?: string;
   /**
    * Module authorities of the user, as `<moduleId>:<actorId>` (`petShop:admin`) — the platform's own role
    * shape (`sites:admin`, `collab-llm:operator`) and exactly what the generated controllers already gate

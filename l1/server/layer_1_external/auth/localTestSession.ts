@@ -19,8 +19,6 @@ export interface LocalTestSessionClaims {
   email: string;
   name: string;
   active_org: { id: string };
-  /** Persona only. Real JWTs never carry this; the draft child uses it when its database has no login row. */
-  person_mdm_id?: string;
   [propName: string]: unknown;
 }
 
@@ -164,7 +162,6 @@ export function claimsForLocalTestPersona(persona: LocalTestPersona, state: Loca
     email: persona.email,
     name: persona.name,
     active_org: { id: state.cmOrgId },
-    person_mdm_id: persona.personMdmId,
   };
 }
 

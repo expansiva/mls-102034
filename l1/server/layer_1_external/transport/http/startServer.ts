@@ -884,16 +884,10 @@ export async function handleHttpRequest(
         ...(session.claims ? {
           verifiedUserId: session.claims.sub,
           verifiedEmail: session.claims.email,
-          verifiedPersonMdmId: session.claims.person_mdm_id,
-          verifiedPersonName: session.claims.name,
           // The module's authorities, filtered from the claims by the transport that verified them. They
           // become `sessionContext.actorScope`, which is what every generated controller gates on.
           verifiedAuthorities: moduleAuthorities(session.claims, routineModuleId(body)),
-        } : {
-          // never take a persona id from the client body: only verified claims may carry one
-          verifiedPersonMdmId: undefined,
-          verifiedPersonName: undefined,
-        }),
+        } : {}),
       },
     }, ctx);
     return {

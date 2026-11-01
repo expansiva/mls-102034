@@ -188,41 +188,6 @@ test('identity cache: memory always; Redis only when REDIS_URL is set', async ()
   }
 });
 
-test('persona id with no login row builds person from the verified claims', async () => {
-  process.env.ACTOR_ID = 'env-actor';
-  try {
-    const ctx = createRequestContext();
-    const session = await applyVerifiedEmailToSession(
-      ctx,
-      ctx.sessionContext,
-      'persona@academia.test',
-      { mdmId: 'person-persona', name: 'Persona Teste' },
-    );
-    assert.equal(session.actorId, 'person-persona');
-    assert.deepEqual(session.person, {
-      mdmId: 'person-persona',
-      email: 'persona@academia.test',
-      name: 'Persona Teste',
-    });
-  } finally {
-    delete process.env.ACTOR_ID;
-  }
-});
-
-test('a login row wins over the persona id', async () => {
-  const ctx = createRequestContext();
-  const aluno = await createPerson(ctx, 'Aluno Real');
-  await ctx.mdm.identity.setLogin(aluno.mdmId, 'real@academia.test');
-  const session = await applyVerifiedEmailToSession(
-    ctx,
-    ctx.sessionContext,
-    'real@academia.test',
-    { mdmId: 'person-persona', name: 'Persona Teste' },
-  );
-  assert.equal(session.person?.mdmId, aluno.mdmId);
-  assert.equal(session.person?.name, 'Aluno Real');
-});
-
 test('without a login row, person is absent and actorId stays as today', async () => {
   process.env.ACTOR_ID = 'env-actor';
   try {
