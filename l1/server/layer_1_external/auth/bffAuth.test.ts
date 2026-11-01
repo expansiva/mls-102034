@@ -44,6 +44,18 @@ test('draft process accepts claims when the secret matches', async () => {
   });
 });
 
+test('draft process keeps person_mdm_id from a verified persona header', async () => {
+  await withDraftEnv(SECRET, async () => {
+    const claims: CollabAuthClaims = { ...CLAIMS, person_mdm_id: 'person-1', name: 'Responsavel' };
+    const outcome = await resolveBffSession({
+      'x-collab-draft-identity-secret': SECRET,
+      'x-collab-draft-identity': encoded(claims),
+    });
+    assert.equal(outcome.claims?.person_mdm_id, 'person-1');
+    assert.equal(outcome.claims?.name, 'Responsavel');
+  });
+});
+
 test('draft process rejects a wrong secret', async () => {
   await withDraftEnv(SECRET, async () => {
     const outcome = await resolveBffSession({

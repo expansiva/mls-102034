@@ -410,6 +410,8 @@ const IDENTITY_SECRET = 'a'.repeat(64);
 const VERIFIED_CLAIMS: CollabAuthClaims = {
   sub: 'persona-1',
   email: 'responsavel@example.com',
+  name: 'Responsavel',
+  person_mdm_id: 'person-responsavel',
   authorities: ['comandaRestaurante:garcom'],
 };
 

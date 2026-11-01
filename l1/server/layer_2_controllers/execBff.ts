@@ -146,6 +146,8 @@ function normalizeRequest(request: BffRequest): BffRequest {
       authToken: request.meta?.authToken,
       verifiedUserId: request.meta?.verifiedUserId,
       verifiedEmail: request.meta?.verifiedEmail,
+      verifiedPersonMdmId: request.meta?.verifiedPersonMdmId,
+      verifiedPersonName: request.meta?.verifiedPersonName,
       verifiedAuthorities: request.meta?.verifiedAuthorities,
       traceId: request.meta?.traceId ?? request.meta?.requestId ?? createUuidV7(),
       source: request.meta?.source ?? (readAppEnv().runtimeMode === 'memory' ? 'test' : 'http'),
@@ -288,6 +290,10 @@ export async function execBff(
       handlerCtx,
       handlerCtx.sessionContext,
       normalizedRequest.meta?.verifiedEmail,
+      {
+        mdmId: normalizedRequest.meta?.verifiedPersonMdmId,
+        name: normalizedRequest.meta?.verifiedPersonName,
+      },
     );
     handlerCtx.mdm = createMdmFacade(handlerCtx);
 
@@ -433,19 +439,34 @@ export async function execBff(
   }
 }
 
-/** Resolve the MDM person for a verified login e-mail onto the session. No row → unchanged. */
+export interface VerifiedPersonaPerson {
+  mdmId?: string;
+  name?: string;
+}
+
+/** Resolve the MDM person for a verified login e-mail onto the session. No row and no persona id → unchanged. */
 export async function applyVerifiedEmailToSession(
   ctx: RequestContext,
   session: RequestSessionContext,
   verifiedEmail: string | undefined,
+  verifiedPersona?: VerifiedPersonaPerson,
 ): Promise<RequestSessionContext> {
   if (!verifiedEmail) return session;
   const person = await resolveSessionPerson(ctx, verifiedEmail);
-  if (!person) return session;
+  if (person) {
+    return createSessionContext({
+      ...session,
+      actorId: person.mdmId,
+      person,
+    });
+  }
+  const mdmId = verifiedPersona?.mdmId?.trim();
+  if (!mdmId) return session;
+  const name = verifiedPersona?.name?.trim() || verifiedEmail;
   return createSessionContext({
     ...session,
-    actorId: person.mdmId,
-    person,
+    actorId: mdmId,
+    person: { mdmId, email: verifiedEmail, name },
   });
 }
 

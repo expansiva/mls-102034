@@ -86,6 +86,8 @@ test('two cookies resolve to their own claims and ignore body or header identity
     assert.equal(membro.claims?.sub, state.personas.membro.sub);
     assert.equal(membro.claims?.email, state.personas.membro.email);
     assert.deepEqual(claimAuthorities(responsavel.claims), []);
+    assert.equal(responsavel.claims?.person_mdm_id, state.personas.responsavel.personMdmId);
+    assert.equal(membro.claims?.person_mdm_id, state.personas.membro.personMdmId);
     assert.equal((responsavel.claims as LocalTestSessionClaims & { personMdmId?: string }).personMdmId, undefined);
     assert.equal((responsavel.claims as { cmUserId?: string }).cmUserId, undefined);
     assert.notEqual(responsavel.claims?.sub, membro.claims?.sub);

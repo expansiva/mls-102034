@@ -27,6 +27,10 @@ export interface BffRequest {
      */
     verifiedUserId?: string;
     verifiedEmail?: string;
+    /** Persona claim `person_mdm_id`, set by the transport after the draft secret checks out. */
+    verifiedPersonMdmId?: string;
+    /** Claim `name`, used only when the persona id has no login row. */
+    verifiedPersonName?: string;
     /** The module's authorities (`<moduleId>:<actorId>`) from the verified claims — becomes actorScope. */
     verifiedAuthorities?: string[];
     traceId?: string;
