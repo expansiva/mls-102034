@@ -38,6 +38,14 @@ const LOCK_RETRY_MS = 200;
 
 const FALLBACK_AUTHOR = { name: 'collab studio', email: 'studio@localhost' };
 
+/**
+ * New Release candidate. Stays on the draft disk and never enters a commit,
+ * even when the project `.gitignore` does not list it.
+ * Same string as BOOKKEEPING_IGNORES in scripts/publishGit.mjs.
+ */
+export const TOBE_CANDIDATE_GITIGNORE = 'l4/*/tobe/candidate/';
+const TOBE_CANDIDATE_PATH = /^l4\/[^/]+\/tobe\/candidate(?:\/|$)/;
+
 export interface GitCommitAuthor {
   name: string;
   email: string;
@@ -99,6 +107,27 @@ async function git(cwd: string, args: string[]): Promise<string> {
   return stdout.trim();
 }
 
+function isUnderTobeCandidate(shortPath: string): boolean {
+  const normalized = shortPath.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '');
+  return TOBE_CANDIDATE_PATH.test(normalized);
+}
+
+/** Paths `git check-ignore` reports. Exit 1 means none of them are ignored. */
+async function pathsIgnoredByGit(projectRoot: string, shortPaths: string[]): Promise<Set<string>> {
+  if (shortPaths.length === 0) return new Set();
+  try {
+    const { stdout } = await execFileAsync(
+      'git',
+      ['-c', `safe.directory=${projectRoot}`, 'check-ignore', '--', ...shortPaths],
+      { cwd: projectRoot, timeout: GIT_TIMEOUT_MS, encoding: 'utf8' },
+    );
+    return new Set(stdout.split('\n').filter(Boolean));
+  } catch (err) {
+    if ((err as { code?: number }).code === 1) return new Set();
+    throw err;
+  }
+}
+
 /** true when the staged tree differs from HEAD for these paths. */
 async function hasStagedChanges(projectRoot: string, pathspecs: string[]): Promise<boolean> {
   try {
@@ -142,9 +171,23 @@ export async function commitSavedSources(
     return { status: 'not-a-repo', msg: `${projectRoot} is not a git checkout` };
   }
 
-  const pathspecs = shortPaths.map((shortPath) => `:(literal)${shortPath}`);
+  const outsideCandidate = shortPaths.filter((shortPath) => !isUnderTobeCandidate(shortPath));
+  let ignored: Set<string>;
+  try {
+    ignored = await pathsIgnoredByGit(projectRoot, outsideCandidate);
+  } catch (err) {
+    // Same contract as the rest of this function: a git failure is reported, never thrown.
+    return { status: 'failed', msg: (err as Error).message };
+  }
+  const kept = outsideCandidate.filter((shortPath) => !ignored.has(shortPath));
+  if (kept.length === 0) {
+    console.error('[cbeGitCommit] no path left to commit; files stay on disk');
+    return { status: 'nothing' };
+  }
+
+  const pathspecs = kept.map((shortPath) => `:(literal)${shortPath}`);
   const author = options.author ?? FALLBACK_AUTHOR;
-  const message = commitMessage(options.comments, shortPaths.length);
+  const message = commitMessage(options.comments, kept.length);
 
   for (let attempt = 1; ; attempt += 1) {
     try {

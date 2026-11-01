@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -202,5 +202,57 @@ test('T11: sourceRoot commits on the draft worktree branch and leaves main HEAD'
     assert.match(relative.msg ?? '', /absolute/);
     assert.equal(git(projectRoot, ['rev-parse', 'HEAD']), mainHead);
     assert.equal(git(worktree, ['rev-parse', 'HEAD']), worktreeHead);
+  });
+});
+
+test('T12: a candidate file is saved and not committed, even without gitignore', async () => {
+  await withGitProject(async ({ projectId, projectRoot }) => {
+    const head = git(projectRoot, ['rev-parse', 'HEAD']);
+    const pointer = join(projectRoot, 'l4', 'mod', 'tobe', 'candidate', 'pointer.json');
+    mkdirSync(join(projectRoot, 'l4', 'mod', 'tobe', 'candidate'), { recursive: true });
+    writeFileSync(pointer, '{"n":1}\n');
+
+    const rc = await commitSavedSources(projectId, ['l4/mod/tobe/candidate/pointer.json'], {});
+
+    assert.equal(rc.status, 'nothing');
+    assert.equal(git(projectRoot, ['rev-parse', 'HEAD']), head);
+    assert.equal(readFileSync(pointer, 'utf8'), '{"n":1}\n');
+    assert.equal(git(projectRoot, ['ls-files', '--', 'l4/mod/tobe/candidate/pointer.json']), '');
+  });
+});
+
+test('T13: another tobe file still commits when the save also includes the candidate', async () => {
+  await withGitProject(async ({ projectId, projectRoot }) => {
+    const plan = join(projectRoot, 'l4', 'mod', 'tobe', 'plan.json');
+    const pointer = join(projectRoot, 'l4', 'mod', 'tobe', 'candidate', 'pointer.json');
+    mkdirSync(join(projectRoot, 'l4', 'mod', 'tobe', 'candidate'), { recursive: true });
+    writeFileSync(plan, '{"plan":1}\n');
+    writeFileSync(pointer, '{"n":1}\n');
+
+    const rc = await commitSavedSources(projectId, [
+      'l4/mod/tobe/candidate/pointer.json',
+      'l4/mod/tobe/plan.json',
+    ], {});
+
+    assert.equal(rc.status, 'committed');
+    assert.equal(git(projectRoot, ['log', '-1', '--name-only', '--format=']), 'l4/mod/tobe/plan.json');
+    assert.equal(existsSync(pointer), true);
+    assert.equal(git(projectRoot, ['ls-files', '--', 'l4/mod/tobe/candidate/pointer.json']), '');
+  });
+});
+
+test('T14: a gitignored path does not fail the commit of the other saved file', async () => {
+  await withGitProject(async ({ projectId, projectRoot }) => {
+    writeFileSync(join(projectRoot, '.gitignore'), 'secret.txt\n');
+    git(projectRoot, ['add', '-A']);
+    git(projectRoot, ['commit', '-m', 'ignore', '--no-verify']);
+    writeFileSync(join(projectRoot, 'l2', 'a.ts'), 'export const a = 5;\n');
+    writeFileSync(join(projectRoot, 'secret.txt'), 'nope\n');
+
+    const rc = await commitSavedSources(projectId, ['secret.txt', 'l2/a.ts'], {});
+
+    assert.equal(rc.status, 'committed');
+    assert.equal(git(projectRoot, ['log', '-1', '--name-only', '--format=']), 'l2/a.ts');
+    assert.equal(existsSync(join(projectRoot, 'secret.txt')), true);
   });
 });
