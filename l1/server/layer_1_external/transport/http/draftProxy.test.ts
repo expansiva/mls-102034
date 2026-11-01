@@ -246,6 +246,51 @@ test('a connection error probes the dev port and retries /execBff once', async (
   assert.equal(Buffer.isBuffer(reply.sent) ? reply.sent.toString() : '', '{"ok":true,"data":{"n":2},"error":null}');
 });
 
+test('a child replaced during the call is asked for again: the retry uses its new port and secret', async () => {
+  delete process.env.COLLAB_DRAFT;
+  const reply = fakeReply();
+  const calls: Array<{ url: string; secret: string | undefined }> = [];
+  let ensures = 0;
+  const probedPorts: number[] = [];
+  const result = await applyDraftExecBff({
+    request: fakeRequest({ routine: 'x.y.z' }, { cookie: `collab-draft=${SLUG}`, 'content-type': 'application/json' }),
+    reply,
+    base: BASE,
+    clientProjectId: '102047',
+    resolveSession: async () => ({ reject: false, claims: { sub: 's', email: 'a@b.c' } }),
+    refreshedAuthCookie: (token) => token,
+    resolveRequestDraftImpl: async () => readyDraft(),
+    ensureDevProcessImpl: () => {
+      ensures += 1;
+      return ensures === 1
+        ? { ...devInfo(), identitySecret: 'old-secret' }
+        : { ...devInfo(), port: PORT + 1, identitySecret: 'new-secret' };
+    },
+    touchDevProcessImpl: () => {},
+    waitForDevReadyImpl: async (port) => {
+      probedPorts.push(port);
+      return true;
+    },
+    fetchImpl: async (url, init) => {
+      const headers = init?.headers as Record<string, string> | undefined;
+      calls.push({ url: String(url), secret: headers?.['x-collab-draft-identity-secret'] });
+      if (calls.length === 1) throw new Error('fetch failed');
+      return new Response(JSON.stringify({ ok: true, data: {}, error: null }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+
+  assert.equal(result.handled, true);
+  assert.equal(ensures, 2);
+  assert.deepEqual(probedPorts, [PORT + 1]);
+  assert.equal(calls[0].secret, 'old-secret');
+  assert.equal(calls[1].secret, 'new-secret');
+  assert.match(calls[1].url, new RegExp(`:${PORT + 1}`, 'u'));
+  assert.equal(reply.statusCode, 200);
+});
+
 test('a TimeoutError answers 503 DRAFT_DOWN without probing', async () => {
   delete process.env.COLLAB_DRAFT;
   const reply = fakeReply();

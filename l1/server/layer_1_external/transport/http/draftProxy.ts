@@ -221,11 +221,13 @@ export async function proxyExecBff(args: {
   }
 
   const body = JSON.stringify(args.request.body ?? {});
-  let identity: { secret: string; claims: CollabAuthClaims } | undefined;
-  if (args.claims) {
-    if (info.identitySecret) identity = { secret: info.identitySecret, claims: args.claims };
-    else console.error(`[draftProxy] dev ${args.slug}: identity secret missing`);
-  }
+  const identityOf = (current: DevProcessInfo): { secret: string; claims: CollabAuthClaims } | undefined => {
+    if (!args.claims) return undefined;
+    if (current.identitySecret) return { secret: current.identitySecret, claims: args.claims };
+    console.error(`[draftProxy] dev ${args.slug}: identity secret missing`);
+    return undefined;
+  };
+  let identity = identityOf(info);
   const post = (): Promise<Response> => doFetch(url(info.port), {
     method: 'POST',
     headers: requestHeaders(args.request, identity),
@@ -239,6 +241,16 @@ export async function proxyExecBff(args: {
   } catch (err) {
     console.error(`[draftProxy] dev ${args.slug} at ${url(info.port)} unreachable: ${(err as Error).message}`);
     if ((err as Error).name === 'TimeoutError') {
+      args.reply.code(503).send(draftDownBody());
+      return;
+    }
+    // The child may have been replaced while this call was in flight (new code after a release): its port and
+    // identity secret are new, and the old secret would be refused as an invalid token. Ask again before retrying.
+    try {
+      info = ensure({ base: args.base, slug: args.slug, clientProjectId: args.clientProjectId });
+      identity = identityOf(info);
+    } catch (ensureErr) {
+      console.error(`[draftProxy] ensure dev ${args.slug} after unreachable failed: ${(ensureErr as Error).message}`);
       args.reply.code(503).send(draftDownBody());
       return;
     }
