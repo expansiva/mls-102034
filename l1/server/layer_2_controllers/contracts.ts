@@ -122,6 +122,8 @@ export interface FrontendNavigationItem {
   label: string;
   href: string;
   description?: string;
+  /** Optional Lucide icon name. Absent when the config item has none. */
+  icon?: string;
 }
 
 export interface BffError {
