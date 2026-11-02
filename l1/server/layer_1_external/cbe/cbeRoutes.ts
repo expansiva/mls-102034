@@ -69,12 +69,19 @@ import { handleProviderToken } from '/_102034_/l1/server/layer_1_external/cbe/cb
 // Bump on every change to the cbe module. Exposed via the x-cbe-version
 // response header and the {action:'ping'} probe so a deploy can be verified:
 //   curl -s localhost:3000/exec -H 'Content-Type: application/json' -d '{"action":"ping"}'
-export const CBE_MODULE_VERSION = '1.8.4';
+export const CBE_MODULE_VERSION = '1.8.5';
 
-// no-cache = always revalidate with the ETag (304 when unchanged). The server
-// is local to the VM, so revalidation is cheap — and a publish always lands
-// without hard refresh. Long-lived caching needs versioned URLs (?v=) first.
+// /libs/<14-digit stamp>/ and /monaco/<stamp>/ are immutable for a year: the
+// stamp is the version, so the bytes at that path do not change. Any other
+// static path stays no-cache and revalidates with the ETag (304 when unchanged).
 const STATIC_CACHE_CONTROL = 'no-cache';
+const VERSIONED_STATIC_CACHE_CONTROL = 'public, max-age=31536000, immutable';
+const VERSIONED_STATIC_PATH = /^\/(?:libs|monaco)\/\d{14}\//;
+
+function staticCacheControl(rawUrl: string): string {
+  const path = rawUrl.split('?')[0] ?? '';
+  return VERSIONED_STATIC_PATH.test(path) ? VERSIONED_STATIC_CACHE_CONTROL : STATIC_CACHE_CONTROL;
+}
 
 const THIRTY_DAYS_MS = 1000 * 60 * 60 * 24 * 30;
 
@@ -1221,7 +1228,7 @@ async function handleStatic(request: FastifyRequest, reply: FastifyReply): Promi
   reply
     .code(CBE_HTTP_OK)
     .header('Content-Type', rc.contentType ?? 'application/octet-stream')
-    .header('Cache-Control', STATIC_CACHE_CONTROL)
+    .header('Cache-Control', staticCacheControl(request.raw.url ?? ''))
     .header('ETag', `"${rc.eTag}"`)
     .send(rc.content);
 }
