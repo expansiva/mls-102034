@@ -3,7 +3,7 @@ import Fastify from 'fastify';
 import { existsSync, readFileSync } from 'node:fs';
 import { extname, join, normalize, resolve } from 'node:path';
 import { getFrontendAppByBasePath, getFrontendAppRegistrations, getAppPublicRootDir, getAppAssetRootDirs } from '/_102034_/l1/server/layer_1_external/frontend/appRegistry.js';
-import { injectFaviconLink, resolveAppFaviconHref } from '/_102034_/l1/server/layer_1_external/frontend/faviconHtml.js';
+import { contentHash12, injectFaviconLink, resolveAppFaviconHref } from '/_102034_/l1/server/layer_1_external/frontend/faviconHtml.js';
 import { readProjectsConfig, resolveWebDistPath } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import { classifyProjectAssetUrl, HASHED_SHARED_JS_PATH } from '/_102034_/l1/server/layer_1_external/transport/http/classifyProjectAssetUrl.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
@@ -169,6 +169,28 @@ function readStaticFile(filePath: string) {
     body: readFileSync(filePath),
     contentType: getContentType(filePath),
   };
+}
+
+const ANNUAL_IMMUTABLE = 'public, max-age=31536000, immutable';
+const staticHashByPath = new Map<string, string>();
+
+/** Hash of a served static, computed on the first read and kept until the process restarts. */
+function rememberStaticHash(pathname: string, body: Buffer): string {
+  const cached = staticHashByPath.get(pathname);
+  if (cached !== undefined) return cached;
+  const hash = contentHash12(body);
+  staticHashByPath.set(pathname, hash);
+  return hash;
+}
+
+function requestQueryV(url: string): string | null {
+  return new URL(url, 'http://runtime.local').searchParams.get('v');
+}
+
+function ifNoneMatchValue(headers?: Record<string, string | string[] | undefined>): string {
+  const raw = headers?.['if-none-match'];
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return (value ?? '').replace(/^W\//u, '').replaceAll('"', '');
 }
 
 export async function buildBootConfig(app: FrontendAppRegistration) {
@@ -794,15 +816,21 @@ export async function handleHttpRequest(
     const staticAsset = tryReadProjectAsset(url);
     if (staticAsset) {
       const pathname = url.replace(/\?.*$/u, '');
+      const hash = rememberStaticHash(pathname, staticAsset.body);
+      const version = requestQueryV(url);
+      const immutable = HASHED_SHARED_JS_PATH.test(pathname) || (version !== null && version === hash);
+      const headersOut: Record<string, string> = {
+        'content-type': staticAsset.contentType,
+        'cache-control': immutable ? ANNUAL_IMMUTABLE : 'no-cache',
+        etag: `"${hash}"`,
+      };
+      if (ifNoneMatchValue(headers) === hash) {
+        return { statusCode: 304, body: '', headers: headersOut };
+      }
       return {
         statusCode: 200,
         body: staticAsset.body,
-        headers: {
-          'content-type': staticAsset.contentType,
-          'cache-control': HASHED_SHARED_JS_PATH.test(pathname)
-            ? 'public, max-age=31536000, immutable'
-            : 'no-cache',
-        },
+        headers: headersOut,
       };
     }
     if (kind === 'static' || kind === 'libs') {

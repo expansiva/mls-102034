@@ -4,8 +4,11 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import {
+  contentHash12,
   DEFAULT_APP_FAVICON_HREF,
+  faviconContentHash,
   injectFaviconLink,
   resolveAppFaviconHref,
 } from '/_102034_/l1/server/layer_1_external/frontend/faviconHtml.js';
@@ -51,8 +54,16 @@ test('not25 R2: ProjectsConfig.favicon is the typed config field (default and ap
 test('not25 T6: injected HTML contains same-origin rel=icon', () => {
   assert.doesNotMatch(spaHtml, /rel=["']icon["']/);
   const html = injectFaviconLink(spaHtml, DEFAULT_APP_FAVICON_HREF);
-  assert.match(html, /<link rel="icon" href="\/_102033_\/l3\/assets\/favicon\.png" \/>/);
   const href = html.match(/<link rel="icon" href="([^"]+)"/)?.[1] ?? '';
+  const filePath = resolveWebDistPath(`.${DEFAULT_APP_FAVICON_HREF}`);
+  if (existsSync(filePath)) {
+    const hash = contentHash12(readFileSync(filePath));
+    assert.equal(href, `${DEFAULT_APP_FAVICON_HREF}?v=${hash}`);
+    assert.equal(faviconContentHash(DEFAULT_APP_FAVICON_HREF), hash);
+    assert.equal(hash, createHash('sha256').update(readFileSync(filePath)).digest('hex').slice(0, 12));
+  } else {
+    assert.equal(href, DEFAULT_APP_FAVICON_HREF);
+  }
   assert.ok(href.startsWith('/') && !href.startsWith('//'), `href must be same-origin, got ${href}`);
   assert.equal(injectFaviconLink(html, '/other.png'), html);
 });

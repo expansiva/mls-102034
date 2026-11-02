@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { createHash } from 'node:crypto';
 import { getContentType, handleHttpRequest } from '/_102034_/l1/server/layer_1_external/transport/http/startServer.js';
 import { resolveWebDistPath } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 
@@ -90,6 +91,25 @@ test('hashed lit shared chunks are immutable for a year; stable names stay no-ca
     const missing = await handleHttpRequest('GET', MISSING);
     assert.equal(missing.statusCode, 404);
     assert.notEqual(missing.headers?.['cache-control'], ANNUAL);
+
+    const libHash = createHash('sha256').update(LIB_BYTES).digest('hex').slice(0, 12);
+    const versioned = await handleHttpRequest('GET', `${LIB}?v=${libHash}`);
+    assert.equal(versioned.statusCode, 200);
+    assert.equal(versioned.headers?.['cache-control'], ANNUAL);
+    assert.equal(versioned.headers?.etag, `"${libHash}"`);
+
+    const stale = await handleHttpRequest('GET', `${LIB}?v=000000000000`);
+    assert.equal(stale.statusCode, 200);
+    assert.equal(stale.headers?.['cache-control'], 'no-cache');
+    assert.equal(stale.headers?.etag, `"${libHash}"`);
+
+    const plain = await handleHttpRequest('GET', LIB);
+    assert.equal(plain.headers?.['cache-control'], 'no-cache');
+    assert.equal(plain.headers?.etag, `"${libHash}"`);
+
+    const notModified = await handleHttpRequest('GET', LIB, undefined, undefined, { 'if-none-match': `"${libHash}"` });
+    assert.equal(notModified.statusCode, 304);
+    assert.equal(notModified.headers?.etag, `"${libHash}"`);
   } finally {
     for (const cleanup of cleanups.reverse()) {
       cleanup();
