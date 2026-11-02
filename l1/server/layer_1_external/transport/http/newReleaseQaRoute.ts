@@ -57,7 +57,7 @@ export function extractNewReleaseQaLitImportMap(shellHtml: string): string {
     lit: '/_libs/lit/index.js',
     'lit/async-directive.js': '/_libs/lit/async-directive.js',
   } as const;
-  if (Object.entries(required).some(([specifier, path]) => (imports as Record<string, string>)[specifier] !== path)) {
+  if (Object.entries(required).some(([specifier, path]) => (imports as Record<string, string>)[specifier]?.replace(/\?v=[0-9a-f]{12}$/u, '') !== path)) {
     throw new Error('QA shell Lit import map is incomplete');
   }
   return JSON.stringify(parsed).replace(/</gu, '\\u003c');

@@ -72,3 +72,16 @@ test('QA import map is copied from the generated shell and fails closed when abs
     /import map is incomplete/u,
   );
 });
+
+test('QA accepts the build-stamped ?v=<hash> on the required lit entries', () => {
+  const stamped = {
+    imports: {
+      lit: '/_libs/lit/index.js?v=0123456789ab',
+      'lit/async-directive.js': '/_libs/lit/async-directive.js?v=abcdef012345',
+    },
+  };
+  const map = extractNewReleaseQaLitImportMap(`<script type="importmap">${JSON.stringify(stamped)}</script>`);
+  assert.match(map, /async-directive\.js\?v=abcdef012345/u);
+  const wrong = { imports: { lit: '/_libs/lit/other.js?v=0123456789ab', 'lit/async-directive.js': '/_libs/lit/async-directive.js' } };
+  assert.throws(() => extractNewReleaseQaLitImportMap(`<script type="importmap">${JSON.stringify(wrong)}</script>`), /incomplete/u);
+});
