@@ -11,6 +11,8 @@ import {
   clearDraftCookie,
   desenvIo,
   draftCookie,
+  runDesenvEnter,
+  runDraftEnter,
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeDesenv.js';
 import { getProjectsBaseDir } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
 import { AncestorDenoConfigError, DraftDatabaseError } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
@@ -618,6 +620,45 @@ test('draftEnter "user" resolves the session and writes nothing without one', as
     else process.env.CBE_PROJECTS_DIR = prevDir;
     rmSync(base, { recursive: true, force: true });
     await app.close();
+  }
+});
+
+test('draftEnter logs one timing line with the four stages and no identity', async () => {
+  const origWorktree = desenvIo.ensureDraftWorktree;
+  const origFastForward = desenvIo.fastForwardDraft;
+  const origDev = desenvIo.ensureDevProcess;
+  const origReady = desenvIo.waitForDevReady;
+  const origProject = desenvIo.resolveClientProjectId;
+  desenvIo.resolveClientProjectId = () => String(PROJECT_ID);
+  desenvIo.ensureDraftWorktree = async () => '/tmp/draft';
+  desenvIo.fastForwardDraft = async () => ({ status: 'up_to_date' });
+  desenvIo.ensureDevProcess = () => ({ port: 4100, pid: 1, startedAt: 0, lastRequestAt: 0 });
+  desenvIo.waitForDevReady = async () => true;
+  const lines: string[] = [];
+  const origInfo = console.info;
+  console.info = (...args: unknown[]) => {
+    lines.push(args.map((part) => String(part)).join(' '));
+  };
+  try {
+    const result = await runDraftEnter({ allowed: true, draft: SLUG, project: PROJECT_ID });
+    assert.equal(result.status, 200);
+    const timing = lines.filter((line) => line.startsWith('[cbe:timing]'));
+    assert.equal(timing.length, 1);
+    assert.match(
+      timing[0],
+      /^\[cbe:timing\] draftEnter total=\d+ms worktree=\d+ms fastForward=\d+ms ensureDevProcess=\d+ms waitForDevReady=\d+ms$/,
+    );
+    assert.equal(timing[0].includes(SLUG), false);
+    lines.length = 0;
+    await runDesenvEnter({ allowed: true, draft: SLUG, to: '/' });
+    assert.equal(lines.some((line) => line.startsWith('[cbe:timing]')), false);
+  } finally {
+    console.info = origInfo;
+    desenvIo.ensureDraftWorktree = origWorktree;
+    desenvIo.fastForwardDraft = origFastForward;
+    desenvIo.ensureDevProcess = origDev;
+    desenvIo.waitForDevReady = origReady;
+    desenvIo.resolveClientProjectId = origProject;
   }
 });
 
