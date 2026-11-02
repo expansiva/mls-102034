@@ -39,12 +39,15 @@ const LOCK_RETRY_MS = 200;
 const FALLBACK_AUTHOR = { name: 'collab studio', email: 'studio@localhost' };
 
 /**
- * New Release candidate. Stays on the draft disk and never enters a commit,
- * even when the project `.gitignore` does not list it.
- * Same string as BOOKKEEPING_IGNORES in scripts/publishGit.mjs.
+ * Local tobe folders. Stay on the draft disk and never enter a commit,
+ * even when the project `.gitignore` does not list them.
+ * Same strings as the tobe entries of BOOKKEEPING_IGNORES in scripts/publishGit.mjs.
  */
-export const TOBE_CANDIDATE_GITIGNORE = 'l4/*/tobe/candidate/';
-const TOBE_CANDIDATE_PATH = /^l4\/[^/]+\/tobe\/candidate(?:\/|$)/;
+export const TOBE_LOCAL_GITIGNORES = ['l4/*/tobe/candidate/', 'l4/*/tobe/operations/'];
+const TOBE_LOCAL_PATHS = TOBE_LOCAL_GITIGNORES.map((pattern) => {
+  const body = pattern.replace(/\/$/, '').replace(/\*/g, '[^/]+');
+  return new RegExp(`^${body}(?:/|$)`);
+});
 
 export interface GitCommitAuthor {
   name: string;
@@ -107,9 +110,9 @@ async function git(cwd: string, args: string[]): Promise<string> {
   return stdout.trim();
 }
 
-function isUnderTobeCandidate(shortPath: string): boolean {
+function isUnderTobeLocal(shortPath: string): boolean {
   const normalized = shortPath.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '');
-  return TOBE_CANDIDATE_PATH.test(normalized);
+  return TOBE_LOCAL_PATHS.some((pattern) => pattern.test(normalized));
 }
 
 /** Paths `git check-ignore` reports. Exit 1 means none of them are ignored. */
@@ -171,15 +174,15 @@ export async function commitSavedSources(
     return { status: 'not-a-repo', msg: `${projectRoot} is not a git checkout` };
   }
 
-  const outsideCandidate = shortPaths.filter((shortPath) => !isUnderTobeCandidate(shortPath));
+  const outsideLocal = shortPaths.filter((shortPath) => !isUnderTobeLocal(shortPath));
   let ignored: Set<string>;
   try {
-    ignored = await pathsIgnoredByGit(projectRoot, outsideCandidate);
+    ignored = await pathsIgnoredByGit(projectRoot, outsideLocal);
   } catch (err) {
     // Same contract as the rest of this function: a git failure is reported, never thrown.
     return { status: 'failed', msg: (err as Error).message };
   }
-  const kept = outsideCandidate.filter((shortPath) => !ignored.has(shortPath));
+  const kept = outsideLocal.filter((shortPath) => !ignored.has(shortPath));
   if (kept.length === 0) {
     console.error('[cbeGitCommit] no path left to commit; files stay on disk');
     return { status: 'nothing' };

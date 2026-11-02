@@ -241,6 +241,42 @@ test('T13: another tobe file still commits when the save also includes the candi
   });
 });
 
+test('T15: an operations file is saved and not committed, even without gitignore', async () => {
+  await withGitProject(async ({ projectId, projectRoot }) => {
+    const head = git(projectRoot, ['rev-parse', 'HEAD']);
+    const stamp = join(projectRoot, 'l4', 'mod', 'tobe', 'operations', 'stamp.json');
+    mkdirSync(join(projectRoot, 'l4', 'mod', 'tobe', 'operations'), { recursive: true });
+    writeFileSync(stamp, '{"n":1}\n');
+
+    const rc = await commitSavedSources(projectId, ['l4/mod/tobe/operations/stamp.json'], {});
+
+    assert.equal(rc.status, 'nothing');
+    assert.equal(git(projectRoot, ['rev-parse', 'HEAD']), head);
+    assert.equal(readFileSync(stamp, 'utf8'), '{"n":1}\n');
+    assert.equal(git(projectRoot, ['ls-files', '--', 'l4/mod/tobe/operations/stamp.json']), '');
+  });
+});
+
+test('T16: another tobe file still commits when the save also includes operations', async () => {
+  await withGitProject(async ({ projectId, projectRoot }) => {
+    const plan = join(projectRoot, 'l4', 'mod', 'tobe', 'plan.json');
+    const stamp = join(projectRoot, 'l4', 'mod', 'tobe', 'operations', 'stamp.json');
+    mkdirSync(join(projectRoot, 'l4', 'mod', 'tobe', 'operations'), { recursive: true });
+    writeFileSync(plan, '{"plan":1}\n');
+    writeFileSync(stamp, '{"n":1}\n');
+
+    const rc = await commitSavedSources(projectId, [
+      'l4/mod/tobe/operations/stamp.json',
+      'l4/mod/tobe/plan.json',
+    ], {});
+
+    assert.equal(rc.status, 'committed');
+    assert.equal(git(projectRoot, ['log', '-1', '--name-only', '--format=']), 'l4/mod/tobe/plan.json');
+    assert.equal(existsSync(stamp), true);
+    assert.equal(git(projectRoot, ['ls-files', '--', 'l4/mod/tobe/operations/stamp.json']), '');
+  });
+});
+
 test('T14: a gitignored path does not fail the commit of the other saved file', async () => {
   await withGitProject(async ({ projectId, projectRoot }) => {
     writeFileSync(join(projectRoot, '.gitignore'), 'secret.txt\n');
