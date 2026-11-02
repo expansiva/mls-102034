@@ -22,7 +22,7 @@ import {
 } from '/_102034_/l1/server/layer_1_external/auth/authorityOverride.js';
 import { registerCbeRoutes } from '/_102034_/l1/server/layer_1_external/cbe/cbeRoutes.js';
 import { resolveClientProjectId } from '/_102034_/l1/server/layer_1_external/cbe/cbeDesenv.js';
-import { getCompiledProject, getProjectsBaseDir } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
+import { getCompiledProject, getProjectsBaseDir, warmCompiledProjects } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
 import { listServableProjectIds } from '/_102034_/l1/server/layer_1_external/cbe/cbeLogin.js';
 import { applyDraftExecBff } from '/_102034_/l1/server/layer_1_external/transport/http/draftProxy.js';
 import { getLatestJson, initCbeLatestJson } from '/_102034_/l1/server/layer_1_external/cbe/cbeLatestJson.js';
@@ -1052,6 +1052,7 @@ if (isMainModule) {
     return server.listen({ port: env.port, host: '0.0.0.0' }).then(() => {
     console.info(`MDM BFF listening on port ${env.port}`);
     console.info(`Registered frontend apps: ${apps.map((app) => `${app.appId}:${app.basePath}`).join(', ')}`);
+    warmCompiledProjects(listServableProjectIds());
     if (runtimeMetricsCollector) {
       void runtimeMetricsCollector.start()
         .then(() => console.info('Runtime metrics collection enabled every 5000ms'))

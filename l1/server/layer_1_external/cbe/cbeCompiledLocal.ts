@@ -54,6 +54,15 @@ interface CompiledProjectCacheEntry {
 
 const cache = new Map<number, CompiledProjectCacheEntry>();
 
+interface CompiledProjectLoad {
+  promise: Promise<CompiledProjectCacheEntry | null>;
+  started: boolean;
+  run: () => CompiledProjectCacheEntry | null;
+}
+
+/** One in-flight read per project. Login and boot warmup share it. */
+const inflight = new Map<number, CompiledProjectLoad>();
+
 export function compressAndEncodeBase64(data: object | string | Uint8Array): string {
   const input = data instanceof Uint8Array
     ? data
@@ -101,6 +110,12 @@ function readCompiledZip(projectId: number, zipPath: string, zipMtimeMs: number)
     }
   }
 
+  // First shortPath wins, same as findIndex. Built once per zip.
+  const filesByShortPath = new Map<string, CbePrjSourcesFile>();
+  for (const file of prjInfo.filesInfo) {
+    if (!filesByShortPath.has(file.shortPath)) filesByShortPath.set(file.shortPath, file);
+  }
+
   let jsMatched = 0;
   for (const entry of zip.getEntries()) {
     if (!entry.entryName.endsWith('.js')) continue;
@@ -109,9 +124,9 @@ function readCompiledZip(projectId: number, zipPath: string, zipMtimeMs: number)
     // fileinfos.json normally indexes sources (.ts), but locally generated
     // zips may index the compiled name (.js) — accept both.
     const shortPathJs = shortPath.replace(/\.ts$/u, '.js');
-    const index = prjInfo.filesInfo.findIndex((f) => f.shortPath === shortPath || f.shortPath === shortPathJs);
-    if (index < 0) continue;
-    prjInfo.filesInfo[index].jsContent = compressAndEncodeBase64(new Uint8Array(entry.getData()));
+    const file = filesByShortPath.get(shortPath) ?? filesByShortPath.get(shortPathJs);
+    if (!file) continue;
+    file.jsContent = compressAndEncodeBase64(new Uint8Array(entry.getData()));
     jsMatched += 1;
   }
 
@@ -142,17 +157,103 @@ export function getProjectFilesInfo(projectId: number): CbePrjSourcesFile[] {
  * Returns the compiled sources info for a workspace project, or null when the
  * project has no obj/compiled.zip. Results are cached until the zip changes.
  */
-export function getCompiledProject(projectId: number): CompiledProjectCacheEntry | null {
+/** Cache hit, or `null` when the zip is absent. `undefined` means it still has to be read. */
+function peekCompiledProject(projectId: number): CompiledProjectCacheEntry | null | undefined {
   const zipPath = resolveCompiledZipPath(projectId);
   if (!existsSync(zipPath)) return null;
-
   const zipMtimeMs = statSync(zipPath).mtimeMs;
   const cached = cache.get(projectId);
   if (cached && cached.zipMtimeMs === zipMtimeMs) return cached;
+  return undefined;
+}
 
+function readCompiledProjectNow(projectId: number): CompiledProjectCacheEntry | null {
+  const zipPath = resolveCompiledZipPath(projectId);
+  if (!existsSync(zipPath)) return null;
+  const zipMtimeMs = statSync(zipPath).mtimeMs;
+  const cached = cache.get(projectId);
+  if (cached && cached.zipMtimeMs === zipMtimeMs) return cached;
   const entry = readCompiledZip(projectId, zipPath, zipMtimeMs);
   cache.set(projectId, entry);
   return entry;
+}
+
+/**
+ * Shared read of one project's compiled zip. A second caller (the login arriving
+ * while boot warmup is still in flight) gets the same promise, not a second read.
+ * The read itself is deferred so the caller can attach before it starts.
+ */
+export function loadCompiledProject(projectId: number): Promise<CompiledProjectCacheEntry | null> {
+  const ready = peekCompiledProject(projectId);
+  if (ready !== undefined) return Promise.resolve(ready);
+  const existing = inflight.get(projectId);
+  if (existing) return existing.promise;
+
+  let resolveLoad: (entry: CompiledProjectCacheEntry | null) => void = () => {};
+  const promise = new Promise<CompiledProjectCacheEntry | null>((resolve) => {
+    resolveLoad = resolve;
+  });
+  const job: CompiledProjectLoad = {
+    promise,
+    started: false,
+    run: () => {
+      job.started = true;
+      let entry: CompiledProjectCacheEntry | null = null;
+      try {
+        entry = readCompiledProjectNow(projectId);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[cbe] compiled zip project ${projectId}: ${message}`);
+        entry = null;
+      } finally {
+        inflight.delete(projectId);
+      }
+      resolveLoad(entry);
+      return entry;
+    },
+  };
+  inflight.set(projectId, job);
+  queueMicrotask(() => {
+    if (inflight.get(projectId) === job && !job.started) job.run();
+  });
+  return promise;
+}
+
+/**
+ * After listen: warm each project's compiled zip without blocking the boot callback.
+ * One project at a time, yielding between them, so `/health` stays responsive.
+ * A failure is one log line inside `loadCompiledProject` and does not stop the rest.
+ */
+export function warmCompiledProjects(projectIds: readonly number[]): void {
+  const ids: number[] = [];
+  const seen = new Set<number>();
+  for (const projectId of projectIds) {
+    if (seen.has(projectId)) continue;
+    seen.add(projectId);
+    ids.push(projectId);
+  }
+  const step = (index: number): void => {
+    if (index >= ids.length) return;
+    void loadCompiledProject(ids[index]).then(() => {
+      setImmediate(() => step(index + 1));
+    });
+  };
+  setImmediate(() => step(0));
+}
+
+export function getCompiledProject(projectId: number): CompiledProjectCacheEntry | null {
+  const ready = peekCompiledProject(projectId);
+  if (ready !== undefined) return ready;
+  const pending = inflight.get(projectId);
+  if (pending) {
+    if (!pending.started) return pending.run();
+    return null;
+  }
+  loadCompiledProject(projectId);
+  const job = inflight.get(projectId);
+  if (job && !job.started) return job.run();
+  const after = peekCompiledProject(projectId);
+  return after === undefined ? null : after;
 }
 
 /**
