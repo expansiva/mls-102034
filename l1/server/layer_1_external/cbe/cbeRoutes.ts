@@ -40,7 +40,7 @@ import { isRebuildInProgress, scheduleRebuildOnSave } from '/_102034_/l1/server/
 import { authorFromSession, commitSavedSources } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitCommit.js';
 import { discardDraft, draftDiff, fastForwardDraft, listDrafts, mergeMainIntoDraft, promoteDraft, restoreDraftPaths } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitPromote.js';
 import { draftSlugForUser, parseDraftSlug, readDraftOwner, requestDraftValue, resolveRequestDraft, resolveWriteDraft, writeDraftOwner, type RequestDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
-import { draftDatabaseUrl, ensureDevReaper, restartDevProcess, stopDevProcess } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
+import { draftDatabaseUrl, ensureDevProcess, ensureDevReaper, restartDevProcess, stopDevProcess } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
 import { awaitDraftPrepare, desenvIo, handleDesenvEnter, handleDesenvExit, handleDraftEnter, runDraftEnter, warmPersonDraftOnLogin } from '/_102034_/l1/server/layer_1_external/cbe/cbeDesenv.js';
 import { getRunningRelease } from '/_102034_/l1/server/layer_1_external/cbe/cbeRelease.js';
 import {
@@ -53,6 +53,7 @@ import {
   type CbeRequestAuthSession,
   type CbeRequestBase,
   type CbeRequestDiscardDraft,
+  type CbeRequestDraftResetDatabase,
   type CbeRequestDraftRestorePaths,
   type CbeRequestDraftDiff,
   type CbeRequestDraftSync,
@@ -70,7 +71,7 @@ import { handleProviderToken } from '/_102034_/l1/server/layer_1_external/cbe/cb
 // Bump on every change to the cbe module. Exposed via the x-cbe-version
 // response header and the {action:'ping'} probe so a deploy can be verified:
 //   curl -s localhost:3000/exec -H 'Content-Type: application/json' -d '{"action":"ping"}'
-export const CBE_MODULE_VERSION = '1.8.6';
+export const CBE_MODULE_VERSION = '1.8.7';
 
 // /libs/<14-digit stamp>/ and /monaco/<stamp>/ are immutable for a year: the
 // stamp is the version, so the bytes at that path do not change. Any other
@@ -409,6 +410,8 @@ async function handleGetContents(request: FastifyRequest, body: CbeRequestGetCon
 export const draftDevHooks = {
   restartDevProcess,
   ensureDevReaper,
+  stopDevProcess,
+  ensureDevProcess,
 };
 
 /** Route tests replace these so a promote or draftSync does not touch git. */
@@ -630,14 +633,14 @@ interface DraftDbDrop {
 
 const DRAFT_DATABASE_NAME = /^[a-z0-9_]+$/u;
 
-/** Route tests replace `dropDatabase` so a discard does not open Postgres. */
+/** Route tests replace `dropDatabase` so a draft reset does not open Postgres. */
 export const draftDbHooks: DraftDbDrop = {
   dropDatabase: dropDraftDatabase,
 };
 
 async function dropDraftDatabase(adminUrl: string, name: string): Promise<void> {
   if (!DRAFT_DATABASE_NAME.test(name)) {
-    console.error(`[cbe] discard draft: invalid database name`);
+    console.error(`[cbe] reset draft database: invalid database name`);
     throw new Error('invalid database name');
   }
   const admin = new Pool({ connectionString: adminUrl });
@@ -647,25 +650,9 @@ async function dropDraftDatabase(adminUrl: string, name: string): Promise<void> 
     try {
       await admin.end();
     } catch (err) {
-      console.error(`[cbe] discard draft: closing admin connection failed: ${(err as Error).message}`);
+      console.error(`[cbe] reset draft database: closing admin connection failed: ${(err as Error).message}`);
     }
   }
-}
-
-interface DiscardedDraftBody {
-  statusCode: number;
-  status: 'discarded';
-  databaseDropped: boolean;
-  cause?: string;
-}
-
-function buildDiscardedDraftBody(
-  drop: { databaseDropped: true } | { databaseDropped: false; cause: string },
-): DiscardedDraftBody {
-  if (drop.databaseDropped) {
-    return { statusCode: CBE_HTTP_OK, status: 'discarded', databaseDropped: true };
-  }
-  return { statusCode: CBE_HTTP_OK, status: 'discarded', databaseDropped: false, cause: drop.cause };
 }
 
 async function discardDraftDatabase(
@@ -675,7 +662,7 @@ async function discardDraftDatabase(
   const testUrl = process.env.DATABASE_URL_TEST;
   if (!testUrl) {
     const cause = 'DATABASE_URL_TEST is not set';
-    console.error(`[cbe] discard draft ${slug}: ${cause}`);
+    console.error(`[cbe] reset draft database ${slug}: ${cause}`);
     return { databaseDropped: false, cause };
   }
   let parsed: { database: string; adminUrl: string } | null;
@@ -683,19 +670,19 @@ async function discardDraftDatabase(
     parsed = parseDatabaseUrl(draftDatabaseUrl(testUrl, slug, projectId));
   } catch (err) {
     const cause = (err as Error).message || String(err);
-    console.error(`[cbe] discard draft ${slug}: ${cause}`);
+    console.error(`[cbe] reset draft database ${slug}: ${cause}`);
     return { databaseDropped: false, cause };
   }
   if (!parsed) {
     const cause = 'invalid database url';
-    console.error(`[cbe] discard draft ${slug}: ${cause}`);
+    console.error(`[cbe] reset draft database ${slug}: ${cause}`);
     return { databaseDropped: false, cause };
   }
   try {
     await draftDbHooks.dropDatabase(parsed.adminUrl, parsed.database);
   } catch (err) {
     const cause = (err as Error).message || String(err);
-    console.error(`[cbe] discard draft ${slug}: drop database ${parsed.database} failed: ${cause}`);
+    console.error(`[cbe] reset draft database ${slug}: drop database ${parsed.database} failed: ${cause}`);
     return { databaseDropped: false, cause };
   }
   return { databaseDropped: true };
@@ -990,12 +977,62 @@ async function handleDiscardDraft(request: FastifyRequest, body: CbeRequestDisca
     return;
   }
   try {
-    stopDevProcess(base, slug);
+    draftDevHooks.stopDevProcess(base, slug);
   } catch (err) {
     console.error(`[cbe] discard draft ${slug}: stop dev process failed: ${(err as Error).message}`);
   }
+  try {
+    draftDevHooks.ensureDevProcess({ base, slug, clientProjectId: project });
+  } catch (err) {
+    console.error(`[cbe] discard draft ${slug}: ensure dev process failed: ${(err as Error).message}`);
+  }
+  reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, status: 'discarded' });
+}
+
+async function handleDraftResetDatabase(
+  request: FastifyRequest,
+  body: CbeRequestDraftResetDatabase,
+  reply: FastifyReply,
+): Promise<void> {
+  const project = await requireSourceProject(request, body, reply);
+  if (!project) return;
+  const slug = typeof body.draft === 'string' ? body.draft : '';
+  const base = getProjectsBaseDir();
+  if (await refuseNotDraftOwner(request, base, slug, reply)) return;
+  // A login or draftEnter that is still preparing this draft would start the child right after the stop.
+  await awaitDraftPrepare(slug);
+  try {
+    draftDevHooks.stopDevProcess(base, slug);
+  } catch (err) {
+    const cause = (err as Error).message || String(err);
+    console.error(`[cbe] reset draft database ${slug}: stop dev process failed: ${cause}`);
+    reply.code(CBE_HTTP_SERVER_ERROR).send({ statusCode: CBE_HTTP_SERVER_ERROR, cause });
+    return;
+  }
   const drop = await discardDraftDatabase(slug, project);
-  reply.code(CBE_HTTP_OK).send(buildDiscardedDraftBody(drop));
+  let database: string | undefined;
+  try {
+    database = draftDevHooks.ensureDevProcess({ base, slug, clientProjectId: project }).database;
+  } catch (err) {
+    const cause = (err as Error).message || String(err);
+    console.error(`[cbe] reset draft database ${slug}: ensure dev process failed: ${cause}`);
+    reply.code(CBE_HTTP_SERVER_ERROR).send({
+      statusCode: CBE_HTTP_SERVER_ERROR,
+      cause: drop.databaseDropped ? cause : drop.cause,
+    });
+    return;
+  }
+  if (!drop.databaseDropped) {
+    reply.code(CBE_HTTP_SERVER_ERROR).send({ statusCode: CBE_HTTP_SERVER_ERROR, cause: drop.cause });
+    return;
+  }
+  if (!database) {
+    const cause = 'database name missing';
+    console.error(`[cbe] reset draft database ${slug}: ${cause}`);
+    reply.code(CBE_HTTP_SERVER_ERROR).send({ statusCode: CBE_HTTP_SERVER_ERROR, cause });
+    return;
+  }
+  reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, status: 'reset', database });
 }
 
 async function handleDraftRestorePaths(request: FastifyRequest, body: CbeRequestDraftRestorePaths, reply: FastifyReply): Promise<void> {
@@ -1173,6 +1210,9 @@ async function handleExec(request: FastifyRequest, reply: FastifyReply): Promise
       case 'discardDraft':
         await handleDiscardDraft(request, body as CbeRequestDiscardDraft, reply);
         return;
+      case 'draftResetDatabase':
+        await handleDraftResetDatabase(request, body as CbeRequestDraftResetDatabase, reply);
+        return;
       case 'draftRestorePaths':
         await handleDraftRestorePaths(request, body as CbeRequestDraftRestorePaths, reply);
         return;
@@ -1304,7 +1344,7 @@ export function registerCbeRoutes(app: FastifyInstance): void {
   app.get('/libs/*', handleStatic);
   app.get('/monaco/*', handleStatic);
   app.get('/mlsServiceWorker.js', handleStatic);
-  console.info(`[cbe] v${CBE_MODULE_VERSION} routes registered: POST /exec (login/authSession/authLogout/getContents/setContents/loadFilesInfo/getHistory/getHistoryContent/promote/discardDraft/draftRestorePaths/listDrafts/draftDiff/draftSync), GET /exec/logout, POST /exec/candidate, GET /desenv, GET /desenv/sair, GET /cbe/source, GET /libs/*, GET /monaco/*, GET /mlsServiceWorker.js`);
+  console.info(`[cbe] v${CBE_MODULE_VERSION} routes registered: POST /exec (login/authSession/authLogout/getContents/setContents/loadFilesInfo/getHistory/getHistoryContent/promote/discardDraft/draftResetDatabase/draftRestorePaths/listDrafts/draftDiff/draftSync), GET /exec/logout, POST /exec/candidate, GET /desenv, GET /desenv/sair, GET /cbe/source, GET /libs/*, GET /monaco/*, GET /mlsServiceWorker.js`);
   if (candidateHubMode() === 'local') {
     if (!candidateSchemaStarted) {
       candidateSchemaStarted = true;

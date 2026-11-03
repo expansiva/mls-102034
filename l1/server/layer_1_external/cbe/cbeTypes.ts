@@ -119,6 +119,12 @@ export interface CbeRequestDiscardDraft extends CbeRequestBase {
   draft?: string;
 }
 
+export interface CbeRequestDraftResetDatabase extends CbeRequestBase {
+  action: 'draftResetDatabase';
+  project?: number;
+  draft?: string;
+}
+
 export interface CbeRequestDraftRestorePaths extends CbeRequestBase {
   action: 'draftRestorePaths';
   project?: number;
