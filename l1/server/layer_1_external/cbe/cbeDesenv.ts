@@ -83,9 +83,79 @@ function queryValue(query: unknown, key: string): string | undefined {
   return undefined;
 }
 
+interface PreparedDraft {
+  port: number;
+  head?: string;
+}
+
+/** One in-flight prepare per slug. Login warmup and draftEnter share it. */
+const draftPrepareInflight = new Map<string, Promise<PreparedDraft>>();
+
 /**
- * Studio login (cookie `collab-draft` present) starts that person's draft child
- * without waiting. A later draftEnter reuses the same lock. No cookie, no child.
+ * Worktree, fast-forward (stop the child only when the branch moved) and one dev process.
+ * A second caller for the same slug waits on the promise already running.
+ */
+export function prepareDraft(opts: {
+  base: string;
+  projectId: number;
+  slug: string;
+  branch: string;
+  stages?: DraftStageMs;
+}): Promise<PreparedDraft> {
+  const current = draftPrepareInflight.get(opts.slug);
+  if (current) return current;
+  const run = runPrepareDraft(opts).finally(() => {
+    if (draftPrepareInflight.get(opts.slug) === run) draftPrepareInflight.delete(opts.slug);
+  });
+  draftPrepareInflight.set(opts.slug, run);
+  return run;
+}
+
+async function runPrepareDraft(opts: {
+  base: string;
+  projectId: number;
+  slug: string;
+  branch: string;
+  stages?: DraftStageMs;
+}): Promise<PreparedDraft> {
+  const { base, projectId, slug, branch, stages } = opts;
+  let head: string | undefined;
+  let mark = Date.now();
+  try {
+    await desenvIo.ensureDraftWorktree({ base, projectId, slug, branch });
+  } finally {
+    if (stages) stages.worktree = stageMs(mark);
+  }
+  try {
+    mark = Date.now();
+    const sync = await desenvIo.fastForwardDraft({ base, projectId, slug });
+    if (sync.status === 'fast_forwarded') {
+      head = sync.ref;
+      desenvIo.stopDevProcess(base, slug);
+      console.info(`[cbe] /desenv: draft ${slug} fast-forwarded to ${sync.ref}`);
+    } else if (sync.status !== 'up_to_date' && sync.status !== 'diverged') {
+      const code = typeof sync.status === 'number' ? sync.code : sync.status;
+      console.warn(`[cbe] /desenv: draft ${slug} not synced: ${code}`);
+    }
+  } catch (err) {
+    const code = err instanceof Error ? err.message : String(err);
+    console.warn(`[cbe] /desenv: draft ${slug} not synced: ${code}`);
+  } finally {
+    if (stages) stages.fastForward = stageMs(mark);
+  }
+  mark = Date.now();
+  let port: number;
+  try {
+    port = desenvIo.ensureDevProcess({ base, slug, clientProjectId: projectId }).port;
+  } finally {
+    if (stages) stages.ensureDevProcess = stageMs(mark);
+  }
+  return head === undefined ? { port } : { port, head };
+}
+
+/**
+ * Studio login (cookie `collab-draft` present) prepares that person's draft
+ * without waiting. A later draftEnter reuses the same prepare. No cookie, no child.
  * A throw is one log line and never the login result.
  */
 export function warmPersonDraftOnLogin(cookieHeader: string | undefined, email: string | undefined): void {
@@ -93,6 +163,11 @@ export function warmPersonDraftOnLogin(cookieHeader: string | undefined, email: 
     const mark = parseCookies(cookieHeader)['collab-draft'];
     if (mark === undefined || mark === '' || !email) return;
     const slug = draftSlugForUser(email).slug;
+    const parsed = parseDraftSlug(slug);
+    if (!parsed) {
+      console.error(`[cbe] login draft ${slug}: slug is not a draft`);
+      return;
+    }
     const projectId = clientProjectNumber(desenvIo.resolveClientProjectId());
     if (projectId === null) {
       console.error(`[cbe] login: client project id is not an integer: ${desenvIo.resolveClientProjectId()}`);
@@ -100,11 +175,9 @@ export function warmPersonDraftOnLogin(cookieHeader: string | undefined, email: 
     }
     const base = desenvIo.getProjectsBaseDir();
     setImmediate(() => {
-      try {
-        desenvIo.ensureDevProcess({ base, slug, clientProjectId: projectId });
-      } catch (err) {
+      prepareDraft({ base, projectId, slug: parsed.slug, branch: parsed.branch }).catch((err) => {
         console.error(`[cbe] login draft ${slug}: ${(err as Error).message}`);
-      }
+      });
     });
   } catch (err) {
     console.error(`[cbe] login draft warmup: ${(err as Error).message}`);
@@ -170,37 +243,16 @@ async function enterDraft(input: {
   const base = desenvIo.getProjectsBaseDir();
   let port: number;
   let head: string | undefined;
-  const stages = input.stages;
   try {
-    let mark = Date.now();
-    try {
-      await desenvIo.ensureDraftWorktree({ base, projectId, slug: parsed.slug, branch: parsed.branch });
-    } finally {
-      if (stages) stages.worktree = stageMs(mark);
-    }
-    try {
-      mark = Date.now();
-      const sync = await desenvIo.fastForwardDraft({ base, projectId, slug: parsed.slug });
-      if (sync.status === 'fast_forwarded') {
-        head = sync.ref;
-        desenvIo.stopDevProcess(base, parsed.slug);
-        console.info(`[cbe] /desenv: draft ${parsed.slug} fast-forwarded to ${sync.ref}`);
-      } else if (sync.status !== 'up_to_date' && sync.status !== 'diverged') {
-        const code = typeof sync.status === 'number' ? sync.code : sync.status;
-        console.warn(`[cbe] /desenv: draft ${parsed.slug} not synced: ${code}`);
-      }
-    } catch (err) {
-      const code = err instanceof Error ? err.message : String(err);
-      console.warn(`[cbe] /desenv: draft ${parsed.slug} not synced: ${code}`);
-    } finally {
-      if (stages) stages.fastForward = stageMs(mark);
-    }
-    mark = Date.now();
-    try {
-      port = desenvIo.ensureDevProcess({ base, slug: parsed.slug, clientProjectId: projectId }).port;
-    } finally {
-      if (stages) stages.ensureDevProcess = stageMs(mark);
-    }
+    const prepared = await prepareDraft({
+      base,
+      projectId,
+      slug: parsed.slug,
+      branch: parsed.branch,
+      stages: input.stages,
+    });
+    port = prepared.port;
+    head = prepared.head;
   } catch (err) {
     console.error(`[cbe] /desenv: draft ${parsed.slug} failed: ${(err as Error).message}`);
     if (err instanceof AncestorDenoConfigError || err instanceof DraftDatabaseError || err instanceof DraftWorktreeMissingError || err instanceof DenoMissingError) {
@@ -214,7 +266,7 @@ async function enterDraft(input: {
   try {
     ready = await desenvIo.waitForDevReady(port);
   } finally {
-    if (stages) stages.waitForDevReady = stageMs(readyMark);
+    if (input.stages) input.stages.waitForDevReady = stageMs(readyMark);
   }
   if (!ready) {
     console.error(`[cbe] /desenv: draft ${parsed.slug} dev not ready on port ${port}`);

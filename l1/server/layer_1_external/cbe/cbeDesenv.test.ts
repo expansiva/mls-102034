@@ -11,6 +11,7 @@ import {
   clearDraftCookie,
   desenvIo,
   draftCookie,
+  prepareDraft,
   runDesenvEnter,
   runDraftEnter,
   warmPersonDraftOnLogin,
@@ -670,11 +671,15 @@ function tick(): Promise<void> {
 }
 
 test('login with collab-draft starts the person draft without waiting; without it, and on ensure error, login is unchanged', async () => {
+  const origWorktree = desenvIo.ensureDraftWorktree;
+  const origFastForward = desenvIo.fastForwardDraft;
   const origDev = desenvIo.ensureDevProcess;
   const origProject = desenvIo.resolveClientProjectId;
   const origBase = desenvIo.getProjectsBaseDir;
   desenvIo.resolveClientProjectId = () => String(PROJECT_ID);
   desenvIo.getProjectsBaseDir = () => '/tmp/projects';
+  desenvIo.ensureDraftWorktree = async () => '/tmp/draft';
+  desenvIo.fastForwardDraft = async () => ({ status: 'up_to_date' });
   const calls: { slug: string; clientProjectId: number }[] = [];
   let started = false;
   desenvIo.ensureDevProcess = (opts) => {
@@ -718,6 +723,118 @@ test('login with collab-draft starts the person draft without waiting; without i
     assert.equal(errors.some((line) => line.includes('deno down')), true);
     assert.deepEqual(login, { statusCode: 200, msg: 'ok' });
   } finally {
+    desenvIo.ensureDraftWorktree = origWorktree;
+    desenvIo.fastForwardDraft = origFastForward;
+    desenvIo.ensureDevProcess = origDev;
+    desenvIo.resolveClientProjectId = origProject;
+    desenvIo.getProjectsBaseDir = origBase;
+  }
+});
+
+function hold<T>(): { promise: Promise<T>; release: (value: T) => void } {
+  let release: (value: T) => void = () => {};
+  const promise = new Promise<T>((resolve) => {
+    release = resolve;
+  });
+  return { promise, release };
+}
+
+test('login warmup fast-forwards once; the following draftEnter does not stop or spawn again', async () => {
+  const origWorktree = desenvIo.ensureDraftWorktree;
+  const origFastForward = desenvIo.fastForwardDraft;
+  const origStop = desenvIo.stopDevProcess;
+  const origDev = desenvIo.ensureDevProcess;
+  const origReady = desenvIo.waitForDevReady;
+  const origProject = desenvIo.resolveClientProjectId;
+  const origBase = desenvIo.getProjectsBaseDir;
+  const email = 'ada@collab.codes';
+  const slug = draftSlugForUser(email).slug;
+  const branch = `user/${slug.slice('user-'.length)}`;
+  let stops = 0;
+  let ensures = 0;
+  let forwards = 0;
+  const seenBranch: string[] = [];
+  const gate = hold<{ status: 'fast_forwarded'; ref: string }>();
+  desenvIo.resolveClientProjectId = () => String(PROJECT_ID);
+  desenvIo.getProjectsBaseDir = () => '/tmp/projects';
+  desenvIo.ensureDraftWorktree = async (opts) => {
+    seenBranch.push(opts.branch);
+    return '/tmp/draft';
+  };
+  desenvIo.fastForwardDraft = async () => {
+    forwards += 1;
+    return gate.promise;
+  };
+  desenvIo.stopDevProcess = () => {
+    stops += 1;
+  };
+  desenvIo.ensureDevProcess = () => {
+    ensures += 1;
+    return { port: 4100, pid: 1, startedAt: 0, lastRequestAt: 0 };
+  };
+  desenvIo.waitForDevReady = async () => true;
+  try {
+    warmPersonDraftOnLogin(`collab-draft=${encodeURIComponent(slug)}`, email);
+    await tick();
+    const entered = runDraftEnter({ allowed: true, draft: slug, project: PROJECT_ID });
+    assert.equal(forwards, 1);
+    gate.release({ status: 'fast_forwarded', ref: 'abc123' });
+    const result = await entered;
+    await tick();
+    assert.equal(result.status, 200);
+    assert.equal(forwards, 1);
+    assert.equal(stops, 1);
+    assert.equal(ensures, 1);
+    assert.deepEqual(seenBranch, [branch]);
+  } finally {
+    gate.release({ status: 'fast_forwarded', ref: 'abc123' });
+    desenvIo.ensureDraftWorktree = origWorktree;
+    desenvIo.fastForwardDraft = origFastForward;
+    desenvIo.stopDevProcess = origStop;
+    desenvIo.ensureDevProcess = origDev;
+    desenvIo.waitForDevReady = origReady;
+    desenvIo.resolveClientProjectId = origProject;
+    desenvIo.getProjectsBaseDir = origBase;
+  }
+});
+
+test('draftEnter and login warmup on the same slug share one fast-forward and one ensure', async () => {
+  const origWorktree = desenvIo.ensureDraftWorktree;
+  const origFastForward = desenvIo.fastForwardDraft;
+  const origDev = desenvIo.ensureDevProcess;
+  const origProject = desenvIo.resolveClientProjectId;
+  const origBase = desenvIo.getProjectsBaseDir;
+  let forwards = 0;
+  let ensures = 0;
+  const gate = hold<void>();
+  desenvIo.resolveClientProjectId = () => String(PROJECT_ID);
+  desenvIo.getProjectsBaseDir = () => '/tmp/projects';
+  desenvIo.ensureDraftWorktree = async () => '/tmp/draft';
+  desenvIo.fastForwardDraft = async () => {
+    forwards += 1;
+    await gate.promise;
+    return { status: 'up_to_date' as const };
+  };
+  desenvIo.ensureDevProcess = () => {
+    ensures += 1;
+    return { port: 4100, pid: 1, startedAt: 0, lastRequestAt: 0 };
+  };
+  try {
+    const first = prepareDraft({ base: '/tmp/projects', projectId: PROJECT_ID, slug: SLUG, branch: 'team/102047' });
+    const second = prepareDraft({ base: '/tmp/projects', projectId: PROJECT_ID, slug: SLUG, branch: 'team/102047' });
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(forwards, 1);
+    gate.release();
+    const [a, b] = await Promise.all([first, second]);
+    assert.equal(a.port, 4100);
+    assert.equal(b.port, 4100);
+    assert.equal(forwards, 1);
+    assert.equal(ensures, 1);
+  } finally {
+    gate.release();
+    desenvIo.ensureDraftWorktree = origWorktree;
+    desenvIo.fastForwardDraft = origFastForward;
     desenvIo.ensureDevProcess = origDev;
     desenvIo.resolveClientProjectId = origProject;
     desenvIo.getProjectsBaseDir = origBase;
