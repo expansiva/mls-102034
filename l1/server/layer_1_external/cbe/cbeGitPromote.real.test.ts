@@ -14,6 +14,7 @@ import {
   listDrafts,
   mergeMainIntoDraft,
   promoteDraft,
+  restoreDraftPaths,
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitPromote.js';
 import { ensureDraftWorktree } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
 import { readHistoryContent } from '/_102034_/l1/server/layer_1_external/cbe/cbeGit.js';
@@ -151,4 +152,107 @@ test('fastForwardDraft and mergeMainIntoDraft against a real draft worktree', as
   );
   assert.equal(g(wt, 'status', '--porcelain'), '');
   assert.equal(g(wt, 'rev-parse', 'HEAD'), headBefore);
+});
+
+test('restoreDraftPaths puts named paths back and drops a draft-only folder', async () => {
+  const prev = process.env.CBE_COMMIT_ON_SAVE;
+  process.env.CBE_COMMIT_ON_SAVE = 'always';
+  const base = mkdtempSync(join(tmpdir(), 'restore-'));
+  const repo = join(base, 'mls-1');
+  mkdirSync(join(repo, 'l1', 'keep'), { recursive: true });
+  mkdirSync(join(repo, 'l2', 'other'), { recursive: true });
+  g(repo, 'init', '-b', 'main');
+  writeFileSync(join(repo, 'l1', 'keep', 'a.ts'), 'main\n');
+  writeFileSync(join(repo, 'l2', 'other', 'b.ts'), 'stay\n');
+  g(repo, 'add', '.');
+  g(repo, 'commit', '-m', 'init');
+  const main = g(repo, 'rev-parse', 'HEAD');
+
+  const slug = 'team-1';
+  const wt = await ensureDraftWorktree({ base, projectId: 1, slug, branch: 'team/1' });
+  const author = { name: 'ana', email: 'ana@x.com' };
+  writeFileSync(join(wt, 'l1', 'keep', 'a.ts'), 'draft\n');
+  writeFileSync(join(wt, 'l2', 'other', 'b.ts'), 'draft-other\n');
+  mkdirSync(join(wt, 'l1', 'mod_old'), { recursive: true });
+  writeFileSync(join(wt, 'l1', 'mod_old', 'c.ts'), 'only-draft\n');
+  writeFileSync(join(wt, 'l1', 'mod_old', 'loose.ts'), 'untracked\n');
+  g(wt, 'add', 'l1/keep/a.ts', 'l2/other/b.ts', 'l1/mod_old/c.ts');
+  g(wt, 'commit', '-m', 'draft edits');
+  const draftHead = g(wt, 'rev-parse', 'HEAD');
+
+  const restored = await restoreDraftPaths({
+    base,
+    projectId: 1,
+    slug,
+    ref: 'main',
+    paths: ['l1/keep/a.ts', 'l1/mod_old'],
+    author,
+  });
+  assert.equal(restored.status, 'restored');
+  if (restored.status !== 'restored') return;
+  assert.equal(restored.restartDev, true);
+  assert.equal(g(wt, 'rev-parse', 'HEAD^'), draftHead);
+  assert.equal(g(wt, 'show', 'HEAD:l1/keep/a.ts'), 'main');
+  assert.equal(g(wt, 'show', 'HEAD:l2/other/b.ts'), 'draft-other');
+  assert.equal(existsSync(join(wt, 'l1', 'mod_old')), false);
+  assert.match(g(wt, 'log', '-1', '--format=%an %ae %s'), /^ana ana@x.com discard /);
+  assert.equal(g(repo, 'rev-parse', 'main'), main);
+
+  // A module directory that exists in ref: files the draft added inside it go too (committed or loose).
+  mkdirSync(join(wt, 'l1', 'keep', 'sub'), { recursive: true });
+  writeFileSync(join(wt, 'l1', 'keep', 'added.ts'), 'added\n');
+  writeFileSync(join(wt, 'l1', 'keep', 'sub', 'deep.ts'), 'deep\n');
+  g(wt, 'add', 'l1/keep/added.ts');
+  g(wt, 'commit', '-m', 'add inside keep');
+  writeFileSync(join(wt, 'l1', 'keep', 'a.ts'), 'edited-again\n');
+  writeFileSync(join(wt, 'l1', 'keep', 'loose2.ts'), 'loose\n');
+  const dir = await restoreDraftPaths({ base, projectId: 1, slug, ref: 'main', paths: ['l1/keep'], author });
+  assert.equal(dir.status, 'restored');
+  assert.equal(g(wt, 'show', 'HEAD:l1/keep/a.ts'), 'main');
+  assert.equal(g(wt, 'ls-tree', '-r', '--name-only', 'HEAD', 'l1/keep'), 'l1/keep/a.ts');
+  assert.equal(existsSync(join(wt, 'l1', 'keep', 'added.ts')), false);
+  assert.equal(existsSync(join(wt, 'l1', 'keep', 'loose2.ts')), false);
+  assert.equal(existsSync(join(wt, 'l1', 'keep', 'sub', 'deep.ts')), false);
+  assert.equal(g(wt, 'status', '--porcelain'), '');
+
+  const l2 = await restoreDraftPaths({
+    base,
+    projectId: 1,
+    slug,
+    ref: 'main',
+    paths: ['l2/other/b.ts'],
+    author,
+  });
+  assert.equal(l2.status, 'restored');
+  if (l2.status !== 'restored') return;
+  assert.equal(l2.restartDev, false);
+  assert.equal(g(wt, 'show', 'HEAD:l2/other/b.ts'), 'stay');
+  assert.equal(g(wt, 'show', 'HEAD:l1/keep/a.ts'), 'main');
+
+  const same = await restoreDraftPaths({
+    base,
+    projectId: 1,
+    slug,
+    ref: 'main',
+    paths: ['l2/other/b.ts'],
+    author,
+  });
+  assert.equal(same.status, 'unchanged');
+  if (same.status === 'unchanged') assert.equal(same.head, l2.head);
+
+  assert.equal((await restoreDraftPaths({ base, projectId: 1, slug, ref: 'main..', paths: ['l1/keep/a.ts'], author })).status, 400);
+  assert.equal((await restoreDraftPaths({ base, projectId: 1, slug, ref: '-main', paths: ['l1/keep/a.ts'], author })).status, 400);
+  const outside = await restoreDraftPaths({ base, projectId: 1, slug, ref: 'main', paths: ['../a.ts'], author });
+  assert.equal(outside.status, 400);
+  if (outside.status === 400) assert.equal(outside.msg, 'draft.path_invalid');
+  const layer = await restoreDraftPaths({ base, projectId: 1, slug, ref: 'main', paths: ['README'], author });
+  assert.equal(layer.status, 400);
+  if (layer.status === 400) assert.equal(layer.msg, 'draft.path_outside_layers');
+  const foreign = '0123456789abcdef0123456789abcdef01234567';
+  const notAncestor = await restoreDraftPaths({ base, projectId: 1, slug, ref: foreign, paths: ['l1/keep/a.ts'], author });
+  assert.equal(notAncestor.status, 400);
+  if (notAncestor.status === 400) assert.equal(notAncestor.msg, 'draft.ref_not_ancestor');
+
+  if (prev === undefined) delete process.env.CBE_COMMIT_ON_SAVE;
+  else process.env.CBE_COMMIT_ON_SAVE = prev;
 });

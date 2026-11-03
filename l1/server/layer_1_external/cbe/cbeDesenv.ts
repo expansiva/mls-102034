@@ -110,6 +110,17 @@ export function prepareDraft(opts: {
   return run;
 }
 
+/** Waits out a prepare already running for this slug. A prepare error is logged and does not fail the waiter. */
+export async function awaitDraftPrepare(slug: string): Promise<void> {
+  const current = draftPrepareInflight.get(slug);
+  if (!current) return;
+  try {
+    await current;
+  } catch (err) {
+    console.error(`[cbe] draft ${slug}: prepare failed before the next draft action: ${(err as Error).message}`);
+  }
+}
+
 async function runPrepareDraft(opts: {
   base: string;
   projectId: number;

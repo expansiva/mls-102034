@@ -9,10 +9,11 @@
 // The branch always comes from parseDraftSlug; a browser ref never reaches git.
 
 import { execFile } from 'node:child_process';
+import { rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { draftSourceRoot, parseDraftSlug, readDraftOwner } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
-import type { GitCommitAuthor } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitCommit.js';
+import { TOBE_LOCAL_GITIGNORES, commitSavedSources, type GitCommitAuthor } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitCommit.js';
 import { resolveSourcePath } from '/_102034_/l1/server/layer_1_external/cbe/cbeSources.js';
 
 const execFileAsync = promisify(execFile);
@@ -46,6 +47,12 @@ export type DiscardDraftResult =
   | { status: 400; code: 'BAD_DRAFT' }
   | { status: 'discarded' }
   | { status: 500; code: 'GIT_ERROR' };
+
+export type RestoreDraftPathsResult =
+  | { status: 400; code: 'BAD_DRAFT' | 'BAD_REF' | 'BAD_PATH'; msg: string }
+  | { status: 'unchanged'; head: string }
+  | { status: 'restored'; paths: string[]; head: string; restartDev: boolean }
+  | { status: 500; code: 'GIT_ERROR'; msg: string };
 
 export interface ListedDraft {
   branch: string;
@@ -237,6 +244,154 @@ export async function discardDraft(opts: {
     return { status: 500, code: 'GIT_ERROR' };
   }
   return { status: 'discarded' };
+}
+
+const TOBE_LOCAL_PATHS = TOBE_LOCAL_GITIGNORES.map((pattern) => {
+  const body = pattern.replace(/\/$/, '').replace(/\*/g, '[^/]+');
+  return new RegExp(`^${body}(?:/|$)`);
+});
+const COMMIT_HEX = /^[0-9a-f]{40}$/;
+const LAYER_PATH = /^l[1-7]\/.+/;
+
+function restorePathReason(shortPath: string): string | null {
+  if (shortPath === '' || shortPath.startsWith('-') || shortPath.startsWith('/') || shortPath.endsWith('/')) {
+    return 'draft.path_invalid';
+  }
+  if (shortPath.includes('\\') || shortPath.includes('\0') || shortPath.split('/').includes('..')) {
+    return 'draft.path_invalid';
+  }
+  if (!LAYER_PATH.test(shortPath)) return 'draft.path_outside_layers';
+  if (TOBE_LOCAL_PATHS.some((pattern) => pattern.test(shortPath))) return 'draft.path_local';
+  return null;
+}
+
+/**
+ * Puts the named paths back to `ref` on the draft branch and commits that with the session author.
+ * A path missing from `ref` is removed. Does not reset the branch or touch the database.
+ */
+export async function restoreDraftPaths(opts: {
+  base: string;
+  projectId: number;
+  slug: string;
+  ref: string;
+  paths: string[];
+  author: GitCommitAuthor;
+  git?: PromoteGit;
+}): Promise<RestoreDraftPathsResult> {
+  const parsed = parseDraftSlug(opts.slug);
+  if (!parsed) return { status: 400, code: 'BAD_DRAFT', msg: 'draft.bad_slug' };
+
+  const ref = opts.ref;
+  if (ref !== 'main' && (ref.startsWith('-') || !COMMIT_HEX.test(ref))) {
+    return { status: 400, code: 'BAD_REF', msg: 'draft.ref_invalid' };
+  }
+  if (!Array.isArray(opts.paths) || opts.paths.length === 0) {
+    return { status: 400, code: 'BAD_PATH', msg: 'draft.paths_required' };
+  }
+  for (const shortPath of opts.paths) {
+    if (typeof shortPath !== 'string') return { status: 400, code: 'BAD_PATH', msg: 'draft.path_invalid' };
+    const reason = restorePathReason(shortPath);
+    if (reason) return { status: 400, code: 'BAD_PATH', msg: reason };
+  }
+
+  const cwd = resolve(draftSourceRoot(opts.base, parsed.slug, opts.projectId));
+  const run = withSafeDirectory(opts.git ?? captureGit, cwd);
+
+  if (ref !== 'main') {
+    const ancestor = await run(['merge-base', '--is-ancestor', ref, 'HEAD']);
+    if (ancestor.code !== 0) {
+      if (ancestor.code !== 1) logGitFailure(`restoreDraftPaths ancestor (${parsed.branch})`, ancestor);
+      return { status: 400, code: 'BAD_REF', msg: 'draft.ref_not_ancestor' };
+    }
+  }
+
+  const present: string[] = [];
+  const missing: string[] = [];
+  for (const shortPath of opts.paths) {
+    const probe = await run(['cat-file', '-e', `${ref}:${shortPath}`]);
+    if (probe.code === 0) present.push(shortPath);
+    else if (probe.code === 1 || probe.code === 128) missing.push(shortPath);
+    else {
+      logGitFailure(`restoreDraftPaths cat-file (${parsed.branch})`, probe);
+      return { status: 500, code: 'GIT_ERROR', msg: (probe.stderr ?? probe.stdout).trim().slice(0, 500) };
+    }
+  }
+
+  // `git checkout <ref> -- <dir>` restores what ref has but keeps files the draft added
+  // inside that directory. Discarding a module has to drop those too (committed or untracked).
+  const addedInDraft = new Set<string>();
+  const looseInDraft = new Set<string>(); // never tracked: removed from disk, nothing to commit
+  if (present.length > 0) {
+    const committed = await run(['diff', '--name-only', '--diff-filter=A', ref, 'HEAD', '--', ...present]);
+    const loose = await run(['ls-files', '--others', '--exclude-standard', '--', ...present]);
+    for (const [label, listed] of [['diff', committed], ['ls-files', loose]] as const) {
+      if (listed.code !== 0) {
+        logGitFailure(`restoreDraftPaths ${label} (${parsed.branch})`, listed);
+        return { status: 500, code: 'GIT_ERROR', msg: (listed.stderr ?? listed.stdout).trim().slice(0, 500) };
+      }
+      for (const line of linesOf(listed.stdout)) {
+        if (TOBE_LOCAL_PATHS.some((pattern) => pattern.test(line))) continue;
+        addedInDraft.add(line);
+        if (label === 'ls-files') looseInDraft.add(line);
+      }
+    }
+  }
+
+  if (present.length > 0) {
+    const checked = await run(['checkout', ref, '--', ...present]);
+    if (checked.code !== 0) {
+      logGitFailure(`restoreDraftPaths checkout (${parsed.branch})`, checked);
+      return { status: 500, code: 'GIT_ERROR', msg: (checked.stderr ?? checked.stdout).trim().slice(0, 500) };
+    }
+  }
+  const commitPaths = new Set<string>(present);
+  for (const added of addedInDraft) {
+    await rm(join(cwd, added), { force: true });
+    if (!looseInDraft.has(added)) commitPaths.add(added);
+  }
+  for (const shortPath of missing) {
+    const listed = await run(['ls-tree', '-r', '--name-only', 'HEAD', '--', shortPath]);
+    if (listed.code !== 0) {
+      logGitFailure(`restoreDraftPaths ls-tree (${parsed.branch})`, listed);
+      return { status: 500, code: 'GIT_ERROR', msg: (listed.stderr ?? listed.stdout).trim().slice(0, 500) };
+    }
+    for (const line of linesOf(listed.stdout)) commitPaths.add(line);
+  }
+  // `commitSavedSources` stages the deletion (`git add -A`). A prior `git rm`
+  // drops the path from the index, and its `:(literal)` pathspec then matches nothing.
+  for (const shortPath of missing) {
+    await rm(join(cwd, shortPath), { recursive: true, force: true });
+  }
+
+  if (commitPaths.size === 0) {
+    const headOnly = await run(['rev-parse', 'HEAD']);
+    if (headOnly.code !== 0) {
+      logGitFailure(`restoreDraftPaths HEAD (${parsed.branch})`, headOnly);
+      return { status: 500, code: 'GIT_ERROR', msg: (headOnly.stderr ?? headOnly.stdout).trim().slice(0, 500) };
+    }
+    return { status: 'unchanged', head: headOnly.stdout.trim() };
+  }
+
+  const commit = await commitSavedSources(opts.projectId, [...commitPaths], {
+    comments: `discard ${opts.paths.join(' ')}`,
+    author: opts.author,
+    sourceRoot: cwd,
+  });
+  if (commit.status === 'failed' || commit.status === 'disabled' || commit.status === 'not-a-repo') {
+    const msg = commit.msg ?? commit.status;
+    console.error(`[cbe] restoreDraftPaths (${parsed.branch}): commit ${commit.status}: ${msg}`);
+    return { status: 500, code: 'GIT_ERROR', msg };
+  }
+
+  const head = await run(['rev-parse', 'HEAD']);
+  if (head.code !== 0) {
+    logGitFailure(`restoreDraftPaths HEAD (${parsed.branch})`, head);
+    return { status: 500, code: 'GIT_ERROR', msg: (head.stderr ?? head.stdout).trim().slice(0, 500) };
+  }
+  const sha = head.stdout.trim();
+  const restartDev = opts.paths.some((shortPath) => shortPath.startsWith('l1/'));
+  if (commit.status === 'nothing') return { status: 'unchanged', head: sha };
+  return { status: 'restored', paths: opts.paths, head: sha, restartDev };
 }
 
 type SyncDraftOpts = {

@@ -119,6 +119,15 @@ export interface CbeRequestDiscardDraft extends CbeRequestBase {
   draft?: string;
 }
 
+export interface CbeRequestDraftRestorePaths extends CbeRequestBase {
+  action: 'draftRestorePaths';
+  project?: number;
+  draft?: string;
+  /** `main`, or a 40-hex commit that is an ancestor of the draft branch. */
+  ref?: string;
+  paths?: string[];
+}
+
 export interface CbeRequestDraftSync extends CbeRequestBase {
   action: 'draftSync';
   project?: number;

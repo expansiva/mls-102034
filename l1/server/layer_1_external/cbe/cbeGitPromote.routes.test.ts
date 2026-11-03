@@ -8,7 +8,8 @@ import { join } from 'node:path';
 import Fastify from 'fastify';
 import { draftDatabaseUrl } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
 import { parseDatabaseUrl } from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
-import { draftDbHooks, draftDevHooks, draftSyncHooks, promoteRouteHooks, registerCbeRoutes } from '/_102034_/l1/server/layer_1_external/cbe/cbeRoutes.js';
+import { draftDbHooks, draftDevHooks, draftSyncHooks, promoteRouteHooks, registerCbeRoutes, sessionHooks } from '/_102034_/l1/server/layer_1_external/cbe/cbeRoutes.js';
+import { draftSlugForUser, writeDraftOwner } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
 
 const PROJECT_ID = 102047;
 const SLUG = 'team-102047';
@@ -432,6 +433,93 @@ test('exec promote, discardDraft, listDrafts and draftDiff', async () => {
     else process.env.CBE_REQUIRE_LOGIN = prev.login;
     if (prev.testDatabase === undefined) delete process.env.DATABASE_URL_TEST;
     else process.env.DATABASE_URL_TEST = prev.testDatabase;
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('draftRestorePaths restarts only for l1 and refuses another owner', async () => {
+  const base = mkdtempSync(join(tmpdir(), 'cbe-restore-routes-'));
+  const projectRoot = join(base, `mls-${PROJECT_ID}`);
+  const person = draftSlugForUser('ana@x.com');
+  const draftRoot = join(base, 'drafts', person.slug, `mls-${PROJECT_ID}`);
+  const prev = {
+    dir: process.env.CBE_PROJECTS_DIR,
+    login: process.env.CBE_REQUIRE_LOGIN,
+    commit: process.env.CBE_COMMIT_ON_SAVE,
+  };
+  process.env.CBE_PROJECTS_DIR = base;
+  process.env.CBE_REQUIRE_LOGIN = 'never';
+  process.env.CBE_COMMIT_ON_SAVE = 'always';
+  const origRestart = draftDevHooks.restartDevProcess;
+  const origEmail = sessionHooks.emailOf;
+  const restarts: string[] = [];
+  draftDevHooks.restartDevProcess = async (opts) => {
+    restarts.push(opts.slug);
+    return { port: 1, pid: 1, startedAt: 0, lastRequestAt: 0 };
+  };
+  let email = 'ana@x.com';
+  sessionHooks.emailOf = async () => email;
+  const app = Fastify();
+  registerCbeRoutes(app);
+  try {
+    git(base, ['init', '-b', 'main', projectRoot]);
+    git(projectRoot, ['config', 'user.name', 'fixture']);
+    git(projectRoot, ['config', 'user.email', 'fixture@test']);
+    mkdirSync(join(projectRoot, 'l1', 'mod'), { recursive: true });
+    mkdirSync(join(projectRoot, 'l2', 'mod'), { recursive: true });
+    writeFileSync(join(projectRoot, 'l1', 'mod', 'a.ts'), 'main\n');
+    writeFileSync(join(projectRoot, 'l2', 'mod', 'b.ts'), 'main\n');
+    git(projectRoot, ['add', '.']);
+    git(projectRoot, ['commit', '--no-verify', '-m', 'init']);
+    mkdirSync(join(base, 'drafts', person.slug), { recursive: true });
+    await writeDraftOwner(base, person.slug, 'ana@x.com');
+    git(projectRoot, ['worktree', 'add', '-b', person.branch, draftRoot]);
+    writeFileSync(join(draftRoot, 'l1', 'mod', 'a.ts'), 'draft-l1\n');
+    writeFileSync(join(draftRoot, 'l2', 'mod', 'b.ts'), 'draft-l2\n');
+    git(draftRoot, ['add', '.']);
+    git(draftRoot, ['commit', '--no-verify', '-m', 'draft']);
+
+    const l1 = await app.inject({
+      method: 'POST',
+      url: '/exec',
+      payload: { action: 'draftRestorePaths', project: PROJECT_ID, draft: person.slug, ref: 'main', paths: ['l1/mod/a.ts'] },
+    });
+    assert.equal(l1.statusCode, 200, l1.body);
+    assert.equal(l1.json().status, 'restored');
+    assert.deepEqual(restarts, [person.slug]);
+    assert.equal(readFileSync(join(draftRoot, 'l2', 'mod', 'b.ts'), 'utf8'), 'draft-l2\n');
+
+    const l2 = await app.inject({
+      method: 'POST',
+      url: '/exec',
+      payload: { action: 'draftRestorePaths', project: PROJECT_ID, draft: person.slug, ref: 'main', paths: ['l2/mod/b.ts'] },
+    });
+    assert.equal(l2.statusCode, 200, l2.body);
+    assert.equal(l2.json().status, 'restored');
+    assert.deepEqual(restarts, [person.slug]);
+
+    email = 'bia@x.com';
+    writeFileSync(join(draftRoot, 'l2', 'mod', 'b.ts'), 'again\n');
+    git(draftRoot, ['add', '.']);
+    git(draftRoot, ['commit', '--no-verify', '-m', 'again']);
+    const denied = await app.inject({
+      method: 'POST',
+      url: '/exec',
+      payload: { action: 'draftRestorePaths', project: PROJECT_ID, draft: person.slug, ref: 'main', paths: ['l2/mod/b.ts'] },
+    });
+    assert.equal(denied.statusCode, 400, denied.body);
+    assert.equal(denied.json().msg, 'draft.not_owner');
+    assert.equal(readFileSync(join(draftRoot, 'l2', 'mod', 'b.ts'), 'utf8'), 'again\n');
+  } finally {
+    draftDevHooks.restartDevProcess = origRestart;
+    sessionHooks.emailOf = origEmail;
+    await app.close();
+    if (prev.dir === undefined) delete process.env.CBE_PROJECTS_DIR;
+    else process.env.CBE_PROJECTS_DIR = prev.dir;
+    if (prev.login === undefined) delete process.env.CBE_REQUIRE_LOGIN;
+    else process.env.CBE_REQUIRE_LOGIN = prev.login;
+    if (prev.commit === undefined) delete process.env.CBE_COMMIT_ON_SAVE;
+    else process.env.CBE_COMMIT_ON_SAVE = prev.commit;
     rmSync(base, { recursive: true, force: true });
   }
 });
