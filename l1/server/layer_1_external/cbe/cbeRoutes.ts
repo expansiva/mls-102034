@@ -1217,7 +1217,11 @@ async function handleStatic(request: FastifyRequest, reply: FastifyReply): Promi
   const rc = await getCbeStaticFile(request.raw.url ?? '', clientETag);
 
   if (rc.statusCode === CBE_HTTP_NOT_MODIFIED) {
-    reply.code(CBE_HTTP_NOT_MODIFIED).send();
+    reply
+      .code(CBE_HTTP_NOT_MODIFIED)
+      .header('Cache-Control', staticCacheControl(request.raw.url ?? ''))
+      .header('ETag', `"${rc.eTag}"`)
+      .send();
     return;
   }
   if (rc.statusCode !== CBE_HTTP_OK || !rc.content) {

@@ -45,6 +45,24 @@ test('versioned /libs and /monaco are immutable; a path without the stamp stays 
     assert.equal(plainMonaco.statusCode, 200);
     assert.equal(plainMonaco.headers['cache-control'], 'no-cache');
     assert.equal(typeof plainMonaco.headers.etag, 'string');
+
+    const versioned304 = await app.inject({
+      method: 'GET',
+      url: `/libs/${STAMP}/lit.js`,
+      headers: { 'if-none-match': String(versionedLib.headers.etag) },
+    });
+    assert.equal(versioned304.statusCode, 304);
+    assert.equal(versioned304.headers['cache-control'], IMMUTABLE);
+    assert.equal(versioned304.headers.etag, versionedLib.headers.etag);
+
+    const plain304 = await app.inject({
+      method: 'GET',
+      url: '/libs/lit.js',
+      headers: { 'if-none-match': String(plainLib.headers.etag) },
+    });
+    assert.equal(plain304.statusCode, 304);
+    assert.equal(plain304.headers['cache-control'], 'no-cache');
+    assert.equal(plain304.headers.etag, plainLib.headers.etag);
   } finally {
     await app.close();
     if (prev === undefined) delete process.env.CBE_STATIC_DIR;
