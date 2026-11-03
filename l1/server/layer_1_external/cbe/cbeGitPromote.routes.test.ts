@@ -510,6 +510,24 @@ test('draftRestorePaths restarts only for l1 and refuses another owner', async (
     assert.equal(denied.statusCode, 400, denied.body);
     assert.equal(denied.json().msg, 'draft.not_owner');
     assert.equal(readFileSync(join(draftRoot, 'l2', 'mod', 'b.ts'), 'utf8'), 'again\n');
+
+    // discardDraft and promote use the same ownership check: another person's user-* draft is untouched.
+    const deniedDiscard = await app.inject({
+      method: 'POST',
+      url: '/exec',
+      payload: { action: 'discardDraft', project: PROJECT_ID, draft: person.slug },
+    });
+    assert.equal(deniedDiscard.statusCode, 400, deniedDiscard.body);
+    assert.equal(deniedDiscard.json().msg, 'draft.not_owner');
+    const deniedPromote = await app.inject({
+      method: 'POST',
+      url: '/exec',
+      payload: { action: 'promote', project: PROJECT_ID, draft: person.slug, target: 'production', comment: 'x' },
+    });
+    assert.equal(deniedPromote.statusCode, 400, deniedPromote.body);
+    assert.equal(deniedPromote.json().msg, 'draft.not_owner');
+    assert.equal(readFileSync(join(draftRoot, 'l2', 'mod', 'b.ts'), 'utf8'), 'again\n');
+    assert.equal(git(draftRoot, ['rev-parse', 'HEAD']).trim().length, 40);
   } finally {
     draftDevHooks.restartDevProcess = origRestart;
     sessionHooks.emailOf = origEmail;

@@ -913,6 +913,7 @@ async function handlePromote(request: FastifyRequest, body: CbeRequestPromote, r
 
   const session = await resolveSession(request);
   const slug = typeof body.draft === 'string' ? body.draft : '';
+  if (await refuseNotDraftOwner(request, getProjectsBaseDir(), slug, reply)) return;
   const comment = typeof body.comment === 'string' ? body.comment : '';
   const claim = buildPromoteInFlight(project, slug, new Date(promoteRouteHooks.now()).toISOString());
   if (!claimPromote(claim, reply)) return;
@@ -963,11 +964,26 @@ async function handlePromote(request: FastifyRequest, body: CbeRequestPromote, r
   reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, status: result.status });
 }
 
+/**
+ * A `user-*` draft belongs to one person: another session gets 400 `draft.not_owner` and nothing runs.
+ * `team-*` drafts stay open to everyone. Returns true when the call was refused (reply already sent).
+ */
+async function refuseNotDraftOwner(request: FastifyRequest, base: string, slug: string, reply: FastifyReply): Promise<boolean> {
+  const parsed = parseDraftSlug(slug);
+  if (!parsed || !parsed.slug.startsWith('user-')) return false;
+  const email = (await sessionHooks.emailOf(request) ?? '').trim().toLowerCase();
+  const owner = (await readDraftOwner(base, parsed.slug) ?? '').trim().toLowerCase();
+  if (email !== '' && owner === email) return false;
+  reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, code: 'NOT_OWNER', msg: 'draft.not_owner' });
+  return true;
+}
+
 async function handleDiscardDraft(request: FastifyRequest, body: CbeRequestDiscardDraft, reply: FastifyReply): Promise<void> {
   const project = await requireSourceProject(request, body, reply);
   if (!project) return;
   const slug = typeof body.draft === 'string' ? body.draft : '';
   const base = getProjectsBaseDir();
+  if (await refuseNotDraftOwner(request, base, slug, reply)) return;
   const result = await discardDraft({ base, projectId: project, slug });
   if (typeof result.status === 'number') {
     replyGitFailure(reply, result);
@@ -992,14 +1008,7 @@ async function handleDraftRestorePaths(request: FastifyRequest, body: CbeRequest
     return;
   }
   const base = getProjectsBaseDir();
-  if (parsed.slug.startsWith('user-')) {
-    const email = (await sessionHooks.emailOf(request) ?? '').trim().toLowerCase();
-    const owner = (await readDraftOwner(base, parsed.slug) ?? '').trim().toLowerCase();
-    if (email === '' || owner !== email) {
-      reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, code: 'NOT_OWNER', msg: 'draft.not_owner' });
-      return;
-    }
-  }
+  if (await refuseNotDraftOwner(request, base, parsed.slug, reply)) return;
   await awaitDraftPrepare(parsed.slug);
   const session = await resolveSession(request);
   const result = await restoreDraftPaths({
