@@ -1,6 +1,7 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/frontend/faviconHtml.ts" enhancement="_blank" />
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
+import { extname } from 'node:path';
 import { resolveWebDistPath, type ProjectsConfig } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 
 /** Default tab icon: same-origin l3 asset of the master frontend (not23). */
@@ -49,6 +50,76 @@ function hrefWithVersion(href: string): string {
   if (href.includes('?')) return href;
   const hash = faviconContentHash(href);
   return hash ? `${href}?v=${hash}` : href;
+}
+
+function faviconContentType(filePath: string): string {
+  switch (extname(filePath)) {
+    case '.png':
+      return 'image/png';
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg';
+    case '.gif':
+      return 'image/gif';
+    case '.webp':
+      return 'image/webp';
+    case '.avif':
+      return 'image/avif';
+    case '.svg':
+      return 'image/svg+xml; charset=utf-8';
+    case '.ico':
+      return 'image/x-icon';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
+/** Bytes of the same-origin file `resolveAppFaviconHref` chose. Missing or unsafe href is null. */
+export function readAppFaviconFile(href: string): { body: Buffer; contentType: string } | null {
+  if (!href.startsWith('/') || href.startsWith('//') || href.includes('?') || href.includes('..')) {
+    return null;
+  }
+  const filePath = resolveWebDistPath(`.${href}`);
+  if (!existsSync(filePath)) return null;
+  return { body: readFileSync(filePath), contentType: faviconContentType(filePath) };
+}
+
+export interface FaviconIcoHttp {
+  statusCode: 200 | 304 | 404;
+  body: Buffer | '';
+  headers?: { 'content-type': string; 'cache-control': 'no-cache'; etag: string };
+}
+
+/** 200 with the file type, or 304 when `If-None-Match` equals the ETag. Always `no-cache`. */
+export function faviconIcoFromFile(
+  file: { body: Buffer; contentType: string },
+  ifNoneMatch: string | undefined,
+): FaviconIcoHttp {
+  const tag = contentHash12(file.body);
+  const headers = {
+    'content-type': file.contentType,
+    'cache-control': 'no-cache' as const,
+    etag: `"${tag}"`,
+  };
+  const client = (ifNoneMatch ?? '').replace(/^W\//u, '').replaceAll('"', '');
+  if (client && client === tag) {
+    return { statusCode: 304, body: '', headers };
+  }
+  return { statusCode: 200, body: file.body, headers };
+}
+
+/** `GET /favicon.ico`: the file `resolveAppFaviconHref` chose. Missing file is 404 plus one log line. */
+export function faviconIcoResponse(
+  favicon: ProjectsConfig['favicon'] | null,
+  ifNoneMatch: string | undefined,
+): FaviconIcoHttp {
+  const href = resolveAppFaviconHref(favicon).href;
+  const file = readAppFaviconFile(href);
+  if (!file) {
+    console.error(`[favicon] missing file for ${href}`);
+    return { statusCode: 404, body: '' };
+  }
+  return faviconIcoFromFile(file, ifNoneMatch);
 }
 
 export function injectFaviconLink(html: string, href: string): string {

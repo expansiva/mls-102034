@@ -10,6 +10,8 @@ import {
   DEFAULT_APP_FAVICON_HREF,
   faviconContentHash,
   injectFaviconLink,
+  faviconIcoFromFile,
+  faviconIcoResponse,
   resolveAppFaviconHref,
 } from '/_102034_/l1/server/layer_1_external/frontend/faviconHtml.js';
 import { handleHttpRequest } from '/_102034_/l1/server/layer_1_external/transport/http/startServer.js';
@@ -72,6 +74,45 @@ test('readAppHtml injects the favicon link', () => {
   const source = readFileSync(new URL('../transport/http/startServer.ts', import.meta.url), 'utf8');
   assert.match(source, /injectFaviconLink/);
   assert.match(source, /faviconHref/);
+});
+
+test('GET /favicon.ico is the app icon with no-cache, and 304 when the ETag matches', () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const ok = faviconIcoFromFile({ body: png, contentType: 'image/png' }, undefined);
+  assert.equal(ok.statusCode, 200);
+  assert.equal(ok.headers?.['content-type'], 'image/png');
+  assert.equal(ok.headers?.['cache-control'], 'no-cache');
+  assert.equal(ok.headers?.etag, `"${contentHash12(png)}"`);
+  assert.ok(Buffer.isBuffer(ok.body) && ok.body.equals(png));
+  const again = faviconIcoFromFile({ body: png, contentType: 'image/png' }, ok.headers?.etag);
+  assert.equal(again.statusCode, 304);
+  assert.equal(again.body, '');
+  assert.equal(again.headers?.['cache-control'], 'no-cache');
+  assert.equal(again.headers?.etag, ok.headers?.etag);
+
+  const filePath = resolveWebDistPath(`.${DEFAULT_APP_FAVICON_HREF}`);
+  if (existsSync(filePath)) {
+    const live = faviconIcoResponse(undefined, undefined);
+    assert.equal(live.statusCode, 200);
+    assert.equal(live.headers?.['content-type'], 'image/png');
+    assert.equal(live.headers?.['cache-control'], 'no-cache');
+  }
+  const logged: string[] = [];
+  const orig = console.error;
+  console.error = (...args: unknown[]) => {
+    logged.push(args.map(String).join(' '));
+  };
+  try {
+    const missing = faviconIcoResponse('/__rt168_no_such_icon__.png', undefined);
+    assert.equal(missing.statusCode, 404);
+    assert.match(logged.join('\n'), /\[favicon\] missing file for \/__rt168_no_such_icon__\.png/);
+  } finally {
+    console.error = orig;
+  }
+  const source = readFileSync(new URL('../transport/http/startServer.ts', import.meta.url), 'utf8');
+  const ico = source.indexOf("app.get('/favicon.ico'");
+  const catchAll = source.indexOf("app.get('/*'");
+  assert.ok(ico >= 0 && catchAll > ico);
 });
 
 test('GET /_102033_/l3/assets/favicon.png is 200 image/png when dist has the file', async (t) => {

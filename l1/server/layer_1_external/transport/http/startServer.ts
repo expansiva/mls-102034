@@ -3,7 +3,7 @@ import Fastify from 'fastify';
 import { existsSync, readFileSync } from 'node:fs';
 import { extname, join, normalize, resolve } from 'node:path';
 import { getFrontendAppByBasePath, getFrontendAppRegistrations, getAppPublicRootDir, getAppAssetRootDirs } from '/_102034_/l1/server/layer_1_external/frontend/appRegistry.js';
-import { contentHash12, injectFaviconLink, resolveAppFaviconHref } from '/_102034_/l1/server/layer_1_external/frontend/faviconHtml.js';
+import { contentHash12, faviconIcoResponse, injectFaviconLink, resolveAppFaviconHref } from '/_102034_/l1/server/layer_1_external/frontend/faviconHtml.js';
 import { readProjectsConfig, resolveWebDistPath } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import { classifyProjectAssetUrl, HASHED_SHARED_JS_PATH } from '/_102034_/l1/server/layer_1_external/transport/http/classifyProjectAssetUrl.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
@@ -682,6 +682,16 @@ export function buildHttpServer() {
   // Lima bench selector. The handler answers 404 when the bench is off or the host is not local,
   // and it is registered before the SPA catch-all so that 404 is real.
   registerLocalTestSessionRoutes(app);
+  // Browser asks /favicon.ico on its own. The URL has no version, so no-cache + ETag.
+  app.get('/favicon.ico', async (request, reply) => {
+    const result = faviconIcoResponse(
+      readProjectsConfig().favicon,
+      request.headers['if-none-match'] as string | undefined,
+    );
+    reply.status(result.statusCode);
+    if (result.headers) reply.headers(result.headers);
+    return result.statusCode === 200 ? result.body : null;
+  });
   app.get('/*', async (request, reply) => {
     const result = await handleHttpRequest('GET', request.url);
     const etag = result.headers?.etag;
