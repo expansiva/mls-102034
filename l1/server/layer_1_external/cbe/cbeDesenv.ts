@@ -3,7 +3,8 @@
 // The path is only the entrance. Routing after that is the cookie.
 
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { parseDraftSlug, ensureDraftWorktree } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
+import { parseDraftSlug, draftSlugForUser, ensureDraftWorktree } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
+import { parseCookies } from '/_102034_/l1/server/layer_1_external/cbe/cbeAuthJwt.js';
 import { AncestorDenoConfigError, DenoMissingError, DraftDatabaseError, DraftWorktreeMissingError, ensureDevProcess, stopDevProcess, waitForDevReady } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
 import { fastForwardDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitPromote.js';
 import { getProjectsBaseDir } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
@@ -80,6 +81,34 @@ function queryValue(query: unknown, key: string): string | undefined {
   if (typeof value === 'string') return value;
   if (Array.isArray(value) && typeof value[0] === 'string') return value[0];
   return undefined;
+}
+
+/**
+ * Studio login (cookie `collab-draft` present) starts that person's draft child
+ * without waiting. A later draftEnter reuses the same lock. No cookie, no child.
+ * A throw is one log line and never the login result.
+ */
+export function warmPersonDraftOnLogin(cookieHeader: string | undefined, email: string | undefined): void {
+  try {
+    const mark = parseCookies(cookieHeader)['collab-draft'];
+    if (mark === undefined || mark === '' || !email) return;
+    const slug = draftSlugForUser(email).slug;
+    const projectId = clientProjectNumber(desenvIo.resolveClientProjectId());
+    if (projectId === null) {
+      console.error(`[cbe] login: client project id is not an integer: ${desenvIo.resolveClientProjectId()}`);
+      return;
+    }
+    const base = desenvIo.getProjectsBaseDir();
+    setImmediate(() => {
+      try {
+        desenvIo.ensureDevProcess({ base, slug, clientProjectId: projectId });
+      } catch (err) {
+        console.error(`[cbe] login draft ${slug}: ${(err as Error).message}`);
+      }
+    });
+  } catch (err) {
+    console.error(`[cbe] login draft warmup: ${(err as Error).message}`);
+  }
 }
 
 function clientProjectNumber(raw: string): number | null {

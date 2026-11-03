@@ -41,7 +41,7 @@ import { authorFromSession, commitSavedSources } from '/_102034_/l1/server/layer
 import { discardDraft, draftDiff, fastForwardDraft, listDrafts, mergeMainIntoDraft, promoteDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitPromote.js';
 import { draftSlugForUser, requestDraftValue, resolveRequestDraft, resolveWriteDraft, writeDraftOwner, type RequestDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
 import { draftDatabaseUrl, ensureDevReaper, restartDevProcess, stopDevProcess } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
-import { desenvIo, handleDesenvEnter, handleDesenvExit, handleDraftEnter, runDraftEnter } from '/_102034_/l1/server/layer_1_external/cbe/cbeDesenv.js';
+import { desenvIo, handleDesenvEnter, handleDesenvExit, handleDraftEnter, runDraftEnter, warmPersonDraftOnLogin } from '/_102034_/l1/server/layer_1_external/cbe/cbeDesenv.js';
 import { getRunningRelease } from '/_102034_/l1/server/layer_1_external/cbe/cbeRelease.js';
 import {
   CBE_HTTP_BAD_REQUEST,
@@ -1170,6 +1170,7 @@ async function handleExec(request: FastifyRequest, reply: FastifyReply): Promise
         }
         if (localOk) {
           const email = localOk.claims.email;
+          warmPersonDraftOnLogin(headerString(request.headers.cookie), email);
           const rc = executeCbeLogin(body as CbeRequestLogin, email, session.picture);
           console.info(`[cbe] /exec action:login (${email}) -> ${rc.statusCode} in ${Date.now() - start}ms`);
           reply.header('set-cookie', [
@@ -1185,6 +1186,7 @@ async function handleExec(request: FastifyRequest, reply: FastifyReply): Promise
           return;
         }
         const loginSession = session.email ? session : { ...session, testUser };
+        warmPersonDraftOnLogin(headerString(request.headers.cookie), session.email ?? testUser);
         const rc = executeCbeLogin(body as CbeRequestLogin, session.email ?? testUser, session.picture);
         console.info(`[cbe] /exec action:login (${session.email ?? testUser ?? 'anonymous'}) -> ${rc.statusCode} in ${Date.now() - start}ms`);
         reply.header('set-cookie', buildLoginCookies(loginSession));

@@ -13,6 +13,7 @@ import {
   draftCookie,
   runDesenvEnter,
   runDraftEnter,
+  warmPersonDraftOnLogin,
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeDesenv.js';
 import { getProjectsBaseDir } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
 import { AncestorDenoConfigError, DraftDatabaseError } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
@@ -659,6 +660,67 @@ test('draftEnter logs one timing line with the four stages and no identity', asy
     desenvIo.ensureDevProcess = origDev;
     desenvIo.waitForDevReady = origReady;
     desenvIo.resolveClientProjectId = origProject;
+  }
+});
+
+function tick(): Promise<void> {
+  return new Promise((resolve) => {
+    setImmediate(resolve);
+  });
+}
+
+test('login with collab-draft starts the person draft without waiting; without it, and on ensure error, login is unchanged', async () => {
+  const origDev = desenvIo.ensureDevProcess;
+  const origProject = desenvIo.resolveClientProjectId;
+  const origBase = desenvIo.getProjectsBaseDir;
+  desenvIo.resolveClientProjectId = () => String(PROJECT_ID);
+  desenvIo.getProjectsBaseDir = () => '/tmp/projects';
+  const calls: { slug: string; clientProjectId: number }[] = [];
+  let started = false;
+  desenvIo.ensureDevProcess = (opts) => {
+    started = true;
+    calls.push({ slug: opts.slug, clientProjectId: opts.clientProjectId });
+    return { port: 4100, pid: 1, startedAt: 0, lastRequestAt: 0 };
+  };
+  const email = 'ada@collab.codes';
+  const slug = draftSlugForUser(email).slug;
+  try {
+    warmPersonDraftOnLogin(`collab-draft=${encodeURIComponent(SLUG)}`, email);
+    assert.equal(started, false);
+    const login = { statusCode: 200, msg: 'ok' };
+    await tick();
+    assert.deepEqual(calls, [{ slug, clientProjectId: PROJECT_ID }]);
+    assert.deepEqual(login, { statusCode: 200, msg: 'ok' });
+
+    calls.length = 0;
+    warmPersonDraftOnLogin('cauth=abc', email);
+    await tick();
+    assert.equal(calls.length, 0);
+
+    desenvIo.ensureDevProcess = () => {
+      throw new Error('deno down');
+    };
+    const origError = console.error;
+    const errors: string[] = [];
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map((part) => String(part)).join(' '));
+    };
+    let thrown = false;
+    try {
+      warmPersonDraftOnLogin('collab-draft=team-1', email);
+      await tick();
+    } catch {
+      thrown = true;
+    } finally {
+      console.error = origError;
+    }
+    assert.equal(thrown, false);
+    assert.equal(errors.some((line) => line.includes('deno down')), true);
+    assert.deepEqual(login, { statusCode: 200, msg: 'ok' });
+  } finally {
+    desenvIo.ensureDevProcess = origDev;
+    desenvIo.resolveClientProjectId = origProject;
+    desenvIo.getProjectsBaseDir = origBase;
   }
 });
 
