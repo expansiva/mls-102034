@@ -690,7 +690,7 @@ test('login with collab-draft starts the person draft without waiting; without i
   const email = 'ada@collab.codes';
   const slug = draftSlugForUser(email).slug;
   try {
-    warmPersonDraftOnLogin(`collab-draft=${encodeURIComponent(SLUG)}`, email);
+    warmPersonDraftOnLogin({ cookie: `collab-draft=${encodeURIComponent(SLUG)}` }, email);
     assert.equal(started, false);
     const login = { statusCode: 200, msg: 'ok' };
     await tick();
@@ -698,7 +698,18 @@ test('login with collab-draft starts the person draft without waiting; without i
     assert.deepEqual(login, { statusCode: 200, msg: 'ok' });
 
     calls.length = 0;
-    warmPersonDraftOnLogin('cauth=abc', email);
+    warmPersonDraftOnLogin({ cookie: 'cauth=abc' }, email);
+    await tick();
+    assert.equal(calls.length, 0);
+
+    // The Studio marks every POST /exec with the x-collab-draft header; the cookie is retired.
+    calls.length = 0;
+    warmPersonDraftOnLogin({ 'x-collab-draft': SLUG }, email);
+    await tick();
+    assert.deepEqual(calls, [{ slug, clientProjectId: PROJECT_ID }]);
+
+    calls.length = 0;
+    warmPersonDraftOnLogin({ 'x-collab-draft': '' }, email);
     await tick();
     assert.equal(calls.length, 0);
 
@@ -712,7 +723,7 @@ test('login with collab-draft starts the person draft without waiting; without i
     };
     let thrown = false;
     try {
-      warmPersonDraftOnLogin('collab-draft=team-1', email);
+      warmPersonDraftOnLogin({ cookie: 'collab-draft=team-1' }, email);
       await tick();
     } catch {
       thrown = true;
@@ -774,7 +785,7 @@ test('login warmup fast-forwards once; the following draftEnter does not stop or
   };
   desenvIo.waitForDevReady = async () => true;
   try {
-    warmPersonDraftOnLogin(`collab-draft=${encodeURIComponent(slug)}`, email);
+    warmPersonDraftOnLogin({ cookie: `collab-draft=${encodeURIComponent(slug)}` }, email);
     await tick();
     const entered = runDraftEnter({ allowed: true, draft: slug, project: PROJECT_ID });
     assert.equal(forwards, 1);

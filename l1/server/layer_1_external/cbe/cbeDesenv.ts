@@ -3,8 +3,7 @@
 // The path is only the entrance. Routing after that is the cookie.
 
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { parseDraftSlug, draftSlugForUser, ensureDraftWorktree } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
-import { parseCookies } from '/_102034_/l1/server/layer_1_external/cbe/cbeAuthJwt.js';
+import { parseDraftSlug, draftSlugForUser, ensureDraftWorktree, requestDraftValue, type DraftRequestHeaders } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
 import { AncestorDenoConfigError, DenoMissingError, DraftDatabaseError, DraftWorktreeMissingError, ensureDevProcess, stopDevProcess, waitForDevReady } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
 import { fastForwardDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitPromote.js';
 import { getProjectsBaseDir } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
@@ -154,13 +153,13 @@ async function runPrepareDraft(opts: {
 }
 
 /**
- * Studio login (cookie `collab-draft` present) prepares that person's draft
+ * Studio login (draft mark present: `x-collab-draft` header, else the `collab-draft` cookie, as `requestDraftValue` reads it) prepares that person's draft
  * without waiting. A later draftEnter reuses the same prepare. No cookie, no child.
  * A throw is one log line and never the login result.
  */
-export function warmPersonDraftOnLogin(cookieHeader: string | undefined, email: string | undefined): void {
+export function warmPersonDraftOnLogin(headers: DraftRequestHeaders | undefined, email: string | undefined): void {
   try {
-    const mark = parseCookies(cookieHeader)['collab-draft'];
+    const mark = requestDraftValue(headers);
     if (mark === undefined || mark === '' || !email) return;
     const slug = draftSlugForUser(email).slug;
     const parsed = parseDraftSlug(slug);

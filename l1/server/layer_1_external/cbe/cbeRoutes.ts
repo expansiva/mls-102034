@@ -1170,7 +1170,7 @@ async function handleExec(request: FastifyRequest, reply: FastifyReply): Promise
         }
         if (localOk) {
           const email = localOk.claims.email;
-          warmPersonDraftOnLogin(headerString(request.headers.cookie), email);
+          warmPersonDraftOnLogin(request.headers, email);
           const rc = executeCbeLogin(body as CbeRequestLogin, email, session.picture);
           console.info(`[cbe] /exec action:login (${email}) -> ${rc.statusCode} in ${Date.now() - start}ms`);
           reply.header('set-cookie', [
@@ -1186,7 +1186,7 @@ async function handleExec(request: FastifyRequest, reply: FastifyReply): Promise
           return;
         }
         const loginSession = session.email ? session : { ...session, testUser };
-        warmPersonDraftOnLogin(headerString(request.headers.cookie), session.email ?? testUser);
+        warmPersonDraftOnLogin(request.headers, session.email ?? testUser);
         const rc = executeCbeLogin(body as CbeRequestLogin, session.email ?? testUser, session.picture);
         console.info(`[cbe] /exec action:login (${session.email ?? testUser ?? 'anonymous'}) -> ${rc.statusCode} in ${Date.now() - start}ms`);
         reply.header('set-cookie', buildLoginCookies(loginSession));
