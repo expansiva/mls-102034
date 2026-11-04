@@ -37,13 +37,21 @@ export function getCbeStaticDir(): string {
   return getStaticDir();
 }
 
+let loggedDefaultStaticDir = false;
+
 function getStaticDir(): string {
   // Explicit override wins (CBE_STATIC_DIR in the .env / pm2 env).
-  const fromEnv = process.env.CBE_STATIC_DIR;
+  const fromEnv = process.env.CBE_STATIC_DIR?.trim();
   if (fromEnv) return resolve(fromEnv);
 
-  // Default: the standard VM location.
-  if (existsSync(DEFAULT_STATIC_DIR)) return DEFAULT_STATIC_DIR;
+  // Default: the standard VM location, last resort, one log line.
+  if (existsSync(DEFAULT_STATIC_DIR)) {
+    if (!loggedDefaultStaticDir) {
+      loggedDefaultStaticDir = true;
+      console.info('[cbe] CBE_STATIC_DIR unset; using /data/mls-base/static');
+    }
+    return DEFAULT_STATIC_DIR;
+  }
 
   // Dev workspace (no /data): <projectsDir>/static.
   return resolveProjectsPath('static');

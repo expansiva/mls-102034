@@ -44,7 +44,7 @@
 import { spawn } from 'node:child_process';
 import { closeSync, lstatSync, mkdirSync, openSync, rmSync, statSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
-import { getProjectsBaseDir } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
+import { getProjectsBaseDir, runsFromProjectCurrent } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
 import { readProjectsConfig } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 
 /** POSIX single-quote escaping for values interpolated into the shell command below. */
@@ -116,6 +116,8 @@ const pendingProjects = new Set<number>();
 export function releaseAliasFor(clientId: string): string {
   const fromEnv = (process.env.COLLAB_RELEASE_ALIAS ?? '').trim();
   if (fromEnv) return fromEnv; // an explicit setting wins, as in the publish
+  // Project tree: pm2 cwd is `<root>/current`. Moving `current` is enough; `current-<id>` is the shared tree only.
+  if (runsFromProjectCurrent()) return '';
   if (!/^\d+$/u.test(clientId)) return '';
   const alias = `current-${clientId}`;
   try {

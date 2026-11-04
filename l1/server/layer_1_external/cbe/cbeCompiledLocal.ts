@@ -17,11 +17,32 @@ import type { CbePrjSourcesFile, CbePrjSourcesInfo } from '/_102034_/l1/server/l
 // base, sibling of releases/ and static/.
 const DEFAULT_PROJECTS_BASE = '/data/mls-base';
 
-/** Base dir where the mls-<id> source folders live. Order: .env override -> VM standard -> dev workspace. */
+/** Root named by the process. Empty when the host did not name one. */
+export function explicitProjectsRoot(): string | undefined {
+  const raw = process.env.CBE_PROJECTS_DIR;
+  const trimmed = raw?.trim();
+  return trimmed ? resolve(trimmed) : undefined;
+}
+
+/** A named root other than the shared base is one project tree: the app runs from `<root>/current`. */
+export function runsFromProjectCurrent(): boolean {
+  const root = explicitProjectsRoot();
+  return root !== undefined && root !== resolve(DEFAULT_PROJECTS_BASE);
+}
+
+let loggedDefaultProjectsBase = false;
+
+/** Base dir where the mls-<id> source folders live. Order: named root -> VM standard -> dev workspace. */
 export function getProjectsBaseDir(): string {
-  const fromEnv = process.env.CBE_PROJECTS_DIR;
-  if (fromEnv) return resolve(fromEnv);
-  if (existsSync(DEFAULT_PROJECTS_BASE)) return DEFAULT_PROJECTS_BASE;
+  const fromEnv = explicitProjectsRoot();
+  if (fromEnv) return fromEnv;
+  if (existsSync(DEFAULT_PROJECTS_BASE)) {
+    if (!loggedDefaultProjectsBase) {
+      loggedDefaultProjectsBase = true;
+      console.info('[cbe] CBE_PROJECTS_DIR unset; using /data/mls-base');
+    }
+    return DEFAULT_PROJECTS_BASE;
+  }
   return resolveProjectsPath('.');
 }
 

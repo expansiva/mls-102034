@@ -12,6 +12,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
+import { runsFromProjectCurrent } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
 import { draftSourceRoot, parseDraftSlug } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
 import {
   DEFAULT_PROJECT_MODE,
@@ -425,8 +426,9 @@ function choosePort(base: string, slug: string): number {
   throw new Error(`no free port in ${start}-${end}`);
 }
 
-/** Same rule as scripts/runtime/projectPorts.mjs releaseAliasOf. */
+/** Same rule as scripts/runtime/projectPorts.mjs releaseAliasOf. On a project tree the release is `<root>/current`. */
 export function releaseAliasOf(projectId: number | string): string {
+  if (runsFromProjectCurrent()) return 'current';
   return `current-${String(projectId).trim()}`;
 }
 
