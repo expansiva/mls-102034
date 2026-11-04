@@ -8,7 +8,7 @@ import {
 import { Pool } from 'pg';
 import type { AppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
-import { getSharedPgPool, queryRows, withPgTransaction } from '/_102034_/l1/server/layer_1_external/data/postgres/pg.js';
+import { getSharedPgPool, pgPoolConfigForDatabase, queryRows, sharedPgDatabaseName, withPgTransaction } from '/_102034_/l1/server/layer_1_external/data/postgres/pg.js';
 import {
   loadResolvedDynamoTableDefinitions,
   loadResolvedPostgresTableDefinitions,
@@ -206,14 +206,12 @@ function isMissingMonitorStorageError(error: unknown) {
   );
 }
 
-function createPgPool(env: AppEnv, databaseName?: string) {
-  return new Pool({
-    host: env.pgHost,
-    port: env.pgPort,
-    database: databaseName ?? env.pgDatabase,
-    user: env.pgUser,
-    password: env.pgPassword,
-  });
+function createPgPool(env: AppEnv, databaseName: string) {
+  return new Pool(pgPoolConfigForDatabase(env, databaseName));
+}
+
+function usesSharedPool(env: AppEnv, targetDatabase: string): boolean {
+  return targetDatabase === sharedPgDatabaseName(env);
 }
 
 export function parseRoutineParts(routine: string): {
@@ -438,7 +436,7 @@ export class MonitorRuntimePostgres {
       throw new Error(`Database not available for monitor: ${targetDatabase}`);
     }
 
-    const useSharedPool = targetDatabase === this.env.pgDatabase;
+    const useSharedPool = usesSharedPool(this.env, targetDatabase);
     return {
       availableDatabases,
       targetDatabase,
@@ -1017,7 +1015,7 @@ export class MonitorRuntimePostgres {
       throw new Error(`Database not available for monitor: ${targetDatabase}`);
     }
 
-    const useSharedPool = targetDatabase === this.env.pgDatabase;
+    const useSharedPool = usesSharedPool(this.env, targetDatabase);
     const pool = useSharedPool ? getSharedPgPool(this.env) : createPgPool(this.env, targetDatabase);
     try {
       const [documentTableName, outboxTableName, replicationFailuresTableName] = await Promise.all([

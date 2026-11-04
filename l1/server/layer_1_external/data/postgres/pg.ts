@@ -49,6 +49,44 @@ function poolConfigFor(env: AppEnv): { connectionString: string } | {
   return { connectionString: resolveDatabaseUrl(mode) };
 }
 
+export type PgPoolConfig = ReturnType<typeof poolConfigFor>;
+
+/** Database the shared pool actually opens: the name in the connection string, or the legacy `pgDatabase`. */
+export function sharedPgDatabaseName(env: AppEnv): string {
+  const config = poolConfigFor(env);
+  if ('connectionString' in config) return databaseNameFromConnectionString(config.connectionString);
+  return config.database;
+}
+
+/**
+ * Pool settings for a database other than the shared one.
+ * With a connection string, only the database name changes. Without one, the legacy host/user/password stay.
+ */
+export function pgPoolConfigForDatabase(env: AppEnv, databaseName: string): PgPoolConfig {
+  const config = poolConfigFor(env);
+  if (!('connectionString' in config)) return { ...config, database: databaseName };
+  if (databaseName === databaseNameFromConnectionString(config.connectionString)) return config;
+  return { connectionString: connectionStringWithDatabase(config.connectionString, databaseName) };
+}
+
+function databaseNameFromConnectionString(connectionString: string): string {
+  const beforeQuery = connectionString.split('?')[0] ?? connectionString;
+  const scheme = beforeQuery.indexOf('://');
+  const pathStart = beforeQuery.indexOf('/', scheme === -1 ? 0 : scheme + 3);
+  if (pathStart === -1) return '';
+  return decodeURIComponent(beforeQuery.slice(pathStart + 1));
+}
+
+function connectionStringWithDatabase(connectionString: string, databaseName: string): string {
+  const queryAt = connectionString.indexOf('?');
+  const beforeQuery = queryAt === -1 ? connectionString : connectionString.slice(0, queryAt);
+  const query = queryAt === -1 ? '' : connectionString.slice(queryAt);
+  const scheme = beforeQuery.indexOf('://');
+  const pathStart = beforeQuery.indexOf('/', scheme === -1 ? 0 : scheme + 3);
+  const prefix = pathStart === -1 ? beforeQuery : beforeQuery.slice(0, pathStart);
+  return `${prefix}/${encodeURIComponent(databaseName)}${query}`;
+}
+
 export function getSharedPgPool(env: AppEnv): Pool {
   if (!sharedPool) {
     sharedPool = new Pool(poolConfigFor(env));
