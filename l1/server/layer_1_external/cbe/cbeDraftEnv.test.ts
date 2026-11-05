@@ -30,9 +30,9 @@ function denoArgs(entry: string, configPath: string): string[] {
   const args = buildDenoArgs(mlsBase, SLUG, 4100, DATABASE_URL);
   const allowEnv = args.find((arg) => arg.startsWith('--allow-env='));
   assert.ok(allowEnv);
-  assert.equal(allowEnv.includes('DATABASE_URL,'), false);
-  assert.equal(allowEnv.endsWith(',DATABASE_URL'), false);
-  assert.equal(allowEnv.includes('DATABASE_URL_TEST'), true);
+  const allowed = allowEnv.slice('--allow-env='.length).split(',');
+  assert.equal(allowed.includes('DATABASE_URL'), false);
+  assert.equal(allowed.includes('DATABASE_URL_TEST'), true);
   const configAt = args.indexOf('--config');
   assert.ok(configAt > 0);
   args[configAt + 1] = configPath;

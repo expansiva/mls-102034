@@ -13,7 +13,9 @@ import {
   AncestorDenoConfigError,
   DenoMissingError,
   DraftDatabaseError,
+  DRAFT_LISTEN_HOST,
   DraftWorktreeMissingError,
+  LISTEN_HOST_ENV,
   buildDenoArgs,
   readDevLogTail,
   draftDatabaseName,
@@ -290,8 +292,8 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
       assert.deepEqual(calls[0].args, [
         'run',
         `--allow-read=${base},${join(base, 'drafts', SLUG)},${projectFilesAllow.join(',')}`,
-        `--allow-env=${[...memoryModeAllowEnv(), 'DATABASE_URL_TEST', 'PG*', 'USERNAME', 'MDM_DATABASE_URL'].join(',')}`,
-        '--allow-net=0.0.0.0:4100,127.0.0.1,127.0.0.1:5432',
+        `--allow-env=${[...memoryModeAllowEnv(), 'DATABASE_URL_TEST', 'PG*', 'USERNAME', 'MDM_DATABASE_URL', LISTEN_HOST_ENV].join(',')}`,
+        '--allow-net=127.0.0.1:4100,127.0.0.1,127.0.0.1:5432',
         '--allow-sys=networkInterfaces,loadavg,systemMemoryInfo,cpus',
         '--config',
         join(base, 'drafts', SLUG, 'deno.json'),
@@ -319,6 +321,7 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
       assert.equal(calls[0].args.some((arg) => arg.startsWith('--allow-net=') && arg.includes('127.0.0.1:5432')), true);
       assert.equal(calls[0].options.env.COLLAB_RUNTIME_MODE, undefined);
       assert.equal(calls[0].options.env.COLLAB_DRAFT, SLUG);
+      assert.equal(calls[0].options.env.COLLAB_LISTEN_HOST, '127.0.0.1');
       assert.equal(calls[0].options.env.COLLAB_PROJECT_ID, '102047');
       assert.equal(calls[0].options.env.DATABASE_URL, undefined);
       assert.equal(calls[0].options.logPath, join(base, 'logs', `dev-${SLUG}.log`));
@@ -1158,6 +1161,18 @@ function existsDev(base: string, slug: string): boolean {
     return false;
   }
 }
+
+test('the draft child listens only on 127.0.0.1: allow-net, COLLAB_LISTEN_HOST in env and allowed to read it', () => {
+  const args = buildDenoArgs('/tmp/base', SLUG, 4100, draftDatabaseUrl(PARENT_TEST_URL, SLUG, 102047));
+  const net = args.find((arg) => arg.startsWith('--allow-net='));
+  assert.ok(net);
+  assert.equal(net.includes('0.0.0.0'), false);
+  assert.equal(net.split('=')[1].split(',')[0], '127.0.0.1:4100');
+  const env = args.find((arg) => arg.startsWith('--allow-env='));
+  assert.ok(env);
+  assert.equal(env.slice('--allow-env='.length).split(',').includes(LISTEN_HOST_ENV), true);
+  assert.equal(DRAFT_LISTEN_HOST, '127.0.0.1');
+});
 
 test('readDevLogTail gives the last lines of the child log with URL credentials hidden, and says so when there is none', () => {
   const base = mkdtempSync(join(tmpdir(), 'dev-log-'));
