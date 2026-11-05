@@ -840,6 +840,20 @@ function delayMs(ms: number): Promise<void> {
  * Polls `GET /health` on the dev port until a 2xx or the deadline.
  * A network error retries. Never throws.
  */
+/**
+ * Last lines of the draft child's own log (`<base>/logs/dev-<slug>.log`), with credentials in URLs hidden, for the
+ * principal's log when the child never answers: without this the only trace of why it died is in a file nobody reads.
+ */
+export function readDevLogTail(base: string, slug: string, maxLines = 40): string {
+  try {
+    const text = readFileSync(join(base, 'logs', `dev-${slug}.log`), 'utf8');
+    const lines = text.split(/\r?\n/u).filter((line) => line.trim() !== '').slice(-maxLines);
+    return lines.map((line) => line.replace(/:\/\/[^\s/@:]+(?::[^\s/@]*)?@/gu, '://***@')).join('\n');
+  } catch {
+    return '(no child log)';
+  }
+}
+
 export async function waitForDevReady(port: number, opts?: WaitForDevReadyOpts): Promise<boolean> {
   const timeoutMs = opts?.timeoutMs ?? DEV_READY_TIMEOUT_MS;
   const stepMs = opts?.stepMs ?? DEV_READY_STEP_MS;

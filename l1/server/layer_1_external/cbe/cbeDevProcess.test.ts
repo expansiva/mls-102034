@@ -17,6 +17,7 @@ import {
   DraftWorktreeMissingError,
   LISTEN_HOST_ENV,
   buildDenoArgs,
+  readDevLogTail,
   draftDatabaseName,
   draftDatabaseUrl,
   ensureDevProcess,
@@ -1171,4 +1172,21 @@ test('the draft child listens only on 127.0.0.1: allow-net, COLLAB_LISTEN_HOST i
   assert.ok(env);
   assert.equal(env.slice('--allow-env='.length).split(',').includes(LISTEN_HOST_ENV), true);
   assert.equal(DRAFT_LISTEN_HOST, '127.0.0.1');
+});
+
+test('readDevLogTail gives the last lines of the child log with URL credentials hidden, and says so when there is none', () => {
+  const base = mkdtempSync(join(tmpdir(), 'dev-log-'));
+  try {
+    assert.equal(readDevLogTail(base, 'team-1'), '(no child log)');
+    mkdirSync(join(base, 'logs'), { recursive: true });
+    const lines = Array.from({ length: 50 }, (_, i) => `line ${i}`);
+    lines.push('connect postgres://collab:s3cret@127.0.0.1:5432/db failed');
+    writeFileSync(join(base, 'logs', 'dev-team-1.log'), `${lines.join('\n')}\n`);
+    const tail = readDevLogTail(base, 'team-1', 5).split('\n');
+    assert.equal(tail.length, 5);
+    assert.equal(tail.at(-1), 'connect postgres://***@127.0.0.1:5432/db failed');
+    assert.equal(tail.join('\n').includes('s3cret'), false);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
 });
