@@ -90,8 +90,31 @@ function normalizeProjectsConfig(config: ProjectsConfig): ProjectsConfig {
   return normalizedConfig;
 }
 
+/**
+ * `existsSync` for a default location that this process may not be allowed to read (a Deno child only reads its own
+ * base): a denied check (`NotCapable`, `EACCES`) counts as absent, with one log line. Any other error still throws.
+ */
+export function existsSyncOrDenied(path: string): boolean {
+  try {
+    return existsSync(path);
+  } catch (error) {
+    const name = (error as Error).name;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (name === 'NotCapable' || name === 'PermissionDenied' || code === 'EACCES' || code === 'EPERM') {
+      if (!loggedDeniedPaths.has(path)) {
+        loggedDeniedPaths.add(path);
+        console.warn(`[cbe] cannot check ${path} (${name}${code ? ` ${code}` : ''}): treated as absent; set CBE_PROJECTS_DIR`);
+      }
+      return false;
+    }
+    throw error;
+  }
+}
+
+const loggedDeniedPaths = new Set<string>();
+
 function isProjectsConfigFile(configPath: string) {
-  if (!existsSync(configPath)) {
+  if (!existsSyncOrDenied(configPath)) {
     return false;
   }
 

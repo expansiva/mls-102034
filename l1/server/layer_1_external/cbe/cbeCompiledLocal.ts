@@ -9,7 +9,9 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import AdmZip from 'adm-zip';
-import { resolveProjectsPath } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
+import { existsSyncOrDenied, resolveProjectsPath } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
+
+export { existsSyncOrDenied };
 import type { CbePrjSourcesFile, CbePrjSourcesInfo } from '/_102034_/l1/server/layer_1_external/cbe/cbeTypes.js';
 
 // Standard VM layout: the release (cwd) holds only the runtime output, while
@@ -32,11 +34,12 @@ export function runsFromProjectCurrent(): boolean {
 
 let loggedDefaultProjectsBase = false;
 
+
 /** Base dir where the mls-<id> source folders live. Order: named root -> VM standard -> dev workspace. */
 export function getProjectsBaseDir(): string {
   const fromEnv = explicitProjectsRoot();
   if (fromEnv) return fromEnv;
-  if (existsSync(DEFAULT_PROJECTS_BASE)) {
+  if (existsSyncOrDenied(DEFAULT_PROJECTS_BASE)) {
     if (!loggedDefaultProjectsBase) {
       loggedDefaultProjectsBase = true;
       console.info('[cbe] CBE_PROJECTS_DIR unset; using /data/mls-base');

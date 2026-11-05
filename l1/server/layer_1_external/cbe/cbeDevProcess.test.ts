@@ -321,6 +321,7 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
       assert.equal(calls[0].args.some((arg) => arg.startsWith('--allow-net=') && arg.includes('127.0.0.1:5432')), true);
       assert.equal(calls[0].options.env.COLLAB_RUNTIME_MODE, undefined);
       assert.equal(calls[0].options.env.COLLAB_DRAFT, SLUG);
+      assert.equal(calls[0].options.env.CBE_PROJECTS_DIR, base, 'the child resolves the projects base like the principal');
       assert.equal(calls[0].options.env.COLLAB_PROJECT_ID, '102047');
       assert.equal(calls[0].options.env.DATABASE_URL, undefined);
       assert.equal(calls[0].options.logPath, join(base, 'logs', `dev-${SLUG}.log`));

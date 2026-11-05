@@ -1,7 +1,7 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/cbe/cbeDraftEnv.test.ts" enhancement="_blank" />
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -473,5 +473,42 @@ await tryRead('appconfig', ${JSON.stringify(join(etcCollab, 'appconfig.json'))})
     else process.env.CBE_PROJECT_FILES_DIR = previous;
     rmSync(draftDir, { recursive: true, force: true });
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('real Deno, project tree: the child with only its own base readable resolves the projects base without NotCapable', async () => {
+  const { buildDraftDenoConfig } = await loadDraftDenoConfigModule();
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'cbe-tree-')));
+  try {
+    // A project tree: nothing of /data/mls-base is readable by the child (its --allow-read covers `base` and the draft dir).
+    const draftDir = join(base, 'drafts', SLUG);
+    mkdirSync(draftDir, { recursive: true });
+    const configPath = join(draftDir, 'deno.json');
+    // The config maps /_<id>_/ to the real repo (the code under test); the base the child may read is `base`.
+    writeFileSync(configPath, `${JSON.stringify(buildDraftDenoConfig({ base: mlsBase, slug: SLUG, clientProjectId: 102047 }), null, 2)}\n`);
+    const entry = join(draftDir, 'baseProbe.ts');
+    writeFileSync(entry, `
+const { getProjectsBaseDir } = await import('/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js');
+console.log('BASE ' + getProjectsBaseDir());
+`);
+    const args = buildDenoArgs(base, SLUG, 4100, DATABASE_URL).filter((arg) => !arg.startsWith('--allow-read='));
+    const configAt = args.indexOf('--config');
+    args[configAt + 1] = configPath;
+    args[args.length - 1] = entry;
+    // --allow-read: the repo that holds the code (to load it) and `base` only; NOT /data/mls-base.
+    args.splice(1, 0, `--allow-read=${mlsBase},${base}`, '--no-prompt');
+    const run = (extraEnv: Record<string, string>) => spawnSync(denoBin(), args, {
+      cwd: draftDir, encoding: 'utf8', env: { PATH: '/usr/bin:/bin:/usr/local/bin', ...extraEnv }, timeout: 120_000,
+    });
+    const withVariable = run({ CBE_PROJECTS_DIR: base });
+    assert.equal(withVariable.status, 0, withVariable.stderr || withVariable.stdout);
+    assert.match(withVariable.stdout, new RegExp(`^BASE ${base.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}$`, 'mu'));
+    const withoutVariable = run({});
+    assert.equal(withoutVariable.status, 0, withoutVariable.stderr || withoutVariable.stdout);
+    assert.match(withoutVariable.stdout, /^BASE /mu, 'no throw: the denied probe of /data/mls-base counts as absent');
+    assert.match(withoutVariable.stderr + withoutVariable.stdout, /cannot check \/data\/mls-base .*treated as absent/u);
+    assert.equal(/NotCapable: Requires read access/u.test(withoutVariable.stderr), false);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
   }
 });

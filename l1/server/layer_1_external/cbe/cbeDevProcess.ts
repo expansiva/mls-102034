@@ -532,7 +532,11 @@ function childEnv(
   databaseUrlTest: string,
   identitySecret: string,
   mdmDatabaseUrl: string,
+  base: string,
 ): Record<string, string> {
+  // The child resolves the projects base the way the principal does, by variable, in any tree: without it the child
+  // probes /data/mls-base, which its --allow-read (`base`, the draft dir, …) does not cover in a project tree.
+  const staticDir = process.env.CBE_STATIC_DIR?.trim();
   return {
     PATH: process.env.PATH ?? '',
     APP_ENV: 'development',
@@ -543,6 +547,8 @@ function childEnv(
     COLLAB_DRAFT: slug,
     COLLAB_PROJECT_ID: String(clientProjectId),
     COLLAB_DRAFT_IDENTITY_SECRET: identitySecret,
+    CBE_PROJECTS_DIR: base,
+    ...(staticDir ? { CBE_STATIC_DIR: staticDir } : {}),
   };
 }
 
@@ -729,7 +735,7 @@ function ensureUnlocked(opts: EnsureDevProcessOpts): DevProcessInfo {
   }
   const spawned = spawn('deno', buildDenoArgs(base, slug, port, databaseUrl), {
     cwd: draftDir,
-    env: childEnv(port, slug, clientProjectId, databaseUrl, identitySecret, testUrl),
+    env: childEnv(port, slug, clientProjectId, databaseUrl, identitySecret, testUrl, base),
     logPath,
   });
   if (!Number.isInteger(spawned.pid) || spawned.pid <= 0) {

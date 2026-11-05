@@ -16,6 +16,7 @@ import {
   CBE_HTTP_OK,
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeTypes.js';
 import { getRunningRelease } from '/_102034_/l1/server/layer_1_external/cbe/cbeRelease.js';
+import { existsSyncOrDenied } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
 
 const DEFAULT_REMOTE_ORIGIN = 'https://on.collab.codes';
 
@@ -45,7 +46,7 @@ function getStaticDir(): string {
   if (fromEnv) return resolve(fromEnv);
 
   // Default: the standard VM location, last resort, one log line.
-  if (existsSync(DEFAULT_STATIC_DIR)) {
+  if (existsSyncOrDenied(DEFAULT_STATIC_DIR)) {
     if (!loggedDefaultStaticDir) {
       loggedDefaultStaticDir = true;
       console.info('[cbe] CBE_STATIC_DIR unset; using /data/mls-base/static');
