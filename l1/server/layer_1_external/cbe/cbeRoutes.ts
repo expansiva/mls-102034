@@ -26,6 +26,7 @@ import {
   type JwtSession,
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeAuthJwt.js';
 import { listSources, readSources, writeSources } from '/_102034_/l1/server/layer_1_external/cbe/cbeSources.js';
+import { EXEC_ROUTE_OPTIONS } from '/_102034_/l1/server/layer_1_external/cbe/cbeExecLimit.js';
 import { CANDIDATE_BODY_LIMIT, candidateActionAllowed, candidateHubMode, candidateHubOrgId, candidateIdentity, candidateLocalCaller, candidateOrigin, proxyCandidateRequest } from '/_102034_/l1/server/layer_1_external/cbe/cbeCandidateProxy.js';
 import { handleCandidateRevision } from '/_102034_/l1/server/layer_1_external/candidate/candidateStore.js';
 import { ensureCandidateSchema, PostgresCandidatePersistence } from '/_102034_/l1/server/layer_1_external/candidate/candidatePostgres.js';
@@ -1335,7 +1336,7 @@ async function handleStatic(request: FastifyRequest, reply: FastifyReply): Promi
 
 export function registerCbeRoutes(app: FastifyInstance): void {
   desenvIo.isAllowed = isSourceRequestAllowed;
-  app.post('/exec', handleExec);
+  app.post('/exec', EXEC_ROUTE_OPTIONS, handleExec);
   app.get('/exec/logout', handleExecLogout);
   app.post('/exec/candidate', { bodyLimit: CANDIDATE_BODY_LIMIT }, handleCandidateProxy);
   app.get('/desenv/sair', handleDesenvExit);
