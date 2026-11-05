@@ -248,6 +248,10 @@ export interface DevSpawnOptions {
 
 export type DevSpawn = (command: string, args: string[], options: DevSpawnOptions) => { pid: number };
 
+/** Name of the variable that tells startServer which address to listen on (default: all interfaces). */
+export const LISTEN_HOST_ENV = 'COLLAB_LISTEN_HOST';
+export const DRAFT_LISTEN_HOST = '127.0.0.1';
+
 export interface EnsureDevProcessOpts {
   base: string;
   slug: string;
@@ -284,12 +288,12 @@ export function buildDenoArgs(base: string, slug: string, port: number, database
   const projectFilesAllow = [...new Set([projectFilesDir, ...(existsSync(projectFilesDir) ? [realpathSync(projectFilesDir)] : [])])];
   const allowEnv = memoryModeAllowEnv();
   // pg reads `process.env['PG' + key]` (PGBINARY, PGSSLMODE, …) plus USERNAME. Deno ≥ 2.1 accepts the suffix `*`.
-  allowEnv.push('DATABASE_URL_TEST', 'PG*', 'USERNAME', 'MDM_DATABASE_URL');
+  allowEnv.push('DATABASE_URL_TEST', 'PG*', 'USERNAME', 'MDM_DATABASE_URL', LISTEN_HOST_ENV);
   return [
     'run',
     `--allow-read=${base},${draftDir},${projectFilesAllow.join(',')}`,
     `--allow-env=${allowEnv.join(',')}`,
-    `--allow-net=0.0.0.0:${port},127.0.0.1,${postgresHostPort(databaseUrl)}`,
+    `--allow-net=127.0.0.1:${port},127.0.0.1,${postgresHostPort(databaseUrl)}`,
     // networkInterfaces: the server. loadavg, systemMemoryInfo, cpus: `os.loadavg/freemem/totalmem/cpus` of the monitor collectors.
     '--allow-sys=networkInterfaces,loadavg,systemMemoryInfo,cpus',
     '--config',
@@ -541,6 +545,8 @@ function childEnv(
     DATABASE_URL_TEST: databaseUrlTest,
     MDM_DATABASE_URL: mdmDatabaseUrl,
     COLLAB_DRAFT: slug,
+    // Only the principal's proxy talks to the draft child, on this machine.
+    [LISTEN_HOST_ENV]: DRAFT_LISTEN_HOST,
     COLLAB_PROJECT_ID: String(clientProjectId),
     COLLAB_DRAFT_IDENTITY_SECRET: identitySecret,
   };
