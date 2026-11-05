@@ -46,7 +46,6 @@ import {
   handleAttachmentHttp, isAttachmentHttpPath,
 } from '/_102034_/l1/server/layer_1_external/storage/attachmentHttp.js';
 import { getCompiledStaticFile } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledStatic.js';
-import { listenHost } from '/_102034_/l1/server/layer_1_external/transport/http/listenHost.js';
 import { localAliasCandidates } from '/_102034_/l1/server/layer_1_external/cbe/cbeLocalAlias.js';
 import { WriteBehindWorker } from '/_102034_/l1/mdm/layer_1_external/queue/WriteBehindWorker.js';
 import { ModuleTickLoop, MODULE_TICK_INTERVAL_MS } from '/_102034_/l1/server/layer_2_application/tick/moduleTick.js';
@@ -1060,7 +1059,7 @@ if (isMainModule) {
     // `return`: sem ele a promessa do listen fica ORFA e o `.catch` la embaixo nao a ve. Um
     // EADDRINUSE produziria exatamente o zumbi que esta correcao existe para matar (processo vivo,
     // pm2 verde, ninguem escutando) — so que uma camada mais fundo.
-    return server.listen({ port: env.port, host: listenHost() }).then(() => {
+    return server.listen({ port: env.port, host: '0.0.0.0' }).then(() => {
     console.info(`MDM BFF listening on port ${env.port}`);
     console.info(`Registered frontend apps: ${apps.map((app) => `${app.appId}:${app.basePath}`).join(', ')}`);
     warmCompiledProjects(listServableProjectIds());
