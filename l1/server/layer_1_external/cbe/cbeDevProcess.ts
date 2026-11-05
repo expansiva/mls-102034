@@ -838,14 +838,52 @@ function delayMs(ms: number): Promise<void> {
  * Last lines of the draft child's own log (`<base>/logs/dev-<slug>.log`), with credentials in URLs hidden, for the
  * principal's log when the child never answers: without this the only trace of why it died is in a file nobody reads.
  */
+const SECRET_IN_LOG = /\w*(?:secret|token|password|passwd|api[_-]?key|authorization|bearer|cookie|identity)\w*\s*[=:]\s*\S+/giu;
+
+/** A log line safe to show: credentials in URLs and `secret=…`-like values are hidden. */
+export function scrubLogLine(line: string): string {
+  return line
+    .replace(/:\/\/[^\s/@:]+(?::[^\s/@]*)?@/gu, '://***@')
+    .replace(/\b(authorization|bearer)\b.*$/iu, '$1 ***')
+    .replace(SECRET_IN_LOG, (match) => `${match.split(/[=:]/u)[0]}=***`);
+}
+
 export function readDevLogTail(base: string, slug: string, maxLines = 40): string {
   try {
     const text = readFileSync(join(base, 'logs', `dev-${slug}.log`), 'utf8');
     const lines = text.split(/\r?\n/u).filter((line) => line.trim() !== '').slice(-maxLines);
-    return lines.map((line) => line.replace(/:\/\/[^\s/@:]+(?::[^\s/@]*)?@/gu, '://***@')).join('\n');
+    return lines.map(scrubLogLine).join('\n');
   } catch {
     return '(no child log)';
   }
+}
+
+/**
+ * Leave the end of the child's log in ONE small file (`<base>/logs/dev-<slug>.tail.txt`), already scrubbed, with whether
+ * the process of `dev.json` is alive: one `cat` tells why the child did not come up, without reading logs at large.
+ */
+export function writeDevLogTail(base: string, slug: string, port: number, maxLines = 60): string {
+  const file = join(base, 'logs', `dev-${slug}.tail.txt`);
+  let pidLine = 'dev.json: absent';
+  try {
+    const info = JSON.parse(readFileSync(join(draftDirOf(base, slug), 'dev.json'), 'utf8')) as { pid?: number; port?: number };
+    let alive = false;
+    if (Number.isInteger(info.pid) && (info.pid as number) > 0) {
+      try {
+        process.kill(info.pid as number, 0);
+        alive = true;
+      } catch { /* not running */ }
+    }
+    pidLine = `dev.json: pid ${info.pid ?? '?'} port ${info.port ?? '?'} ${alive ? 'alive' : 'NOT running'}`;
+  } catch { /* no dev.json */ }
+  const text = `# ${new Date().toISOString()} draft ${slug}: did not answer /health on port ${port}\n# ${pidLine}\n${readDevLogTail(base, slug, maxLines)}\n`;
+  try {
+    mkdirSync(join(base, 'logs'), { recursive: true });
+    writeFileSync(file, text);
+  } catch (error) {
+    console.error(`[cbe] dev ${slug}: could not write ${file}: ${(error as Error).message}`);
+  }
+  return file;
 }
 
 export async function waitForDevReady(port: number, opts?: WaitForDevReadyOpts): Promise<boolean> {

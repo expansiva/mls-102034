@@ -16,6 +16,8 @@ import {
   DraftWorktreeMissingError,
   buildDenoArgs,
   readDevLogTail,
+  scrubLogLine,
+  writeDevLogTail,
   draftDatabaseName,
   draftDatabaseUrl,
   ensureDevProcess,
@@ -1171,6 +1173,29 @@ test('readDevLogTail gives the last lines of the child log with URL credentials 
     assert.equal(tail.length, 5);
     assert.equal(tail.at(-1), 'connect postgres://***@127.0.0.1:5432/db failed');
     assert.equal(tail.join('\n').includes('s3cret'), false);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('writeDevLogTail leaves one small scrubbed file with the end of the child log and whether its process is alive', () => {
+  const base = mkdtempSync(join(tmpdir(), 'dev-tail-'));
+  try {
+    mkdirSync(join(base, 'logs'), { recursive: true });
+    mkdirSync(join(base, 'drafts', 'team-1'), { recursive: true });
+    writeFileSync(join(base, 'drafts', 'team-1', 'dev.json'), JSON.stringify({ pid: 2147483000, port: 4100 }));
+    const lines = Array.from({ length: 80 }, (_, i) => `line ${i}`);
+    lines.push('connect postgres://collab:s3cret@127.0.0.1:5432/db failed', 'COLLAB_DRAFT_IDENTITY_SECRET=abc123def', 'Authorization: Bearer xyz');
+    writeFileSync(join(base, 'logs', 'dev-team-1.log'), `${lines.join('\n')}\n`);
+    const file = writeDevLogTail(base, 'team-1', 4100, 10);
+    assert.equal(file, join(base, 'logs', 'dev-team-1.tail.txt'));
+    const text = readFileSync(file, 'utf8');
+    assert.match(text, /^# \S+ draft team-1: did not answer \/health on port 4100\n# dev\.json: pid 2147483000 port 4100 NOT running\n/u);
+    assert.equal(text.trim().split('\n').length, 12, 'two header lines and the last 10 lines');
+    for (const secret of ['s3cret', 'abc123def', 'xyz']) assert.equal(text.includes(secret), false, `${secret} must be hidden`);
+    assert.equal(scrubLogLine('postgres://u:p@h/d'), 'postgres://***@h/d');
+    assert.match(writeDevLogTail(base, 'team-2', 4101), /dev-team-2\.tail\.txt$/u);
+    assert.match(readFileSync(join(base, 'logs', 'dev-team-2.tail.txt'), 'utf8'), /dev\.json: absent\n\(no child log\)/u);
   } finally {
     rmSync(base, { recursive: true, force: true });
   }

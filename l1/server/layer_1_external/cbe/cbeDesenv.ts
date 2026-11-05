@@ -4,7 +4,7 @@
 
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { parseDraftSlug, draftSlugForUser, ensureDraftWorktree, requestDraftValue, type DraftRequestHeaders } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
-import { readDevLogTail } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
+import { readDevLogTail, writeDevLogTail } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
 import { AncestorDenoConfigError, DenoMissingError, DraftDatabaseError, DraftWorktreeMissingError, ensureDevProcess, stopDevProcess, waitForDevReady } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
 import { fastForwardDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitPromote.js';
 import { getProjectsBaseDir } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
@@ -280,7 +280,8 @@ async function enterDraft(input: {
     if (input.stages) input.stages.waitForDevReady = stageMs(readyMark);
   }
   if (!ready) {
-    console.error(`[cbe] /desenv: draft ${parsed.slug} dev not ready on port ${port}; child log tail:\n${readDevLogTail(base, parsed.slug)}`);
+    const tailFile = writeDevLogTail(base, parsed.slug, port);
+    console.error(`[cbe] /desenv: draft ${parsed.slug} dev not ready on port ${port}; child log tail (also in ${tailFile}):\n${readDevLogTail(base, parsed.slug)}`);
     return { ok: false, status: 503, msg: 'draft unavailable: dev not ready' };
   }
 
