@@ -25,7 +25,8 @@ import {
   verifyAccessToken,
   type JwtSession,
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeAuthJwt.js';
-import { listSources, readSources, writeSources } from '/_102034_/l1/server/layer_1_external/cbe/cbeSources.js';
+import { listSources, readSources, writeDecodedSources } from '/_102034_/l1/server/layer_1_external/cbe/cbeSources.js';
+import { decodeSourceInputs, partProblem, removeUploads, storePart, sweepExpiredUploads } from '/_102034_/l1/server/layer_1_external/cbe/cbeUploads.js';
 import { EXEC_ROUTE_OPTIONS } from '/_102034_/l1/server/layer_1_external/cbe/cbeExecLimit.js';
 import { CANDIDATE_BODY_LIMIT, candidateActionAllowed, candidateHubMode, candidateHubOrgId, candidateIdentity, candidateLocalCaller, candidateOrigin, proxyCandidateRequest } from '/_102034_/l1/server/layer_1_external/cbe/cbeCandidateProxy.js';
 import { handleCandidateRevision } from '/_102034_/l1/server/layer_1_external/candidate/candidateStore.js';
@@ -66,6 +67,7 @@ import {
   type CbeRequestLogin,
   type CbeRequestPromote,
   type CbeRequestSetContents,
+  type CbeRequestSetContentsPart,
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeTypes.js';
 import { handleProviderToken } from '/_102034_/l1/server/layer_1_external/cbe/cbeProviderToken.js';
 
@@ -474,11 +476,21 @@ async function handleSetContents(request: FastifyRequest, body: CbeRequestSetCon
     }
   }
   const draft = await resolveWriteDraft(headers, base, project);
-  const rc = writeSources(project, body.files ?? [], body.deletes ?? [], { sourceRoot: draft.sourceRoot });
+  // Big files (rt189): compressed ones are decoded and the ones in parts are assembled and checked HERE, before the first
+  // write; a bad one is a 400 with the reason and nothing is written, not even the other files of the request.
+  const decoded = decodeSourceInputs(Array.isArray(body.files) ? body.files : [], { base, project, scope: draft.slug });
+  // After the decode, so an expired upload is reported as expired and only then removed.
+  sweepExpiredUploads(base, project);
+  if (!decoded.ok) {
+    reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, msg: decoded.msg });
+    return;
+  }
+  const rc = writeDecodedSources(project, decoded.files, body.deletes ?? [], { sourceRoot: draft.sourceRoot });
   if (!rc.ok) {
     reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, msg: rc.msg ?? 'invalid request' });
     return;
   }
+  removeUploads(base, project, draft.slug, decoded.uploadIds);
   // Commit so getHistory and versionRef see this write. Awaited, never fatal —
   // the files are already on disk. `sourceRoot` is the draft worktree.
   const session = await resolveSession(request);
@@ -518,6 +530,48 @@ async function handleSetContents(request: FastifyRequest, body: CbeRequestSetCon
     }
   }
   reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, msg: 'ok', commit, draft: draftBody(draft) });
+}
+
+/**
+ * The draft a write goes to, as a slug only (no worktree is made): the one setContents will choose with the same inputs,
+ * so the parts of a big file wait where the setContents that joins them will look.
+ */
+async function writeTargetSlug(request: FastifyRequest, project: number): Promise<string> {
+  const marked = requestDraftValue(request.headers);
+  const parsed = parseDraftSlug(marked);
+  if (parsed) return parsed.slug;
+  if (marked === undefined || marked === '') {
+    const email = await sessionHooks.emailOf(request);
+    if (email) return draftSlugForUser(email).slug;
+  }
+  return `team-${project}`;
+}
+
+// One part of a big file (rt189). Same access rule and same draft choice as setContents; nothing is written to the
+// project tree, only to the uploads folder.
+async function handleSetContentsPart(request: FastifyRequest, body: CbeRequestSetContentsPart, reply: FastifyReply): Promise<void> {
+  if (!await isSourceRequestAllowed(request)) {
+    reply.code(CBE_HTTP_UNAUTHORIZED).send({ statusCode: CBE_HTTP_UNAUTHORIZED, msg: 'login required' });
+    return;
+  }
+  const project = readProjectId(body);
+  if (!project) {
+    reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, msg: 'invalid project' });
+    return;
+  }
+  const problem = partProblem(body);
+  if (problem) {
+    reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, msg: problem });
+    return;
+  }
+  const base = getProjectsBaseDir();
+  sweepExpiredUploads(base, project);
+  const stored = storePart(base, project, await writeTargetSlug(request, project), body as { uploadId: string; index: number; total: number; data: string });
+  if (!stored.ok) {
+    reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, msg: stored.msg });
+    return;
+  }
+  reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, msg: 'ok', received: stored.received });
 }
 
 async function handleLoadFilesInfo(request: FastifyRequest, body: CbeRequestLoadFilesInfo, reply: FastifyReply): Promise<void> {
@@ -1211,6 +1265,9 @@ async function handleExec(request: FastifyRequest, reply: FastifyReply): Promise
         return;
       case 'setContents':
         await handleSetContents(request, body as CbeRequestSetContents, reply);
+        return;
+      case 'setContentsPart':
+        await handleSetContentsPart(request, body as CbeRequestSetContentsPart, reply);
         return;
       case 'loadFilesInfo':
         await handleLoadFilesInfo(request, body as CbeRequestLoadFilesInfo, reply);

@@ -66,10 +66,47 @@ export interface CbeRequestGetContents extends CbeRequestBase {
   ref?: string;
 }
 
+/** How the text of a file written by `setContents` is encoded: text, base64 bytes, or base64 of a gzip (rt189). */
+export type CbeSourceEncoding = 'utf8' | 'base64' | 'gzip-base64';
+
+/** A file that travels inside the request. No `encoding` means utf8. The decoded size is at most 64 MB. */
+export interface CbeSourceFileContent {
+  shortPath: string;
+  content: string;
+  encoding?: CbeSourceEncoding;
+}
+
+/**
+ * A file that travels in parts (`setContentsPart`): `uploadId` names the parts, `encoding` says how the joined text is
+ * decoded and `sha256` (hex) is the hash of the FINAL bytes, checked before anything is written.
+ */
+export interface CbeSourceFileUpload {
+  shortPath: string;
+  uploadId: string;
+  encoding: CbeSourceEncoding;
+  sha256: string;
+}
+
+export type CbeSourceFileInput = CbeSourceFileContent | CbeSourceFileUpload;
+
+/**
+ * One part of a big file. `uploadId` is a UUID made by the client; `data` is a piece of the final string (text,
+ * base64 or gzip-base64), at most 3 MB; `index` runs from 0 to `total - 1` and `total` is at most 64. Sending a part
+ * again overwrites it. Answer: `{ statusCode: 200, received }`.
+ */
+export interface CbeRequestSetContentsPart extends CbeRequestBase {
+  action: 'setContentsPart';
+  project?: number;
+  uploadId?: string;
+  index?: number;
+  total?: number;
+  data?: string;
+}
+
 export interface CbeRequestSetContents extends CbeRequestBase {
   action: 'setContents';
   project?: number;
-  files?: CbeSourceFile[];
+  files?: CbeSourceFileInput[];
   deletes?: string[];
   /** The studio's save comment — becomes the message of the commit cbeGitCommit makes. */
   comments?: string | null;

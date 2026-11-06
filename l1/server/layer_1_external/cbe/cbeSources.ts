@@ -12,7 +12,8 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, resolve, sep } from 'node:path';
 import { getProjectFilesInfo, resolveProjectSourcePath } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
-import type { CbePrjSourcesFile, CbeSourceFile } from '/_102034_/l1/server/layer_1_external/cbe/cbeTypes.js';
+import { decodeSourceInputs, type DecodedSourceFile } from '/_102034_/l1/server/layer_1_external/cbe/cbeUploads.js';
+import type { CbePrjSourcesFile, CbeSourceFile, CbeSourceFileContent } from '/_102034_/l1/server/layer_1_external/cbe/cbeTypes.js';
 
 /** Levels the platform defines (l1..l7); l0 has no level folder. */
 const MAX_LEVEL = 7;
@@ -86,7 +87,22 @@ export function readSources(projectId: number, shortPaths: string[], sourceRoot?
  */
 export function writeSources(
   projectId: number,
-  files: CbeSourceFile[],
+  files: CbeSourceFileContent[],
+  deletes: string[],
+  options: { sourceRoot?: string } = {},
+): { ok: boolean; msg?: string; paths: string[] } {
+  const decoded = decodeSourceInputs(files, { base: '', project: projectId, scope: '' });
+  if (!decoded.ok) return { ok: false, msg: decoded.msg, paths: [] };
+  return writeDecodedSources(projectId, decoded.files, deletes, options);
+}
+
+/**
+ * The write half of `writeSources`, for files already decoded and checked (uploads assembled by the route): validates
+ * every path first, then writes, so a rejected path leaves nothing written.
+ */
+export function writeDecodedSources(
+  projectId: number,
+  files: DecodedSourceFile[],
   deletes: string[],
   options: { sourceRoot?: string } = {},
 ): { ok: boolean; msg?: string; paths: string[] } {
@@ -95,10 +111,7 @@ export function writeSources(
   for (const file of files) {
     const path = resolveSourcePath(projectId, file.shortPath, sourceRoot);
     if (!path) return { ok: false, msg: `rejected shortPath: ${file.shortPath}`, paths: [] };
-    writes.push({
-      path,
-      content: file.encoding === 'base64' ? Buffer.from(file.content, 'base64') : Buffer.from(file.content, 'utf8'),
-    });
+    writes.push({ path, content: file.bytes });
   }
 
   const removals: string[] = [];
