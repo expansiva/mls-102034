@@ -36,7 +36,7 @@ import { getLocalTestConfig } from '/_102034_/l1/server/layer_1_external/config/
 import { expiredLocalTestCookie } from '/_102034_/l1/server/layer_1_external/transport/http/localTestSessionHttp.js';
 import { parseDatabaseUrl } from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
 import { getSharedPgPool } from '/_102034_/l1/server/layer_1_external/data/postgres/pg.js';
-import { readHistory, readHistoryContent } from '/_102034_/l1/server/layer_1_external/cbe/cbeGit.js';
+import { isAcceptableRef, MAX_REF_PATHS, readContentsAtRef, readHistory, readHistoryContent } from '/_102034_/l1/server/layer_1_external/cbe/cbeGit.js';
 import { isRebuildInProgress, scheduleRebuildOnSave } from '/_102034_/l1/server/layer_1_external/cbe/cbeRebuildOnSave.js';
 import { authorFromSession, commitSavedSources } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitCommit.js';
 import { discardDraft, draftDiff, fastForwardDraft, listDrafts, mergeMainIntoDraft, promoteDraft, restoreDraftPaths } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitPromote.js';
@@ -403,6 +403,22 @@ async function handleGetContents(request: FastifyRequest, body: CbeRequestGetCon
     return;
   }
   const draft = await resolveRequestDraft(request.headers, getProjectsBaseDir(), project);
+  if (body.ref !== undefined) {
+    // A batch at a commit (rt188): one git process for the whole list. A bad ref is a 400, not an empty list, so an
+    // error never looks like "no files".
+    if (!isAcceptableRef(body.ref) || body.shortPaths.length > MAX_REF_PATHS) {
+      const msg = isAcceptableRef(body.ref) ? `too many shortPaths for a ref request (max ${MAX_REF_PATHS})` : 'invalid ref';
+      reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, msg });
+      return;
+    }
+    const atRef = readContentsAtRef(project, body.shortPaths, body.ref, draft?.sourceRoot);
+    if (atRef === null) {
+      reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, msg: 'invalid ref' });
+      return;
+    }
+    reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, msg: 'ok', files: atRef, draft: draftBody(draft) });
+    return;
+  }
   const files = readSources(project, body.shortPaths, draft?.sourceRoot);
   reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, msg: 'ok', files, draft: draftBody(draft) });
 }

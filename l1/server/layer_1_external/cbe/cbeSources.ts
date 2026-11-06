@@ -52,6 +52,15 @@ export function resolveSourcePath(projectId: number, shortPath: string, sourceRo
   return target;
 }
 
+const TEXT_SOURCE_PATTERN = /\.(ts|tsx|js|json|less|css|html|md|txt|svg|sql|yml|yaml)$/u;
+
+/** The one text/binary rule of the source actions: text by extension (utf8), anything else base64. */
+export function sourceFileFromBytes(shortPath: string, bytes: Buffer): CbeSourceFile {
+  return TEXT_SOURCE_PATTERN.test(shortPath)
+    ? { shortPath, content: bytes.toString('utf8'), encoding: 'utf8' }
+    : { shortPath, content: bytes.toString('base64'), encoding: 'base64' };
+}
+
 /** Reads the requested sources; a file that is not there comes back as null content. */
 export function readSources(projectId: number, shortPaths: string[], sourceRoot?: string): CbeSourceFile[] {
   const rc: CbeSourceFile[] = [];
@@ -62,10 +71,7 @@ export function readSources(projectId: number, shortPaths: string[], sourceRoot?
       continue;
     }
     if (!existsSync(path) || !statSync(path).isFile()) continue;
-    const isText = /\.(ts|tsx|js|json|less|css|html|md|txt|svg|sql|yml|yaml)$/u.test(shortPath);
-    rc.push(isText
-      ? { shortPath, content: readFileSync(path, 'utf8'), encoding: 'utf8' }
-      : { shortPath, content: readFileSync(path).toString('base64'), encoding: 'base64' });
+    rc.push(sourceFileFromBytes(shortPath, readFileSync(path)));
   }
   return rc;
 }

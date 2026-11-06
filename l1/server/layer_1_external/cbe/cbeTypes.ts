@@ -55,6 +55,15 @@ export interface CbeRequestGetContents extends CbeRequestBase {
   action: 'getContents';
   project?: number;
   shortPaths?: string[];
+  /**
+   * A commit (7..40 hex chars). With it, each `shortPath` is read as it was in that commit, in the same tree
+   * `getHistoryContent` reads (the draft's when the draft header is present), in ONE git process for the whole
+   * request. The answer has the usual shape (`files[]` with `shortPath`, `content`, `encoding`): a file that did not
+   * exist in the commit, or a path the project boundary rejects, is simply left out of the list, as without `ref`.
+   * An invalid `ref`, an unknown commit or more than 500 `shortPaths` is a 400, never an empty list. Without `ref`
+   * nothing changes.
+   */
+  ref?: string;
 }
 
 export interface CbeRequestSetContents extends CbeRequestBase {
