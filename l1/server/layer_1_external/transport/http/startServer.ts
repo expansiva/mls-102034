@@ -1,6 +1,7 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/transport/http/startServer.ts" enhancement="_blank" />
 import Fastify from 'fastify';
-import { existsSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, normalize, resolve } from 'node:path';
 import { getFrontendAppByBasePath, getFrontendAppRegistrations, getAppPublicRootDir, getAppAssetRootDirs } from '/_102034_/l1/server/layer_1_external/frontend/appRegistry.js';
 import { contentHash12, faviconIcoResponse, injectFaviconLink, resolveAppFaviconHref } from '/_102034_/l1/server/layer_1_external/frontend/faviconHtml.js';
@@ -291,11 +292,62 @@ async function injectBootConfig(html: string, app: FrontendAppRegistration) {
   return `${bootScript}\n${withIcon}`;
 }
 
+// The entry document of a module (rt183). Its body is the module's index.html with the boot script injected: the
+// boot config reads only project configuration (no session, user or organization), `window.latest` changes when a
+// lib is published, `window.collabFecho` when a project of the closure changes. So the body is the same for every
+// route of the module and for every person until one of those changes. It is built once and served with an ETag of
+// that body, so a reload gets 304. The entry is valid while the module registration object and the projects config
+// object are the same ones (both are cached per process and replaced on a reset), and while the file version, the
+// latest, the fecho and the project mode are the same.
+const HTML_CACHE_MAX = 64;
+
+interface AppHtmlEntry {
+  app: FrontendAppRegistration;
+  config: unknown;
+  body: Buffer;
+  eTag: string;
+}
+
+const appHtmlCache = new Map<string, AppHtmlEntry>();
+let appHtmlBuilds = 0;
+
+/** How many times a document body was built (a cache hit builds nothing). */
+export function appHtmlBuildCount(): number {
+  return appHtmlBuilds;
+}
+
+function currentProjectsConfig(): unknown {
+  try {
+    return readProjectsConfig();
+  } catch {
+    return null;
+  }
+}
+
+function appHtmlCacheKey(filePath: string, app: FrontendAppRegistration): string {
+  const stat = statSync(filePath);
+  return [
+    app.basePath, filePath, stat.mtimeMs, stat.size, getLatestJson() ?? '', buildCollabFechoJson(), readProjectMode(app.projectId),
+  ].join('|');
+}
+
+export function clearAppHtmlCache(): void {
+  appHtmlCache.clear();
+}
+
 async function readAppHtml(filePath: string, app: FrontendAppRegistration) {
-  return {
-    body: Buffer.from(await injectBootConfig(readFileSync(filePath, 'utf8'), app), 'utf8'),
-    contentType: 'text/html; charset=utf-8',
-  };
+  const key = appHtmlCacheKey(filePath, app);
+  const config = currentProjectsConfig();
+  let entry = appHtmlCache.get(key);
+  if (!entry || entry.app !== app || entry.config !== config) {
+    appHtmlBuilds += 1;
+    const body = Buffer.from(await injectBootConfig(readFileSync(filePath, 'utf8'), app), 'utf8');
+    entry = { app, config, body, eTag: createHash('sha1').update(body).digest('hex') };
+    // A new key means the old ones of this module are stale (a release/lib change): keep the map small.
+    if (appHtmlCache.size >= HTML_CACHE_MAX) appHtmlCache.clear();
+    appHtmlCache.set(key, entry);
+  }
+  return { body: entry.body, contentType: 'text/html; charset=utf-8', eTag: entry.eTag };
 }
 
 function tryReadProjectAsset(urlPath: string) {
@@ -700,6 +752,8 @@ export function buildHttpServer() {
       const serverETag = etag.replaceAll('"', '');
       if (clientETag && clientETag === serverETag) {
         reply.status(304);
+        // A 304 repeats the validator and the cache policy (RFC 9110 15.4.5): the browser keeps using them.
+        reply.headers(result.headers ?? {});
         return null;
       }
     }
@@ -856,13 +910,20 @@ export async function handleHttpRequest(
 
     const appFile = await tryReadAppFile(url);
     if (appFile) {
+      const documentHeaders: Record<string, string> = {
+        'content-type': appFile.contentType,
+        'cache-control': 'no-cache',
+      };
+      // Only the entry document carries an ETag; other files of the app folder keep their plain 200.
+      const eTag = 'eTag' in appFile ? appFile.eTag : undefined;
+      if (eTag) {
+        documentHeaders.etag = `"${eTag}"`;
+        if (ifNoneMatchValue(headers) === eTag) return { statusCode: 304, body: '', headers: documentHeaders };
+      }
       return {
         statusCode: 200,
         body: appFile.body,
-        headers: {
-          'content-type': appFile.contentType,
-          'cache-control': 'no-cache',
-        },
+        headers: documentHeaders,
       };
     }
   }
