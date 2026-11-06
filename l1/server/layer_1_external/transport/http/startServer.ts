@@ -751,10 +751,9 @@ export function buildHttpServer() {
       const clientETag = ((request.headers['if-none-match'] as string | undefined) ?? '').replace(/^W\//u, '').replaceAll('"', '');
       const serverETag = etag.replaceAll('"', '');
       if (clientETag && clientETag === serverETag) {
-        reply.status(304);
         // A 304 repeats the validator and the cache policy (RFC 9110 15.4.5): the browser keeps using them.
-        reply.headers(result.headers ?? {});
-        return null;
+        // `reply.send()` (not `return null`): a HEAD request with a matching tag answered 500 with the latter.
+        return reply.status(304).headers(result.headers ?? {}).send();
       }
     }
     reply.status(result.statusCode);

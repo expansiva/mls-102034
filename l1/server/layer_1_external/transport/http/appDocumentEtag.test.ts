@@ -46,6 +46,9 @@ test('the entry document comes with an ETag and no-cache; If-None-Match with it 
     const again = await app.inject({ method: 'GET', url, headers: { 'if-none-match': tag } });
     assert.equal(again.statusCode, 304);
     assert.equal(eTagOf(again), tag);
+    const head = await app.inject({ method: 'HEAD', url, headers: { 'if-none-match': tag } });
+    assert.equal(head.statusCode, 304, 'HEAD with a matching tag (curl -I) is a 304, not a 500');
+    assert.equal(eTagOf(head), tag);
     const other = await app.inject({ method: 'GET', url, headers: { 'if-none-match': '"0000000000000000000000000000000000000000"' } });
     assert.equal(other.statusCode, 200);
     assert.equal(other.body, first.body);
