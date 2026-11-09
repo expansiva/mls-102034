@@ -15,6 +15,9 @@ import { delimiter, dirname, join } from 'node:path';
 import { runsFromProjectCurrent } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
 import { draftSourceRoot, parseDraftSlug } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
 import {
+  DraftPortBusyError, DEFAULT_DRAFT_PORT_RANGE, adoptDraftPort, allocateDraftPort, describeListener, draftPortsFile,
+} from '/_102034_/l1/server/layer_1_external/cbe/cbeDraftPorts.js';
+import {
   DEFAULT_PROJECT_MODE,
   isProjectMode,
   isTestMode,
@@ -24,7 +27,6 @@ import {
 
 const IDLE_MS = 30 * 60 * 1000;
 const RESTART_DEBOUNCE_MS = 1000;
-const DEFAULT_PORT_RANGE = '4100-4199';
 const DEFAULT_MAX = 8;
 const LOCK_RETRIES = 40;
 const LOCK_RETRY_MS = 50;
@@ -136,6 +138,8 @@ const EXTRA_ENV_KEYS = [
 export class AncestorDenoConfigError extends Error {}
 
 export class DraftDatabaseError extends Error {}
+
+export { DraftPortBusyError };
 
 export class DraftWorktreeMissingError extends Error {}
 
@@ -392,7 +396,7 @@ function listDevRecords(base: string): ListedDev[] {
 }
 
 function parsePortRange(): { start: number; end: number } {
-  const value = process.env.COLLAB_DEV_PORT_RANGE?.trim() || DEFAULT_PORT_RANGE;
+  const value = process.env.COLLAB_DEV_PORT_RANGE?.trim() || DEFAULT_DRAFT_PORT_RANGE;
   const match = /^(\d+)-(\d+)$/u.exec(value);
   const start = match ? Number(match[1]) : NaN;
   const end = match ? Number(match[2]) : NaN;
@@ -427,25 +431,20 @@ export function isPortFreeOnMachine(port: number): boolean {
 }
 
 /**
- * The first port of the range that no live child of THIS base holds AND that is free on the machine. The base is not
- * enough (rt197): two apps share one VM and one range, each only sees its own `dev.json` files, and both picked the
- * same port, so a call for one app's draft was answered by the other app's child (`draft identity rejected`, a 401, and
- * the Studio asking for login again). The machine is the only authority on who holds a port.
+ * The draft's FIXED port, from the table of the machine (cbeDraftPorts.ts): the one it already has, or, the first time, the
+ * first usable port of the range, recorded under the machine lock. The port of a draft that is stopped is still its own.
+ * If that port is held by another program the start FAILS with who holds it (`DraftPortBusyError`): changing it silently
+ * is how two drafts ended up answering each other's calls (rt197: two apps, one range, per-app records).
  */
-function choosePort(base: string, slug: string, portFree: (port: number) => boolean): number {
-  const { start, end } = parsePortRange();
-  const used = new Set<number>();
-  for (const entry of listDevRecords(base)) {
-    if (entry.slug === slug) continue;
-    if (isDevPidAlive(entry.record.pid)) used.add(entry.record.port);
+function choosePort(base: string, slug: string, clientProjectId: number, portFree: (port: number) => boolean): number {
+  const file = draftPortsFile(base);
+  const { port, fresh } = allocateDraftPort({ file, projectId: clientProjectId, slug, range: parsePortRange(), portFree });
+  if (!fresh && !portFree(port)) {
+    const error = new DraftPortBusyError(port, slug, clientProjectId, describeListener(port));
+    console.error(`[cbe] dev ${slug}: ${error.message}`);
+    throw error;
   }
-  for (let port = start; port <= end; port += 1) {
-    if (used.has(port)) continue;
-    if (portFree(port)) return port;
-    console.error(`[cbe] dev ${slug}: port ${port} is in use by another process on this machine, trying the next one`);
-  }
-  console.error(`[cbe] dev ${slug}: no free port in ${start}-${end}`);
-  throw new Error(`no free port in ${start}-${end}`);
+  return port;
 }
 
 /** Same rule as scripts/runtime/projectPorts.mjs releaseAliasOf. On a project tree the release is `<root>/current`. */
@@ -703,7 +702,15 @@ function ensureUnlocked(opts: EnsureDevProcessOpts): DevProcessInfo {
   const existing = readDevJson(path);
   if (existing && isDevPidAlive(existing.pid)) {
     const identitySecret = readIdentitySecret(base, slug);
-    if (identitySecret !== undefined && existing.codeId === codeId) return { ...existing, identitySecret };
+    if (identitySecret !== undefined && existing.codeId === codeId) {
+      // A live child that predates the table is recorded under the port it holds (never changes the child).
+      try {
+        adoptDraftPort({ file: draftPortsFile(base), projectId: clientProjectId, slug, port: existing.port });
+      } catch (err) {
+        console.error(`[cbe] dev ${slug}: could not record port ${existing.port} in the ports table: ${(err as Error).message}`);
+      }
+      return { ...existing, identitySecret };
+    }
     if (identitySecret !== undefined) {
       console.error(`[cbe] draft ${slug}: code changed (${existing.codeId ?? ''} → ${codeId}), restarting`);
     } else {
@@ -745,7 +752,7 @@ function ensureUnlocked(opts: EnsureDevProcessOpts): DevProcessInfo {
   const writeConfig = opts.writeConfig ?? defaultWriteConfig;
   writeConfig({ base, slug, clientProjectId });
 
-  const port = choosePort(base, slug, opts.portFree ?? isPortFreeOnMachine);
+  const port = choosePort(base, slug, clientProjectId, opts.portFree ?? isPortFreeOnMachine);
   const logPath = join(base, 'logs', `dev-${slug}.log`);
   mkdirSync(join(base, 'logs'), { recursive: true });
   const identitySecret = randomBytes(32).toString('hex');
@@ -848,6 +855,8 @@ const DEV_READY_TIMEOUT_MS = 10_000;
 const DEV_READY_STEP_MS = 250;
 
 export interface WaitForDevReadyOpts {
+  /** The draft this port must belong to: a child that says it is ANOTHER draft or project is refused, not waited for. */
+  expect?: { projectId: number; slug: string };
   timeoutMs?: number;
   stepMs?: number;
   fetchImpl?: typeof fetch;
@@ -914,6 +923,24 @@ export function writeDevLogTail(base: string, slug: string, port: number, maxLin
   return file;
 }
 
+/**
+ * `/health` of a draft child says whose it is (`projectId`, `slug`; no data of a person). Another draft's answer is a wrong
+ * destination, final: false at once. A child that predates this field sends neither and is accepted (nothing to compare).
+ */
+async function healthMatches(response: Response, expect: { projectId: number; slug: string }, port: number): Promise<boolean> {
+  let body: { projectId?: unknown; slug?: unknown } | null = null;
+  try {
+    body = await response.json() as { projectId?: unknown; slug?: unknown };
+  } catch {
+    return true;
+  }
+  if (!body || (body.projectId === undefined && body.slug === undefined)) return true;
+  if (Number(body.projectId) === expect.projectId && body.slug === expect.slug) return true;
+  const got = (value: unknown): string => String(value ?? '?').replace(/[^A-Za-z0-9_.:-]/gu, '?').slice(0, 80);
+  console.error(`[cbe] dev port ${port} answered as draft ${got(body.slug)} of project ${got(body.projectId)}, expected ${expect.slug} of project ${expect.projectId}`);
+  return false;
+}
+
 export async function waitForDevReady(port: number, opts?: WaitForDevReadyOpts): Promise<boolean> {
   const timeoutMs = opts?.timeoutMs ?? DEV_READY_TIMEOUT_MS;
   const stepMs = opts?.stepMs ?? DEV_READY_STEP_MS;
@@ -929,7 +956,10 @@ export async function waitForDevReady(port: number, opts?: WaitForDevReadyOpts):
           method: 'GET',
           signal: AbortSignal.timeout(stepMs * 4),
         });
-        if (response.status >= 200 && response.status < 300) return true;
+        if (response.status >= 200 && response.status < 300) {
+          if (opts?.expect && !(await healthMatches(response, opts.expect, port))) return false;
+          return true;
+        }
       } catch {
         // The process is still binding the port. Try again until the deadline.
       }

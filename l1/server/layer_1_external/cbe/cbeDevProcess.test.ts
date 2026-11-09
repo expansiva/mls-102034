@@ -14,6 +14,7 @@ import {
   AncestorDenoConfigError,
   DenoMissingError,
   DraftDatabaseError,
+  DraftPortBusyError,
   DraftWorktreeMissingError,
   buildDenoArgs,
   readDevLogTail,
@@ -1275,4 +1276,85 @@ test('choosePort: toda a faixa ocupada na máquina falha dizendo isso', (t) => {
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
+});
+
+// rt198: the port of a draft is fixed (one table per machine) and a busy port is an error, not a new port.
+test('a stopped draft comes back on its own port, even after other drafts took the ones around it', (t) => {
+  const pids: number[] = [];
+  const prevRange = process.env.COLLAB_DEV_PORT_RANGE;
+  const prevTestDatabase = process.env.DATABASE_URL_TEST;
+  process.env.COLLAB_DEV_PORT_RANGE = '4100-4199';
+  process.env.DATABASE_URL_TEST = PARENT_TEST_URL;
+  t.after(() => {
+    killPids(pids);
+    if (prevRange === undefined) delete process.env.COLLAB_DEV_PORT_RANGE;
+    else process.env.COLLAB_DEV_PORT_RANGE = prevRange;
+    if (prevTestDatabase === undefined) delete process.env.DATABASE_URL_TEST;
+    else process.env.DATABASE_URL_TEST = prevTestDatabase;
+  });
+  const base = mkdtempSync(join(tmpdir(), 'cbe-dev-fixed-'));
+  try {
+    writeOwnReleaseConfig(base);
+    mkdirSync(join(base, 'drafts', SLUG, 'mls-102047'), { recursive: true });
+    const other = draftSlugForUser('fixa@example.test').slug;
+    mkdirSync(join(base, 'drafts', other, 'mls-102047'), { recursive: true });
+    const spawnDev: DevSpawn = () => ({ pid: dummyPid(pids) });
+    const ensure = (slug: string) => ensureDevProcess({ base, slug, clientProjectId: 102047, spawn: spawnDev, writeConfig: () => {}, portFree: () => true });
+    const first = ensure(SLUG);
+    assert.equal(first.port, 4100);
+    stopDevProcess(base, SLUG);
+    assert.equal(ensure(other).port, 4101, 'o outro rascunho não herda a porta do que parou');
+    assert.equal(ensure(SLUG).port, 4100, 'o rascunho desligado volta na porta dele');
+    const table = JSON.parse(readFileSync(join(base, 'draft-ports.json'), 'utf8')) as { portas: Record<string, { port: number }> };
+    assert.equal(table.portas[`102047:${SLUG}`].port, 4100);
+    assert.equal(table.portas[`102047:${other}`].port, 4101);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('the fixed port of a draft held by another program is an error naming the port, not a silent change', (t) => {
+  const prevRange = process.env.COLLAB_DEV_PORT_RANGE;
+  const prevTestDatabase = process.env.DATABASE_URL_TEST;
+  process.env.COLLAB_DEV_PORT_RANGE = '4100-4199';
+  process.env.DATABASE_URL_TEST = PARENT_TEST_URL;
+  t.after(() => {
+    if (prevRange === undefined) delete process.env.COLLAB_DEV_PORT_RANGE;
+    else process.env.COLLAB_DEV_PORT_RANGE = prevRange;
+    if (prevTestDatabase === undefined) delete process.env.DATABASE_URL_TEST;
+    else process.env.DATABASE_URL_TEST = prevTestDatabase;
+  });
+  const base = mkdtempSync(join(tmpdir(), 'cbe-dev-busy-'));
+  try {
+    writeOwnReleaseConfig(base);
+    mkdirSync(join(base, 'drafts', SLUG, 'mls-102047'), { recursive: true });
+    writeFileSync(join(base, 'draft-ports.json'), JSON.stringify({ versao: 1, portas: { [`102047:${SLUG}`]: { port: 4150, desde: '2026-11-09T00:00:00.000Z' } } }));
+    const spawned: number[] = [];
+    assert.throws(
+      () => ensureDevProcess({ base, slug: SLUG, clientProjectId: 102047, spawn: () => { spawned.push(1); return { pid: 1 }; }, writeConfig: () => {}, portFree: (port) => port !== 4150 }),
+      (error: unknown) => error instanceof DraftPortBusyError
+        && error.port === 4150 && error.slug === SLUG && error.projectId === 102047
+        && /port 4150 of draft team-102047 \(project 102047\) is held by another program/u.test(error.message),
+    );
+    assert.equal(spawned.length, 0, 'nada foi iniciado');
+    const table = JSON.parse(readFileSync(join(base, 'draft-ports.json'), 'utf8')) as { portas: Record<string, { port: number }> };
+    assert.equal(table.portas[`102047:${SLUG}`].port, 4150, 'a porta do rascunho não mudou');
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('waitForDevReady with expect: a port that answers as ANOTHER draft or project is refused at once; the right one, or a legacy child, is ready', async () => {
+  const health = (body: unknown): typeof fetch => (async () => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch;
+  const expect = { projectId: 102047, slug: SLUG };
+  let calls = 0;
+  const counting = (body: unknown): typeof fetch => (async () => { calls += 1; return new Response(JSON.stringify(body), { status: 200 }); }) as typeof fetch;
+  assert.equal(await waitForDevReady(4100, { expect, fetchImpl: health({ ok: true, projectId: 102047, slug: SLUG }), sleep: async () => {} }), true);
+  assert.equal(await waitForDevReady(4100, { expect, fetchImpl: health({ ok: true }), sleep: async () => {} }), true, 'filho antigo, sem o campo: nada a comparar');
+  assert.equal(await waitForDevReady(4100, { expect, fetchImpl: counting({ ok: true, projectId: 102056, slug: 'team-102056' }), sleep: async () => {} }), false);
+  assert.equal(calls, 1, 'resposta de outro rascunho é final, sem nova tentativa');
+  assert.equal(await waitForDevReady(4100, { expect, fetchImpl: health({ ok: true, projectId: 102047, slug: 'user-aaaaaaaaaaaaaaaa' }), sleep: async () => {} }), false);
+  assert.equal(await waitForDevReady(4100, { expect, fetchImpl: health({ ok: true, projectId: 102056, slug: SLUG }), sleep: async () => {} }), false);
+  // without expect nothing changes
+  assert.equal(await waitForDevReady(4100, { fetchImpl: health({ ok: true, projectId: 1, slug: 'x' }), sleep: async () => {} }), true);
 });

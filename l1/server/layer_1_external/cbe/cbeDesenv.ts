@@ -5,7 +5,7 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { parseDraftSlug, draftSlugForUser, ensureDraftWorktree, requestDraftValue, type DraftRequestHeaders } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
 import { readDevLogTail, writeDevLogTail } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
-import { AncestorDenoConfigError, DenoMissingError, DraftDatabaseError, DraftWorktreeMissingError, ensureDevProcess, stopDevProcess, waitForDevReady } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
+import { AncestorDenoConfigError, DenoMissingError, DraftDatabaseError, DraftPortBusyError, DraftWorktreeMissingError, ensureDevProcess, stopDevProcess, waitForDevReady } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
 import { fastForwardDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitPromote.js';
 import { getProjectsBaseDir } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
 import { readProjectsConfig } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
@@ -266,7 +266,7 @@ async function enterDraft(input: {
     head = prepared.head;
   } catch (err) {
     console.error(`[cbe] /desenv: draft ${parsed.slug} failed: ${(err as Error).message}`);
-    if (err instanceof AncestorDenoConfigError || err instanceof DraftDatabaseError || err instanceof DraftWorktreeMissingError || err instanceof DenoMissingError) {
+    if (err instanceof AncestorDenoConfigError || err instanceof DraftDatabaseError || err instanceof DraftWorktreeMissingError || err instanceof DraftPortBusyError || err instanceof DenoMissingError) {
       return { ok: false, status: 503, msg: 'draft unavailable: ' + err.message };
     }
     return { ok: false, status: CBE_HTTP_SERVER_ERROR, msg: 'draft unavailable' };
@@ -275,7 +275,7 @@ async function enterDraft(input: {
   const readyMark = Date.now();
   let ready = false;
   try {
-    ready = await desenvIo.waitForDevReady(port);
+    ready = await desenvIo.waitForDevReady(port, { expect: { projectId, slug: parsed.slug } });
   } finally {
     if (input.stages) input.stages.waitForDevReady = stageMs(readyMark);
   }

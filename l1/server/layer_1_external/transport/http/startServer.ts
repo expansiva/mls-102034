@@ -580,10 +580,21 @@ export async function resolveSessionInfoBody(
   });
 }
 
+/**
+ * `/health`. A draft child (COLLAB_DRAFT set) also says whose it is, so the proxy never trusts a port that answers for another
+ * draft or project (rt198). Ids only, no data of a person; the principal answers the plain `{ ok: true }`.
+ */
+export function healthBody(env: NodeJS.ProcessEnv = process.env): { ok: true; projectId?: number; slug?: string } {
+  const slug = env.COLLAB_DRAFT;
+  const projectId = Number(env.COLLAB_PROJECT_ID);
+  if (!slug || !Number.isSafeInteger(projectId)) return { ok: true };
+  return { ok: true, projectId, slug };
+}
+
 export function buildHttpServer() {
   const app = Fastify({ logger: false });
 
-  app.get('/health', async () => ({ ok: true }));
+  app.get('/health', async () => healthBody());
   app.get('/_moduleBoot', async (request, reply) => {
     const basePath = String((request.query as { basePath?: string }).basePath ?? '');
     const result = await resolveModuleBoot(basePath);
@@ -787,7 +798,7 @@ export async function handleHttpRequest(
   if (method === 'GET' && url === '/health') {
     return {
       statusCode: 200,
-      body: { ok: true },
+      body: healthBody(),
     };
   }
 

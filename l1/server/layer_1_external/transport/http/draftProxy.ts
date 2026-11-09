@@ -4,6 +4,7 @@
 
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { CollabAuthClaims } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
+import { canUseDraft, type DraftAccessReason } from '/_102034_/l1/server/layer_1_external/transport/http/draftAccess.js';
 import { parseDraftSlug, requestDraftValue, resolveRequestDraft, type DraftRequestHeaders } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
 import {
   ensureDevProcess,
@@ -38,6 +39,7 @@ export type DraftExecPlan =
       reason?: 'ok' | 'missing-token' | 'invalid-token';
     }
   | { action: 'unauthorized'; statusCode: 401; slug: string; reason: 'ok' | 'missing-token' | 'invalid-token' }
+  | { action: 'forbidden'; statusCode: 403; slug: string; reason: DraftAccessReason }
   | { action: 'local' };
 
 export interface DraftExecDeps {
@@ -69,11 +71,17 @@ export function draftSlugForProxy(headers: DraftRequestHeaders | undefined): str
 export async function planDraftExecBff(
   headers: DraftRequestHeaders | undefined,
   resolveSession: () => Promise<DraftSessionView>,
+  projectId?: number,
 ): Promise<DraftExecPlan> {
   const slug = draftSlugForProxy(headers);
   if (!slug) return { action: 'local' };
   const session = await resolveSession();
   if (session.reject) return { action: 'unauthorized', statusCode: 401, slug, reason: session.reason ?? 'invalid-token' };
+  // The session is valid; whether it may use THIS draft is another question, and its answer is a 403 (a 401 means login).
+  if (projectId !== undefined) {
+    const access = canUseDraft(session.claims, projectId, slug);
+    if (!access.allowed) return { action: 'forbidden', statusCode: 403, slug, reason: access.reason };
+  }
   return {
     action: 'proxy',
     slug,
@@ -188,7 +196,7 @@ export async function proxyExecBff(args: {
   const ensure = args.ensureDevProcessImpl ?? ensureDevProcess;
   const touch = args.touchDevProcessImpl ?? touchDevProcess;
   const doFetch = args.fetchImpl ?? fetch;
-  const waitReady = args.waitForDevReadyImpl ?? ((port: number) => waitForDevReady(port));
+  const waitReady = args.waitForDevReadyImpl ?? ((port: number) => waitForDevReady(port, { expect: { projectId: args.clientProjectId, slug: args.slug } }));
   const resolve = args.resolveRequestDraftImpl ?? resolveRequestDraft;
   const url = (port: number) => `http://127.0.0.1:${port}/execBff`;
 
@@ -307,7 +315,21 @@ export async function applyDraftExecBff(args: {
   resolveSession: () => Promise<DraftSessionView>;
   refreshedAuthCookie: (token: string) => string;
 } & DraftExecDeps): Promise<{ handled: boolean; statusCode?: 401 }> {
-  const plan = await planDraftExecBff(args.request.headers, args.resolveSession);
+  const plan = await planDraftExecBff(args.request.headers, args.resolveSession, clientProjectNumber(args.clientProjectId) ?? undefined);
+  if (plan.action === 'forbidden') {
+    logDraftForward({
+      slug: plan.slug,
+      routine: routineName(args.request.body),
+      identity: true,
+      reason: plan.reason,
+      source: 'none',
+      renewed: false,
+      status: plan.statusCode,
+      by: 'principal',
+    });
+    args.reply.code(403).send({ ok: false, data: null, error: { code: 'DRAFT_FORBIDDEN', message: 'This draft is not yours to use.' } });
+    return { handled: true };
+  }
   if (plan.action === 'unauthorized') {
     logDraftForward({
       slug: plan.slug,
