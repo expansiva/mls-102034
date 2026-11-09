@@ -46,6 +46,7 @@ test('exec promote, discardDraft, listDrafts and draftDiff', async () => {
 
   const scheduled: Array<number | undefined> = [];
   const origSchedule = promoteRouteHooks.scheduleRebuildOnSave;
+  const origEnabled = promoteRouteHooks.isRebuildOnSaveEnabled;
   const origBusy = promoteRouteHooks.isRebuildInProgress;
   const origNow = promoteRouteHooks.now;
   const origStateDir = promoteRouteHooks.promoteStateDir;
@@ -58,11 +59,13 @@ test('exec promote, discardDraft, listDrafts and draftDiff', async () => {
   const restarts: Array<{ base: string; slug: string; clientProjectId: number }> = [];
   let ffCalls = 0;
   let rebuildBusy = false;
+  let rebuildEnabled = true;
   let nowMs = Date.parse('2026-10-12T15:00:00.000Z');
   promoteRouteHooks.scheduleRebuildOnSave = (project) => {
     scheduled.push(project);
   };
   promoteRouteHooks.isRebuildInProgress = () => rebuildBusy;
+  promoteRouteHooks.isRebuildOnSaveEnabled = () => rebuildEnabled;
   promoteRouteHooks.promoteStateDir = () => base;
   promoteRouteHooks.now = () => nowMs;
   draftDbHooks.dropDatabase = async (adminUrl, name) => {
@@ -271,13 +274,17 @@ test('exec promote, discardDraft, listDrafts and draftDiff', async () => {
     writeFileSync(join(draftRoot, 'l2', 'ship.ts'), 'shipped\n');
     git(draftRoot, ['add', 'l2/ship.ts']);
     git(draftRoot, ['commit', '--no-verify', '-m', 'ship after discard']);
+    // rt202: with the rebuild disabled nothing is scheduled and the reply SAYS so (the client must not wait 10 minutes)
+    rebuildEnabled = false;
     const shipped = await app.inject({
       method: 'POST',
       url: '/exec',
       payload: { action: 'promote', project: PROJECT_ID, draft: SLUG, target: 'production', comment: 'after discard' },
     });
+    rebuildEnabled = true;
     assert.equal(shipped.statusCode, 200, shipped.body);
     assert.equal(shipped.json().status, 'merged');
+    assert.equal(shipped.json().release, 'disabled');
     assert.equal(shipped.json().draftSync, 'fast_forwarded');
     assert.equal(ffCalls, 2);
     assert.equal(restarts.length, 2);
@@ -382,6 +389,7 @@ test('exec promote, discardDraft, listDrafts and draftDiff', async () => {
   } finally {
     promoteRouteHooks.scheduleRebuildOnSave = origSchedule;
     promoteRouteHooks.isRebuildInProgress = origBusy;
+    promoteRouteHooks.isRebuildOnSaveEnabled = origEnabled;
     promoteRouteHooks.now = origNow;
     promoteRouteHooks.promoteStateDir = origStateDir;
     draftDbHooks.dropDatabase = origDrop;

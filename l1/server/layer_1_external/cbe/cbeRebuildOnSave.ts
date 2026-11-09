@@ -75,6 +75,16 @@ function isEnabled(): boolean {
   return process.env.NODE_ENV === 'production';
 }
 
+/** For the promote reply: is a save/promote going to start a release build at all? */
+export function isRebuildOnSaveEnabled(): boolean {
+  return isEnabled();
+}
+
+/** Every decision of this module leaves a line (rt202): a build that never starts must say why, not stay silent. */
+function why(): string {
+  return `CBE_REBUILD_ON_SAVE=${process.env.CBE_REBUILD_ON_SAVE ?? '(unset)'} NODE_ENV=${process.env.NODE_ENV ?? '(unset)'}`;
+}
+
 /** Only for the synchronous lock-contention diagnostics below — the build's own
  * start/end lines are written by the detached shell chain, not from here. */
 function log(line: string): void {
@@ -166,6 +176,7 @@ function scheduleRetry(delayMs: number): void {
 }
 
 function attemptBuild(): void {
+  log(`[rebuild-on-save] ${new Date().toISOString()} attempt (pid ${process.pid})`);
   let fd: number;
   try {
     fd = openSync(LOCK_PATH, 'wx'); // atomic exclusive create — fails with EEXIST if already locked
@@ -208,7 +219,13 @@ function attemptBuild(): void {
     detached: true,
     stdio: 'ignore',
   });
+  // A launcher that cannot start (no sh, a bad cwd) emits 'error' and, unhandled, nothing is built and nothing is said.
+  launcher.on('error', (error) => {
+    log(`[rebuild-on-save] launcher failed to start: ${error.message}; clearing the lock`);
+    rmSync(LOCK_PATH, { force: true });
+  });
   launcher.unref();
+  log(`[rebuild-on-save] ${new Date().toISOString()} launched client=${clientId} projects=${projects.join(',') || '-'} owner=${ownerToken}`);
 }
 
 /**
@@ -232,8 +249,12 @@ export function isRebuildInProgress(): boolean {
  * the 2 pm2 cluster workers.
  */
 export function scheduleRebuildOnSave(project?: number): void {
-  if (!isEnabled()) return;
+  if (!isEnabled()) {
+    log(`[rebuild-on-save] disabled, release NOT scheduled for project ${project ?? '?'} (${why()})`);
+    return;
+  }
   if (Number.isInteger(project) && (project as number) > 0) pendingProjects.add(project as number);
   if (timer) clearTimeout(timer);
   timer = setTimeout(attemptBuild, DEBOUNCE_MS);
+  log(`[rebuild-on-save] ${new Date().toISOString()} scheduled for project ${project ?? '?'} in ${DEBOUNCE_MS} ms (root ${ROOT})`);
 }

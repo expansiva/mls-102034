@@ -38,7 +38,7 @@ import { expiredLocalTestCookie } from '/_102034_/l1/server/layer_1_external/tra
 import { parseDatabaseUrl } from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
 import { getSharedPgPool } from '/_102034_/l1/server/layer_1_external/data/postgres/pg.js';
 import { isAcceptableRef, MAX_REF_PATHS, readContentsAtRef, readHistory, readHistoryContent } from '/_102034_/l1/server/layer_1_external/cbe/cbeGit.js';
-import { isRebuildInProgress, scheduleRebuildOnSave } from '/_102034_/l1/server/layer_1_external/cbe/cbeRebuildOnSave.js';
+import { isRebuildInProgress, isRebuildOnSaveEnabled, scheduleRebuildOnSave } from '/_102034_/l1/server/layer_1_external/cbe/cbeRebuildOnSave.js';
 import { authorFromSession, commitSavedSources } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitCommit.js';
 import { discardDraft, draftDiff, fastForwardDraft, listDrafts, mergeMainIntoDraft, promoteDraft, restoreDraftPaths } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitPromote.js';
 import { draftSlugForUser, parseDraftSlug, readDraftOwner, requestDraftValue, resolveRequestDraft, resolveWriteDraft, writeDraftOwner, type RequestDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
@@ -694,6 +694,7 @@ function buildLastPromote(project: number, draft: string, at: string): LastPromo
 export const promoteRouteHooks = {
   scheduleRebuildOnSave,
   isRebuildInProgress,
+  isRebuildOnSaveEnabled,
   promoteStateDir: (): string => getProjectsBaseDir(),
   now: (): number => Date.now(),
 };
@@ -1010,7 +1011,8 @@ async function handlePromote(request: FastifyRequest, body: CbeRequestPromote, r
       statusCode: CBE_HTTP_OK,
       status: 'merged',
       ref: result.ref,
-      release: 'scheduled',
+      // 'disabled': nothing was scheduled (the module logs why), so the client must not wait 10 minutes for a release.
+      release: promoteRouteHooks.isRebuildOnSaveEnabled() ? 'scheduled' : 'disabled',
       draftSync,
     });
     return;
