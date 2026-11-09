@@ -196,11 +196,22 @@ function resolveDraftIdentity(
   const encodedClaims = oneHeader(headers, DRAFT_IDENTITY_HEADER);
   if (!presentedSecret && !encodedClaims) return { reject: false, reason: 'missing-token' };
   const claims = encodedClaims ? draftClaimsFromHeader(encodedClaims) : undefined;
-  if (!presentedSecret || !draftSecretsMatch(presentedSecret, expectedSecret) || !claims) {
-    console.error('[resolveBffSession] draft identity rejected (invalid-token)');
+  // Say WHICH condition failed (rt197), never a value: one message for three causes hid that the caller was another app's.
+  const condition = !presentedSecret
+    ? 'missing-secret'
+    : !draftSecretsMatch(presentedSecret, expectedSecret)
+      ? 'secret-mismatch'
+      : !claims
+        ? 'bad-claims'
+        : undefined;
+  if (condition) {
+    // `secret-mismatch` usually means the call was meant for ANOTHER child (a port shared by two apps, or a child replaced
+    // meanwhile): who answered is the evidence. Draft, project, pid and age; never the secret.
+    const who = `draft=${process.env.COLLAB_DRAFT ?? '?'} project=${process.env.COLLAB_PROJECT_ID ?? '?'} pid=${process.pid} up=${Math.round(process.uptime())}s`;
+    console.error(`[resolveBffSession] draft identity rejected (${condition}) ${who}`);
     return { reject: true, reason: 'invalid-token' };
   }
-  return { claims, reject: false, reason: 'ok' };
+  return { claims: claims as CollabAuthClaims, reject: false, reason: 'ok' };
 }
 
 /**

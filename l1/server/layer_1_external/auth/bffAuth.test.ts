@@ -71,3 +71,47 @@ test('draft process rejects the right secret with claims that do not decode', as
     assert.deepEqual(missingClaims, { reject: true, reason: 'invalid-token' });
   });
 });
+
+// rt197: the rejection names the condition, never a value.
+async function rejectionLog(headers: Record<string, string>): Promise<string[]> {
+  const lines: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => { lines.push(args.join(' ')); };
+  try {
+    await withDraftEnv(SECRET, async () => { await resolveBffSession(headers); });
+  } finally {
+    console.error = original;
+  }
+  return lines;
+}
+
+test('draft rejection log: missing-secret, secret-mismatch and bad-claims are told apart, with who answered', async () => {
+  process.env.COLLAB_DRAFT = 'team-102047';
+  process.env.COLLAB_PROJECT_ID = '102047';
+  try {
+    const missing = await rejectionLog({ 'x-collab-draft-identity': encoded(CLAIMS) });
+    assert.match(missing.join('\n'), /draft identity rejected \(missing-secret\) draft=team-102047 project=102047 pid=\d+ up=\d+s/u);
+    const mismatch = await rejectionLog({ 'x-collab-draft-identity-secret': 'b'.repeat(64), 'x-collab-draft-identity': encoded(CLAIMS) });
+    assert.match(mismatch.join('\n'), /draft identity rejected \(secret-mismatch\) draft=team-102047 project=102047 pid=\d+ up=\d+s/u);
+    const badClaims = await rejectionLog({ 'x-collab-draft-identity-secret': SECRET, 'x-collab-draft-identity': '%%%not-base64-json%%%' });
+    assert.match(badClaims.join('\n'), /draft identity rejected \(bad-claims\)/u);
+    for (const line of [...missing, ...mismatch, ...badClaims]) {
+      assert.ok(!line.includes(SECRET) && !line.includes('b'.repeat(64)), 'o log nunca traz o segredo');
+    }
+  } finally {
+    delete process.env.COLLAB_DRAFT;
+    delete process.env.COLLAB_PROJECT_ID;
+  }
+});
+
+test('draft rejection keeps the same outcome for the caller (invalid-token) whatever the condition', async () => {
+  for (const headers of [
+    { 'x-collab-draft-identity': encoded(CLAIMS) },
+    { 'x-collab-draft-identity-secret': 'b'.repeat(64), 'x-collab-draft-identity': encoded(CLAIMS) },
+    { 'x-collab-draft-identity-secret': SECRET, 'x-collab-draft-identity': '%%%' },
+  ]) {
+    await withDraftEnv(SECRET, async () => {
+      assert.deepEqual(await resolveBffSession(headers), { reject: true, reason: 'invalid-token' });
+    });
+  }
+});

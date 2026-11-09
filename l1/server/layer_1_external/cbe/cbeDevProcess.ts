@@ -255,6 +255,8 @@ export interface EnsureDevProcessOpts {
   spawn?: DevSpawn;
   now?: () => number;
   writeConfig?: (input: { base: string; slug: string; clientProjectId: number }) => void;
+  /** Tests: is this port free on the machine? Default: a real bind attempt (`isPortFreeOnMachine`). */
+  portFree?: (port: number) => boolean;
 }
 
 interface PendingRestart {
@@ -412,7 +414,25 @@ function devMax(): number {
   return max;
 }
 
-function choosePort(base: string, slug: string): number {
+/**
+ * Is nothing listening on `port` on this machine? A bind attempt in a throwaway node process (the way a child would
+ * bind: all addresses). Fails closed: anything unexpected counts as "in use".
+ */
+export function isPortFreeOnMachine(port: number): boolean {
+  const probe = 'const s=require("node:net").createServer();'
+    + 's.once("error",()=>process.exit(1));'
+    + `s.listen(${Math.trunc(port)},"0.0.0.0",()=>s.close(()=>process.exit(0)));`;
+  const result = spawnSync(process.execPath, ['-e', probe], { timeout: 5000, stdio: 'ignore' });
+  return result.status === 0;
+}
+
+/**
+ * The first port of the range that no live child of THIS base holds AND that is free on the machine. The base is not
+ * enough (rt197): two apps share one VM and one range, each only sees its own `dev.json` files, and both picked the
+ * same port, so a call for one app's draft was answered by the other app's child (`draft identity rejected`, a 401, and
+ * the Studio asking for login again). The machine is the only authority on who holds a port.
+ */
+function choosePort(base: string, slug: string, portFree: (port: number) => boolean): number {
   const { start, end } = parsePortRange();
   const used = new Set<number>();
   for (const entry of listDevRecords(base)) {
@@ -420,7 +440,9 @@ function choosePort(base: string, slug: string): number {
     if (isDevPidAlive(entry.record.pid)) used.add(entry.record.port);
   }
   for (let port = start; port <= end; port += 1) {
-    if (!used.has(port)) return port;
+    if (used.has(port)) continue;
+    if (portFree(port)) return port;
+    console.error(`[cbe] dev ${slug}: port ${port} is in use by another process on this machine, trying the next one`);
   }
   console.error(`[cbe] dev ${slug}: no free port in ${start}-${end}`);
   throw new Error(`no free port in ${start}-${end}`);
@@ -723,7 +745,7 @@ function ensureUnlocked(opts: EnsureDevProcessOpts): DevProcessInfo {
   const writeConfig = opts.writeConfig ?? defaultWriteConfig;
   writeConfig({ base, slug, clientProjectId });
 
-  const port = choosePort(base, slug);
+  const port = choosePort(base, slug, opts.portFree ?? isPortFreeOnMachine);
   const logPath = join(base, 'logs', `dev-${slug}.log`);
   mkdirSync(join(base, 'logs'), { recursive: true });
   const identitySecret = randomBytes(32).toString('hex');

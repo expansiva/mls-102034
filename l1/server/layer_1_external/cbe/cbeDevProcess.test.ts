@@ -6,6 +6,7 @@ import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readdirSync, 
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createServer } from 'node:net';
 import test from 'node:test';
 import { draftSlugForUser } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
 import { DEFAULT_APPCONFIG_FILE } from '/_102034_/l1/server/layer_1_external/cbe/cbeProviderToken.js';
@@ -21,6 +22,7 @@ import {
   draftDatabaseName,
   draftDatabaseUrl,
   ensureDevProcess,
+  isPortFreeOnMachine,
   setDevIdentitySecretForTests,
   stopDevProcess,
   ensureDevReaper,
@@ -1197,6 +1199,79 @@ test('writeDevLogTail leaves one small scrubbed file with the end of the child l
     assert.equal(scrubLogLine('postgres://u:p@h/d'), 'postgres://***@h/d');
     assert.match(writeDevLogTail(base, 'team-2', 4101), /dev-team-2\.tail\.txt$/u);
     assert.match(readFileSync(join(base, 'logs', 'dev-team-2.tail.txt'), 'utf8'), /dev\.json: absent\n\(no child log\)/u);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+// rt197: two apps on one VM share the port range; each only sees its own dev.json files.
+test('isPortFreeOnMachine: uma porta com alguém escutando não está livre; solta, está', async () => {
+  const server = createServer();
+  await new Promise<void>((resolve) => server.listen(0, '0.0.0.0', resolve));
+  const port = (server.address() as { port: number }).port;
+  try {
+    assert.equal(isPortFreeOnMachine(port), false);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+  assert.equal(isPortFreeOnMachine(port), true);
+});
+
+test('choosePort: o filho de OUTRO app (outra base) ocupa a 4100; este app pega a 4101, e a 4100 volta quando liberar', (t) => {
+  const pids: number[] = [];
+  const prevRange = process.env.COLLAB_DEV_PORT_RANGE;
+  const prevTestDatabase = process.env.DATABASE_URL_TEST;
+  process.env.COLLAB_DEV_PORT_RANGE = '4100-4199';
+  process.env.DATABASE_URL_TEST = PARENT_TEST_URL;
+  t.after(() => {
+    killPids(pids);
+    if (prevRange === undefined) delete process.env.COLLAB_DEV_PORT_RANGE;
+    else process.env.COLLAB_DEV_PORT_RANGE = prevRange;
+    if (prevTestDatabase === undefined) delete process.env.DATABASE_URL_TEST;
+    else process.env.DATABASE_URL_TEST = prevTestDatabase;
+  });
+  const base = mkdtempSync(join(tmpdir(), 'cbe-dev-port-'));
+  try {
+    writeOwnReleaseConfig(base);
+    mkdirSync(join(base, 'drafts', SLUG, 'mls-102047'), { recursive: true });
+    const spawnDev: DevSpawn = () => ({ pid: dummyPid(pids) });
+    const held = new Set([4100]); // held by the other app's team draft: no dev.json of THIS base mentions it
+    const portFree = (port: number): boolean => !held.has(port);
+    const first = ensureDevProcess({ base, slug: SLUG, clientProjectId: 102047, spawn: spawnDev, writeConfig: () => {}, portFree });
+    assert.equal(first.port, 4101, 'sem a checagem da máquina seria a 4100, a porta do outro app');
+    const userSlug = draftSlugForUser('pessoa@example.test').slug;
+    mkdirSync(join(base, 'drafts', userSlug, 'mls-102047'), { recursive: true });
+    const second = ensureDevProcess({ base, slug: userSlug, clientProjectId: 102047, spawn: spawnDev, writeConfig: () => {}, portFree });
+    assert.equal(second.port, 4102, 'a 4101 é deste app (dev.json vivo) e a 4100 é do outro');
+    // the other app's child is gone: a NEW draft gets the lowest free port again
+    held.clear();
+    const third = draftSlugForUser('outra@example.test').slug;
+    mkdirSync(join(base, 'drafts', third, 'mls-102047'), { recursive: true });
+    assert.equal(ensureDevProcess({ base, slug: third, clientProjectId: 102047, spawn: spawnDev, writeConfig: () => {}, portFree }).port, 4100);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('choosePort: toda a faixa ocupada na máquina falha dizendo isso', (t) => {
+  const prevRange = process.env.COLLAB_DEV_PORT_RANGE;
+  const prevTestDatabase = process.env.DATABASE_URL_TEST;
+  process.env.COLLAB_DEV_PORT_RANGE = '4100-4101';
+  process.env.DATABASE_URL_TEST = PARENT_TEST_URL;
+  t.after(() => {
+    if (prevRange === undefined) delete process.env.COLLAB_DEV_PORT_RANGE;
+    else process.env.COLLAB_DEV_PORT_RANGE = prevRange;
+    if (prevTestDatabase === undefined) delete process.env.DATABASE_URL_TEST;
+    else process.env.DATABASE_URL_TEST = prevTestDatabase;
+  });
+  const base = mkdtempSync(join(tmpdir(), 'cbe-dev-port-'));
+  try {
+    writeOwnReleaseConfig(base);
+    mkdirSync(join(base, 'drafts', SLUG, 'mls-102047'), { recursive: true });
+    assert.throws(
+      () => ensureDevProcess({ base, slug: SLUG, clientProjectId: 102047, spawn: () => ({ pid: 1 }), writeConfig: () => {}, portFree: () => false }),
+      /no free port in 4100-4101/u,
+    );
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
