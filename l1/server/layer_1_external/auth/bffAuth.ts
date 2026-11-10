@@ -75,11 +75,19 @@ export function isActorEnforcementOn(): boolean {
   return process.env.BFF_ACTORS_ENFORCED === 'true';
 }
 
-const AUTH_BASE_URL = process.env.COLLAB_AUTH_BASE_URL ?? 'https://auth.collab.codes';
-const JWKS_URL = process.env.COLLAB_AUTH_JWKS_URL
-  ?? `${AUTH_BASE_URL.replace(/\/$/u, '')}/.well-known/jwks.json`;
-const ISSUER = process.env.COLLAB_AUTH_ISSUER ?? 'https://auth.collab.codes';
-const JWKS_TIMEOUT_MS = Number(process.env.COLLAB_AUTH_JWKS_TIMEOUT_MS ?? 5000);
+// Read at USE time, never at import: the app's `.env` enters the process after this module is imported.
+function authBaseUrl(): string {
+  return (process.env.COLLAB_AUTH_BASE_URL ?? 'https://auth.collab.codes').replace(/\/$/u, '');
+}
+function jwksUrl(): string {
+  return process.env.COLLAB_AUTH_JWKS_URL ?? `${authBaseUrl()}/.well-known/jwks.json`;
+}
+function authIssuer(): string {
+  return process.env.COLLAB_AUTH_ISSUER ?? 'https://auth.collab.codes';
+}
+function jwksTimeoutMs(): number {
+  return Number(process.env.COLLAB_AUTH_JWKS_TIMEOUT_MS ?? 5000);
+}
 
 /**
  * Is the 401 ENFORCED?
@@ -95,7 +103,7 @@ export function isBffAuthEnforced(): boolean {
 
 let jwks: ReturnType<typeof createRemoteJWKSet> | undefined;
 function getJwks(): ReturnType<typeof createRemoteJWKSet> {
-  if (!jwks) jwks = createRemoteJWKSet(new URL(JWKS_URL), { timeoutDuration: JWKS_TIMEOUT_MS });
+  if (!jwks) jwks = createRemoteJWKSet(new URL(jwksUrl()), { timeoutDuration: jwksTimeoutMs() });
   return jwks;
 }
 
@@ -130,7 +138,7 @@ export function tokenFromRequest(headers: Record<string, string | string[] | und
 /** Verified claims, honouring `grace_until` exactly like the rest of the platform. */
 export async function verifyAccessToken(token: string): Promise<CollabAuthClaims> {
   try {
-    const { payload } = await jwtVerify(token, getJwks(), { issuer: ISSUER });
+    const { payload } = await jwtVerify(token, getJwks(), { issuer: authIssuer() });
     return payload as CollabAuthClaims;
   } catch (error) {
     if (error instanceof joseErrors.JWTExpired) {
@@ -138,7 +146,7 @@ export async function verifyAccessToken(token: string): Promise<CollabAuthClaims
       const graceUntil = payload.grace_until as number | undefined;
       if (typeof graceUntil === 'number' && typeof payload.exp === 'number' && Math.floor(Date.now() / 1000) < graceUntil) {
         const verified = await jwtVerify(token, getJwks(), {
-          issuer: ISSUER,
+          issuer: authIssuer(),
           clockTolerance: Math.max(0, graceUntil - payload.exp),
         });
         return verified.payload as CollabAuthClaims;

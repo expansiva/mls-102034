@@ -21,10 +21,19 @@ export interface CollabAuthClaims extends JWTPayload {
   orgs?: Array<{ id?: string; name?: string }>;
 }
 
-const AUTH_BASE_URL = (process.env.COLLAB_AUTH_BASE_URL ?? 'https://auth.collab.codes').replace(/\/$/u, '');
-const JWKS_URL = process.env.COLLAB_AUTH_JWKS_URL ?? `${AUTH_BASE_URL}/.well-known/jwks.json`;
-const ISSUER = process.env.COLLAB_AUTH_ISSUER ?? 'https://auth.collab.codes';
-const JWKS_TIMEOUT_MS = Number(process.env.COLLAB_AUTH_JWKS_TIMEOUT_MS ?? 5000);
+// Read at USE time, never at import: the app's `.env` enters the process after this module is imported.
+function authBaseUrl(): string {
+  return (process.env.COLLAB_AUTH_BASE_URL ?? 'https://auth.collab.codes').replace(/\/$/u, '');
+}
+function jwksUrl(): string {
+  return process.env.COLLAB_AUTH_JWKS_URL ?? `${authBaseUrl()}/.well-known/jwks.json`;
+}
+function authIssuer(): string {
+  return process.env.COLLAB_AUTH_ISSUER ?? 'https://auth.collab.codes';
+}
+function jwksTimeoutMs(): number {
+  return Number(process.env.COLLAB_AUTH_JWKS_TIMEOUT_MS ?? 5000);
+}
 
 export function isJwtAuthEnabled(): boolean {
   return process.env.AUTH_JWT_ENABLED !== 'false';
@@ -34,7 +43,7 @@ export function isJwtAuthEnabled(): boolean {
 let _jwks: ReturnType<typeof createRemoteJWKSet> | undefined;
 function getJwks(): ReturnType<typeof createRemoteJWKSet> {
   if (!_jwks) {
-    _jwks = createRemoteJWKSet(new URL(JWKS_URL), { timeoutDuration: JWKS_TIMEOUT_MS });
+    _jwks = createRemoteJWKSet(new URL(jwksUrl()), { timeoutDuration: jwksTimeoutMs() });
   }
   return _jwks;
 }
@@ -46,7 +55,7 @@ function getJwks(): ReturnType<typeof createRemoteJWKSet> {
  */
 export async function verifyAccessToken(token: string): Promise<CollabAuthClaims> {
   try {
-    const { payload } = await jwtVerify(token, getJwks(), { issuer: ISSUER });
+    const { payload } = await jwtVerify(token, getJwks(), { issuer: authIssuer() });
     return payload as CollabAuthClaims;
   } catch (err) {
     if (err instanceof joseErrors.JWTExpired) {
@@ -57,7 +66,7 @@ export async function verifyAccessToken(token: string): Promise<CollabAuthClaims
         // The decoded payload only supplies a tolerance. Never trust its claims
         // without verifying the signature and issuer, even during grace.
         const verified = await jwtVerify(token, getJwks(), {
-          issuer: ISSUER,
+          issuer: authIssuer(),
           clockTolerance: Math.max(0, graceUntil - expiredAt),
         });
         return verified.payload as CollabAuthClaims;
@@ -88,7 +97,7 @@ export function sameSelectedSession(previous: CollabAuthClaims, current: CollabA
 /** The issuer checks membership; the returned JWT is checked again locally. */
 export async function selectOrganization(accessToken: string, original: CollabAuthClaims, orgId: string): Promise<string | null> {
   try {
-    const response = await fetch(`${AUTH_BASE_URL}/auth/select-org`, {
+    const response = await fetch(`${authBaseUrl()}/auth/select-org`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
       body: JSON.stringify({ org_id: orgId }),
@@ -107,7 +116,7 @@ export async function selectOrganization(accessToken: string, original: CollabAu
 /** Exchanges a refresh token for a fresh access token; null on any failure. */
 export async function refreshAccessToken(refreshToken: string, orgId?: string): Promise<string | null> {
   try {
-    const res = await fetch(`${AUTH_BASE_URL}/auth/token/refresh`, {
+    const res = await fetch(`${authBaseUrl()}/auth/token/refresh`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refresh_token: refreshToken, ...(orgId ? { org_id: orgId } : {}) }),
@@ -162,7 +171,7 @@ export async function resolveJwtSession(cauth: string, crefresh: string): Promis
       const decoded = decodeJwt(cauth);
       if (typeof decoded.exp !== 'number') return {};
       const verified = await jwtVerify(cauth, getJwks(), {
-        issuer: ISSUER,
+        issuer: authIssuer(),
         currentDate: new Date((decoded.exp - 1) * 1000),
       });
       previous = verified.payload as CollabAuthClaims;

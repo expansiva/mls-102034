@@ -1,7 +1,7 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/cbe/cbeRebuildOnSave.test.ts" enhancement="_blank" />
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildShellChain, releaseAliasFor } from '/_102034_/l1/server/layer_1_external/cbe/cbeRebuildOnSave.js';
+import { buildShellChain, releaseAliasFor, scheduleRebuildOnSave } from '/_102034_/l1/server/layer_1_external/cbe/cbeRebuildOnSave.js';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -81,7 +81,7 @@ test('T8: releaseAliasFor só devolve o alias quando o symlink existe', () => {
   }
 });
 
-// rt202: a build that never starts must say why. The module fixes its root and env at import, so it runs in a child.
+// rt202: a build that never starts must say why. The enabled/disabled env is read at call time but the child keeps each case isolated.
 function runProbe(env: Record<string, string>, root: string, waitMs = 6000): string {
   const here = dirname(fileURLToPath(import.meta.url));
   const monorepoRoot = join(here, '..', '..', '..', '..', '..');
@@ -130,6 +130,28 @@ test('T10: habilitada, cada passo deixa linha (agendou, tentou, lançou) e a cad
     assert.match(log, /=== rebuild-on-save end .* exit=0 ===/u);
     assert.equal(existsSync(join(root, '.rebuild-on-save.lock')), false, 'a cadeia solta o lock no fim');
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('T11: CBE_PROJECTS_DIR definido DEPOIS da importação vale (o .env entra depois do módulo)', () => {
+  // rt202 (10/11): ROOT era lido na importação; na VM o .env ainda não estava no processo, a raiz virava a
+  // pasta da release e a cadeia morria em "Cannot find module .../scripts/runtime/buildProjectsObj.mjs".
+  const root = mkdtempSync(join(tmpdir(), 'rebuild-late-env-'));
+  const prevDir = process.env.CBE_PROJECTS_DIR;
+  const prevFlag = process.env.CBE_REBUILD_ON_SAVE;
+  try {
+    process.env.CBE_PROJECTS_DIR = root; // o import lá em cima já aconteceu
+    process.env.CBE_REBUILD_ON_SAVE = 'never';
+    scheduleRebuildOnSave(102047);
+    const logFile = join(root, 'logs', 'rebuild-on-save.log');
+    assert.ok(existsSync(logFile), 'o log vai para a raiz nomeada depois da importação');
+    assert.match(readFileSync(logFile, 'utf8'), /disabled, release NOT scheduled for project 102047/u);
+  } finally {
+    if (prevDir === undefined) delete process.env.CBE_PROJECTS_DIR;
+    else process.env.CBE_PROJECTS_DIR = prevDir;
+    if (prevFlag === undefined) delete process.env.CBE_REBUILD_ON_SAVE;
+    else process.env.CBE_REBUILD_ON_SAVE = prevFlag;
     rmSync(root, { recursive: true, force: true });
   }
 });

@@ -52,18 +52,28 @@ function shQuote(value: string): string {
   return `'${value.replace(/'/gu, `'\\''`)}'`;
 }
 
-// getProjectsBaseDir() and releaseHandlers.ts's own BASE_DIR
-// (resolve(process.cwd(), '..', '..')) resolve to the same directory in
-// production (/data/mls-base) — reused here instead of re-deriving a third way.
-const ROOT = getProjectsBaseDir();
-const LOGS_DIR = join(ROOT, 'logs');
-const LOG_PATH = join(LOGS_DIR, 'rebuild-on-save.log');
-const LOCK_PATH = join(ROOT, '.rebuild-on-save.lock');
+// Read at USE time, never at import: the app's `.env` (CBE_PROJECTS_DIR) enters the process after this module
+// is imported, so a top-level `const ROOT = getProjectsBaseDir()` froze the release folder as the root and the
+// build chain died with "Cannot find module .../scripts/runtime/buildProjectsObj.mjs" (rt202, 10/11).
+function rebuildRoot(): string {
+  return getProjectsBaseDir();
+}
+function logsDir(): string {
+  return join(rebuildRoot(), 'logs');
+}
+function logPath(): string {
+  return join(logsDir(), 'rebuild-on-save.log');
+}
+function lockPath(): string {
+  return join(rebuildRoot(), '.rebuild-on-save.lock');
+}
+function debounceMs(): number {
+  return Number.parseInt(process.env.COLLAB_REBUILD_DEBOUNCE_MS ?? '4000', 10);
+}
 
 const STALE_LOCK_MS = 15 * 60 * 1000; // well above a lean (--skip-install --skip-migrate) build
 const RETRY_MS = 1000;
 const RETRY_JITTER_MS = 500;
-const DEBOUNCE_MS = Number.parseInt(process.env.COLLAB_REBUILD_DEBOUNCE_MS ?? '4000', 10);
 
 /** CBE_REBUILD_ON_SAVE=always|never overrides; default is production-only —
  * a local dev checkout also has servers/pm2.config.js on disk, so "does the
@@ -89,8 +99,8 @@ function why(): string {
  * start/end lines are written by the detached shell chain, not from here. */
 function log(line: string): void {
   try {
-    mkdirSync(LOGS_DIR, { recursive: true });
-    const fd = openSync(LOG_PATH, 'a');
+    mkdirSync(logsDir(), { recursive: true });
+    const fd = openSync(logPath(), 'a');
     writeSync(fd, `${line}\n`);
     closeSync(fd);
   } catch {
@@ -100,7 +110,7 @@ function log(line: string): void {
 
 function lockIsStale(): boolean {
   try {
-    return Date.now() - statSync(LOCK_PATH).mtimeMs > STALE_LOCK_MS;
+    return Date.now() - statSync(lockPath()).mtimeMs > STALE_LOCK_MS;
   } catch {
     return false;
   }
@@ -131,7 +141,7 @@ export function releaseAliasFor(clientId: string): string {
   if (!/^\d+$/u.test(clientId)) return '';
   const alias = `current-${clientId}`;
   try {
-    lstatSync(join(ROOT, alias));
+    lstatSync(join(rebuildRoot(), alias));
     return alias;
   } catch {
     return ''; // no alias on this host: the global `current` is enough
@@ -164,8 +174,8 @@ export function buildShellChain(options: { ownerToken: string; clientId: string;
     `${aliasPrefix}pnpm build -- --client ${shQuote(clientId)} --skip-install --skip-migrate;`,
     'code=$?;',
     `printf '=== rebuild-on-save end %s pid=%s exit=%s ===\\n' "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" ${shQuote(ownerToken)} "$code";`,
-    `if [ "$(head -1 ${shQuote(LOCK_PATH)} 2>/dev/null)" = ${shQuote(ownerToken)} ]; then rm -f ${shQuote(LOCK_PATH)}; fi`,
-    `} >> ${shQuote(LOG_PATH)} 2>&1 &`,
+    `if [ "$(head -1 ${shQuote(lockPath())} 2>/dev/null)" = ${shQuote(ownerToken)} ]; then rm -f ${shQuote(lockPath())}; fi`,
+    `} >> ${shQuote(logPath())} 2>&1 &`,
   );
   return steps.join(' ');
 }
@@ -179,7 +189,7 @@ function attemptBuild(): void {
   log(`[rebuild-on-save] ${new Date().toISOString()} attempt (pid ${process.pid})`);
   let fd: number;
   try {
-    fd = openSync(LOCK_PATH, 'wx'); // atomic exclusive create — fails with EEXIST if already locked
+    fd = openSync(lockPath(), 'wx'); // atomic exclusive create — fails with EEXIST if already locked
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'EEXIST') {
       log(`[rebuild-on-save] lock check failed: ${(err as Error).message}`);
@@ -187,7 +197,7 @@ function attemptBuild(): void {
     }
     if (lockIsStale()) {
       log('[rebuild-on-save] stale lock found (holder likely crashed) — clearing and retrying');
-      rmSync(LOCK_PATH, { force: true });
+      rmSync(lockPath(), { force: true });
       scheduleRetry(50);
       return;
     }
@@ -206,7 +216,7 @@ function attemptBuild(): void {
   closeSync(fd);
 
   const clientId = String(readProjectsConfig().defaultProjectId);
-  mkdirSync(LOGS_DIR, { recursive: true });
+  mkdirSync(logsDir(), { recursive: true });
 
   // Claimed here, not in the timer: a worker that loses the lock race re-arms
   // and must still carry its projects into the build that finally runs.
@@ -215,14 +225,14 @@ function attemptBuild(): void {
 
   const chain = buildShellChain({ ownerToken, clientId, projects, releaseAlias: releaseAliasFor(clientId) });
   const launcher = spawn('sh', ['-c', chain], {
-    cwd: ROOT,
+    cwd: rebuildRoot(),
     detached: true,
     stdio: 'ignore',
   });
   // A launcher that cannot start (no sh, a bad cwd) emits 'error' and, unhandled, nothing is built and nothing is said.
   launcher.on('error', (error) => {
     log(`[rebuild-on-save] launcher failed to start: ${error.message}; clearing the lock`);
-    rmSync(LOCK_PATH, { force: true });
+    rmSync(lockPath(), { force: true });
   });
   launcher.unref();
   log(`[rebuild-on-save] ${new Date().toISOString()} launched client=${clientId} projects=${projects.join(',') || '-'} owner=${ownerToken}`);
@@ -237,7 +247,7 @@ function attemptBuild(): void {
  */
 export function isRebuildInProgress(): boolean {
   try {
-    return statSync(LOCK_PATH).mtimeMs > Date.now() - STALE_LOCK_MS;
+    return statSync(lockPath()).mtimeMs > Date.now() - STALE_LOCK_MS;
   } catch {
     return false; // no lock file = nothing building
   }
@@ -255,6 +265,6 @@ export function scheduleRebuildOnSave(project?: number): void {
   }
   if (Number.isInteger(project) && (project as number) > 0) pendingProjects.add(project as number);
   if (timer) clearTimeout(timer);
-  timer = setTimeout(attemptBuild, DEBOUNCE_MS);
-  log(`[rebuild-on-save] ${new Date().toISOString()} scheduled for project ${project ?? '?'} in ${DEBOUNCE_MS} ms (root ${ROOT})`);
+  timer = setTimeout(attemptBuild, debounceMs());
+  log(`[rebuild-on-save] ${new Date().toISOString()} scheduled for project ${project ?? '?'} in ${debounceMs()} ms (root ${rebuildRoot()})`);
 }
