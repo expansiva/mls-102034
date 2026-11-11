@@ -179,6 +179,15 @@ export interface CbeRequestDraftDataSource extends CbeRequestBase {
   draft?: string;
 }
 
+/** Switch the draft data source to `copy`. No `modules` copies every business module. */
+export interface CbeRequestDraftCopy extends CbeRequestBase {
+  action: 'draftCopy';
+  project?: number;
+  draft?: string;
+  modules?: string[];
+  withRegistry?: boolean;
+}
+
 export interface CbeRequestDraftRestorePaths extends CbeRequestBase {
   action: 'draftRestorePaths';
   project?: number;

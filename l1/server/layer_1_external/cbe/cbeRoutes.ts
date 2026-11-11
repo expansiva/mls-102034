@@ -36,7 +36,7 @@ import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { localTestSessionFromHeaders } from '/_102034_/l1/server/layer_1_external/auth/localTestSession.js';
 import { getLocalTestConfig } from '/_102034_/l1/server/layer_1_external/config/localTestConfig.js';
 import { expiredLocalTestCookie } from '/_102034_/l1/server/layer_1_external/transport/http/localTestSessionHttp.js';
-import { parseDatabaseUrl } from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
+import { parseDatabaseUrl, readProjectMode, resolveDatabaseUrl } from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
 import { getSharedPgPool } from '/_102034_/l1/server/layer_1_external/data/postgres/pg.js';
 import { isAcceptableRef, MAX_REF_PATHS, readContentsAtRef, readHistory, readHistoryContent } from '/_102034_/l1/server/layer_1_external/cbe/cbeGit.js';
 import { isRebuildInProgress, isRebuildOnSaveEnabled, scheduleRebuildOnSave } from '/_102034_/l1/server/layer_1_external/cbe/cbeRebuildOnSave.js';
@@ -54,6 +54,8 @@ import {
   type DraftDataLogEntry,
 } from '/_102034_/l1/server/layer_1_external/cbe/draftDataSource.js';
 import { awaitDraftPrepare, desenvIo, handleDesenvEnter, handleDesenvExit, handleDraftEnter, runDraftEnter, warmPersonDraftOnLogin } from '/_102034_/l1/server/layer_1_external/cbe/cbeDesenv.js';
+import { draftCopyText, isDraftCopyModuleId, performDraftCopy, type PerformDraftCopyInput, type PerformDraftCopyResult } from '/_102034_/l1/server/layer_1_external/cbe/draftCopy.js';
+import { forgetDraftLoginCopy } from '/_102034_/l1/server/layer_1_external/cbe/draftLoginCopy.js';
 import { getRunningRelease } from '/_102034_/l1/server/layer_1_external/cbe/cbeRelease.js';
 import {
   CBE_HTTP_BAD_REQUEST,
@@ -66,6 +68,7 @@ import {
   type CbeRequestAuthSession,
   type CbeRequestBase,
   type CbeRequestDiscardDraft,
+  type CbeRequestDraftCopy,
   type CbeRequestDraftDataSource,
   type CbeRequestDraftResetDatabase,
   type CbeRequestDraftRestorePaths,
@@ -86,7 +89,7 @@ import { handleProviderToken } from '/_102034_/l1/server/layer_1_external/cbe/cb
 // Bump on every change to the cbe module. Exposed via the x-cbe-version
 // response header and the {action:'ping'} probe so a deploy can be verified:
 //   curl -s localhost:3000/exec -H 'Content-Type: application/json' -d '{"action":"ping"}'
-export const CBE_MODULE_VERSION = '1.8.8';
+export const CBE_MODULE_VERSION = '1.8.9';
 
 // /libs/<14-digit stamp>/ and /monaco/<stamp>/ are immutable for a year: the
 // stamp is the version, so the bytes at that path do not change. Any other
@@ -449,6 +452,16 @@ export const draftDevHooks = {
   ensureDevReaper,
   stopDevProcess,
   ensureDevProcess,
+};
+
+/** Route tests replace this so a draft action does not wait on a real prepare. */
+export const draftPrepareHooks = {
+  awaitDraftPrepare,
+};
+
+/** Route tests replace `perform` so a copy does not open Postgres. */
+export const draftCopyHooks: { perform: (input: PerformDraftCopyInput) => Promise<PerformDraftCopyResult> } = {
+  perform: performDraftCopy,
 };
 
 /** Route tests replace these so a promote or draftSync does not touch git. */
@@ -1144,7 +1157,7 @@ async function handleDraftResetDatabase(
   if (await refuseNotDraftOwner(request, base, slug, reply)) return;
   if (await refuseDraftData(request, 'reset', reply)) return;
   // A login or draftEnter that is still preparing this draft would start the child right after the stop.
-  await awaitDraftPrepare(slug);
+  await draftPrepareHooks.awaitDraftPrepare(slug);
   const by = await draftActor(request, slug);
   try {
     draftDevHooks.stopDevProcess(base, slug);
@@ -1166,6 +1179,7 @@ async function handleDraftResetDatabase(
       try {
         const at = new Date().toISOString();
         writeDraftData(draftDirOf(base, slug), { source: 'seed', at, by });
+        forgetDraftLoginCopy(draftDirOf(base, slug));
         recordDraftData(base, slug, { at, by, action: 'reset', result: 'failed', source: 'seed', cause: reported });
       } catch (recordErr) {
         console.error(`[cbe] reset draft database ${slug}: record seed failed: ${(recordErr as Error).message}`);
@@ -1201,6 +1215,7 @@ async function handleDraftResetDatabase(
   try {
     const at = new Date().toISOString();
     writeDraftData(draftDirOf(base, slug), { source: 'seed', at, by });
+    forgetDraftLoginCopy(draftDirOf(base, slug));
     recordDraftData(base, slug, { at, by, action: 'reset', result: 'ok', source: 'seed' });
   } catch (err) {
     const cause = (err as Error).message || String(err);
@@ -1209,6 +1224,102 @@ async function handleDraftResetDatabase(
     return;
   }
   reply.code(CBE_HTTP_OK).send({ statusCode: CBE_HTTP_OK, status: 'reset', database });
+}
+
+function draftCopyModules(body: CbeRequestDraftCopy): { modules?: string[]; withRegistry?: boolean } | 'invalid' {
+  if (body.withRegistry !== undefined && typeof body.withRegistry !== 'boolean') return 'invalid';
+  if (body.modules === undefined) return body.withRegistry === undefined ? {} : 'invalid';
+  if (!Array.isArray(body.modules) || body.modules.length === 0) return 'invalid';
+  const modules: string[] = [];
+  for (const moduleId of body.modules) {
+    if (typeof moduleId !== 'string' || !isDraftCopyModuleId(moduleId) || modules.includes(moduleId)) return 'invalid';
+    modules.push(moduleId);
+  }
+  return { modules, withRegistry: body.withRegistry === true };
+}
+
+async function handleDraftCopy(request: FastifyRequest, body: CbeRequestDraftCopy, reply: FastifyReply): Promise<void> {
+  const project = await requireSourceProject(request, body, reply);
+  if (!project) return;
+  const slug = typeof body.draft === 'string' ? body.draft : '';
+  const base = getProjectsBaseDir();
+  if (await refuseNotDraftOwner(request, base, slug, reply)) return;
+  if (await refuseDraftData(request, 'copy', reply)) return;
+  const parsed = parseDraftSlug(slug);
+  if (!parsed) {
+    reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, code: 'BAD_DRAFT', msg: 'draft.bad_slug' });
+    return;
+  }
+  const selection = draftCopyModules(body);
+  const lang = draftDataLang(headerString(request.headers['accept-language']));
+  if (selection === 'invalid') {
+    reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, code: 'BAD_MODULES', msg: draftCopyText('badModules', lang) });
+    return;
+  }
+  const testUrl = process.env.DATABASE_URL_TEST;
+  let sourceUrl = '';
+  let target: { database: string; adminUrl: string } | null = null;
+  let targetUrl = '';
+  try {
+    sourceUrl = resolveDatabaseUrl(readProjectMode(project));
+    if (!testUrl) throw new Error('DATABASE_URL_TEST is not set');
+    targetUrl = draftDatabaseUrl(testUrl, parsed.slug, project);
+    target = parseDatabaseUrl(targetUrl);
+    if (!target) throw new Error('invalid database url');
+  } catch (err) {
+    const cause = (err as Error).message || String(err);
+    console.error(`[cbe] copy draft database ${parsed.slug}: ${cause}`);
+    reply.code(CBE_HTTP_SERVER_ERROR).send({
+      statusCode: CBE_HTTP_SERVER_ERROR,
+      code: 'DRAFT_COPY',
+      msg: draftCopyText('notConfigured', lang),
+    });
+    return;
+  }
+  // A login or draftEnter that is still preparing this draft would start the child right after the stop.
+  await draftPrepareHooks.awaitDraftPrepare(parsed.slug);
+  const by = await draftActor(request, parsed.slug);
+  try {
+    draftDevHooks.stopDevProcess(base, parsed.slug);
+  } catch (err) {
+    const cause = (err as Error).message || String(err);
+    console.error(`[cbe] copy draft database ${parsed.slug}: stop dev process failed: ${cause}`);
+    reply.code(CBE_HTTP_SERVER_ERROR).send({ statusCode: CBE_HTTP_SERVER_ERROR, code: 'DRAFT_COPY', msg: draftCopyText('failed', lang), cause });
+    return;
+  }
+  const result = await draftCopyHooks.perform({
+    sourceUrl,
+    targetUrl,
+    projectId: project,
+    ...(selection.modules ? { modules: selection.modules } : {}),
+    ...(selection.withRegistry !== undefined ? { withRegistry: selection.withRegistry } : {}),
+    draftDir: draftDirOf(base, parsed.slug),
+    by,
+    lang,
+    adminUrl: target.adminUrl,
+    database: target.database,
+    dropDatabase: (adminUrl, database) => draftDbHooks.dropDatabase(adminUrl, database),
+    start: () => {
+      draftDevHooks.ensureDevProcess({ base, slug: parsed.slug, clientProjectId: project });
+    },
+  });
+  if (!result.ok) {
+    reply.code(CBE_HTTP_SERVER_ERROR).send({
+      statusCode: CBE_HTTP_SERVER_ERROR,
+      code: 'DRAFT_COPY',
+      msg: result.msg,
+      ...(result.table ? { table: result.table } : {}),
+      ...(result.seeded ? { source: 'seed' } : {}),
+    });
+    return;
+  }
+  reply.code(CBE_HTTP_OK).send({
+    statusCode: CBE_HTTP_OK,
+    status: 'copied',
+    source: 'copy',
+    tables: result.tables,
+    database: target.database,
+  });
 }
 
 async function handleDraftRestorePaths(request: FastifyRequest, body: CbeRequestDraftRestorePaths, reply: FastifyReply): Promise<void> {
@@ -1395,6 +1506,9 @@ async function handleExec(request: FastifyRequest, reply: FastifyReply): Promise
       case 'draftResetDatabase':
         await handleDraftResetDatabase(request, body as CbeRequestDraftResetDatabase, reply);
         return;
+      case 'draftCopy':
+        await handleDraftCopy(request, body as CbeRequestDraftCopy, reply);
+        return;
       case 'draftRestorePaths':
         await handleDraftRestorePaths(request, body as CbeRequestDraftRestorePaths, reply);
         return;
@@ -1526,7 +1640,7 @@ export function registerCbeRoutes(app: FastifyInstance): void {
   app.get('/libs/*', handleStatic);
   app.get('/monaco/*', handleStatic);
   app.get('/mlsServiceWorker.js', handleStatic);
-  console.info(`[cbe] v${CBE_MODULE_VERSION} routes registered: POST /exec (login/authSession/authLogout/getContents/setContents/loadFilesInfo/getHistory/getHistoryContent/promote/discardDraft/draftDataSource/draftResetDatabase/draftRestorePaths/listDrafts/draftDiff/draftSync), GET /exec/logout, POST /exec/candidate, GET /desenv, GET /desenv/sair, GET /cbe/source, GET /libs/*, GET /monaco/*, GET /mlsServiceWorker.js`);
+  console.info(`[cbe] v${CBE_MODULE_VERSION} routes registered: POST /exec (login/authSession/authLogout/getContents/setContents/loadFilesInfo/getHistory/getHistoryContent/promote/discardDraft/draftDataSource/draftResetDatabase/draftCopy/draftRestorePaths/listDrafts/draftDiff/draftSync), GET /exec/logout, POST /exec/candidate, GET /desenv, GET /desenv/sair, GET /cbe/source, GET /libs/*, GET /monaco/*, GET /mlsServiceWorker.js`);
   if (candidateHubMode() === 'local') {
     if (!candidateSchemaStarted) {
       candidateSchemaStarted = true;
