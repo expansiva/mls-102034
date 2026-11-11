@@ -131,7 +131,20 @@ test('postgres: orphan index row is replaced; a real duplicate still fails; the 
     const runtime: IDataRuntime = createPostgresDataRuntime(env, pool);
     const ctx = createRequestContext(runtime);
     const meta = { module: 'mdm', routine: 'mdm.entity.create' };
-    const newCompany = () => normalizeDetailInput({ subtype: 'Company', name: 'Org Rt206', status: 'Active' }, ctx, ctx.idGenerator.newId());
+    // The same required fields as DataRecordService.test.ts (createCompanyDetail): the validation runs before the create under test.
+    const newCompany = () => normalizeDetailInput(
+      {
+        subtype: 'Company',
+        name: 'Org Rt206',
+        status: 'Active',
+        legalName: 'Org Rt206 LLC',
+        countryCode: 'US',
+        docType: 'EIN',
+        docId: `99-${randomBytes(4).toString('hex')}`,
+      },
+      ctx,
+      ctx.idGenerator.newId(),
+    );
 
     // Scenario 1: the index has the row, the documents table is empty.
     const orphan = newCompany();
