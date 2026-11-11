@@ -404,8 +404,22 @@ export class DataRecordService {
       const index = def.buildIndex(after);
       const document = def.toDocument(after, 1);
       await ctx.data.runInTransaction(async (runtime) => {
+        const indexRuntime = def.getIndexRuntime(runtime);
+        // rt206: an index row whose document is gone is what a Postgres crash leaves behind (mdm_documents is
+        // UNLOGGED, the index is not). Without this, re-creating the same id hits the primary key of the index and
+        // the app cannot boot. Only when the document does NOT exist: with a document the id is a real duplicate and
+        // the insert below fails as before. The put is an upsert, so the existence check has to come first.
+        const existingDocument = await runtime.mdmDocument.get({ mdmId: entityId });
+        if (!existingDocument) {
+          const where = { mdmId: entityId } as unknown as Partial<TIndex>;
+          const orphan = await indexRuntime.findOne({ where });
+          if (orphan) {
+            await indexRuntime.delete({ where });
+            console.warn(`[mdm] orphan index row replaced ${entityId} (${def.entityType}: the index had a row but the document did not)`);
+          }
+        }
         await runtime.mdmDocument.put({ record: document });
-        await def.getIndexRuntime(runtime).insert({ record: index });
+        await indexRuntime.insert({ record: index });
         await AuditLogService.record(ctx, runtime, {
           entityType: def.entityType,
           entityId,
