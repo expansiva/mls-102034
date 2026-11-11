@@ -192,9 +192,17 @@ export function forgetDraftLoginCopy(draftKey: string): void {
 /** Drops only the "missing at the origin" memory for this draft. The done set stays. */
 export function forgetDraftLoginAbsent(draftKey: string): void {
   const prefix = `${draftKey}\0`;
+  let removed = 0;
   for (const key of absentLogins) {
-    if (key.startsWith(prefix)) absentLogins.delete(key);
+    if (!key.startsWith(prefix)) continue;
+    absentLogins.delete(key);
+    removed += 1;
   }
+  if (removed > 0) console.info('[cbe] draft login copy: forgot absent login');
+}
+
+function infoAbsentSkip(): void {
+  console.info('[cbe] draft login copy: skipped absent login');
 }
 
 function rememberAbsent(draftKey: string, generation: string, email: string, lang: DraftDataLang): void {
@@ -517,7 +525,10 @@ function asCopyError(err: unknown, lang: DraftDataLang): DraftLoginCopyError {
 export async function copyDraftLogin(input: DraftLoginCopyInput): Promise<{ copied: boolean }> {
   const lang = input.lang ?? 'en';
   if (input.sourceName === 'readonly' || input.sourceName === 'same') return { copied: false };
-  if (absentLogins.has(absentKey(input.draftKey, input.email))) return { copied: false };
+  if (absentLogins.has(absentKey(input.draftKey, input.email))) {
+    infoAbsentSkip();
+    return { copied: false };
+  }
   let email: string;
   try {
     email = assertLoginEmail(input.email);
@@ -528,7 +539,10 @@ export async function copyDraftLogin(input: DraftLoginCopyInput): Promise<{ copi
   }
   const key = memoryKey(input.draftKey, input.generation, email);
   if (copiedLogins.has(key)) return { copied: false };
-  if (absentLogins.has(absentKey(input.draftKey, email))) return { copied: false };
+  if (absentLogins.has(absentKey(input.draftKey, email))) {
+    infoAbsentSkip();
+    return { copied: false };
+  }
   const load = input.load ?? loadDraftLogin;
   const write = input.write ?? writeDraftLoginPlan;
   let loaded: DraftLoginLoaded;
@@ -585,7 +599,10 @@ export async function ensureDraftLoginCopied(input: DraftLoginEntry): Promise<Dr
   if (state.source === 'readonly' || state.source === 'same') return { ok: true, copied: false };
   const draftKey = draftDirOf(input.base, input.slug);
   const generation = state.at ?? '';
-  if (absentLogins.has(absentKey(draftKey, input.email))) return { ok: true, copied: false };
+  if (absentLogins.has(absentKey(draftKey, input.email))) {
+    infoAbsentSkip();
+    return { ok: true, copied: false };
+  }
   let email: string;
   try {
     email = assertLoginEmail(input.email);
@@ -595,7 +612,10 @@ export async function ensureDraftLoginCopied(input: DraftLoginEntry): Promise<Dr
     return { ok: true, copied: false };
   }
   if (copiedLogins.has(memoryKey(draftKey, generation, email))) return { ok: true, copied: false };
-  if (absentLogins.has(absentKey(draftKey, email))) return { ok: true, copied: false };
+  if (absentLogins.has(absentKey(draftKey, email))) {
+    infoAbsentSkip();
+    return { ok: true, copied: false };
+  }
 
   let ready = false;
   try {

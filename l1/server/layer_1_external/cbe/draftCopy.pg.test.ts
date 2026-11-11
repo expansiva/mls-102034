@@ -74,6 +74,10 @@ const SCHEMA = `
     id text PRIMARY KEY,
     details jsonb NOT NULL
   );
+  CREATE TABLE "mls102047_modCamel_tabela" (
+    id text PRIMARY KEY,
+    details jsonb NOT NULL
+  );
   CREATE TABLE mdm_documents (
     "mdmId" text PRIMARY KEY,
     details jsonb NOT NULL
@@ -119,10 +123,12 @@ test('copy matches counts and jsonb md5; a different column returns the draft to
     await exec(sourceUrl, SCHEMA);
     await exec(targetUrl, SCHEMA);
     await exec(sourceUrl, `INSERT INTO mls102047_orders_item (id, details) VALUES ('a', '{"n":1}'::jsonb), ('b', '{"n":2}'::jsonb)`);
+    await exec(sourceUrl, `INSERT INTO "mls102047_modCamel_tabela" (id, details) VALUES ('a', '{"camel":1}'::jsonb)`);
     await exec(sourceUrl, `INSERT INTO mdm_documents ("mdmId", details) VALUES ('doc-1', '{"kind":"person"}'::jsonb)`);
     await exec(sourceUrl, `INSERT INTO mdm_outbox (id, payload) VALUES ('src', '{"from":"app"}'::jsonb)`);
     await exec(sourceUrl, `INSERT INTO monitor_bff_execution_log (id, payload) VALUES ('src', '{"from":"app"}'::jsonb)`);
     await exec(targetUrl, `INSERT INTO mls102047_orders_item (id, details) VALUES ('old', '{"n":0}'::jsonb)`);
+    await exec(targetUrl, `INSERT INTO "mls102047_modCamel_tabela" (id, details) VALUES ('old', '{"camel":0}'::jsonb)`);
     await exec(targetUrl, `INSERT INTO mdm_documents ("mdmId", details) VALUES ('old', '{"kind":"old"}'::jsonb)`);
     await exec(targetUrl, `INSERT INTO mdm_outbox (id, payload) VALUES ('keep', '{"from":"draft"}'::jsonb)`);
     await exec(targetUrl, `INSERT INTO monitor_bff_execution_log (id, payload) VALUES ('keep', '{"from":"draft"}'::jsonb)`);
@@ -145,12 +151,15 @@ test('copy matches counts and jsonb md5; a different column returns the draft to
     });
     assert.equal(copied.ok, true);
     if (!copied.ok) return;
-    assert.deepEqual(copied.tables, ['mdm_documents', 'mls102047_orders_item']);
+    assert.deepEqual(copied.tables, ['mdm_documents', 'mls102047_modCamel_tabela', 'mls102047_orders_item']);
     assert.equal(started, 1);
     assert.equal(readDraftData(dir).source, 'copy');
     const orderMd5 = async (url: string) => rowsOf(url, `SELECT md5(details::text) AS hash FROM mls102047_orders_item ORDER BY id`);
+    const camelMd5 = async (url: string) => rowsOf(url, `SELECT md5(details::text) AS hash FROM "mls102047_modCamel_tabela" ORDER BY id`);
     const docMd5 = async (url: string) => rowsOf(url, `SELECT md5(details::text) AS hash FROM mdm_documents ORDER BY "mdmId"`);
     assert.deepEqual(await orderMd5(targetUrl), await orderMd5(sourceUrl));
+    assert.deepEqual(await camelMd5(targetUrl), await camelMd5(sourceUrl));
+    assert.equal((await rowsOf(targetUrl, 'SELECT count(*)::int AS n FROM "mls102047_modCamel_tabela"'))[0]?.n, 1);
     assert.deepEqual(await docMd5(targetUrl), await docMd5(sourceUrl));
     assert.equal((await rowsOf(targetUrl, 'SELECT count(*)::int AS n FROM mls102047_orders_item'))[0]?.n, 2);
     assert.deepEqual(await rowsOf(targetUrl, 'SELECT id FROM mdm_outbox ORDER BY id'), [{ id: 'keep' }]);

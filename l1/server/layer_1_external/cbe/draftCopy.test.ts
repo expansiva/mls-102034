@@ -8,6 +8,7 @@ import Fastify from 'fastify';
 import { draftDirOf } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
 import { readDraftData } from '/_102034_/l1/server/layer_1_external/cbe/draftDataSource.js';
 import {
+  DraftCopyError,
   draftCopyTables,
   performDraftCopy,
   type DraftCopyColumn,
@@ -25,7 +26,9 @@ const PROJECT_ID = 102047;
 const SLUG = 'team-102047';
 const PARENT_TEST_URL = 'postgres://collab:s3cret@127.0.0.1:5432/collab_app_test';
 const CATALOG = [
+  'mls102047_agendaClinica_consulta',
   'mls102047_cafeflow_cup',
+  'mls102047_comandaRestaurante_mesa',
   'mls102047_orders_item',
   'mls999_orders_item',
   'mdm_documents',
@@ -46,7 +49,9 @@ const ALL = [
   'mdm_documents_entities_index',
   'mdm_relationship',
   'mdm_tag',
+  'mls102047_agendaClinica_consulta',
   'mls102047_cafeflow_cup',
+  'mls102047_comandaRestaurante_mesa',
   'mls102047_orders_item',
 ];
 const COLUMNS: DraftCopyColumn[] = [
@@ -99,10 +104,24 @@ const bomb: Sql = {
 };
 
 test('draftCopyTables: all, one module, registry flag, and the excluded tables', () => {
-  assert.deepEqual(draftCopyTables({ projectId: PROJECT_ID, tables: CATALOG }), ALL);
+  const errors: string[] = [];
+  const origError = console.error;
+  console.error = (...args: unknown[]) => {
+    errors.push(args.map((part) => String(part)).join(' '));
+  };
+  try {
+    assert.deepEqual(draftCopyTables({ projectId: PROJECT_ID, tables: CATALOG }), ALL);
+    assert.equal(errors.some((line) => line.includes('unsafe')), false);
+  } finally {
+    console.error = origError;
+  }
   assert.deepEqual(
     draftCopyTables({ projectId: PROJECT_ID, tables: CATALOG, modules: ['cafeFlow'] }),
     ['mls102047_cafeflow_cup'],
+  );
+  assert.deepEqual(
+    draftCopyTables({ projectId: PROJECT_ID, tables: CATALOG, modules: ['comandaRestaurante'] }),
+    ['mls102047_comandaRestaurante_mesa'],
   );
   assert.deepEqual(
     draftCopyTables({ projectId: PROJECT_ID, tables: CATALOG, modules: ['cafeFlow'], withRegistry: false }),
@@ -115,6 +134,18 @@ test('draftCopyTables: all, one module, registry flag, and the excluded tables',
   const excluded = ['mdm_outbox', 'mdm_audit_log', 'mdm_monitoring_write', 'monitor_bff_execution_log', '_schema_module_state', 'platform_schema_snapshot_log', 'mdm_kv'];
   const all = draftCopyTables({ projectId: PROJECT_ID, tables: CATALOG });
   for (const name of excluded) assert.equal(all.includes(name), false, name);
+});
+
+test('draftCopyTables fails the copy when a project table name is not an identifier', () => {
+  for (const name of ['mls102047_bad name', 'mls102047_a;b', 'mls102047_a"b']) {
+    assert.throws(() => draftCopyTables({ projectId: PROJECT_ID, tables: [name, 'mls102047_orders_item'] }), (err: unknown) => {
+      assert.ok(err instanceof DraftCopyError);
+      assert.equal(err.code, 'DRAFT_COPY');
+      assert.equal(err.table, name);
+      assert.equal(err.message.includes(name), true);
+      return true;
+    });
+  }
 });
 
 test('draftCopy requires copy authority, records the copy, forgets the login, and stops before copying', async () => {
@@ -231,7 +262,7 @@ test('draftCopy requires copy authority, records the copy, forgets the login, an
     const dump = spawned.find((args) => args[0] === 'pg_dump');
     assert.ok(dump);
     assert.equal(dump.includes('--table'), true);
-    assert.equal(dump.includes('mls102047_orders_item'), true);
+    assert.equal(dump.includes('"mls102047_orders_item"'), true);
     assert.equal(dump.includes('mdm_outbox'), false);
     assert.equal(dump.includes('s3cret'), false);
     const stored = readDraftData(dir);

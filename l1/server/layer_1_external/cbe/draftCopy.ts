@@ -37,7 +37,7 @@ const EXCLUDED = new Set<string>([
 ]);
 
 const MODULE_ID = /^[A-Za-z][A-Za-z0-9]*$/u;
-const IDENT = /^[a-z_][a-z0-9_]*$/u;
+const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const COPY_TIMEOUT_MS = 120_000;
 
 const TEXT: Record<DraftDataLang, {
@@ -108,6 +108,7 @@ export function draftCopyTables(input: {
   tables: readonly string[];
   modules?: readonly string[];
   withRegistry?: boolean;
+  lang?: DraftDataLang;
 }): string[] {
   const projectPrefix = `mls${input.projectId}_`;
   const selected = input.modules?.map((moduleId) => moduleTableNamespacePrefix(moduleId)) ?? null;
@@ -115,6 +116,7 @@ export function draftCopyTables(input: {
   const chosen: string[] = [];
   for (const name of input.tables) {
     if (!IDENT.test(name)) {
+      if (name.startsWith(projectPrefix)) fail('failed', input.lang ?? 'en', name);
       console.error(`[cbe] draft copy: skipped table with an unsafe name: ${name}`);
       continue;
     }
@@ -129,7 +131,7 @@ export function draftCopyTables(input: {
       chosen.push(name);
       continue;
     }
-    if (selected.some((prefix) => prefix !== '' && rest.startsWith(prefix))) chosen.push(name);
+    if (selected.some((prefix) => prefix !== '' && rest.toLowerCase().startsWith(prefix))) chosen.push(name);
   }
   return [...new Set(chosen)].sort((left, right) => left.localeCompare(right));
 }
@@ -306,7 +308,7 @@ async function copyTables(input: {
   try {
     const dumped = await input.io.spawn(
       'pg_dump',
-      ['--format=custom', '--data-only', '--no-owner', '--no-acl', '--file', dumpPath, ...input.tables.flatMap((table) => ['--table', table])],
+      ['--format=custom', '--data-only', '--no-owner', '--no-acl', '--file', dumpPath, ...input.tables.flatMap((table) => ['--table', quoteIdent(table)])],
       pgEnv(input.sourceUrl),
     );
     if (dumped.code !== 0) {
@@ -361,6 +363,7 @@ export async function performDraftCopy(input: PerformDraftCopyInput): Promise<Pe
     tables = draftCopyTables({
       projectId: input.projectId,
       tables: present,
+      lang,
       ...(input.modules ? { modules: input.modules } : {}),
       ...(input.withRegistry !== undefined ? { withRegistry: input.withRegistry } : {}),
     });
