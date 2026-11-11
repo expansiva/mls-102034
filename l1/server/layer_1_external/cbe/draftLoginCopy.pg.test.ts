@@ -9,8 +9,10 @@ import { Client, Pool } from 'pg';
 import type { AppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { CacheRuntimeMemory } from '/_102034_/l1/server/layer_1_external/cache/CacheRuntimeMemory.js';
 import { draftDatabaseName, draftDatabaseUrl, draftDirOf } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
+import { desenvIo, runDraftEnter } from '/_102034_/l1/server/layer_1_external/cbe/cbeDesenv.js';
 import {
   ensureDraftLoginCopied,
+  forgetDraftLoginAbsent,
   forgetDraftLoginCopy,
 } from '/_102034_/l1/server/layer_1_external/cbe/draftLoginCopy.js';
 import { createPostgresDataRuntime } from '/_102034_/l1/mdm/layer_1_external/data/postgres/MdmDataRuntimePostgres.js';
@@ -283,6 +285,115 @@ test('entry copies the login into a disposable draft database without a second c
     throw new Error(scrub(err));
   } finally {
     forgetDraftLoginCopy(draftDirOf(base, slug));
+    rmSync(base, { recursive: true, force: true });
+    for (const name of [sourceName, draftName]) {
+      try {
+        await admin.query(`DROP DATABASE IF EXISTS ${quoteDb(name)} WITH (FORCE)`);
+      } catch (err) {
+        console.error(`[cbe] draft login copy drop failed: ${scrub(err)}`);
+      }
+    }
+    await admin.end();
+  }
+});
+
+test('a login missing at the origin does not block; the next studio entry copies it', { skip: !optedIn, timeout: 60_000 }, async () => {
+  const adminUrl = tunnelUrl();
+  const hex = randomBytes(4).toString('hex');
+  const sourceName = `collab_app_draft_st70s2b_${hex}`;
+  const slug = `user-${randomBytes(8).toString('hex')}`;
+  const projectId = 102047;
+  const draftName = draftDatabaseName(slug, projectId);
+  const sourceUrl = withDatabase(adminUrl, sourceName);
+  const draftUrl = withDatabase(adminUrl, draftName);
+  const base = mkdtempSync(join(tmpdir(), 'draft-login-pg-absent-'));
+  const draftKey = draftDirOf(base, slug);
+  const admin = new Client({ connectionString: adminUrl });
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map((part) => String(part)).join(' '));
+  };
+  const origBase = desenvIo.getProjectsBaseDir;
+  const origProject = desenvIo.resolveClientProjectId;
+  const origWorktree = desenvIo.ensureDraftWorktree;
+  const origFastForward = desenvIo.fastForwardDraft;
+  const origDev = desenvIo.ensureDevProcess;
+  const origReady = desenvIo.waitForDevReady;
+  desenvIo.getProjectsBaseDir = () => base;
+  desenvIo.resolveClientProjectId = () => String(projectId);
+  desenvIo.ensureDraftWorktree = async () => '/tmp/draft';
+  desenvIo.fastForwardDraft = async () => ({ status: 'up_to_date' });
+  desenvIo.ensureDevProcess = () => ({ port: 4100, pid: 1, startedAt: 0, lastRequestAt: 0 });
+  desenvIo.waitForDevReady = async () => true;
+  await admin.connect();
+  try {
+    await admin.query(`CREATE DATABASE ${quoteDb(sourceName)}`);
+    await admin.query(`CREATE DATABASE ${quoteDb(draftName)}`);
+    await createSchema(sourceUrl);
+    await createSchema(draftUrl);
+    await seed(sourceUrl, draftUrl);
+    await exec(sourceUrl, `DELETE FROM "mdm_tag" WHERE lower(tag) = $1`, [EMAIL]);
+    forgetDraftLoginCopy(draftKey);
+    forgetDraftLoginAbsent(draftKey);
+
+    const entry = () => ensureDraftLoginCopied({
+      base,
+      slug,
+      projectId,
+      email: 'Ada@Example.com',
+      lang: 'en',
+      parentDatabaseUrl: sourceUrl,
+      waitUntilReady: async () => true,
+    });
+    const tagCount = async () => {
+      const rows = await rowsOf(draftUrl, `SELECT id FROM "mdm_tag" WHERE lower(tag) = $1`, [EMAIL]);
+      return rows.length;
+    };
+
+    assert.deepEqual(await entry(), { ok: true, copied: false });
+    assert.equal(await tagCount(), 0);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /not in the app database/);
+    assert.deepEqual(await entry(), { ok: true, copied: false });
+    assert.equal(warnings.length, 1);
+
+    await exec(
+      sourceUrl,
+      `INSERT INTO "mdm_tag" ("id", "entityType", "entityId", tag, namespace, module, "createdBy", "createdByType", "createdAt")
+       VALUES ('tag-1', 'MdmEntity', $1, $2, 'login', 'organization', 'app', 'system', $3)`,
+      [PERSON, EMAIL, '2026-11-11T00:00:00.000Z'],
+    );
+    assert.deepEqual(await entry(), { ok: true, copied: false });
+    assert.equal(await tagCount(), 0);
+
+    const entered = await runDraftEnter({ allowed: true, draft: slug, project: projectId });
+    assert.equal(entered.status, 200);
+    assert.deepEqual(await entry(), { ok: true, copied: true });
+    assert.equal(await tagCount(), 1);
+
+    const pool = new Pool({ connectionString: draftUrl, max: 1 });
+    try {
+      const runtime = createPostgresDataRuntime({ appEnv: 'development' } as AppEnv, pool);
+      const found = await resolveSessionPerson({ data: runtime, cache: new CacheRuntimeMemory() } as unknown as RequestContext, EMAIL);
+      assert.equal(found?.mdmId, PERSON);
+      assert.equal(found?.email, EMAIL);
+    } finally {
+      await pool.end();
+    }
+  } catch (err) {
+    if (err instanceof assert.AssertionError) throw err;
+    throw new Error(scrub(err));
+  } finally {
+    console.warn = originalWarn;
+    desenvIo.getProjectsBaseDir = origBase;
+    desenvIo.resolveClientProjectId = origProject;
+    desenvIo.ensureDraftWorktree = origWorktree;
+    desenvIo.fastForwardDraft = origFastForward;
+    desenvIo.ensureDevProcess = origDev;
+    desenvIo.waitForDevReady = origReady;
+    forgetDraftLoginCopy(draftKey);
+    forgetDraftLoginAbsent(draftKey);
     rmSync(base, { recursive: true, force: true });
     for (const name of [sourceName, draftName]) {
       try {

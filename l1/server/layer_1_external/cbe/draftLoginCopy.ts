@@ -168,9 +168,17 @@ export type DraftLoginEntryResult =
   | { ok: false; reason: 'not-ready' };
 
 const copiedLogins = new Set<string>();
+/** Login missing at the origin. Not the done set: the next draftEnter drops it, a new data.json `at` does not. */
+const absentLogins = new Set<string>();
+/** One warning per draft, generation and login. A later draftEnter does not warn again for the same generation. */
+const absentWarnings = new Set<string>();
 
 function memoryKey(draftKey: string, generation: string, email: string): string {
   return `${draftKey}\0${generation}\0${email}`;
+}
+
+function absentKey(draftKey: string, email: string): string {
+  return `${draftKey}\0${email}`;
 }
 
 /** Drops every remembered login for this draft. A new data.json `at` also misses the key. */
@@ -179,6 +187,23 @@ export function forgetDraftLoginCopy(draftKey: string): void {
   for (const key of copiedLogins) {
     if (key.startsWith(prefix)) copiedLogins.delete(key);
   }
+}
+
+/** Drops only the "missing at the origin" memory for this draft. The done set stays. */
+export function forgetDraftLoginAbsent(draftKey: string): void {
+  const prefix = `${draftKey}\0`;
+  for (const key of absentLogins) {
+    if (key.startsWith(prefix)) absentLogins.delete(key);
+  }
+}
+
+function rememberAbsent(draftKey: string, generation: string, email: string, lang: DraftDataLang): void {
+  const warnKey = memoryKey(draftKey, generation, email);
+  if (!absentWarnings.has(warnKey)) {
+    absentWarnings.add(warnKey);
+    console.warn(`[cbe] draft login copy: ${draftLoginCopyText('missing', lang)}`);
+  }
+  absentLogins.add(absentKey(draftKey, email));
 }
 
 function scrub(err: unknown): string {
@@ -492,15 +517,18 @@ function asCopyError(err: unknown, lang: DraftDataLang): DraftLoginCopyError {
 export async function copyDraftLogin(input: DraftLoginCopyInput): Promise<{ copied: boolean }> {
   const lang = input.lang ?? 'en';
   if (input.sourceName === 'readonly' || input.sourceName === 'same') return { copied: false };
+  if (absentLogins.has(absentKey(input.draftKey, input.email))) return { copied: false };
   let email: string;
   try {
     email = assertLoginEmail(input.email);
   } catch (err) {
     console.error(`[cbe] draft login copy refused: ${scrub(err)}`);
-    throw new DraftLoginCopyError(draftLoginCopyText('missing', lang));
+    absentLogins.add(absentKey(input.draftKey, input.email));
+    return { copied: false };
   }
   const key = memoryKey(input.draftKey, input.generation, email);
   if (copiedLogins.has(key)) return { copied: false };
+  if (absentLogins.has(absentKey(input.draftKey, email))) return { copied: false };
   const load = input.load ?? loadDraftLogin;
   const write = input.write ?? writeDraftLoginPlan;
   let loaded: DraftLoginLoaded;
@@ -508,6 +536,10 @@ export async function copyDraftLogin(input: DraftLoginCopyInput): Promise<{ copi
     loaded = await load(input.from, input.to, email, lang);
   } catch (err) {
     throw asCopyError(err, lang);
+  }
+  if (!loaded.login) {
+    rememberAbsent(input.draftKey, input.generation, email, lang);
+    return { copied: false };
   }
   const plan = planDraftLoginCopy({ ...loaded, email }, lang);
   try {
@@ -539,7 +571,8 @@ async function openSql(url: string): Promise<Sql & { close(): Promise<void> }> {
 
 /**
  * After the draft child is ready: copy this login from the app database into the draft database.
- * `readonly` and `same` do nothing. A second call for the same data.json generation does nothing.
+ * `readonly` and `same` do nothing. A login already copied for this data.json generation does nothing.
+ * A login missing at the origin does nothing until the next draftEnter.
  */
 export async function ensureDraftLoginCopied(input: DraftLoginEntry): Promise<DraftLoginEntryResult> {
   const lang = input.lang;
@@ -552,14 +585,17 @@ export async function ensureDraftLoginCopied(input: DraftLoginEntry): Promise<Dr
   if (state.source === 'readonly' || state.source === 'same') return { ok: true, copied: false };
   const draftKey = draftDirOf(input.base, input.slug);
   const generation = state.at ?? '';
+  if (absentLogins.has(absentKey(draftKey, input.email))) return { ok: true, copied: false };
   let email: string;
   try {
     email = assertLoginEmail(input.email);
   } catch (err) {
     console.error(`[cbe] draft login copy refused: ${scrub(err)}`);
-    throw new DraftLoginCopyError(draftLoginCopyText('missing', lang));
+    absentLogins.add(absentKey(draftKey, input.email));
+    return { ok: true, copied: false };
   }
   if (copiedLogins.has(memoryKey(draftKey, generation, email))) return { ok: true, copied: false };
+  if (absentLogins.has(absentKey(draftKey, email))) return { ok: true, copied: false };
 
   let ready = false;
   try {

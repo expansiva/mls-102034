@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { CollabAuthClaims } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
-import { DraftLoginCopyError, draftLoginCopyText } from '/_102034_/l1/server/layer_1_external/cbe/draftLoginCopy.js';
+import { DraftLoginCopyError, copyDraftLogin, draftLoginCopyText, forgetDraftLoginAbsent, forgetDraftLoginCopy } from '/_102034_/l1/server/layer_1_external/cbe/draftLoginCopy.js';
 import {
   applyDraftExecBff,
   draftDownBody,
@@ -735,6 +735,132 @@ test('a failed login copy is a visible error and does not call the child', async
   const sent = reply.sent as unknown as { error: { code: string; message: string } };
   assert.equal(sent.error.code, 'DRAFT_LOGIN_COPY');
   assert.equal(sent.error.message, draftLoginCopyText('failed', 'pt'));
+});
+
+test('a login missing at the origin is proxied with 200 and one warning; a sql failure stays 503', async () => {
+  delete process.env.COLLAB_DRAFT;
+  const draftKey = `${BASE}/absent-${Date.now()}`;
+  let loads = 0;
+  let fetched = 0;
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map((part) => String(part)).join(' '));
+  };
+  const absentLoad = async () => {
+    loads += 1;
+    return {
+      email: VERIFIED_CLAIMS.email,
+      login: null,
+      indexes: new Map(),
+      documents: new Map(),
+      relationships: [],
+      sourceReservations: [],
+      draftReservations: [],
+      draftIndexIds: new Set<string>(),
+    };
+  };
+  const bomb = { async query() { throw new Error('sql should not run'); } };
+  const copyImpl = async (input: { email: string; lang: 'en' | 'pt' | 'es' }) => {
+    const result = await copyDraftLogin({
+      sourceName: 'seed',
+      email: input.email,
+      draftKey,
+      generation: 'g1',
+      lang: input.lang,
+      from: bomb,
+      to: bomb,
+      load: absentLoad,
+      write: async () => { throw new Error('write should not run'); },
+    });
+    return { ok: true as const, copied: result.copied };
+  };
+  try {
+    const reply = fakeReply();
+    const result = await applyDraftExecBff({
+      request: fakeRequest({ routine: 'x.y.z' }, { cookie: `collab-draft=${SLUG}`, 'accept-language': 'en' }),
+      reply,
+      base: BASE,
+      clientProjectId: '102047',
+      resolveSession: async () => ({ reject: false, claims: VERIFIED_CLAIMS }),
+      refreshedAuthCookie: (token) => token,
+      resolveRequestDraftImpl: async () => readyDraft(),
+      ensureDevProcessImpl: () => devInfo(),
+      touchDevProcessImpl: () => {},
+      copyDraftLoginImpl: copyImpl,
+      fetchImpl: async () => {
+        fetched += 1;
+        return new Response(JSON.stringify({ ok: true, data: null, error: null }), { status: 200 });
+      },
+    });
+    assert.equal(result.handled, true);
+    assert.equal(reply.statusCode, 200);
+    assert.equal(fetched, 1);
+    assert.equal(loads, 1);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /not in the app database/);
+
+    await applyDraftExecBff({
+      request: fakeRequest({ routine: 'x.y.z' }, { cookie: `collab-draft=${SLUG}` }),
+      reply: fakeReply(),
+      base: BASE,
+      clientProjectId: '102047',
+      resolveSession: async () => ({ reject: false, claims: VERIFIED_CLAIMS }),
+      refreshedAuthCookie: (token) => token,
+      resolveRequestDraftImpl: async () => readyDraft(),
+      ensureDevProcessImpl: () => devInfo(),
+      touchDevProcessImpl: () => {},
+      copyDraftLoginImpl: copyImpl,
+      fetchImpl: async () => {
+        fetched += 1;
+        return new Response('{}', { status: 200 });
+      },
+    });
+    assert.equal(loads, 1);
+    assert.equal(warnings.length, 1);
+    assert.equal(fetched, 2);
+
+    forgetDraftLoginAbsent(draftKey);
+    const failed = fakeReply();
+    let failedFetch = 0;
+    await applyDraftExecBff({
+      request: fakeRequest({ routine: 'x.y.z' }, { cookie: `collab-draft=${SLUG}`, 'accept-language': 'en' }),
+      reply: failed,
+      base: BASE,
+      clientProjectId: '102047',
+      resolveSession: async () => ({ reject: false, claims: VERIFIED_CLAIMS }),
+      refreshedAuthCookie: (token) => token,
+      resolveRequestDraftImpl: async () => readyDraft(),
+      ensureDevProcessImpl: () => devInfo(),
+      touchDevProcessImpl: () => {},
+      copyDraftLoginImpl: async (input) => {
+        await copyDraftLogin({
+          sourceName: 'seed',
+          email: input.email,
+          draftKey,
+          generation: 'g-sql',
+          lang: input.lang,
+          from: bomb,
+          to: bomb,
+          load: async () => { throw new Error('connection refused'); },
+        });
+        return { ok: true as const, copied: false };
+      },
+      fetchImpl: async () => {
+        failedFetch += 1;
+        return new Response('{}', { status: 200 });
+      },
+    });
+    assert.equal(failedFetch, 0);
+    assert.equal(failed.statusCode, 503);
+    const sent = failed.sent as unknown as { error: { code: string; message: string } };
+    assert.equal(sent.error.code, 'DRAFT_LOGIN_COPY');
+    assert.match(sent.error.message, /Could not copy the login into the draft/);
+  } finally {
+    console.warn = originalWarn;
+    forgetDraftLoginCopy(draftKey);
+    forgetDraftLoginAbsent(draftKey);
+  }
 });
 
 test('a draft that is not ready before the login copy answers DRAFT_DOWN and does not call the child', async () => {
