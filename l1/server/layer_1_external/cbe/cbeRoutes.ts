@@ -92,7 +92,7 @@ import { handleProviderToken } from '/_102034_/l1/server/layer_1_external/cbe/cb
 // Bump on every change to the cbe module. Exposed via the x-cbe-version
 // response header and the {action:'ping'} probe so a deploy can be verified:
 //   curl -s localhost:3000/exec -H 'Content-Type: application/json' -d '{"action":"ping"}'
-export const CBE_MODULE_VERSION = '1.8.10';
+export const CBE_MODULE_VERSION = '1.8.11';
 
 // /libs/<14-digit stamp>/ and /monaco/<stamp>/ are immutable for a year: the
 // stamp is the version, so the bytes at that path do not change. Any other
@@ -1120,6 +1120,19 @@ function recordDraftData(base: string, slug: string, entry: DraftDataLogEntry): 
   appendDraftDataLog(draftDirOf(base, slug), entry);
 }
 
+function draftSourceOption(
+  action: DraftDataAction,
+  authorities: readonly string[],
+  alphaAllAuthorities: boolean,
+  lang: ReturnType<typeof draftDataLang>,
+  configured: () => boolean,
+): { ok: boolean; reason?: string } {
+  const decision = canDraftData(action, authorities, { alphaAllAuthorities }, lang);
+  if (!decision.allowed) return { ok: false, reason: decision.msg };
+  if (!configured()) return { ok: false, reason: draftSharedText('notConfigured', lang) };
+  return { ok: true };
+}
+
 async function handleDraftDataSource(request: FastifyRequest, body: CbeRequestDraftDataSource, reply: FastifyReply): Promise<void> {
   const project = await requireSourceProject(request, body, reply);
   if (!project) return;
@@ -1132,8 +1145,11 @@ async function handleDraftDataSource(request: FastifyRequest, body: CbeRequestDr
     reply.code(CBE_HTTP_BAD_REQUEST).send({ statusCode: CBE_HTTP_BAD_REQUEST, code: 'BAD_DRAFT', msg: 'draft.bad_slug' });
     return;
   }
+  const lang = draftDataLang(headerString(request.headers['accept-language']));
   try {
-    const state = readDraftData(draftDirOf(base, parsed.slug), draftDataLang(headerString(request.headers['accept-language'])));
+    const state = readDraftData(draftDirOf(base, parsed.slug), lang);
+    const authorities = await draftDataHooks.authoritiesOf(request);
+    const alpha = draftDataHooks.alphaOn();
     reply.code(CBE_HTTP_OK).send({
       statusCode: CBE_HTTP_OK,
       source: state.source,
@@ -1141,6 +1157,12 @@ async function handleDraftDataSource(request: FastifyRequest, body: CbeRequestDr
       by: state.by,
       ...(state.modules ? { modules: state.modules } : {}),
       ...(state.withRegistry !== undefined ? { withRegistry: state.withRegistry } : {}),
+      options: {
+        seed: draftSourceOption('reset', authorities, alpha, lang, () => true),
+        copy: draftSourceOption('copy', authorities, alpha, lang, () => true),
+        readonly: draftSourceOption('readonly', authorities, alpha, lang, () => sharedSourceConfigured('readonly')),
+        same: draftSourceOption('sameDatabase', authorities, alpha, lang, () => sharedSourceConfigured('same')),
+      },
     });
   } catch (err) {
     const cause = err instanceof Error ? err.message : String(err);

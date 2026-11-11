@@ -5,12 +5,13 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify from 'fastify';
-import { draftDirOf, ensureDevProcess, type DevSpawn } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
+import { draftDirOf, draftSharedText, ensureDevProcess, type DevSpawn } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
 import { draftDataHooks, draftDbHooks, draftDevHooks, registerCbeRoutes, sessionHooks } from '/_102034_/l1/server/layer_1_external/cbe/cbeRoutes.js';
 import {
   DraftDataFileError,
   appendDraftDataLog,
   canDraftData,
+  draftDataText,
   readDraftData,
   writeDraftData,
   DRAFT_DATA_ACTIONS,
@@ -160,7 +161,14 @@ test('draftDataSource returns source, when and who; reset records seed; authorit
       payload: { action: 'draftDataSource', project: PROJECT_ID, draft: SLUG },
     });
     assert.equal(viewed.statusCode, 200, viewed.body);
-    assert.deepEqual(viewed.json(), { statusCode: 200, source: 'seed', at: null, by: null });
+    const deniedOption = { ok: false, reason: draftDataText('forbidden', 'en') };
+    assert.deepEqual(viewed.json(), {
+      statusCode: 200,
+      source: 'seed',
+      at: null,
+      by: null,
+      options: { seed: deniedOption, copy: deniedOption, readonly: deniedOption, same: deniedOption },
+    });
 
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'data.json'), '{');
@@ -222,6 +230,82 @@ test('draftDataSource returns source, when and who; reset records seed; authorit
     else process.env.CBE_REQUIRE_LOGIN = prev.login;
     if (prev.testDatabase === undefined) delete process.env.DATABASE_URL_TEST;
     else process.env.DATABASE_URL_TEST = prev.testDatabase;
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('draftDataSource options follow authority and whether readonly is configured', async () => {
+  const base = mkdtempSync(join(tmpdir(), 'cbe-draft-data-options-'));
+  const prev = {
+    dir: process.env.CBE_PROJECTS_DIR,
+    login: process.env.CBE_REQUIRE_LOGIN,
+    testDatabase: process.env.DATABASE_URL_TEST,
+    readonly: process.env.DATABASE_URL_READONLY,
+  };
+  process.env.CBE_PROJECTS_DIR = base;
+  process.env.CBE_REQUIRE_LOGIN = 'never';
+  process.env.DATABASE_URL_TEST = PARENT_TEST_URL;
+  delete process.env.DATABASE_URL_READONLY;
+  const origAlpha = draftDataHooks.alphaOn;
+  const origAuthorities = draftDataHooks.authoritiesOf;
+  let authorities: readonly string[] = [];
+  let alpha = true;
+  draftDataHooks.alphaOn = () => alpha;
+  draftDataHooks.authoritiesOf = async () => authorities;
+  const app = Fastify();
+  registerCbeRoutes(app);
+  const ask = (acceptLanguage?: string) => app.inject({
+    method: 'POST',
+    url: '/exec',
+    headers: acceptLanguage ? { 'accept-language': acceptLanguage } : {},
+    payload: { action: 'draftDataSource', project: PROJECT_ID, draft: SLUG },
+  });
+  try {
+    const open = await ask();
+    assert.equal(open.statusCode, 200, open.body);
+    const openOptions = open.json().options;
+    assert.deepEqual(openOptions.readonly, { ok: false, reason: draftSharedText('notConfigured', 'en') });
+    assert.deepEqual(openOptions.seed, { ok: true });
+    assert.deepEqual(openOptions.copy, { ok: true });
+    assert.deepEqual(openOptions.same, { ok: true });
+    assert.equal(open.json().source, 'seed');
+    assert.equal(open.json().at, null);
+    assert.equal(open.json().by, null);
+
+    const openPt = await ask('pt-BR,pt;q=0.9');
+    assert.equal(openPt.json().options.readonly.reason, draftSharedText('notConfigured', 'pt'));
+
+    alpha = false;
+    authorities = ['draftData.view'];
+    const closed = await ask();
+    assert.equal(closed.statusCode, 200, closed.body);
+    const forbidden = { ok: false, reason: draftDataText('forbidden', 'en') };
+    assert.deepEqual(closed.json().options, { seed: forbidden, copy: forbidden, readonly: forbidden, same: forbidden });
+
+    const closedPt = await ask('es');
+    const forbiddenEs = { ok: false, reason: draftDataText('forbidden', 'es') };
+    assert.deepEqual(closedPt.json().options.seed, forbiddenEs);
+    assert.deepEqual(closedPt.json().options.same, forbiddenEs);
+
+    authorities = ['draftData.view', 'draftData.copy'];
+    const granted = await ask();
+    assert.equal(granted.statusCode, 200, granted.body);
+    assert.deepEqual(granted.json().options.copy, { ok: true });
+    assert.deepEqual(granted.json().options.seed, forbidden);
+    assert.deepEqual(granted.json().options.readonly, forbidden);
+    assert.deepEqual(granted.json().options.same, forbidden);
+  } finally {
+    draftDataHooks.alphaOn = origAlpha;
+    draftDataHooks.authoritiesOf = origAuthorities;
+    await app.close();
+    if (prev.dir === undefined) delete process.env.CBE_PROJECTS_DIR;
+    else process.env.CBE_PROJECTS_DIR = prev.dir;
+    if (prev.login === undefined) delete process.env.CBE_REQUIRE_LOGIN;
+    else process.env.CBE_REQUIRE_LOGIN = prev.login;
+    if (prev.testDatabase === undefined) delete process.env.DATABASE_URL_TEST;
+    else process.env.DATABASE_URL_TEST = prev.testDatabase;
+    if (prev.readonly === undefined) delete process.env.DATABASE_URL_READONLY;
+    else process.env.DATABASE_URL_READONLY = prev.readonly;
     rmSync(base, { recursive: true, force: true });
   }
 });
