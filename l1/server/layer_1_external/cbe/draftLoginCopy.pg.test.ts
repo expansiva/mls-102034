@@ -9,10 +9,8 @@ import { Client, Pool } from 'pg';
 import type { AppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { CacheRuntimeMemory } from '/_102034_/l1/server/layer_1_external/cache/CacheRuntimeMemory.js';
 import { draftDatabaseName, draftDatabaseUrl, draftDirOf } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
-import { desenvIo, runDraftEnter } from '/_102034_/l1/server/layer_1_external/cbe/cbeDesenv.js';
 import {
   ensureDraftLoginCopied,
-  forgetDraftLoginAbsent,
   forgetDraftLoginCopy,
 } from '/_102034_/l1/server/layer_1_external/cbe/draftLoginCopy.js';
 import { createPostgresDataRuntime } from '/_102034_/l1/mdm/layer_1_external/data/postgres/MdmDataRuntimePostgres.js';
@@ -297,10 +295,10 @@ test('entry copies the login into a disposable draft database without a second c
   }
 });
 
-test('a login missing at the origin does not block; the next studio entry copies it', { skip: !optedIn, timeout: 60_000 }, async () => {
+test('a login missing at the origin does not block; the next request copies it after the three rows exist', { skip: !optedIn, timeout: 60_000 }, async () => {
   const adminUrl = tunnelUrl();
   const hex = randomBytes(4).toString('hex');
-  const sourceName = `collab_app_draft_st70s2b_${hex}`;
+  const sourceName = `collab_app_draft_st70s3c_${hex}`;
   const slug = `user-${randomBytes(8).toString('hex')}`;
   const projectId = 102047;
   const draftName = draftDatabaseName(slug, projectId);
@@ -314,18 +312,6 @@ test('a login missing at the origin does not block; the next studio entry copies
   console.warn = (...args: unknown[]) => {
     warnings.push(args.map((part) => String(part)).join(' '));
   };
-  const origBase = desenvIo.getProjectsBaseDir;
-  const origProject = desenvIo.resolveClientProjectId;
-  const origWorktree = desenvIo.ensureDraftWorktree;
-  const origFastForward = desenvIo.fastForwardDraft;
-  const origDev = desenvIo.ensureDevProcess;
-  const origReady = desenvIo.waitForDevReady;
-  desenvIo.getProjectsBaseDir = () => base;
-  desenvIo.resolveClientProjectId = () => String(projectId);
-  desenvIo.ensureDraftWorktree = async () => '/tmp/draft';
-  desenvIo.fastForwardDraft = async () => ({ status: 'up_to_date' });
-  desenvIo.ensureDevProcess = () => ({ port: 4100, pid: 1, startedAt: 0, lastRequestAt: 0 });
-  desenvIo.waitForDevReady = async () => true;
   await admin.connect();
   try {
     await admin.query(`CREATE DATABASE ${quoteDb(sourceName)}`);
@@ -334,8 +320,9 @@ test('a login missing at the origin does not block; the next studio entry copies
     await createSchema(draftUrl);
     await seed(sourceUrl, draftUrl);
     await exec(sourceUrl, `DELETE FROM "mdm_tag" WHERE lower(tag) = $1`, [EMAIL]);
+    await exec(sourceUrl, `DELETE FROM "mdm_documents" WHERE "mdmId" = $1`, [PERSON]);
+    await exec(sourceUrl, `DELETE FROM "mdm_documents_entities_index" WHERE "mdmId" = $1`, [PERSON]);
     forgetDraftLoginCopy(draftKey);
-    forgetDraftLoginAbsent(draftKey);
 
     const entry = () => ensureDraftLoginCopied({
       base,
@@ -358,17 +345,19 @@ test('a login missing at the origin does not block; the next studio entry copies
     assert.deepEqual(await entry(), { ok: true, copied: false });
     assert.equal(warnings.length, 1);
 
+    const at = '2026-11-11T00:00:00.000Z';
+    await exec(sourceUrl, indexSql(), [PERSON, 'Person', 'Original']);
+    await exec(
+      sourceUrl,
+      `INSERT INTO "mdm_documents" ("mdmId", version, details) VALUES ($1, 1, $2::jsonb)`,
+      [PERSON, JSON.stringify({ name: 'Original' })],
+    );
     await exec(
       sourceUrl,
       `INSERT INTO "mdm_tag" ("id", "entityType", "entityId", tag, namespace, module, "createdBy", "createdByType", "createdAt")
        VALUES ('tag-1', 'MdmEntity', $1, $2, 'login', 'organization', 'app', 'system', $3)`,
-      [PERSON, EMAIL, '2026-11-11T00:00:00.000Z'],
+      [PERSON, EMAIL, at],
     );
-    assert.deepEqual(await entry(), { ok: true, copied: false });
-    assert.equal(await tagCount(), 0);
-
-    const entered = await runDraftEnter({ allowed: true, draft: slug, project: projectId });
-    assert.equal(entered.status, 200);
     assert.deepEqual(await entry(), { ok: true, copied: true });
     assert.equal(await tagCount(), 1);
 
@@ -386,14 +375,7 @@ test('a login missing at the origin does not block; the next studio entry copies
     throw new Error(scrub(err));
   } finally {
     console.warn = originalWarn;
-    desenvIo.getProjectsBaseDir = origBase;
-    desenvIo.resolveClientProjectId = origProject;
-    desenvIo.ensureDraftWorktree = origWorktree;
-    desenvIo.fastForwardDraft = origFastForward;
-    desenvIo.ensureDevProcess = origDev;
-    desenvIo.waitForDevReady = origReady;
     forgetDraftLoginCopy(draftKey);
-    forgetDraftLoginAbsent(draftKey);
     rmSync(base, { recursive: true, force: true });
     for (const name of [sourceName, draftName]) {
       try {

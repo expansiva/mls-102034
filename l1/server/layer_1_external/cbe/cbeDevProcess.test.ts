@@ -555,6 +555,8 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
       writeDev(base, 'team-middle', { port: 4102, pid: middlePid, startedAt: now - 2_000, lastRequestAt: now - 2_000 });
       writeDev(base, 'team-newest', { port: 4103, pid: newestPid, startedAt: now - 1_000, lastRequestAt: now - 1_000 });
       writeDev(base, 'team-dead', { port: 4104, pid: 2_147_483_646, startedAt: 1, lastRequestAt: 1 });
+      const dataJson = join(base, 'drafts', 'team-idle', 'data.json');
+      writeFileSync(dataJson, `${JSON.stringify({ source: 'copy', at: 'keep-at', by: 'ana' })}\n`);
 
       reapIdle({ base, now });
 
@@ -569,6 +571,7 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
       assert.equal(existsDev(base, 'team-middle'), true);
       assert.equal(existsDev(base, 'team-newest'), true);
       assert.equal(existsDev(base, 'team-dead'), false);
+      assert.equal(JSON.parse(readFileSync(dataJson, 'utf8')).at, 'keep-at');
     } finally {
       delete process.env.COLLAB_DEV_MAX;
       rmSync(base, { recursive: true, force: true });

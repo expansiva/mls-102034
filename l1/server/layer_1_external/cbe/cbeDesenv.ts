@@ -4,8 +4,7 @@
 
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { parseDraftSlug, draftSlugForUser, ensureDraftWorktree, requestDraftValue, type DraftRequestHeaders } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
-import { draftDirOf, readDevLogTail, writeDevLogTail } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
-import { forgetDraftLoginAbsent } from '/_102034_/l1/server/layer_1_external/cbe/draftLoginCopy.js';
+import { readDevLogTail, writeDevLogTail } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
 import { AncestorDenoConfigError, DenoMissingError, DraftDatabaseError, DraftPortBusyError, DraftWorktreeMissingError, ensureDevProcess, stopDevProcess, waitForDevReady } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
 import { fastForwardDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitPromote.js';
 import { getProjectsBaseDir } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
@@ -325,7 +324,6 @@ export async function runDraftEnter(input: {
       },
     });
     if (!entered.ok) return jsonResult(entered.status, entered.msg);
-    forgetDraftLoginAbsent(draftDirOf(desenvIo.getProjectsBaseDir(), entered.slug));
     const body: { statusCode: number; ok: true; slug: string; head?: string } = {
       statusCode: CBE_HTTP_OK,
       ok: true,

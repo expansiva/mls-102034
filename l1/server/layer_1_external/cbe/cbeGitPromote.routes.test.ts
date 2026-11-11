@@ -6,8 +6,10 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify from 'fastify';
+import { draftDirOf } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
 import { draftDataHooks, draftDbHooks, draftDevHooks, draftSyncHooks, promoteRouteHooks, registerCbeRoutes, sessionHooks } from '/_102034_/l1/server/layer_1_external/cbe/cbeRoutes.js';
 import { draftSlugForUser, writeDraftOwner } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
+import { readDraftData } from '/_102034_/l1/server/layer_1_external/cbe/draftDataSource.js';
 
 const PROJECT_ID = 102047;
 const SLUG = 'team-102047';
@@ -258,6 +260,8 @@ test('exec promote, discardDraft, listDrafts and draftDiff', async () => {
     writeFileSync(devJson, JSON.stringify({
       port: 4100, pid: 2147483646, startedAt: 0, lastRequestAt: 0, database: DRAFT_DATABASE,
     }));
+    const dataJson = join(base, 'drafts', SLUG, 'data.json');
+    writeFileSync(dataJson, `${JSON.stringify({ source: 'copy', at: 'keep-at', by: 'ana' })}\n`);
     assert.equal(drops.length, 0);
     const discarded = await app.inject({
       method: 'POST',
@@ -268,6 +272,7 @@ test('exec promote, discardDraft, listDrafts and draftDiff', async () => {
     assert.equal(discarded.json().status, 'discarded');
     assert.equal(discarded.json().databaseDropped, undefined);
     assert.equal(existsSync(devJson), false);
+    assert.equal(JSON.parse(readFileSync(dataJson, 'utf8')).at, 'keep-at');
     assert.deepEqual(drops, []);
     assert.equal(git(draftRoot, ['rev-parse', 'HEAD']), git(projectRoot, ['rev-parse', 'HEAD']));
 
@@ -455,6 +460,19 @@ test('draftResetDatabase stops, drops and ensures, and discardDraft does not dro
     assert.equal(reset.json().status, 'reset');
     assert.equal(reset.json().database, DRAFT_DATABASE);
     assert.deepEqual(order, ['stop', `drop:${DRAFT_DATABASE}`, 'ensure']);
+    const firstAt = readDraftData(draftDirOf(base, SLUG)).at;
+    assert.match(firstAt ?? '', /^\d{4}-\d{2}-\d{2}T/u);
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    order.length = 0;
+    const again = await app.inject({
+      method: 'POST',
+      url: '/exec',
+      payload: { action: 'draftResetDatabase', project: PROJECT_ID, draft: SLUG },
+    });
+    assert.equal(again.statusCode, 200, again.body);
+    const secondAt = readDraftData(draftDirOf(base, SLUG)).at;
+    assert.notEqual(secondAt, firstAt);
 
     order.length = 0;
     dropError = new Error('drop refused');
@@ -466,6 +484,7 @@ test('draftResetDatabase stops, drops and ensures, and discardDraft does not dro
     assert.equal(failed.statusCode, 500, failed.body);
     assert.equal(failed.json().cause, 'drop refused');
     assert.deepEqual(order, ['stop', `drop:${DRAFT_DATABASE}`, 'ensure']);
+    assert.equal(readDraftData(draftDirOf(base, SLUG)).at, secondAt);
 
     order.length = 0;
     dropError = null;

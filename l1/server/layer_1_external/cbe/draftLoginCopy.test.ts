@@ -6,13 +6,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { draftDirOf } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
 import { writeDraftData } from '/_102034_/l1/server/layer_1_external/cbe/draftDataSource.js';
-import { desenvIo, runDraftEnter } from '/_102034_/l1/server/layer_1_external/cbe/cbeDesenv.js';
 import {
   DraftLoginCopyError,
   copyDraftLogin,
   draftLoginCopyText,
   ensureDraftLoginCopied,
-  forgetDraftLoginAbsent,
   forgetDraftLoginCopy,
   planDraftLoginCopy,
   writeDraftLoginPlan,
@@ -251,11 +249,8 @@ test('a failed write is visible and the next entry tries again', async () => {
   }
 });
 
-test('a login missing at the origin opens without a failure and is read again only after draftEnter', async () => {
-  const key = `draft-key-${Date.now()}-absent`;
-  const base = mkdtempSync(join(tmpdir(), 'draft-login-absent-'));
-  const slug = 'team-102047';
-  const draftKey = draftDirOf(base, slug);
+test('a login missing at the origin is read on every request, warns once, and the next request copies', async () => {
+  const draftKey = `draft-key-${Date.now()}-absent`;
   let loads = 0;
   let present = false;
   const warnings: string[] = [];
@@ -263,18 +258,6 @@ test('a login missing at the origin opens without a failure and is read again on
   console.warn = (...args: unknown[]) => {
     warnings.push(args.map((part) => String(part)).join(' '));
   };
-  const origBase = desenvIo.getProjectsBaseDir;
-  const origProject = desenvIo.resolveClientProjectId;
-  const origWorktree = desenvIo.ensureDraftWorktree;
-  const origFastForward = desenvIo.fastForwardDraft;
-  const origDev = desenvIo.ensureDevProcess;
-  const origReady = desenvIo.waitForDevReady;
-  desenvIo.getProjectsBaseDir = () => base;
-  desenvIo.resolveClientProjectId = () => '102047';
-  desenvIo.ensureDraftWorktree = async () => '/tmp/draft';
-  desenvIo.fastForwardDraft = async () => ({ status: 'up_to_date' });
-  desenvIo.ensureDevProcess = () => ({ port: 4100, pid: 1, startedAt: 0, lastRequestAt: 0 });
-  desenvIo.waitForDevReady = async () => true;
   const load = async () => {
     loads += 1;
     const row = loaded();
@@ -298,51 +281,22 @@ test('a login missing at the origin opens without a failure and is read again on
     assert.deepEqual(await run('g1'), { copied: false });
     assert.deepEqual(await run('g1'), { copied: false });
     assert.deepEqual(await run('g2'), { copied: false });
-    assert.equal(loads, 1);
+    assert.equal(loads, 3);
     assert.equal(warnings.length, 1);
     assert.match(warnings[0], /not in the app database/);
     assert.equal(warnings[0].includes(EMAIL), false);
-    forgetDraftLoginCopy(draftKey);
-    assert.deepEqual(await run('g2'), { copied: false });
-    assert.equal(loads, 1);
 
     present = true;
-    const entered = await runDraftEnter({ allowed: true, draft: slug, project: 102047 });
-    assert.equal(entered.status, 200);
     assert.deepEqual(await run('g1'), { copied: true });
-    assert.equal(loads, 2);
+    assert.equal(loads, 4);
     assert.equal(warnings.length, 1);
-
-    let waited = 0;
-    writeDraftData(draftKey, { source: 'seed', at: 'g1', by: EMAIL });
-    const again = await ensureDraftLoginCopied({
-      base,
-      slug,
-      projectId: 102047,
-      email: EMAIL,
-      lang: 'en',
-      waitUntilReady: async () => {
-        waited += 1;
-        return false;
-      },
-    });
-    assert.deepEqual(again, { ok: true, copied: false });
-    assert.equal(waited, 0);
   } finally {
     console.warn = originalWarn;
-    desenvIo.getProjectsBaseDir = origBase;
-    desenvIo.resolveClientProjectId = origProject;
-    desenvIo.ensureDraftWorktree = origWorktree;
-    desenvIo.fastForwardDraft = origFastForward;
-    desenvIo.ensureDevProcess = origDev;
-    desenvIo.waitForDevReady = origReady;
     forgetDraftLoginCopy(draftKey);
-    forgetDraftLoginAbsent(draftKey);
-    rmSync(base, { recursive: true, force: true });
   }
 });
 
-test('an email the login refuses does not fail the copy and is not logged again', async () => {
+test('an email the login refuses does not fail the copy and is logged on every request', async () => {
   const key = `draft-key-${Date.now()}-bad-email`;
   const errors: string[] = [];
   const originalError = console.error;
@@ -363,11 +317,11 @@ test('an email the login refuses does not fail the copy and is not logged again'
   try {
     assert.deepEqual(await run(), { copied: false });
     assert.deepEqual(await run(), { copied: false });
-    assert.equal(errors.length, 1);
+    assert.equal(errors.length, 2);
     assert.match(errors[0], /login e-mail is required/);
+    assert.match(errors[1], /login e-mail is required/);
   } finally {
     console.error = originalError;
-    forgetDraftLoginAbsent(key);
   }
 });
 

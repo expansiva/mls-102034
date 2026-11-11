@@ -214,6 +214,8 @@ test('readonly without the url changes nothing; same and readonly record; a sche
     assert.match(diff.json().msg, /orders/);
     assert.match(diff.json().msg, /sample data or a copy/);
     assert.equal(readDraftData(dir).source, 'same');
+    const sameAt = readDraftData(dir).at;
+    assert.match(sameAt ?? '', /^\d{4}-\d{2}-\d{2}T/u);
     const failedLog = readFileSync(join(dir, 'data.log.jsonl'), 'utf8');
     assert.match(failedLog, /"action":"sameDatabase"/);
     assert.match(failedLog, /"result":"failed"/);
@@ -221,6 +223,7 @@ test('readonly without the url changes nothing; same and readonly record; a sche
     ready = true;
     order.length = 0;
     authorities = ['draftData.readonly'];
+    await new Promise((resolve) => setTimeout(resolve, 5));
     const okReadonly = await app.inject({
       method: 'POST',
       url: '/exec',
@@ -229,10 +232,13 @@ test('readonly without the url changes nothing; same and readonly record; a sche
     assert.equal(okReadonly.statusCode, 200, okReadonly.body);
     assert.equal(okReadonly.json().source, 'readonly');
     assert.equal(readDraftData(dir).source, 'readonly');
+    assert.notEqual(readDraftData(dir).at, sameAt);
+    const readonlyAt = readDraftData(dir).at;
     assert.match(readFileSync(join(dir, 'data.log.jsonl'), 'utf8'), /"action":"readonly".*"result":"ok"/);
 
     authorities = ['draftData.reset'];
     order.length = 0;
+    await new Promise((resolve) => setTimeout(resolve, 5));
     const reset = await app.inject({
       method: 'POST',
       url: '/exec',
@@ -241,6 +247,7 @@ test('readonly without the url changes nothing; same and readonly record; a sche
     assert.equal(reset.statusCode, 200, reset.body);
     assert.deepEqual(order, ['prepare', 'stop', 'drop', 'start:seed']);
     assert.equal(readDraftData(dir).source, 'seed');
+    assert.notEqual(readDraftData(dir).at, readonlyAt);
 
     writeFileSync(join(dir, 'data.json'), `${JSON.stringify({ source: 'same', at: 't', by: 'ana' })}\n`);
     authorities = ['draftData.copy'];
@@ -252,6 +259,8 @@ test('readonly without the url changes nothing; same and readonly record; a sche
     });
     assert.equal(copied.statusCode, 200, copied.body);
     assert.deepEqual(order, ['prepare', 'stop', 'start:seed', 'stop', 'copy:seed']);
+    assert.equal(readDraftData(dir).source, 'seed');
+    assert.notEqual(readDraftData(dir).at, 't');
   } finally {
     draftDataHooks.alphaOn = orig.alpha;
     draftDataHooks.authoritiesOf = orig.authorities;

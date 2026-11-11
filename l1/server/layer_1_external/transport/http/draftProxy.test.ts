@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { CollabAuthClaims } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
-import { DraftLoginCopyError, copyDraftLogin, draftLoginCopyText, forgetDraftLoginAbsent, forgetDraftLoginCopy } from '/_102034_/l1/server/layer_1_external/cbe/draftLoginCopy.js';
+import { DraftLoginCopyError, copyDraftLogin, draftLoginCopyText, forgetDraftLoginCopy } from '/_102034_/l1/server/layer_1_external/cbe/draftLoginCopy.js';
 import {
   applyDraftExecBff,
   draftDownBody,
@@ -816,11 +816,10 @@ test('a login missing at the origin is proxied with 200 and one warning; a sql f
         return new Response('{}', { status: 200 });
       },
     });
-    assert.equal(loads, 1);
+    assert.equal(loads, 2);
     assert.equal(warnings.length, 1);
     assert.equal(fetched, 2);
 
-    forgetDraftLoginAbsent(draftKey);
     const failed = fakeReply();
     let failedFetch = 0;
     await applyDraftExecBff({
@@ -859,7 +858,6 @@ test('a login missing at the origin is proxied with 200 and one warning; a sql f
   } finally {
     console.warn = originalWarn;
     forgetDraftLoginCopy(draftKey);
-    forgetDraftLoginAbsent(draftKey);
   }
 });
 

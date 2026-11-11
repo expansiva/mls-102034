@@ -270,6 +270,8 @@ test('draftCopy requires copy authority, records the copy, forgets the login, an
     assert.equal(stored.by, 'ana@x.com');
     assert.deepEqual(stored.modules, ['orders']);
     assert.equal(stored.withRegistry, false);
+    assert.match(stored.at ?? '', /^\d{4}-\d{2}-\d{2}T/u);
+    const copyAt = stored.at;
     const log = readFileSync(join(dir, 'data.log.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line) as { action: string; result: string; source: string });
     assert.equal(log.at(-1)?.action, 'copy');
     assert.equal(log.at(-1)?.result, 'ok');
@@ -280,6 +282,7 @@ test('draftCopy requires copy authority, records the copy, forgets the login, an
     order.length = 0;
     spawned.length = 0;
     mismatch = true;
+    await new Promise((resolve) => setTimeout(resolve, 5));
     const mismatched = await app.inject({
       method: 'POST',
       url: '/exec',
@@ -291,6 +294,7 @@ test('draftCopy requires copy authority, records the copy, forgets the login, an
     assert.equal(mismatched.json().msg.includes('s3cret'), false);
     assert.equal(mismatched.json().source, 'seed');
     assert.equal(readDraftData(dir).source, 'seed');
+    assert.notEqual(readDraftData(dir).at, copyAt);
     assert.equal(order.includes('drop:collab_app_draft_team_102047'), true);
     assert.deepEqual(order.slice(0, 3), ['prepare', 'stop', 'copy']);
     assert.equal(order.at(-1), 'start');
