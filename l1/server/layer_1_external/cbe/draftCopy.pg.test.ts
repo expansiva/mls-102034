@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from 'pg';
 import { draftDirOf } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
-import { readDraftData } from '/_102034_/l1/server/layer_1_external/cbe/draftDataSource.js';
+import { readDraftData, writeDraftData } from '/_102034_/l1/server/layer_1_external/cbe/draftDataSource.js';
 import { performDraftCopy } from '/_102034_/l1/server/layer_1_external/cbe/draftCopy.js';
 import { parseDatabaseUrl } from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
 
@@ -114,7 +114,10 @@ test('copy matches counts and jsonb md5; a different column returns the draft to
   const brokenDir = draftDirOf(base, 'team-102047b');
   const admin = new Client({ connectionString: adminUrl });
   await admin.connect();
-  const names = [sourceName, targetName, `${sourceName}_c`, brokenName];
+  const stuckName = `collab_app_draft_st70s3d_${hex}`;
+  const stuckDir = draftDirOf(base, 'team-102047c');
+  const stuckUrl = withDatabase(adminUrl, stuckName);
+  const names = [sourceName, targetName, `${sourceName}_c`, brokenName, stuckName];
   let started = 0;
   try {
     const who = await rowsOf(adminUrl, 'SELECT current_user AS user');
@@ -205,6 +208,39 @@ test('copy matches counts and jsonb md5; a different column returns the draft to
     assert.equal(left.length, 0);
     const sourceLeft = await rowsOf(adminUrl, 'SELECT datname FROM pg_database WHERE datname = $1', [`${sourceName}_c`]);
     assert.equal(sourceLeft.length, 1);
+
+    // The return to seed also fails: the database stays, `at` is new, and the message carries both errors.
+    await exec(stuckUrl, SCHEMA);
+    writeDraftData(stuckDir, { source: 'copy', at: '2026-01-01T00:00:00.000Z', by: 'ana@x.com' });
+    const stuck = await performDraftCopy({
+      sourceUrl: brokenSourceUrl,
+      targetUrl: stuckUrl,
+      projectId: PROJECT_ID,
+      draftDir: stuckDir,
+      by: 'bia@x.com',
+      lang: 'en',
+      adminUrl: parsedAdmin.adminUrl,
+      database: stuckName,
+      dropDatabase: async () => {
+        throw new Error('cannot drop: database is being accessed');
+      },
+      start: () => {
+        seedStarted += 1;
+      },
+    });
+    assert.equal(stuck.ok, false);
+    if (stuck.ok) return;
+    assert.equal(stuck.seeded, false);
+    assert.match(stuck.msg, /columns do not match/);
+    assert.match(stuck.msg, /Returning the draft database to seed also failed/);
+    assert.match(stuck.msg, /cannot drop/);
+    assert.equal(seedStarted, 1);
+    const after = readDraftData(stuckDir);
+    assert.equal(after.source, 'copy');
+    assert.notEqual(after.at, '2026-01-01T00:00:00.000Z');
+    assert.equal(after.by, 'bia@x.com');
+    const stuckLeft = await rowsOf(adminUrl, 'SELECT datname FROM pg_database WHERE datname = $1', [stuckName]);
+    assert.equal(stuckLeft.length, 1);
   } catch (err) {
     if (err instanceof assert.AssertionError) throw err;
     throw new Error(scrub(err));

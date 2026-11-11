@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { Client } from 'pg';
 import { moduleTableNamespacePrefix } from '/_102034_/l1/server/layer_1_external/persistence/contracts.js';
-import { appendDraftDataLog, writeDraftData, type DraftDataLang } from '/_102034_/l1/server/layer_1_external/cbe/draftDataSource.js';
+import { appendDraftDataLog, readDraftData, writeDraftData, type DraftDataLang, type DraftDataState } from '/_102034_/l1/server/layer_1_external/cbe/draftDataSource.js';
 import { forgetDraftLoginCopy } from '/_102034_/l1/server/layer_1_external/cbe/draftLoginCopy.js';
 
 const execFileAsync = promisify(execFile);
@@ -47,6 +47,7 @@ const TEXT: Record<DraftDataLang, {
   empty: string;
   notConfigured: string;
   badModules: string;
+  dropFailed: string;
 }> = {
   en: {
     column: 'The table columns do not match the draft',
@@ -55,6 +56,7 @@ const TEXT: Record<DraftDataLang, {
     empty: 'There are no tables to copy',
     notConfigured: 'The app database is not configured on this server',
     badModules: 'The module list is invalid',
+    dropFailed: 'Returning the draft database to seed also failed',
   },
   pt: {
     column: 'As colunas da tabela não coincidem com o rascunho',
@@ -63,6 +65,7 @@ const TEXT: Record<DraftDataLang, {
     empty: 'Não há tabelas para copiar',
     notConfigured: 'O banco do aplicativo não está configurado neste servidor',
     badModules: 'A lista de módulos é inválida',
+    dropFailed: 'Devolver o banco do rascunho ao seed também falhou',
   },
   es: {
     column: 'Las columnas de la tabla no coinciden con el borrador',
@@ -71,6 +74,7 @@ const TEXT: Record<DraftDataLang, {
     empty: 'No hay tablas para copiar',
     notConfigured: 'La base de la aplicación no está configurada en este servidor',
     badModules: 'La lista de módulos no es válida',
+    dropFailed: 'Devolver la base del borrador al seed también falló',
   },
 };
 
@@ -382,19 +386,29 @@ export async function performDraftCopy(input: PerformDraftCopyInput): Promise<Pe
     } catch (dropErr) {
       const cause = scrub(dropErr);
       console.error(`[cbe] draft copy: returning the draft database to seed failed: ${cause}`);
+      const msg = `${copyError.message}; ${draftCopyText('dropFailed', lang)} (${cause})`;
       try {
-        appendDraftDataLog(input.draftDir, {
-          at: new Date().toISOString(),
+        // The database is in an unknown state: keep the recorded source, but a new `at` ends any login-copy memory.
+        let previous: DraftDataState = { source: 'seed', at: null, by: null };
+        try {
+          previous = readDraftData(input.draftDir, lang);
+        } catch (readErr) {
+          console.error(`[cbe] draft copy: read data.json: ${scrub(readErr)}`);
+        }
+        const at = new Date().toISOString();
+        writeDraftData(input.draftDir, {
+          source: previous.source,
+          at,
           by: input.by,
-          action: 'copy',
-          result: 'failed',
-          cause: `${copyError.message}; ${cause}`,
+          ...(previous.modules ? { modules: previous.modules } : {}),
+          ...(previous.withRegistry !== undefined ? { withRegistry: previous.withRegistry } : {}),
         });
+        appendDraftDataLog(input.draftDir, { at, by: input.by, action: 'copy', result: 'failed', cause: msg });
       } catch (logErr) {
         console.error(`[cbe] draft copy: record failed copy: ${scrub(logErr)}`);
       }
       forgetDraftLoginCopy(input.draftDir);
-      return { ok: false, msg: copyError.message, table: copyError.table, seeded: false };
+      return { ok: false, msg, table: copyError.table, seeded: false };
     }
     try {
       input.start();
