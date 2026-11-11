@@ -140,6 +140,56 @@ export class AncestorDenoConfigError extends Error {}
 
 export class DraftDatabaseError extends Error {}
 
+export type DraftSharedLang = 'en' | 'pt' | 'es';
+
+const DRAFT_SHARED_TEXT: Record<DraftSharedLang, { notConfigured: string; notStarted: string }> = {
+  en: {
+    notConfigured: 'The read-only app database is not configured on this server',
+    notStarted: 'The draft did not start',
+  },
+  pt: {
+    notConfigured: 'O banco somente leitura do aplicativo não está configurado neste servidor',
+    notStarted: 'O rascunho não iniciou',
+  },
+  es: {
+    notConfigured: 'La base de solo lectura de la aplicación no está configurada en este servidor',
+    notStarted: 'El borrador no se inició',
+  },
+};
+
+export function draftSharedText(key: keyof (typeof DRAFT_SHARED_TEXT)['en'], lang: DraftSharedLang = 'en'): string {
+  return DRAFT_SHARED_TEXT[lang][key];
+}
+
+/**
+ * seed/copy: the draft database, and no MDM url (the registry stays on that database).
+ * readonly: both urls are DATABASE_URL_READONLY. same: both are the parent app url.
+ * A missing readonly url throws before anything is spawned.
+ */
+export function draftChildDatabaseUrls(input: {
+  source: DraftDataSourceName;
+  draftUrl: string;
+  parentUrl: string;
+  readonlyUrl?: string;
+}): { databaseUrlTest: string; mdmDatabaseUrl?: string } {
+  if (input.source === 'readonly') {
+    const url = input.readonlyUrl?.trim() ?? '';
+    if (!parseDatabaseUrl(url)) {
+      console.error('[cbe] DATABASE_URL_READONLY is not configured');
+      throw new DraftDatabaseError(draftSharedText('notConfigured'));
+    }
+    return { databaseUrlTest: url, mdmDatabaseUrl: url };
+  }
+  if (input.source === 'same') {
+    if (!parseDatabaseUrl(input.parentUrl)) {
+      console.error('[cbe] parent database url is not configured for a shared draft');
+      throw new DraftDatabaseError(draftSharedText('notConfigured'));
+    }
+    return { databaseUrlTest: input.parentUrl, mdmDatabaseUrl: input.parentUrl };
+  }
+  return { databaseUrlTest: input.draftUrl };
+}
+
 export { DraftPortBusyError };
 
 export class DraftWorktreeMissingError extends Error {}
@@ -291,7 +341,8 @@ export function buildDenoArgs(base: string, slug: string, port: number, database
   const projectFilesAllow = [...new Set([projectFilesDir, ...(existsSync(projectFilesDir) ? [realpathSync(projectFilesDir)] : [])])];
   const allowEnv = memoryModeAllowEnv();
   // pg reads `process.env['PG' + key]` (PGBINARY, PGSSLMODE, …) plus USERNAME. Deno ≥ 2.1 accepts the suffix `*`.
-  allowEnv.push('DATABASE_URL_TEST', 'PG*', 'USERNAME', 'MDM_DATABASE_URL');
+  // MDM_DATABASE_URL stays last: the draft env check rejects a permission named exactly DATABASE_URL, and a comma after MDM_DATABASE_URL would look like one.
+  allowEnv.push('DATABASE_URL_TEST', 'PG*', 'USERNAME', 'COLLAB_DRAFT_DATA_SOURCE', 'DATABASE_URL_READONLY', 'MDM_DATABASE_URL');
   return [
     'run',
     `--allow-read=${base},${draftDir},${projectFilesAllow.join(',')}`,
@@ -560,7 +611,7 @@ function childEnv(
   // The child resolves the projects base the way the principal does, by variable, in any tree: without it the child
   // probes /data/mls-base, which its --allow-read (`base`, the draft dir, …) does not cover in a project tree.
   // seed and copy keep the registry on the draft database: no MDM_DATABASE_URL, so getMdmPgPool uses the shared pool.
-  // readonly and same still receive the parent URL; those sources are wired in a later step.
+  // readonly and same point both urls at the app database (read-only role, or the parent's own url).
   const staticDir = process.env.CBE_STATIC_DIR?.trim();
   const env: Record<string, string> = {
     PATH: process.env.PATH ?? '',
@@ -569,12 +620,20 @@ function childEnv(
     RUNTIME_MODE: 'postgres',
     DATABASE_URL_TEST: databaseUrlTest,
     COLLAB_DRAFT: slug,
+    COLLAB_DRAFT_DATA_SOURCE: source,
     COLLAB_PROJECT_ID: String(clientProjectId),
     COLLAB_DRAFT_IDENTITY_SECRET: identitySecret,
     CBE_PROJECTS_DIR: base,
     ...(staticDir ? { CBE_STATIC_DIR: staticDir } : {}),
   };
-  if (source !== 'seed' && source !== 'copy') env.MDM_DATABASE_URL = mdmDatabaseUrl;
+  if (source === 'readonly' || source === 'same') {
+    if (!mdmDatabaseUrl) {
+      console.error(`[cbe] dev ${slug}: shared database url is missing for ${source}`);
+      throw new DraftDatabaseError(draftSharedText('notConfigured'));
+    }
+    env.DATABASE_URL_TEST = mdmDatabaseUrl;
+    env.MDM_DATABASE_URL = mdmDatabaseUrl;
+  }
   return env;
 }
 
@@ -761,6 +820,19 @@ function ensureUnlocked(opts: EnsureDevProcessOpts): DevProcessInfo {
     console.error(`[cbe] dev ${slug}: ${message}`);
     throw new DraftDatabaseError(message);
   }
+  let childUrls: { databaseUrlTest: string; mdmDatabaseUrl?: string };
+  try {
+    childUrls = draftChildDatabaseUrls({
+      source: dataSource,
+      draftUrl: databaseUrl,
+      parentUrl: testUrl,
+      readonlyUrl: process.env.DATABASE_URL_READONLY,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[cbe] dev ${slug}: ${message}`);
+    throw err instanceof DraftDatabaseError ? err : new DraftDatabaseError(message);
+  }
 
   const writeConfig = opts.writeConfig ?? defaultWriteConfig;
   writeConfig({ base, slug, clientProjectId });
@@ -775,9 +847,9 @@ function ensureUnlocked(opts: EnsureDevProcessOpts): DevProcessInfo {
     console.error(`[cbe] dev ${slug}: ${message}`);
     throw new DenoMissingError(message);
   }
-  const spawned = spawn('deno', buildDenoArgs(base, slug, port, databaseUrl), {
+  const spawned = spawn('deno', buildDenoArgs(base, slug, port, childUrls.databaseUrlTest), {
     cwd: draftDir,
-    env: childEnv(port, slug, clientProjectId, databaseUrl, identitySecret, testUrl, base, dataSource),
+    env: childEnv(port, slug, clientProjectId, childUrls.databaseUrlTest, identitySecret, childUrls.mdmDatabaseUrl ?? '', base, dataSource),
     logPath,
   });
   if (!Number.isInteger(spawned.pid) || spawned.pid <= 0) {

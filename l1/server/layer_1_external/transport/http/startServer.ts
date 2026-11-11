@@ -8,6 +8,7 @@ import { contentHash12, faviconIcoResponse, injectFaviconLink, resolveAppFavicon
 import { readProjectsConfig, resolveWebDistPath } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import { classifyProjectAssetUrl, HASHED_SHARED_JS_PATH } from '/_102034_/l1/server/layer_1_external/transport/http/classifyProjectAssetUrl.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
+import { assertSharedDraftSchemaForBoot } from '/_102034_/l1/server/layer_1_external/persistence/schemaBootstrap.js';
 import { applyVerifiedEmailToSession, createDefaultRequestContext, execBff } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
 import { initializeOrganizationForProcess } from '/_102034_/l1/mdm/layer_3_usecases/organizationBootstrap.js';
 import { AppError } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
@@ -1028,6 +1029,9 @@ console.log(`Starting server with isMainModule=${isMainModule}, argv[1]=${proces
 /** Draft boot applies the draft schema before listen. Production (no COLLAB_DRAFT) only listens. */
 export interface BootStepsInput {
   draft: boolean;
+  /** readonly/same share the app database: check hashes, then skip create, rebuild, seed and the company. */
+  sharedDatabase?: boolean;
+  assertSharedSchema?: () => Promise<void>;
   runMigrations: () => Promise<void>;
   initializeOrganization?: () => Promise<void>;
   /** After migrations and organization bootstrap, before the process accepts traffic. */
@@ -1079,7 +1083,16 @@ function bootErrorDetail(error: unknown): string {
 }
 
 export async function bootSteps(input: BootStepsInput): Promise<void> {
-  if (input.draft) {
+  if (input.draft && input.sharedDatabase) {
+    try {
+      await input.assertSharedSchema?.();
+    } catch (error) {
+      const cause = error instanceof Error ? error.message : String(error);
+      console.error(`[boot] draft shared schema refused; refusing to listen: ${bootErrorDetail(error)}`);
+      process.exit(1);
+      throw new Error(`[boot] process.exit(1) was ignored after: ${cause}`);
+    }
+  } else if (input.draft) {
     try {
       await input.runMigrations();
     } catch (error) {
@@ -1089,7 +1102,7 @@ export async function bootSteps(input: BootStepsInput): Promise<void> {
       throw new Error(`[boot] process.exit(1) was ignored after: ${cause}`);
     }
   }
-  if (input.initializeOrganization) {
+  if (input.initializeOrganization && !input.sharedDatabase) {
     try {
       await input.initializeOrganization();
     } catch (error) {
@@ -1116,8 +1129,12 @@ if (isMainModule) {
     moduleTickLoop?.stop();
     await workflowWakeLifecycle.stop();
   });
+  const draftSource = process.env.COLLAB_DRAFT_DATA_SOURCE;
+  const sharedDatabase = draftSource === 'readonly' || draftSource === 'same';
   void bootSteps({
     draft: Boolean(process.env.COLLAB_DRAFT),
+    sharedDatabase,
+    assertSharedSchema: () => assertSharedDraftSchemaForBoot(readAppEnv()),
     runMigrations: async () => {
       const { runMigrations } = await import('/_102034_/l1/scripts/migrate.js');
       await runMigrations();
@@ -1144,7 +1161,7 @@ if (isMainModule) {
         .then((count) => console.info(`Module tick enabled every ${MODULE_TICK_INTERVAL_MS}ms for ${count} module(s)`))
         .catch((error) => console.error('[tick] startup failed:', error));
     }
-    if (env.runtimeMode === 'postgres' && env.writeBehindEnabled) {
+    if (env.runtimeMode === 'postgres' && env.writeBehindEnabled && process.env.COLLAB_DRAFT_DATA_SOURCE !== 'readonly') {
       const worker = new WriteBehindWorker(env);
       const runWorker = async () => {
         try {

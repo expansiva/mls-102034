@@ -188,6 +188,20 @@ export interface CbeRequestDraftCopy extends CbeRequestBase {
   withRegistry?: boolean;
 }
 
+/** Point the draft at the app database through the read-only role. */
+export interface CbeRequestDraftReadonly extends CbeRequestBase {
+  action: 'draftReadonly';
+  project?: number;
+  draft?: string;
+}
+
+/** Point the draft at the same database as the published app. */
+export interface CbeRequestDraftSame extends CbeRequestBase {
+  action: 'draftSame';
+  project?: number;
+  draft?: string;
+}
+
 export interface CbeRequestDraftRestorePaths extends CbeRequestBase {
   action: 'draftRestorePaths';
   project?: number;

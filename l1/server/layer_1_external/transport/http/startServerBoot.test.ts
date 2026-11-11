@@ -92,6 +92,62 @@ test('GET /_moduleBoot unknown basePath is 404 JSON', async () => {
   assert.deepEqual(result.body, { statusCode: 404, msg: 'Not found' });
 });
 
+test('bootSteps on a shared draft checks the schema and skips migrations and the company', async () => {
+  const order: string[] = [];
+  await bootSteps({
+    draft: true,
+    sharedDatabase: true,
+    assertSharedSchema: async () => { order.push('assert'); },
+    runMigrations: async () => { order.push('migrate'); },
+    initializeOrganization: async () => { order.push('org'); },
+    listen: async () => { order.push('listen'); },
+  });
+  assert.deepEqual(order, ['assert', 'listen']);
+});
+
+test('bootSteps does not listen when the shared schema check refuses', async () => {
+  const exits: Array<number | undefined> = [];
+  const logs: string[] = [];
+  let migrated = false;
+  let listened = false;
+  const origExit = process.exit;
+  const origError = console.error;
+  process.exit = ((code?: number) => {
+    exits.push(code);
+    throw new Error(`exit:${code}`);
+  }) as typeof process.exit;
+  console.error = ((...args: unknown[]) => {
+    logs.push(args.map(String).join(' '));
+  }) as typeof console.error;
+  try {
+    await assert.rejects(
+      () => bootSteps({
+        draft: true,
+        sharedDatabase: true,
+        assertSharedSchema: async () => { throw new Error('Module orders differs from the published app'); },
+        runMigrations: async () => { migrated = true; },
+        listen: async () => { listened = true; },
+      }),
+      /exit:1/,
+    );
+    assert.equal(migrated, false);
+    assert.equal(listened, false);
+    assert.equal(exits[0], 1);
+    assert.match(logs.join('\n'), /draft shared schema refused/);
+    assert.match(logs.join('\n'), /Module orders/);
+  } finally {
+    process.exit = origExit;
+    console.error = origError;
+  }
+});
+
+test('the child boot wires readonly and same to the shared schema check and skips write-behind', () => {
+  const source = readFileSync(new URL('./startServer.ts', import.meta.url), 'utf8');
+  assert.match(source, /draftSource === 'readonly' \|\| draftSource === 'same'/);
+  assert.match(source, /assertSharedDraftSchemaForBoot\(readAppEnv\(\)\)/);
+  assert.match(source, /COLLAB_DRAFT_DATA_SOURCE !== 'readonly'/);
+});
+
 test('bootSteps does not listen when draft migrations fail', async () => {
   const exits: Array<number | undefined> = [];
   const logs: string[] = [];

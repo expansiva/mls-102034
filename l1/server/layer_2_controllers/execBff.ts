@@ -184,6 +184,24 @@ export async function withAlphaAuthorities(
   return { ...meta, verifiedAuthorities: merged };
 }
 
+const DRAFT_READONLY_WRITE: Record<'en' | 'pt' | 'es', string> = {
+  en: 'This draft is read-only. Nothing was saved.',
+  pt: 'Este rascunho é somente leitura. Nada foi gravado.',
+  es: 'Este borrador es de solo lectura. No se guardó nada.',
+};
+
+/** `cmd*` on a read-only draft is refused before any handler runs. Reads stay allowed. */
+export function refuseDraftReadonlyWrite(
+  source: string | undefined,
+  command: string | undefined,
+  lang: 'en' | 'pt' | 'es' = 'en',
+): string {
+  if (source !== 'readonly') return '';
+  if (!/^cmd/u.test(command ?? '')) return '';
+  console.error(`[execBff] draft data source readonly refused ${command ?? ''}`);
+  return DRAFT_READONLY_WRITE[lang];
+}
+
 export async function execBff(
   request: BffRequest,
   ctx = createDefaultRequestContext(),
@@ -198,6 +216,15 @@ export async function execBff(
 
   try {
     normalizedRequest = normalizeRequest(request);
+    if (!ctx.sandbox) {
+      const readonlyRefusal = refuseDraftReadonlyWrite(
+        process.env.COLLAB_DRAFT_DATA_SOURCE,
+        parseRoutineParts(normalizedRequest.routine).command,
+      );
+      if (readonlyRefusal) {
+        throw new AppError('DRAFT_READONLY', readonlyRefusal, 403, { routine: normalizedRequest.routine });
+      }
+    }
     const resolution = resolveRoutineResolution(normalizedRequest.routine);
     // The SERVER half of the two defences on destructive test runs. The runner is supposed to keep its
     // create/update/delete suite for test modes; "supposed to" is what let one production run write junk,
@@ -338,7 +365,7 @@ export async function execBff(
 
     // Sandbox runs (test runner on a disposable runtime) are not production traffic:
     // they are kept out of the execution log, the series store and the telemetry.
-    if (!ctx.sandbox) {
+    if (!ctx.sandbox && response?.error?.code !== 'DRAFT_READONLY') {
       try {
         await MonitorExecutionEntity.record({
           requestId:
@@ -378,7 +405,7 @@ export async function execBff(
 
     const rawTelemetry = normalizedRequest?.meta?.telemetry ??
       (request as { meta?: { telemetry?: unknown } } | null | undefined)?.meta?.telemetry;
-    if (!ctx.sandbox && Array.isArray(rawTelemetry) && rawTelemetry.length > 0) {
+    if (!ctx.sandbox && response?.error?.code !== 'DRAFT_READONLY' && Array.isArray(rawTelemetry) && rawTelemetry.length > 0) {
       const TELEMETRY_LIMIT = 20;
       const receivedAt = finishedAtIso;
       const requestId =

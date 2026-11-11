@@ -33,6 +33,7 @@ import {
   planModuleRebuild,
   stateKey,
   type ModuleRebuildMode,
+  type ModuleRebuildPlan,
 } from '/_102034_/l1/server/layer_1_external/persistence/schemaModulePlan.js';
 import { applySeedRows } from '/_102034_/l1/server/layer_1_external/persistence/seedApplier.js';
 import { selectEligibleSeedRows } from '/_102034_/l1/server/layer_1_external/persistence/seedPolicy.js';
@@ -728,4 +729,129 @@ export async function bootstrapSchema(
       orphans,
     },
   };
+}
+
+const SCHEMA_DIFF_TEXT: Record<'en' | 'pt' | 'es', (list: string) => string> = {
+  en: (list) => `Module ${list} differs from the published app. Choose sample data or a copy to start this draft.`,
+  pt: (list) => `O módulo ${list} difere do aplicativo publicado. Escolha dados de exemplo ou uma cópia para iniciar este rascunho.`,
+  es: (list) => `El módulo ${list} difiere de la aplicación publicada. Elija datos de ejemplo o una copia para iniciar este borrador.`,
+};
+
+const SCHEMA_DIFF_MARK = /DRAFT_SCHEMA_DIFF modules=([A-Za-z0-9_-]+(?:,[A-Za-z0-9_-]+)*)/u;
+
+/** Modules whose published hash differs. `none` and `recordOnly` do not change the database. */
+export function sharedDraftDrift(plan: ModuleRebuildPlan): string[] {
+  if (plan.mode === 'none' || plan.mode === 'recordOnly') return [];
+  return [...new Set([...plan.rebuild, ...plan.removed])].sort((left, right) => left.localeCompare(right));
+}
+
+export function sharedDraftSchemaMessage(modules: readonly string[], lang: 'en' | 'pt' | 'es' = 'en'): string {
+  return SCHEMA_DIFF_TEXT[lang](modules.join(', '));
+}
+
+export function sharedDraftSchemaLog(modules: readonly string[]): string {
+  return `${sharedDraftSchemaMessage(modules)} DRAFT_SCHEMA_DIFF modules=${modules.join(',')}`;
+}
+
+export function sharedDraftSchemaModules(text: string): string[] | null {
+  const match = SCHEMA_DIFF_MARK.exec(text);
+  if (!match?.[1]) return null;
+  return match[1].split(',');
+}
+
+export class SharedDraftSchemaError extends Error {
+  readonly modules: string[];
+
+  constructor(modules: string[]) {
+    super(sharedDraftSchemaLog(modules));
+    this.name = 'SharedDraftSchemaError';
+    this.modules = modules;
+  }
+}
+
+const UNDEFINED_TABLE = '42P01';
+
+function scrubDbError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  return raw.replace(/postgres:\/\/\S+/giu, 'postgres://***');
+}
+
+/** Reads the published hashes. A missing state table is "no client state", not a silent seed. Any other error is thrown. */
+async function readPublishedModuleState(pool: Pool, ownProjects: string[]): Promise<{
+  applied: Map<string, string> | null;
+  lastSnapshotId: string | null;
+}> {
+  let lastSnapshotId: string | null = null;
+  try {
+    const snap = await pool.query<{ id: string }>(
+      `SELECT id FROM ${quoteIdentifier(SCHEMA_MIGRATIONS_TABLE)} ORDER BY applied_at DESC, id DESC LIMIT 1`,
+    );
+    lastSnapshotId = snap.rows[0]?.id ?? null;
+  } catch (error) {
+    const code = (error as { code?: string }).code;
+    if (code !== UNDEFINED_TABLE) {
+      const cause = scrubDbError(error);
+      console.error(`[boot] could not read the published schema snapshot: ${cause}`);
+      throw new Error(`Could not read the published schema snapshot (${cause})`);
+    }
+    console.error('[boot] published database has no _schema_migrations table');
+  }
+  try {
+    const result = await pool.query<{ project_id: string; module_id: string; hash: string }>(
+      `SELECT project_id, module_id, hash FROM ${quoteIdentifier(SCHEMA_MODULE_STATE_TABLE)} WHERE project_id = ANY($1::text[])`,
+      [ownProjects],
+    );
+    return {
+      applied: new Map(result.rows.map((row) => [stateKey(row.project_id, row.module_id), row.hash])),
+      lastSnapshotId,
+    };
+  } catch (error) {
+    const code = (error as { code?: string }).code;
+    if (code === UNDEFINED_TABLE) {
+      console.error('[boot] published database has no _schema_module_state table');
+      return { applied: null, lastSnapshotId };
+    }
+    const cause = scrubDbError(error);
+    console.error(`[boot] could not read published module hashes: ${cause}`);
+    throw new Error(`Could not read published module hashes (${cause})`);
+  }
+}
+
+/**
+ * Read-only check for a draft that shares the app database.
+ * A differing module hash throws. This function does not create, rebuild, seed or write.
+ */
+export async function assertSharedDraftSchema(input: {
+  pool: Pool;
+  current: Map<string, string>;
+  currentSnapshotId: string;
+  ownProjects: string[];
+}): Promise<void> {
+  const published = await readPublishedModuleState(input.pool, input.ownProjects);
+  const plan = planModuleRebuild({
+    current: input.current,
+    applied: published.applied,
+    lastSnapshotId: published.lastSnapshotId,
+    currentSnapshotId: input.currentSnapshotId,
+    ownProjects: input.ownProjects,
+  });
+  const modules = sharedDraftDrift(plan);
+  if (modules.length === 0) return;
+  const error = new SharedDraftSchemaError(modules);
+  console.error(`[boot] ${error.message}`);
+  throw error;
+}
+
+/** The one boot check for readonly and same: compare the draft schema to the published database, then stop. */
+export async function assertSharedDraftSchemaForBoot(env: AppEnv, pool?: Pool): Promise<void> {
+  if (env.runtimeMode === 'memory') return;
+  const snapshot = await buildSchemaSnapshot(env);
+  const definedModules = modulesOf(snapshot.tables);
+  const ownProjects = [...new Set(definedModules.map((module) => module.projectId))];
+  await assertSharedDraftSchema({
+    pool: pool ?? getSharedPgPool(env),
+    current: await moduleHashes(snapshot.tables),
+    currentSnapshotId: snapshot.id,
+    ownProjects,
+  });
 }
