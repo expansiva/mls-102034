@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { CollabAuthClaims } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
+import { DraftLoginCopyError, draftLoginCopyText } from '/_102034_/l1/server/layer_1_external/cbe/draftLoginCopy.js';
 import {
   applyDraftExecBff,
   draftDownBody,
@@ -10,6 +11,8 @@ import {
   planDraftExecBff,
   type DraftSessionView,
 } from '/_102034_/l1/server/layer_1_external/transport/http/draftProxy.js';
+
+const skipLoginCopy = async () => ({ ok: true as const, copied: false });
 
 const SLUG = 'team-102047';
 const BASE = '/tmp/draft-proxy-test';
@@ -271,6 +274,7 @@ test('a child replaced during the call is asked for again: the retry uses its ne
       probedPorts.push(port);
       return true;
     },
+    copyDraftLoginImpl: skipLoginCopy,
     fetchImpl: async (url, init) => {
       const headers = init?.headers as Record<string, string> | undefined;
       calls.push({ url: String(url), secret: headers?.['x-collab-draft-identity-secret'] });
@@ -504,6 +508,7 @@ test('draft proxy drops a browser identity header and forwards the verified one'
       resolveRequestDraftImpl: async () => readyDraft(),
       ensureDevProcessImpl: () => ({ ...devInfo(), identitySecret: IDENTITY_SECRET }),
       touchDevProcessImpl: () => {},
+      copyDraftLoginImpl: skipLoginCopy,
       fetchImpl: async (_url, init) => {
         headers = init?.headers as Record<string, string>;
         return new Response(JSON.stringify({ ok: true, data: null, error: null }), { status: 200 });
@@ -577,6 +582,7 @@ test('draft forward logs identity yes and reason ok when the session has claims'
       resolveRequestDraftImpl: async () => readyDraft(),
       ensureDevProcessImpl: () => ({ ...devInfo(), identitySecret: IDENTITY_SECRET }),
       touchDevProcessImpl: () => {},
+      copyDraftLoginImpl: skipLoginCopy,
       fetchImpl: async () => new Response(JSON.stringify({ ok: true, data: null, error: null }), { status: 200 }),
     });
     assert.equal(result.handled, true);
@@ -697,4 +703,61 @@ test('a routine name and a child error code with line breaks cannot forge log li
   assert.match(draftLines[0], /identity: no/);
   assert.match(draftLines[0], /status=401/);
   assert.match(draftLines[0], /error=UNAUTHENTICATED\?/);
+});
+
+test('a failed login copy is a visible error and does not call the child', async () => {
+  delete process.env.COLLAB_DRAFT;
+  const reply = fakeReply();
+  let fetched = 0;
+  const result = await applyDraftExecBff({
+    request: fakeRequest({ routine: 'x.y.z' }, { cookie: `collab-draft=${SLUG}`, 'accept-language': 'pt' }),
+    reply,
+    base: BASE,
+    clientProjectId: '102047',
+    resolveSession: async () => ({ reject: false, claims: VERIFIED_CLAIMS }),
+    refreshedAuthCookie: (token) => token,
+    resolveRequestDraftImpl: async () => readyDraft(),
+    ensureDevProcessImpl: () => devInfo(),
+    touchDevProcessImpl: () => {},
+    copyDraftLoginImpl: async (input) => {
+      assert.equal(input.lang, 'pt');
+      assert.equal(input.email, VERIFIED_CLAIMS.email);
+      throw new DraftLoginCopyError(draftLoginCopyText('failed', input.lang));
+    },
+    fetchImpl: async () => {
+      fetched += 1;
+      return new Response('{}', { status: 200 });
+    },
+  });
+  assert.equal(result.handled, true);
+  assert.equal(fetched, 0);
+  assert.equal(reply.statusCode, 503);
+  const sent = reply.sent as unknown as { error: { code: string; message: string } };
+  assert.equal(sent.error.code, 'DRAFT_LOGIN_COPY');
+  assert.equal(sent.error.message, draftLoginCopyText('failed', 'pt'));
+});
+
+test('a draft that is not ready before the login copy answers DRAFT_DOWN and does not call the child', async () => {
+  delete process.env.COLLAB_DRAFT;
+  const reply = fakeReply();
+  let fetched = 0;
+  await applyDraftExecBff({
+    request: fakeRequest({ routine: 'x.y.z' }, { cookie: `collab-draft=${SLUG}` }),
+    reply,
+    base: BASE,
+    clientProjectId: '102047',
+    resolveSession: async () => ({ reject: false, claims: VERIFIED_CLAIMS }),
+    refreshedAuthCookie: (token) => token,
+    resolveRequestDraftImpl: async () => readyDraft(),
+    ensureDevProcessImpl: () => devInfo(),
+    touchDevProcessImpl: () => {},
+    copyDraftLoginImpl: async () => ({ ok: false, reason: 'not-ready' }),
+    fetchImpl: async () => {
+      fetched += 1;
+      return new Response('{}', { status: 200 });
+    },
+  });
+  assert.equal(fetched, 0);
+  assert.equal(reply.statusCode, 503);
+  assert.deepEqual(reply.sent, draftDownBody());
 });

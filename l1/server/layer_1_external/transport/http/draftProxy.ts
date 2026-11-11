@@ -13,6 +13,14 @@ import {
   type DevProcessInfo,
   type EnsureDevProcessOpts,
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
+import { draftDataLang } from '/_102034_/l1/server/layer_1_external/cbe/draftDataSource.js';
+import {
+  DraftLoginCopyError,
+  draftLoginCopyText,
+  ensureDraftLoginCopied,
+  type DraftLoginEntry,
+  type DraftLoginEntryResult,
+} from '/_102034_/l1/server/layer_1_external/cbe/draftLoginCopy.js';
 
 const HOP_BY_HOP = new Set([
   'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
@@ -48,6 +56,7 @@ export interface DraftExecDeps {
   touchDevProcessImpl?: (base: string, slug: string, now: number) => void;
   waitForDevReadyImpl?: (port: number) => Promise<boolean>;
   resolveRequestDraftImpl?: typeof resolveRequestDraft;
+  copyDraftLoginImpl?: (input: DraftLoginEntry) => Promise<DraftLoginEntryResult>;
 }
 
 export function draftDownBody(): { ok: false; data: null; error: { code: 'DRAFT_DOWN'; message: string } } {
@@ -90,6 +99,12 @@ export async function planDraftExecBff(
     ...(session.source ? { source: session.source } : {}),
     ...(session.reason ? { reason: session.reason } : {}),
   };
+}
+
+function acceptLanguage(headers: FastifyRequest['headers']): string | undefined {
+  const value = headers['accept-language'];
+  if (Array.isArray(value)) return value[0];
+  return value;
 }
 
 function clientProjectNumber(raw: string): number | null {
@@ -226,6 +241,35 @@ export async function proxyExecBff(args: {
     touch(args.base, args.slug, Date.now());
   } catch (err) {
     console.error(`[draftProxy] touch dev ${args.slug} failed: ${(err as Error).message}`);
+  }
+
+  if (args.claims?.email) {
+    const copy = args.copyDraftLoginImpl ?? ensureDraftLoginCopied;
+    const lang = draftDataLang(acceptLanguage(args.request.headers));
+    let copied: DraftLoginEntryResult;
+    try {
+      copied = await copy({
+        base: args.base,
+        slug: args.slug,
+        projectId: args.clientProjectId,
+        email: args.claims.email,
+        lang,
+        waitUntilReady: () => waitReady(info.port),
+      });
+    } catch (err) {
+      const cause = err instanceof Error ? err.message : String(err);
+      console.error(`[draftProxy] draft ${args.slug} login copy failed: ${cause.replace(/postgres:\/\/\S+/giu, 'postgres://***')}`);
+      const message = err instanceof DraftLoginCopyError
+        ? err.message
+        : `${draftLoginCopyText('failed', lang)} (${cause.replace(/postgres:\/\/\S+/giu, 'postgres://***').slice(0, 180)})`;
+      args.reply.code(503).send({ ok: false, data: null, error: { code: 'DRAFT_LOGIN_COPY', message } });
+      return;
+    }
+    if (!copied.ok) {
+      console.error(`[draftProxy] dev ${args.slug} not ready before login copy`);
+      args.reply.code(503).send(draftDownBody());
+      return;
+    }
   }
 
   const body = JSON.stringify(args.request.body ?? {});
@@ -367,6 +411,7 @@ export async function applyDraftExecBff(args: {
     touchDevProcessImpl: args.touchDevProcessImpl,
     waitForDevReadyImpl: args.waitForDevReadyImpl,
     resolveRequestDraftImpl: args.resolveRequestDraftImpl,
+    copyDraftLoginImpl: args.copyDraftLoginImpl,
   });
   return { handled: true };
 }
