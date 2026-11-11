@@ -8,6 +8,7 @@
 export const CBE_HTTP_OK = 200;
 export const CBE_HTTP_BAD_REQUEST = 400;
 export const CBE_HTTP_UNAUTHORIZED = 401;
+export const CBE_HTTP_FORBIDDEN = 403;
 export const CBE_HTTP_NOT_FOUND = 404;
 export const CBE_HTTP_NOT_MODIFIED = 304;
 export const CBE_HTTP_SERVER_ERROR = 500;
@@ -167,6 +168,13 @@ export interface CbeRequestDiscardDraft extends CbeRequestBase {
 
 export interface CbeRequestDraftResetDatabase extends CbeRequestBase {
   action: 'draftResetDatabase';
+  project?: number;
+  draft?: string;
+}
+
+/** Current draft data source: `source`, and `at`/`by` when a person last set it. */
+export interface CbeRequestDraftDataSource extends CbeRequestBase {
+  action: 'draftDataSource';
   project?: number;
   draft?: string;
 }

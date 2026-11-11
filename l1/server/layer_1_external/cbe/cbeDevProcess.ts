@@ -13,6 +13,7 @@ import {
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { runsFromProjectCurrent } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
+import { readDraftData, type DraftDataSourceName } from '/_102034_/l1/server/layer_1_external/cbe/draftDataSource.js';
 import { draftSourceRoot, parseDraftSlug } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
 import {
   DraftPortBusyError, DEFAULT_DRAFT_PORT_RANGE, adoptDraftPort, allocateDraftPort, describeListener, draftPortsFile,
@@ -318,7 +319,7 @@ function draftKey(base: string, slug: string): string {
   return `${base}\0${slug}`;
 }
 
-function draftDirOf(base: string, slug: string): string {
+export function draftDirOf(base: string, slug: string): string {
   return join(base, 'drafts', slug);
 }
 
@@ -554,23 +555,27 @@ function childEnv(
   identitySecret: string,
   mdmDatabaseUrl: string,
   base: string,
+  source: DraftDataSourceName,
 ): Record<string, string> {
   // The child resolves the projects base the way the principal does, by variable, in any tree: without it the child
   // probes /data/mls-base, which its --allow-read (`base`, the draft dir, …) does not cover in a project tree.
+  // seed and copy keep the registry on the draft database: no MDM_DATABASE_URL, so getMdmPgPool uses the shared pool.
+  // readonly and same still receive the parent URL; those sources are wired in a later step.
   const staticDir = process.env.CBE_STATIC_DIR?.trim();
-  return {
+  const env: Record<string, string> = {
     PATH: process.env.PATH ?? '',
     APP_ENV: 'development',
     PORT: String(port),
     RUNTIME_MODE: 'postgres',
     DATABASE_URL_TEST: databaseUrlTest,
-    MDM_DATABASE_URL: mdmDatabaseUrl,
     COLLAB_DRAFT: slug,
     COLLAB_PROJECT_ID: String(clientProjectId),
     COLLAB_DRAFT_IDENTITY_SECRET: identitySecret,
     CBE_PROJECTS_DIR: base,
     ...(staticDir ? { CBE_STATIC_DIR: staticDir } : {}),
   };
+  if (source !== 'seed' && source !== 'copy') env.MDM_DATABASE_URL = mdmDatabaseUrl;
+  return env;
 }
 
 function defaultWriteConfig(input: { base: string; slug: string; clientProjectId: number }): void {
@@ -748,6 +753,14 @@ function ensureUnlocked(opts: EnsureDevProcessOpts): DevProcessInfo {
   }
   const databaseUrl = draftDatabaseUrl(testUrl, slug, clientProjectId);
   const database = new URL(databaseUrl).pathname.replace(/^\//u, '');
+  let dataSource: DraftDataSourceName;
+  try {
+    dataSource = readDraftData(draftDir).source;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[cbe] dev ${slug}: ${message}`);
+    throw new DraftDatabaseError(message);
+  }
 
   const writeConfig = opts.writeConfig ?? defaultWriteConfig;
   writeConfig({ base, slug, clientProjectId });
@@ -764,7 +777,7 @@ function ensureUnlocked(opts: EnsureDevProcessOpts): DevProcessInfo {
   }
   const spawned = spawn('deno', buildDenoArgs(base, slug, port, databaseUrl), {
     cwd: draftDir,
-    env: childEnv(port, slug, clientProjectId, databaseUrl, identitySecret, testUrl, base),
+    env: childEnv(port, slug, clientProjectId, databaseUrl, identitySecret, testUrl, base, dataSource),
     logPath,
   });
   if (!Number.isInteger(spawned.pid) || spawned.pid <= 0) {

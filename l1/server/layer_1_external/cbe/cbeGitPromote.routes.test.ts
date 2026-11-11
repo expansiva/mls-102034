@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify from 'fastify';
-import { draftDbHooks, draftDevHooks, draftSyncHooks, promoteRouteHooks, registerCbeRoutes, sessionHooks } from '/_102034_/l1/server/layer_1_external/cbe/cbeRoutes.js';
+import { draftDataHooks, draftDbHooks, draftDevHooks, draftSyncHooks, promoteRouteHooks, registerCbeRoutes, sessionHooks } from '/_102034_/l1/server/layer_1_external/cbe/cbeRoutes.js';
 import { draftSlugForUser, writeDraftOwner } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
 
 const PROJECT_ID = 102047;
@@ -425,10 +425,12 @@ test('draftResetDatabase stops, drops and ensures, and discardDraft does not dro
   const origStop = draftDevHooks.stopDevProcess;
   const origEnsure = draftDevHooks.ensureDevProcess;
   const origEmail = sessionHooks.emailOf;
+  const origAlpha = draftDataHooks.alphaOn;
   const order: string[] = [];
   let dropError: Error | null = null;
   let email = 'ana@x.com';
   sessionHooks.emailOf = async () => email;
+  draftDataHooks.alphaOn = () => true;
   draftDbHooks.dropDatabase = async (_adminUrl, name) => {
     order.push(`drop:${name}`);
     if (dropError) throw dropError;
@@ -492,6 +494,7 @@ test('draftResetDatabase stops, drops and ensures, and discardDraft does not dro
     draftDevHooks.stopDevProcess = origStop;
     draftDevHooks.ensureDevProcess = origEnsure;
     sessionHooks.emailOf = origEmail;
+    draftDataHooks.alphaOn = origAlpha;
     await app.close();
     if (prev.dir === undefined) delete process.env.CBE_PROJECTS_DIR;
     else process.env.CBE_PROJECTS_DIR = prev.dir;
