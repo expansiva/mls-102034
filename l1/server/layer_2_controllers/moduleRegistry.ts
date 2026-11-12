@@ -20,16 +20,18 @@ async function loadRouterFromEntrypoint(backendRouter: string): Promise<Map<stri
 
 // Hexagonal model: discover routes by enumerating the module's controllers folder and reading each
 // controller's exported `routes: ControllerRoute[]`. No generated router file.
-export async function loadRouterFromControllers(controllersDir: string): Promise<Map<string, BffHandler>> {
-  const dir = resolveProjectDistPath(controllersDir);
-  const router = new Map<string, BffHandler>();
-  const entries = readdirSync(dir);
+/**
+ * Which files of a controllers folder are loaded: every `.js` (but `.defs.js`), and a `.ts` only when no `.js` with the same
+ * name exists (no dist yet). Apart from `loadRouterFromControllers` so the rule can be tested without importing: a loader
+ * that maps `.js` to its `.ts` sibling (tsx) would hide which of the two was chosen.
+ */
+export function selectControllerFiles(entries: readonly string[]): string[] {
   const jsStems = new Set(
     entries
       .filter((file) => file.endsWith('.js') && !file.endsWith('.defs.js'))
       .map((file) => file.slice(0, -3)),
   );
-  const files = entries.filter((file) => {
+  return entries.filter((file) => {
     if (file.endsWith('.js')) {
       return !file.endsWith('.defs.js');
     }
@@ -38,6 +40,12 @@ export async function loadRouterFromControllers(controllersDir: string): Promise
     }
     return !jsStems.has(file.slice(0, -3));
   });
+}
+
+export async function loadRouterFromControllers(controllersDir: string): Promise<Map<string, BffHandler>> {
+  const dir = resolveProjectDistPath(controllersDir);
+  const router = new Map<string, BffHandler>();
+  const files = selectControllerFiles(readdirSync(dir));
   for (const file of files) {
     const moduleUrl = resolveProjectModuleImportUrl(`${controllersDir.replace(/\/$/u, '')}/${file}`);
     const mod = await import(moduleUrl);
