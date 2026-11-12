@@ -12,10 +12,13 @@ import type {
 import type {
   OccurrenceKey,
   TaskOccurrenceAdvanceCommand,
+  TaskLlmStepRefusal,
   TaskOccurrenceAdvanceResult,
+  TaskOccurrenceLlmCommand,
+  TaskOccurrenceLlmPort,
+  TaskOccurrenceLlmResult,
   TaskOccurrenceOpenCommand,
   TaskOccurrenceOpenResult,
-  TaskOccurrencePort,
   TaskOccurrenceSnapshot,
   WorkflowExecutor,
 } from '/_102034_/l1/workflow/contracts.js';
@@ -27,7 +30,8 @@ import {
   type MessagesWorkflowIdentities,
 } from '/_102034_/l1/workflow/messagesTask.js';
 
-type TaskClient = Pick<ServerMessagesClient, 'openModuleTask' | 'getModuleTask' | 'advanceModuleTask'>;
+type TaskClient = Pick<ServerMessagesClient, 'openModuleTask' | 'getModuleTask' | 'advanceModuleTask'>
+  & Partial<Pick<ServerMessagesClient, 'requestModuleLlmStep'>>;
 
 export interface MessagesTaskOccurrencePortOptions {
   projectId: string;
@@ -164,7 +168,42 @@ async function encodeExecutor(
   return { kind: 'person', userId: await toCm(ctx, identities, executor.mdmId) };
 }
 
-export function createMessagesTaskOccurrencePort(options: MessagesTaskOccurrencePortOptions): TaskOccurrencePort {
+const LLM_REFUSALS: Readonly<Record<TaskLlmStepRefusal, { code: string; message: string }>> = {
+  paused: { code: 'WORKFLOW_LLM_PAUSED', message: 'The task is paused; the LLM step was not requested.' },
+  llm_step_not_current: { code: 'WORKFLOW_LLM_STEP_NOT_CURRENT', message: 'The step is not the current LLM step.' },
+  llm_pass_limit: { code: 'WORKFLOW_LLM_PASS_LIMIT', message: 'The LLM step passed its limit of passes; the task was paused.' },
+  task_too_large: { code: 'WORKFLOW_LLM_TASK_TOO_LARGE', message: 'The task would grow beyond the size limit.' },
+};
+
+/** A refusal of the LLM step by its own code (`msg`); anything else goes through the generic envelope rules. */
+function llmRefusal(msg: unknown): { code: string; message: string } | undefined {
+  return typeof msg === 'string' && Object.prototype.hasOwnProperty.call(LLM_REFUSALS, msg)
+    ? LLM_REFUSALS[msg as TaskLlmStepRefusal]
+    : undefined;
+}
+
+function readLlmResult(body: { state?: unknown; result?: unknown; failure?: unknown; cost?: unknown }): TaskOccurrenceLlmResult {
+  const state = body.state;
+  if (state !== 'pending' && state !== 'in_progress' && state !== 'completed' && state !== 'failed') protocol();
+  const out: TaskOccurrenceLlmResult = { state };
+  if (body.result !== undefined) {
+    if (typeof body.result !== 'string') protocol();
+    out.result = body.result;
+  }
+  if (body.failure !== undefined) {
+    if (!isRecord(body.failure) || typeof body.failure.code !== 'string' || typeof body.failure.message !== 'string') protocol();
+    out.failure = { code: body.failure.code, message: body.failure.message };
+  }
+  if (body.cost !== undefined) {
+    if (typeof body.cost !== 'number' || !Number.isFinite(body.cost)) protocol();
+    out.cost = body.cost;
+  }
+  if (state === 'completed' && out.result === undefined) protocol();
+  if (state === 'failed' && out.failure === undefined) protocol();
+  return out;
+}
+
+export function createMessagesTaskOccurrencePort(options: MessagesTaskOccurrencePortOptions): TaskOccurrenceLlmPort {
   const projectId = boundId(options.projectId);
   const moduleId = boundId(options.moduleId);
   const asUserId = boundId(options.asUserId);
@@ -264,6 +303,36 @@ export function createMessagesTaskOccurrencePort(options: MessagesTaskOccurrence
       if (command.message !== undefined) intent.message = { content: command.message.content };
       const result = await client.advanceModuleTask(asUserId, intent);
       return finishAdvance(ctx, identities, key, command, result);
+    },
+    async requestLlmStep(_ctx, key, command): Promise<TaskOccurrenceLlmResult> {
+      inScope(key);
+      if (client.requestModuleLlmStep === undefined) {
+        throw new AppError('WORKFLOW_LLM_UNSUPPORTED', 'This messages client cannot ask an LLM step.', 501);
+      }
+      const result = await client.requestModuleLlmStep(asUserId, {
+        ref: {
+          project: key.project,
+          module: key.module,
+          entity: key.entity,
+          recordId: key.recordId,
+          processId: key.processId,
+          // The request names the occurrence like the reads do; the version of the plan is not part of finding it.
+          workflowVersion: null,
+        },
+        commandId: command.commandId,
+        stepKey: command.stepKey,
+        input: command.input,
+        maxPasses: command.maxPasses,
+        ...(command.tools === undefined ? {} : { tools: command.tools }),
+      });
+      const refusal = llmRefusal(result.body.msg);
+      // Like the other module actions the envelope may travel with http 200 (statusCode in the body) or with the same http status.
+      if (refusal !== undefined && REMOTE_STATUS.has(result.body.statusCode) && (result.httpStatus === result.body.statusCode || result.httpStatus === 200)) {
+        throw new AppError(refusal.code, refusal.message, result.body.statusCode);
+      }
+      const verdict = classifyEnvelope(result.httpStatus, { statusCode: result.body.statusCode, msg: result.body.msg, taskId: readTaskId(result.body) });
+      if (verdict.kind !== 'ok') raiseEnvelope(verdict);
+      return readLlmResult(result.body);
     },
   };
 }

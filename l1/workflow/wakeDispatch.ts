@@ -83,12 +83,18 @@ export function createWorkflowWakeDispatcher(
         return { retry: { code: 'WORKFLOW_WAKE_PROTOCOL' } };
       }
       if (commandApplied(event, snapshot)) return 'accepted';
-      if (terminal(snapshot) || stepPassSeqDiffers(event, snapshot) || wakeUnusable(event, snapshot, deps.now ?? (() => new Date()))) {
+      const llmEnd = event.kind === 'llm-step-finished';
+      if (llmEnd) {
+        // The end of a module LLM step. A step of the agent has no wake and the task only exposes seq inside wake, so seq is not
+        // checked (rt209): the effect is idempotent by commandId, which the handler reads back. Stale when the module has moved on.
+        if (terminal(snapshot) || snapshot.step !== event.stepKey || snapshot.pass !== event.pass) return 'stale';
+      } else if (terminal(snapshot) || stepPassSeqDiffers(event, snapshot) || wakeUnusable(event, snapshot, deps.now ?? (() => new Date()))) {
         return 'stale';
       }
       if (snapshot.status === 'paused') {
         return { retry: { code: 'WORKFLOW_WAKE_PAUSED' } };
       }
+      if (llmEnd && snapshot.status !== 'in progress') return 'stale';
       if (snapshot.status !== 'in progress' || !planHasStep(snapshot)) {
         return { retry: { code: 'WORKFLOW_WAKE_NOT_CURRENT' } };
       }

@@ -25,6 +25,10 @@ export type {
   TaskOccurrenceOpenResult,
   TaskOccurrenceAdvanceResult,
   TaskOccurrencePort,
+  TaskOccurrenceLlmPort,
+  TaskOccurrenceLlmCommand,
+  TaskOccurrenceLlmResult,
+  TaskLlmStepRefusal,
 } from '/_102034_/l1/workflow/contracts.js';
 export {
   createWorkflowEngine,
@@ -36,6 +40,8 @@ export {
   type TaskWorkflowEngine,
   type TaskWorkflowOpen,
   type TaskWorkflowAdvance,
+  type TaskWorkflowLlmEngine,
+  type TaskWorkflowLlmStep,
 } from '/_102034_/l1/workflow/engine.js';
 export { createMemoryOccurrencePort } from '/_102034_/l1/workflow/memoryOccurrence.js';
 export {

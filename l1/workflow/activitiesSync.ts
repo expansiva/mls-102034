@@ -4,6 +4,7 @@ import type { WorkflowActivityStore } from '/_102034_/l1/workflow/activitiesStor
 import type {
   OccurrenceKey,
   TaskOccurrenceAdvanceResult,
+  TaskOccurrenceLlmPort,
   TaskOccurrenceOpenResult,
   TaskOccurrencePort,
   TaskOccurrenceSnapshot,
@@ -16,10 +17,12 @@ const SCOPE = 'MSG_APP_SCOPE_INVALID';
  * Decorates the canonical task port. The projection is refreshed from a fresh read.
  * A projection failure never rewrites a confirmed open or advance.
  */
+export function withWorkflowActivityProjection(basePort: TaskOccurrenceLlmPort, store: WorkflowActivityStore): TaskOccurrenceLlmPort;
+export function withWorkflowActivityProjection(basePort: TaskOccurrencePort, store: WorkflowActivityStore): TaskOccurrencePort;
 export function withWorkflowActivityProjection(
-  basePort: TaskOccurrencePort,
+  basePort: TaskOccurrencePort | TaskOccurrenceLlmPort,
   store: WorkflowActivityStore,
-): TaskOccurrencePort {
+): TaskOccurrencePort | TaskOccurrenceLlmPort {
   async function refresh(ctx: RequestContext, key: OccurrenceKey): Promise<void> {
     try {
       await store.refresh(ctx, key, () => basePort.find(ctx, key));
@@ -71,6 +74,13 @@ export function withWorkflowActivityProjection(
       await refresh(ctx, key);
       return advanced;
     },
+    ...('requestLlmStep' in basePort
+      ? {
+        // The LLM step changes no field the projection keeps (the step result is read back by the module): no refresh.
+        requestLlmStep: (ctx: RequestContext, key: OccurrenceKey, command: Parameters<TaskOccurrenceLlmPort['requestLlmStep']>[2]) =>
+          (basePort as TaskOccurrenceLlmPort).requestLlmStep(ctx, key, command),
+      }
+      : {}),
   };
 }
 

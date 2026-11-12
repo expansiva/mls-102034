@@ -3,6 +3,7 @@ import { AppError } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import type { IClock, ILogger } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import { getRunningRelease } from '/_102034_/l1/server/layer_1_external/cbe/cbeRelease.js';
 import type { RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
+import type { IAMessageInputType, LLMTool } from '/_102036_/l2/shared/interfaces.js';
 import type {
   AdvanceOccurrenceResult,
   OccurrenceKey,
@@ -11,6 +12,8 @@ import type {
   OpenOccurrenceResult,
   TaskOccurrenceAdvanceCommand,
   TaskOccurrenceAdvanceResult,
+  TaskOccurrenceLlmPort,
+  TaskOccurrenceLlmResult,
   TaskOccurrenceMessageStatus,
   TaskOccurrenceOpenResult,
   TaskOccurrencePort,
@@ -95,6 +98,76 @@ export interface TaskWorkflowEngine {
     command: TaskWorkflowAdvance,
   ): Promise<TaskOccurrenceAdvanceResult>;
   find(ctx: RequestContext, key: OccurrenceKey): Promise<TaskOccurrenceSnapshot | null>;
+}
+
+/**
+ * What the module hands the engine to ask one LLM step (ontologia §3, G5). It writes no cm vocabulary: the engine adds the
+ * markers (`modelType`, `x-web-search`, `x-tool-strict`) and the tool shape. The prompt itself stays the module's.
+ */
+export interface TaskWorkflowLlmStep {
+  key: OccurrenceKey;
+  /** Identity of the request: repeating it returns the same step and never calls the LLM again. */
+  commandId: string;
+  /** Must be the current `llm` step of the task. */
+  stepKey: string;
+  /** The request is refused past this many passes of the step. */
+  maxPasses: number;
+  system: string;
+  user: string;
+  webSearch?: boolean;
+  /** Output schema; the engine sends it as the interaction tool. */
+  outputSchema?: { name: string; description?: string; parameters: Record<string, unknown> };
+  /** Defaults to `agent`. */
+  modelType?: string;
+}
+
+/** The engine that can also ask an LLM step. Apart from `TaskWorkflowEngine`, which stays as it is for the modules already generated. */
+export interface TaskWorkflowLlmEngine extends TaskWorkflowEngine {
+  requestLlmStep(ctx: RequestContext, input: TaskWorkflowLlmStep): Promise<TaskOccurrenceLlmResult>;
+}
+
+const LLM_MARKER = /<!--\s*(?:modelType|x-web-search|x-tool-strict)\s*:/u;
+const DEFAULT_MODEL_TYPE = 'agent';
+
+function requireText(value: unknown, field: string): string {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new AppError('INVALID_COMMAND', `${field} must be a non-empty string.`, 400);
+  }
+  return value;
+}
+
+/** Builds what goes to the cm: the `input` messages with the markers and, with an output schema, the tools. */
+export function buildLlmStepRequest(step: TaskWorkflowLlmStep): { input: IAMessageInputType[]; tools?: LLMTool[] } {
+  const system = requireText(step.system, 'system');
+  const user = requireText(step.user, 'user');
+  if (LLM_MARKER.test(system) || LLM_MARKER.test(user)) {
+    throw new AppError('INVALID_COMMAND', 'The prompt must not carry cm markers; the engine adds them.', 400);
+  }
+  const modelType = step.modelType === undefined ? DEFAULT_MODEL_TYPE : requireText(step.modelType, 'modelType');
+  if (/-->|[\r\n]/u.test(modelType)) {
+    throw new AppError('INVALID_COMMAND', 'modelType is not valid.', 400);
+  }
+  const markers = [`<!-- modelType: ${modelType} -->`];
+  if (step.webSearch === true) markers.push('<!-- x-web-search: true -->');
+  if (step.outputSchema !== undefined) markers.push('<!-- x-tool-strict: true -->');
+  const request: { input: IAMessageInputType[]; tools?: LLMTool[] } = {
+    input: [
+      { type: 'system', content: `${markers.join('\n')}\n${system}` },
+      { type: 'human', content: user },
+    ],
+  };
+  if (step.outputSchema !== undefined) {
+    const name = requireText(step.outputSchema.name, 'outputSchema.name');
+    request.tools = [{
+      type: 'function',
+      function: {
+        name,
+        ...(step.outputSchema.description === undefined ? {} : { description: step.outputSchema.description }),
+        parameters: step.outputSchema.parameters,
+      },
+    }];
+  }
+  return request;
 }
 
 function sessionBy(ctx: WorkflowEngineContext): string | null {
@@ -297,11 +370,33 @@ function createLegacyWorkflowEngine(port: OccurrencePort): WorkflowEngine {
   };
 }
 
+export function createWorkflowEngine(port: TaskOccurrenceLlmPort): TaskWorkflowLlmEngine;
 export function createWorkflowEngine(port: TaskOccurrencePort): TaskWorkflowEngine;
 export function createWorkflowEngine(port: OccurrencePort): WorkflowEngine;
 export function createWorkflowEngine(
-  port: TaskOccurrencePort | OccurrencePort,
-): TaskWorkflowEngine | WorkflowEngine {
-  if (isTaskOccurrencePort(port)) return createTaskWorkflowEngine(port);
-  return createLegacyWorkflowEngine(port);
+  port: TaskOccurrenceLlmPort | TaskOccurrencePort | OccurrencePort,
+): TaskWorkflowLlmEngine | TaskWorkflowEngine | WorkflowEngine {
+  if (!isTaskOccurrencePort(port)) return createLegacyWorkflowEngine(port);
+  const engine = createTaskWorkflowEngine(port);
+  if (!('requestLlmStep' in port) || typeof port.requestLlmStep !== 'function') return engine;
+  const llmPort = port as TaskOccurrenceLlmPort;
+  const withLlm: TaskWorkflowLlmEngine = {
+    ...engine,
+    async requestLlmStep(ctx, input) {
+      requireText(input.commandId, 'commandId');
+      requireText(input.stepKey, 'stepKey');
+      if (!Number.isSafeInteger(input.maxPasses) || input.maxPasses < 1) {
+        throw new AppError('INVALID_COMMAND', 'maxPasses must be an integer of at least 1.', 400);
+      }
+      const request = buildLlmStepRequest(input);
+      return llmPort.requestLlmStep(ctx, input.key, {
+        commandId: input.commandId,
+        stepKey: input.stepKey,
+        maxPasses: input.maxPasses,
+        input: request.input,
+        ...(request.tools === undefined ? {} : { tools: request.tools }),
+      });
+    },
+  };
+  return withLlm;
 }

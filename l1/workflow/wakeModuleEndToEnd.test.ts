@@ -39,10 +39,10 @@ function marks(): Marks {
   return holder.__rt207;
 }
 
-const registerSource = (moduleId: string, routine: string) => `import { registerWorkflowWakeHandler } from '/_102034_/l1/workflow/index.js';
-registerWorkflowWakeHandler(${JSON.stringify({ projectId: APP_ID, moduleId, processId: 'procA', routine })}, async (ctx, event, occurrence) => {
-  globalThis.__rt207.wakes.push(ctx.moduleId + ':' + event.eventId + ':' + occurrence.taskId);
-});
+const registerSource = (moduleId: string, ...routines: string[]) => `import { registerWorkflowWakeHandler } from '/_102034_/l1/workflow/index.js';
+${routines.map((routine) => `registerWorkflowWakeHandler(${JSON.stringify({ projectId: APP_ID, moduleId, processId: 'procA', routine })}, async (ctx, event, occurrence) => {
+  globalThis.__rt207.wakes.push(ctx.moduleId + ':' + event.eventId + ':' + occurrence.taskId + ':' + (event.kind ?? 'wake'));
+});`).join('\n')}
 `;
 
 const tickSource = (moduleId: string) => `export async function onTick(ctx, now) {
@@ -182,7 +182,7 @@ async function setup(): Promise<Env> {
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, name), source);
   };
-  write(MODULE, 'registerRepositories.ts', registerSource(MODULE, 'onWait'));
+  write(MODULE, 'registerRepositories.ts', registerSource(MODULE, 'onWait', 'gerar'));
   write(MODULE, 'moduleTick.ts', tickSource(MODULE));
   // só a raiz, exportando onTick: o motor não o lê (o tick vem do persistenceEntrypoint)
   write('semtick', 'registerRepositories.ts', `${registerSource('semtick', 'onWait')}\n${tickSource('semtick')}`);
@@ -263,7 +263,7 @@ test('(b) o despertar válido é gravado (accepted) e o despachante chama o hand
     const stored = env.inbox.stored.get('task-1:wait:1:1');
     assert.ok(stored);
     assert.equal(await dispatcherFor(MODULE).dispatch(stored), 'accepted');
-    assert.deepEqual(marks().wakes, [`${MODULE}:task-1:wait:1:1:task-1`]);
+    assert.deepEqual(marks().wakes, [`${MODULE}:task-1:wait:1:1:task-1:wake`]);
   } finally {
     await env.restore();
   }
@@ -297,6 +297,64 @@ test('(c) sem handler a rota dá 503 ANTES de gravar e o mesmo evento é aceito 
     assert.ok(stored);
     assert.deepEqual(await dispatcherFor('tardio').dispatch(stored), { retry: { code: 'WORKFLOW_WAKE_HANDLER_UNAVAILABLE' } });
     assert.equal(marks().wakes.length, 0);
+  } finally {
+    await env.restore();
+  }
+});
+
+test('(d) rt209: o aviso de fim de LLM entra pela mesma rota e chega ao handler da etapa llm; repetido não duplica; formato trocado dá 400', async () => {
+  const env = await setup();
+  try {
+    const llmEvent = wakeEvent({
+      eventId: 'task-1:gerar:llm:cmd-1',
+      stepKey: 'gerar',
+      routine: 'gerar',
+      kind: 'llm-step-finished',
+      commandId: 'cmd-1',
+      state: 'completed',
+    });
+    const first = await post(env.app, llmEvent);
+    assert.equal(first.statusCode, 202);
+    assert.deepEqual(first.json(), { eventId: 'task-1:gerar:llm:cmd-1', outcome: 'accepted' });
+    assert.equal(marks().wakes.length, 0, 'a rota resolve o handler e não o chama');
+
+    // o mesmo aviso de novo: o inbox reconhece o eventId e não grava outra linha
+    const repeated = await post(env.app, llmEvent);
+    assert.equal(repeated.statusCode, 200);
+    assert.deepEqual(repeated.json(), { eventId: 'task-1:gerar:llm:cmd-1', outcome: 'stale' });
+    assert.equal(env.inbox.stored.size, 1);
+
+    const stored = env.inbox.stored.get('task-1:gerar:llm:cmd-1');
+    assert.ok(stored);
+    assert.equal(stored.kind, 'llm-step-finished');
+    assert.equal(stored.commandId, 'cmd-1');
+    assert.equal(stored.state, 'completed');
+    const snap = snapshot(MODULE);
+    snap.step = 'gerar';
+    snap.plan = { ...snap.plan, steps: [{ stepId: 'gerar', kind: 'llm', title: 'Gerar', next: [], ownerKind: 'agent' }] };
+    snap.wake = undefined;
+    const port: TaskOccurrencePort = {
+      kind: 'task',
+      async open() { throw new Error('dispatcher must not open'); },
+      async find() { return snap; },
+      async advance() { throw new Error('dispatcher must not advance'); },
+    };
+    const dispatcher = createWorkflowWakeDispatcher(APP_ID, MODULE, {
+      port,
+      now: () => new Date('2026-10-20T12:00:01Z'),
+      companyId: () => 'company-canonical',
+      readIntegration: () => ({ organizationId: 'org-1' }),
+      createContext: () => createRequestContext(createMemoryDataRuntime(), { sandbox: true }),
+    });
+    assert.equal(await dispatcher.dispatch(stored), 'accepted');
+    assert.deepEqual(marks().wakes, [`${MODULE}:task-1:gerar:llm:cmd-1:task-1:llm-step-finished`]);
+
+    // formato do eventId trocado entre os dois tipos: 400, nada gravado
+    const swapped = await post(env.app, wakeEvent({ eventId: 'task-1:gerar:llm:cmd-9', stepKey: 'gerar', routine: 'gerar' }));
+    assert.equal(swapped.statusCode, 400);
+    const swappedBack = await post(env.app, wakeEvent({ kind: 'llm-step-finished', commandId: 'cmd-9', state: 'completed', stepKey: 'gerar', routine: 'gerar' }));
+    assert.equal(swappedBack.statusCode, 400);
+    assert.equal(env.inbox.stored.size, 1);
   } finally {
     await env.restore();
   }

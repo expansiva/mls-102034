@@ -6,7 +6,7 @@ import {
 import type { WorkflowActivityStore } from '/_102034_/l1/workflow/activitiesStore.js';
 import { createPostgresWorkflowActivityStore } from '/_102034_/l1/workflow/activitiesPostgres.js';
 import { withWorkflowActivityProjection } from '/_102034_/l1/workflow/activitiesSync.js';
-import type { TaskOccurrencePort } from '/_102034_/l1/workflow/contracts.js';
+import type { TaskOccurrenceLlmPort } from '/_102034_/l1/workflow/contracts.js';
 import { createMessagesWorkflowIdentities } from '/_102034_/l1/workflow/messagesIdentities.js';
 import { createMessagesTaskOccurrencePort } from '/_102034_/l1/workflow/messagesOccurrence.js';
 
@@ -14,7 +14,7 @@ import { createMessagesTaskOccurrencePort } from '/_102034_/l1/workflow/messages
 export type RuntimeMessagesClient = Pick<
   ServerMessagesClient,
   'openModuleTask' | 'getModuleTask' | 'advanceModuleTask' | 'linkModulePerson' | 'resolveModulePeople'
->;
+> & Partial<Pick<ServerMessagesClient, 'requestModuleLlmStep'>>;
 
 export interface RuntimeMessagesTaskPortOptions {
   projectId: string;
@@ -26,7 +26,7 @@ export interface RuntimeMessagesTaskPortOptions {
 }
 
 /** Production task port. projectId and moduleId come from the server bootstrap. */
-export function createRuntimeMessagesTaskPort(options: RuntimeMessagesTaskPortOptions): TaskOccurrencePort {
+export function createRuntimeMessagesTaskPort(options: RuntimeMessagesTaskPortOptions): TaskOccurrenceLlmPort {
   const projectId = options.projectId;
   const moduleId = options.moduleId;
   const client = options.client ?? createServerMessagesClient({ projectId });

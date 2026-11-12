@@ -1,6 +1,6 @@
 /// <mls fileReference="_102034_/l1/workflow/contracts.ts" enhancement="_blank"/>
 import type { IClock, RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
-import type { ModuleWake, ResponseOpenModuleTask, TaskData } from '/_102036_/l2/shared/interfaces.js';
+import type { IAMessageInputType, LLMTool, ModuleWake, ResponseOpenModuleTask, TaskData } from '/_102036_/l2/shared/interfaces.js';
 import type { WorkflowPlan } from '/_102034_/l1/workflow/plan.js';
 
 export type WorkflowStepKind = 'human' | 'mechanical' | 'llm' | 'wait' | 'alert';
@@ -185,6 +185,29 @@ export interface TaskOccurrenceAdvanceResult {
   moduleMessage?: TaskOccurrenceMessageStatus;
 }
 
+/** What the engine sends to the cm to ask one LLM step under the current `llm` step (ontologia §3). */
+export interface TaskOccurrenceLlmCommand {
+  commandId: string;
+  stepKey: string;
+  maxPasses: number;
+  /** Prompt messages already in the interaction shape (system and human). */
+  input: IAMessageInputType[];
+  /** Output schema in the interaction tool shape. */
+  tools?: LLMTool[];
+}
+
+/** Errors the cm answers on a refused LLM step. */
+export type TaskLlmStepRefusal = 'paused' | 'llm_step_not_current' | 'llm_pass_limit' | 'task_too_large';
+
+export interface TaskOccurrenceLlmResult {
+  state: 'pending' | 'in_progress' | 'completed' | 'failed';
+  /** Text, or the tool arguments, when completed. */
+  result?: string;
+  /** When failed. */
+  failure?: { code: string; message: string };
+  cost?: number;
+}
+
 export interface TaskOccurrencePort {
   readonly kind: 'task';
   open(ctx: RequestContext, command: TaskOccurrenceOpenCommand): Promise<TaskOccurrenceOpenResult>;
@@ -194,4 +217,12 @@ export interface TaskOccurrencePort {
     key: OccurrenceKey,
     command: TaskOccurrenceAdvanceCommand,
   ): Promise<TaskOccurrenceAdvanceResult>;
+}
+
+/**
+ * The task port that can also ask an LLM step. Apart from `TaskOccurrencePort` on purpose: a port written
+ * before the step (a test double, the generator's tests) keeps compiling, and only the runtime port has it.
+ */
+export interface TaskOccurrenceLlmPort extends TaskOccurrencePort {
+  requestLlmStep(ctx: RequestContext, key: OccurrenceKey, command: TaskOccurrenceLlmCommand): Promise<TaskOccurrenceLlmResult>;
 }

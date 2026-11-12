@@ -40,6 +40,11 @@ export interface WorkflowWakeStableIdentity {
   pass: number;
   seq: number;
   routine: string;
+  /** 'wake' when the event has no kind. */
+  kind: 'wake' | 'llm-step-finished';
+  /** Only on 'llm-step-finished'. */
+  commandId?: string;
+  state?: 'completed' | 'failed';
 }
 
 export type WorkflowWakeDispatchResult =
@@ -169,17 +174,35 @@ export function parseWorkflowWakeEvent(body: unknown, byteLength?: number): Modu
   const stepKey = requiredString(body, 'stepKey');
   const seq = positiveInteger(body, 'seq');
   const eventId = requiredString(body, 'eventId');
-  const prefix = `${taskId}:${stepKey}:${seq}:`;
-  if (!eventId.startsWith(prefix)) {
-    invalid('eventId must start with taskId:stepKey:seq:');
+  const kind = body.kind;
+  if (kind !== undefined && kind !== 'wake' && kind !== 'llm-step-finished') {
+    invalid("kind must be 'wake' or 'llm-step-finished'");
   }
-  const suffix = eventId.slice(prefix.length);
-  if (!POSITIVE_DECIMAL.test(suffix)) {
-    invalid('eventId suffix must be a positive integer');
-  }
-  const suffixNumber = Number(suffix);
-  if (!Number.isSafeInteger(suffixNumber)) {
-    invalid('eventId suffix must be a safe positive integer');
+  let llmEnd: { commandId: string; state: 'completed' | 'failed' } | undefined;
+  if (kind === 'llm-step-finished') {
+    // The end of a module LLM step: eventId is <taskId>:<stepKey>:llm:<commandId>, and only this kind may use it.
+    const commandId = requiredString(body, 'commandId');
+    const state = body.state;
+    if (state !== 'completed' && state !== 'failed') {
+      invalid("state must be 'completed' or 'failed'");
+    }
+    if (eventId !== `${taskId}:${stepKey}:llm:${commandId}`) {
+      invalid('eventId must be taskId:stepKey:llm:commandId');
+    }
+    llmEnd = { commandId, state };
+  } else {
+    const prefix = `${taskId}:${stepKey}:${seq}:`;
+    if (!eventId.startsWith(prefix)) {
+      invalid('eventId must start with taskId:stepKey:seq:');
+    }
+    const suffix = eventId.slice(prefix.length);
+    if (!POSITIVE_DECIMAL.test(suffix)) {
+      invalid('eventId suffix must be a positive integer');
+    }
+    const suffixNumber = Number(suffix);
+    if (!Number.isSafeInteger(suffixNumber)) {
+      invalid('eventId suffix must be a safe positive integer');
+    }
   }
   const event: ModuleWakeEvent = {
     eventId,
@@ -193,6 +216,11 @@ export function parseWorkflowWakeEvent(body: unknown, byteLength?: number): Modu
     revision: positiveInteger(body, 'revision'),
     routine: requiredString(body, 'routine'),
   };
+  if (llmEnd) {
+    event.kind = 'llm-step-finished';
+    event.commandId = llmEnd.commandId;
+    event.state = llmEnd.state;
+  }
   return event;
 }
 
@@ -213,6 +241,9 @@ export function workflowWakeStableIdentity(event: ModuleWakeEvent): WorkflowWake
     pass: event.pass,
     seq: event.seq,
     routine: event.routine,
+    kind: event.kind ?? 'wake',
+    ...(event.commandId === undefined ? {} : { commandId: event.commandId }),
+    ...(event.state === undefined ? {} : { state: event.state }),
   };
 }
 
@@ -226,6 +257,9 @@ export function sameWorkflowWakeIdentity(left: ModuleWakeEvent, right: ModuleWak
     && a.pass === b.pass
     && a.seq === b.seq
     && a.routine === b.routine
+    && a.kind === b.kind
+    && a.commandId === b.commandId
+    && a.state === b.state
     && a.ref.project === b.ref.project
     && a.ref.module === b.ref.module
     && a.ref.entity === b.ref.entity

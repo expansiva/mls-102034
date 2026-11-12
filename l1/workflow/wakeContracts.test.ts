@@ -192,3 +192,60 @@ test('workflow wake inbox is a platform postgres table registered for migrate', 
   const registered = loaded.tableDefinitions.find((definition) => definition.repositoryName === 'workflowWakeInbox');
   assert.equal(registered, defined);
 });
+
+// rt209: the end of a module LLM step travels as the same event, with kind, commandId and state.
+function llmBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return body({
+    kind: 'llm-step-finished',
+    commandId: 'cmd-1',
+    state: 'completed',
+    eventId: 'task-1:wait:llm:cmd-1',
+    ...overrides,
+  });
+}
+
+test('llm-step-finished is parsed with kind, commandId and state; a wake keeps its shape', () => {
+  const event = parseWorkflowWakeEvent(llmBody());
+  assert.equal(event.kind, 'llm-step-finished');
+  assert.equal(event.commandId, 'cmd-1');
+  assert.equal(event.state, 'completed');
+  assert.equal(event.eventId, 'task-1:wait:llm:cmd-1');
+  assert.equal(event.seq, 2);
+  assert.equal(workflowWakeCommandId(event.eventId), 'wake:task-1:wait:llm:cmd-1');
+  assert.equal(parseWorkflowWakeEvent(llmBody({ state: 'failed' })).state, 'failed');
+
+  // without kind, or with 'wake', exactly as before: no kind/commandId/state in the result, extra fields dropped
+  for (const wake of [parsed(), parsed({ kind: 'wake', commandId: 'x', state: 'completed' })]) {
+    assert.equal('kind' in wake, false);
+    assert.equal('commandId' in wake, false);
+    assert.equal('state' in wake, false);
+  }
+});
+
+test('llm-step-finished refuses a missing commandId or state, an unknown kind, and the wake eventId format (and the reverse)', () => {
+  const invalid = (value: unknown) => assert.throws(
+    () => parseWorkflowWakeEvent(value),
+    (error: unknown) => error instanceof AppError && error.statusCode === 400 && error.code === 'WORKFLOW_WAKE_EVENT_INVALID',
+  );
+  const { commandId: _c, ...noCommand } = llmBody();
+  const { state: _s, ...noState } = llmBody();
+  invalid(noCommand);
+  invalid(noState);
+  invalid(llmBody({ commandId: '' }));
+  invalid(llmBody({ state: 'pending' }));
+  invalid(llmBody({ kind: 'other' }));
+  invalid(llmBody({ eventId: 'task-1:wait:2:3' })); // wake format with kind llm
+  invalid(llmBody({ eventId: 'task-1:wait:llm:cmd-2' })); // another commandId
+  invalid(llmBody({ eventId: 'task-9:wait:llm:cmd-1' })); // another task
+  invalid(body({ eventId: 'task-1:wait:llm:cmd-1' })); // llm format without kind
+  invalid(body({ kind: 'wake', eventId: 'task-1:wait:llm:cmd-1' })); // llm format with kind wake
+});
+
+test('llm-step-finished identity includes kind, commandId and state', () => {
+  const base = parseWorkflowWakeEvent(llmBody());
+  const repeated = parseWorkflowWakeEvent(llmBody({ attempt: 5, revision: 9 }));
+  assert.equal(sameWorkflowWakeIdentity(base, repeated), true);
+  assert.equal(sameWorkflowWakeIdentity(base, parseWorkflowWakeEvent(llmBody({ state: 'failed' }))), false);
+  assert.equal(sameWorkflowWakeIdentity(base, parseWorkflowWakeEvent(llmBody({ commandId: 'cmd-2', eventId: 'task-1:wait:llm:cmd-2' }))), false);
+  assert.equal(sameWorkflowWakeIdentity(parsed(), parsed({ kind: 'wake' })), true);
+});

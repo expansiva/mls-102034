@@ -12,6 +12,7 @@ import type {
   RequestGetTaskUpdate,
   RequestLinkModulePerson,
   RequestListModuleTasks,
+  RequestModuleLlmStep,
   RequestOpenModuleTask,
   RequestResolveModulePeople,
   ResponseAddMessage,
@@ -23,6 +24,7 @@ import type {
   ResponseGetTaskUpdate,
   ResponseLinkModulePerson,
   ResponseListModuleTasks,
+  ResponseModuleLlmStep,
   ResponseOpenModuleTask,
   ResponseResolveModulePeople,
 } from '/_102036_/l2/shared/interfaces.js';
@@ -36,6 +38,7 @@ type ActionName =
   | 'openModuleTask'
   | 'getModuleTask'
   | 'listModuleTasks'
+  | 'requestModuleLlmStep'
   | 'applyIntents'
   | 'getTaskUpdate'
   | 'addMessage'
@@ -94,6 +97,10 @@ export type ServerMessagesClient = {
     asUserId: string,
     intent: AgentIntentModuleAdvance,
   ): Promise<MessagesCallResult<ResponseApplyIntents>>;
+  requestModuleLlmStep(
+    asUserId: string,
+    input: Omit<RequestModuleLlmStep, 'action' | 'userId'>,
+  ): Promise<MessagesCallResult<ResponseModuleLlmStep>>;
   applyIntents(
     asUserId: string,
     input: Omit<RequestApplyIntents, 'action' | 'userId'>,
@@ -315,6 +322,7 @@ export function createServerMessagesClient(options: ServerMessagesClientOptions 
     openModuleTask: (asUserId, input) => call('openModuleTask', asUserId, input, 'module', input.ref.project),
     getModuleTask: (asUserId, input) => call('getModuleTask', asUserId, input, 'module', input.ref.project),
     listModuleTasks: (asUserId, input) => call('listModuleTasks', asUserId, input, 'module', input.project),
+    requestModuleLlmStep: (asUserId, input) => call('requestModuleLlmStep', asUserId, input, 'module', input.ref.project),
     advanceModuleTask: async (asUserId, intent) => {
       if (intent.type !== 'module-advance') {
         throw localError('MSG_MODULE_INTENT_UNSUPPORTED', 400, MODULE_INTENT_UNSUPPORTED);

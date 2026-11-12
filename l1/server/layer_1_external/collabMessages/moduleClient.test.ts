@@ -34,6 +34,8 @@ const EXPECTED_MODULE_METHODS = [
   'linkModulePerson',
   'listModuleTasks',
   'openModuleTask',
+  // rt209: the LLM step of a module task; its transport case is the last test of this block.
+  'requestModuleLlmStep',
   'resolveModulePeople',
 ] as const;
 
@@ -230,6 +232,37 @@ describe('module messages client', () => {
         assert.equal((call.body.ref as { project: string }).project, app);
       }
     }
+  });
+
+  it('sends requestModuleLlmStep with the private token of the app and refuses another project before fetch', async () => {
+    const dir = projectFilesDir();
+    writeAppFile(dir, APP_A, TOKEN_A, ORG_A);
+    const { fetchImpl, calls } = mockFetch(() => jsonResponse(200, envelope(200, { state: 'pending' })));
+    const client = createServerMessagesClient({ projectId: APP_A, env: globalEnv(), fetchImpl });
+    const input = {
+      ref: { ...ref(APP_A), workflowVersion: null },
+      commandId: 'cmd-1',
+      stepKey: 'gerar',
+      input: [{ type: 'system' as const, content: 's' }, { type: 'human' as const, content: 'u' }],
+      maxPasses: 2,
+    };
+    const result = await client.requestModuleLlmStep(USER, input);
+    assert.equal(result.body.state, 'pending');
+    assert.equal(calls.length, 1);
+    const call = calls[0]!;
+    assert.equal(call.body.action, 'requestModuleLlmStep');
+    assert.equal(call.headers['x-app-id'], APP_A);
+    assert.equal(call.headers.authorization, `Bearer ${TOKEN_A}`);
+    assert.equal(call.headers['x-org-id'], ORG_A);
+    assert.equal(call.headers['x-user-id'], USER);
+    assert.equal('cookie' in call.headers, false);
+    assert.equal(call.body.commandId, 'cmd-1');
+    assert.equal(call.body.maxPasses, 2);
+    await assert.rejects(
+      client.requestModuleLlmStep(USER, { ...input, ref: { ...ref(APP_B), workflowVersion: null } }),
+      (err: unknown) => err instanceof AppError && err.code === 'MSG_APP_SCOPE_INVALID' && err.statusCode === 400,
+    );
+    assert.equal(calls.length, 1);
   });
 
   it('rejects a divergent project or ref before fetch', async () => {

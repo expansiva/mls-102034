@@ -344,3 +344,64 @@ test('passo fora do plano persistido não executa', async () => {
   assert.deepEqual(await run.dispatcher.dispatch(event()), { retry: { code: 'WORKFLOW_WAKE_NOT_CURRENT' } });
   assert.equal(run.calls.includes('handler'), false);
 });
+
+// rt209: the end of a module LLM step. The step of the agent has no wake and the task only exposes seq inside wake.
+function llmEvent(overrides: Partial<ModuleWakeEvent> = {}): ModuleWakeEvent {
+  return event({
+    eventId: 'task-1:wait:llm:cmd-1',
+    kind: 'llm-step-finished',
+    commandId: 'cmd-1',
+    state: 'completed',
+    routine: 'wait',
+    seq: 7,
+    ...overrides,
+  });
+}
+
+function llmHarness(occurrence: TaskOccurrenceSnapshot | null) {
+  const calls: string[] = [];
+  const handlers = new Map<string, WorkflowWakeHandler>([
+    [key({ projectId: PROJECT, moduleId: MODULE, processId: 'procA', routine: 'wait' }), async (_ctx, item) => {
+      calls.push(`handler:${item.kind}:${item.commandId}:${item.state}`);
+    }],
+  ]);
+  return { ...harness({ occurrence, handlers }), calls };
+}
+
+test('llm-step-finished chega ao handler com kind, commandId e state, sem wake e sem conferir seq', async () => {
+  const run = llmHarness(snapshot({ wake: undefined }));
+  assert.equal(await run.dispatcher.dispatch(llmEvent()), 'accepted');
+  assert.deepEqual(run.calls, ['handler:llm-step-finished:cmd-1:completed']);
+  // failed also reaches the handler: the module decides what to do with a failed step
+  const failed = llmHarness(snapshot({ wake: undefined }));
+  assert.equal(await failed.dispatcher.dispatch(llmEvent({ state: 'failed' })), 'accepted');
+  assert.deepEqual(failed.calls, ['handler:llm-step-finished:cmd-1:failed']);
+});
+
+test('llm-step-finished é stale com a Task done, outro passo ou outro pass; pausada espera; comando já aplicado aceita sem handler', async () => {
+  for (const occurrence of [
+    snapshot({ wake: undefined, done: true, status: 'done' }),
+    snapshot({ wake: undefined, step: 'other', plan: plan('other') }),
+    snapshot({ wake: undefined, pass: 2 }),
+    snapshot({ wake: undefined, status: 'todo' }),
+  ]) {
+    const run = llmHarness(occurrence);
+    assert.equal(await run.dispatcher.dispatch(llmEvent()), 'stale');
+    assert.deepEqual(run.calls, []);
+  }
+  const paused = llmHarness(snapshot({ wake: undefined, status: 'paused' }));
+  assert.deepEqual(await paused.dispatcher.dispatch(llmEvent()), { retry: { code: 'WORKFLOW_WAKE_PAUSED' } });
+  assert.deepEqual(paused.calls, []);
+
+  const applied = llmHarness(snapshot({
+    wake: undefined,
+    history: [{ commandId: workflowWakeCommandId('task-1:wait:llm:cmd-1') } as TaskOccurrenceSnapshot['history'][number]],
+  }));
+  assert.equal(await applied.dispatcher.dispatch(llmEvent()), 'accepted');
+  assert.deepEqual(applied.calls, []);
+});
+
+test('um despertar comum continua stale sem wake: a mudança só vale para llm-step-finished', async () => {
+  const run = harness({ occurrence: snapshot({ wake: undefined }) });
+  assert.equal(await run.dispatcher.dispatch(event()), 'stale');
+});
