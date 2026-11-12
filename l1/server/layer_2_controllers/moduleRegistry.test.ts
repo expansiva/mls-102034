@@ -53,8 +53,9 @@ test('loadRouterFromControllers lê .js e, sem dist, .ts', async () => {
 test('selectControllerFiles: .js ganha do .ts de mesmo nome; .defs, .d.ts e .test não entram', () => {
   assert.deepEqual(
     selectControllerFiles(['gamma.js', 'gamma.ts', 'delta.ts', 'gamma.defs.js', 'delta.defs.ts', 'delta.d.ts', 'delta.test.ts', 'eps.test.js', 'notes.md']),
-    ['gamma.js', 'delta.ts', 'eps.test.js'],
+    ['gamma.js', 'delta.ts'],
   );
+  assert.deepEqual(selectControllerFiles(['a.js', 'a.test.js', 'a.defs.js', 'b.ts', 'b.test.ts']), ['a.js', 'b.ts']);
   assert.deepEqual(selectControllerFiles(['alpha.ts']), ['alpha.ts']);
   assert.deepEqual(selectControllerFiles([]), []);
 });

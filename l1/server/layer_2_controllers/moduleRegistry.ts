@@ -18,6 +18,11 @@ async function loadRouterFromEntrypoint(backendRouter: string): Promise<Map<stri
   return (createRouter as () => Map<string, BffHandler>)();
 }
 
+/** A test file runs its own top-level code (it may swap repositories and engines): the app never imports one. */
+export function isTestFile(file: string): boolean {
+  return /\.test\.(js|ts)$/u.test(file);
+}
+
 // Hexagonal model: discover routes by enumerating the module's controllers folder and reading each
 // controller's exported `routes: ControllerRoute[]`. No generated router file.
 /**
@@ -26,16 +31,17 @@ async function loadRouterFromEntrypoint(backendRouter: string): Promise<Map<stri
  * that maps `.js` to its `.ts` sibling (tsx) would hide which of the two was chosen.
  */
 export function selectControllerFiles(entries: readonly string[]): string[] {
+  const loadable = entries.filter((file) => !isTestFile(file));
   const jsStems = new Set(
-    entries
+    loadable
       .filter((file) => file.endsWith('.js') && !file.endsWith('.defs.js'))
       .map((file) => file.slice(0, -3)),
   );
-  return entries.filter((file) => {
+  return loadable.filter((file) => {
     if (file.endsWith('.js')) {
       return !file.endsWith('.defs.js');
     }
-    if (!file.endsWith('.ts') || file.endsWith('.d.ts') || file.endsWith('.defs.ts') || file.endsWith('.test.ts')) {
+    if (!file.endsWith('.ts') || file.endsWith('.d.ts') || file.endsWith('.defs.ts')) {
       return false;
     }
     return !jsStems.has(file.slice(0, -3));

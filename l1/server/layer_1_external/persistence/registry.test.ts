@@ -7,6 +7,7 @@ import {
   loadResolvedDynamoTableDefinitions,
   loadResolvedTableDefinitions,
   resetResolvedTableDefinitionsCache,
+  selectTableDefinitionFiles,
   toSchemaSnapshotTable,
 } from '/_102034_/l1/server/layer_1_external/persistence/registry.js';
 
@@ -587,6 +588,27 @@ test('persistence registry keeps initial and test apart across modules, entrypoi
     assert.match(key.message ?? '', /complete non-null unique key/);
     assert.equal(dynamo.ok, false);
     assert.match(dynamo.message ?? '', /dynamoOnly/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('selectTableDefinitionFiles never returns a test file and keeps .defs', () => {
+  assert.deepEqual(
+    selectTableDefinitionFiles(['a.js', 'a.test.js', 'a.defs.js', 'b.ts', 'b.test.ts', 'b.d.ts', 'c.defs.ts', 'notes.md']),
+    ['a.js', 'a.defs.js', 'b.ts', 'c.defs.ts'],
+  );
+});
+
+test('the table loader does not import a test file that sits in the table folder', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'rt211-'));
+  try {
+    writeHappyWorkspace(root, false, 'Brasil');
+    // A test runs its own top-level code. If the loader imported it, the probe would fail here.
+    writeModuleFile(root, '900111', 'l1/geo/tables/country.test.ts', "throw new Error('test file imported by the app');\n");
+    const probe = await runProbe(root);
+    assert.equal(probe.ok, true, probe.message);
+    assert.equal((probe.definitions ?? []).some((definition) => definition.repositoryName === 'geoCountry'), true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

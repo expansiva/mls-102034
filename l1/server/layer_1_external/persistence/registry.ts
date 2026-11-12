@@ -222,6 +222,15 @@ function acceptSeedExport(value: unknown, source: string): TableSeedRows | null 
   return value;
 }
 
+/**
+ * Files of a table-defs folder that are imported. `.defs.*` is kept (those are the definitions); a test file is never
+ * imported by the app, because it runs its own top-level code inside the server.
+ */
+export function selectTableDefinitionFiles(entries: readonly string[]): string[] {
+  return entries.filter((file) =>
+    (file.endsWith('.js') || file.endsWith('.ts')) && !file.endsWith('.d.ts') && !/\.test\.(js|ts)$/u.test(file));
+}
+
 // Hexagonal model: discover every TableDefinition-shaped export across the module's table-def
 // adapters. TableSeedRows-shaped exports are collected globally and merged after every persistence
 // module is loaded, so a client module can seed 102034-owned MDM tables without owning them.
@@ -229,8 +238,7 @@ async function discoverTableDefinitions(tableDefsDir: string): Promise<ImportedP
   const dir = resolveProjectDistPath(tableDefsDir);
   const definitions: TableDefinition[] = [];
   const seeds: TableSeedRows[] = [];
-  const files = readdirSync(dir).filter((file) =>
-    (file.endsWith('.js') || file.endsWith('.ts')) && !file.endsWith('.d.ts'));
+  const files = selectTableDefinitionFiles(readdirSync(dir));
   for (const file of files) {
     const moduleUrl = resolveProjectModuleImportUrl(`${tableDefsDir.replace(/\/$/u, '')}/${file}`);
     const mod = await import(moduleUrl);
