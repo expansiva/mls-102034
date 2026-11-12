@@ -233,11 +233,11 @@ test('the cli refuses before a write when mode or url is missing', () => {
 test('member roles tag both people and a repeat does not change the version', async () => {
   const ctx = ctxAt('2026-10-18');
   const config = projectsConfig('102047', ['tarefas']);
-  const first = await ensureLocalTestPair(ctx, config, binding(), ['tarefas.MembroEquipe']);
+  const first = await ensureLocalTestPair(ctx, config, binding(), ['tarefas.Participante']);
   const versions = new Map<string, number>();
   for (const persona of first.personas) {
     const person = await ctx.mdm.entity.get({ mdmId: persona.personMdmId });
-    assert.equal(person.details.tags.includes('tarefas.MembroEquipe'), true);
+    assert.equal(person.details.tags.includes('tarefas.Participante'), true);
     assert.equal(person.details.status, 'Active');
     const links = await ctx.data.mdmRelationship.findMany({ where: { fromId: persona.personMdmId, type: 'AssignedTo' } });
     assert.equal(links.length, 1);
@@ -246,7 +246,7 @@ test('member roles tag both people and a repeat does not change the version', as
     assert.equal(links[0].status, 'Active');
     versions.set(persona.personMdmId, person.version);
   }
-  const second = await ensureLocalTestPair(ctx, config, binding(), ['tarefas.MembroEquipe']);
+  const second = await ensureLocalTestPair(ctx, config, binding(), ['tarefas.Participante']);
   assert.deepEqual(
     second.personas.map((persona) => persona.personMdmId),
     first.personas.map((persona) => persona.personMdmId),
@@ -254,7 +254,7 @@ test('member roles tag both people and a repeat does not change the version', as
   for (const persona of second.personas) {
     const person = await ctx.mdm.entity.get({ mdmId: persona.personMdmId });
     assert.equal(person.version, versions.get(persona.personMdmId));
-    assert.equal(person.details.tags.filter((tag) => tag === 'tarefas.MembroEquipe').length, 1);
+    assert.equal(person.details.tags.filter((tag) => tag === 'tarefas.Participante').length, 1);
   }
   const people = await ctx.data.mdmEntityIndex.findMany({ where: { subtype: 'Person' } });
   assert.equal(people.length, 2);
@@ -263,7 +263,7 @@ test('member roles tag both people and a repeat does not change the version', as
 test('a module outside the project config is refused before any write', async () => {
   const ctx = ctxAt('2026-10-18');
   await assert.rejects(
-    ensureLocalTestPair(ctx, projectsConfig(), binding(), ['tarefas.MembroEquipe']),
+    ensureLocalTestPair(ctx, projectsConfig(), binding(), ['tarefas.Participante']),
     /not in the project config/,
   );
   const people = await ctx.data.mdmEntityIndex.findMany({ where: { subtype: 'Person' } });
@@ -281,7 +281,7 @@ test('a person that is not Active is refused and left inactive', async () => {
     await ctx.mdm.entity.inactivate({ mdmId: persona.personMdmId, expectedVersion: person.version });
   }
   await assert.rejects(
-    ensureLocalTestPair(ctx, config, binding(), ['tarefas.MembroEquipe']),
+    ensureLocalTestPair(ctx, config, binding(), ['tarefas.Participante']),
     /not Active/,
   );
   for (const persona of seeded.personas) {
@@ -298,7 +298,7 @@ test('omitting member roles leaves the bench without a module role', async () =>
   assert.deepEqual(again.personas, seeded.personas);
   for (const persona of again.personas) {
     const person = await ctx.mdm.entity.get({ mdmId: persona.personMdmId });
-    assert.equal(person.details.tags.includes('tarefas.MembroEquipe'), false);
+    assert.equal(person.details.tags.includes('tarefas.Participante'), false);
   }
 });
 
@@ -307,7 +307,7 @@ test('without onboarding, a member role seeds two Active people in the organizat
   const config = projectsConfig('102047', ['tarefas'], false);
   // The boot creates the organization company before any seed runs.
   const boot = await ensureOrganizationIdentity(ctx, binding());
-  const seeded = await ensureLocalTestPair(ctx, config, binding(), ['tarefas.MembroEquipe']);
+  const seeded = await ensureLocalTestPair(ctx, config, binding(), ['tarefas.Participante']);
   assert.equal(seeded.companyMdmId, boot.companyMdmId);
   assert.equal(seeded.organizationKey, 'org-bench');
   assert.equal(seeded.personas.length, 2);
@@ -318,7 +318,7 @@ test('without onboarding, a member role seeds two Active people in the organizat
     assert.equal(persona.sub, localTestSub('102047', persona.alias));
     const person = await ctx.mdm.entity.get({ mdmId: persona.personMdmId });
     assert.equal(person.details.status, 'Active');
-    assert.equal(person.details.tags.includes('tarefas.MembroEquipe'), true);
+    assert.equal(person.details.tags.includes('tarefas.Participante'), true);
     assert.equal(await ctx.mdm.identity.findByLogin(persona.email), persona.personMdmId);
     const links = await ctx.data.mdmRelationship.findMany({ where: { fromId: persona.personMdmId, type: 'AssignedTo' } });
     assert.equal(links.length, 1);
@@ -334,12 +334,12 @@ test('without onboarding, a member role seeds two Active people in the organizat
 test('without onboarding, a repeat keeps ids and versions', async () => {
   const ctx = ctxAt('2026-10-18');
   const config = projectsConfig('102047', ['tarefas'], false);
-  const first = await ensureLocalTestPair(ctx, config, binding(), ['tarefas.MembroEquipe']);
+  const first = await ensureLocalTestPair(ctx, config, binding(), ['tarefas.Participante']);
   const versions = new Map<string, number>();
   for (const persona of first.personas) {
     versions.set(persona.personMdmId, (await ctx.mdm.entity.get({ mdmId: persona.personMdmId })).version);
   }
-  const second = await ensureLocalTestPair(ctx, config, binding(), ['tarefas.MembroEquipe']);
+  const second = await ensureLocalTestPair(ctx, config, binding(), ['tarefas.Participante']);
   assert.deepEqual(second, first);
   for (const persona of second.personas) {
     assert.equal((await ctx.mdm.entity.get({ mdmId: persona.personMdmId })).version, versions.get(persona.personMdmId));
