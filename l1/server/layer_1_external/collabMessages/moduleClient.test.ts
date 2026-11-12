@@ -256,6 +256,7 @@ describe('module messages client', () => {
     assert.equal(call.headers['x-org-id'], ORG_A);
     assert.equal(call.headers['x-user-id'], USER);
     assert.equal('cookie' in call.headers, false);
+    assert.equal('userId' in call.body, false, 'the cm schema of this action has no body userId (additionalProperties: false)');
     assert.equal(call.body.commandId, 'cmd-1');
     assert.equal(call.body.maxPasses, 2);
     await assert.rejects(

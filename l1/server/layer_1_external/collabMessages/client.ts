@@ -55,6 +55,8 @@ const ACTIONS_WITHOUT_BODY_USER_ID: ReadonlySet<ActionName> = new Set<ActionName
   'openModuleTask',
   'getModuleTask',
   'listModuleTasks',
+  // rt209: the schema of requestModuleLlmStep (moduleTasks.ts RequestModuleLlmStepSchema) has no userId either.
+  'requestModuleLlmStep',
 ]);
 
 function bodyOf(action: ActionName, input: object, userId: string): Record<string, unknown> {
