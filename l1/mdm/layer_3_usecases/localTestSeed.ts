@@ -2,7 +2,7 @@
 import type { ProjectOnboardingConfig, ProjectsConfig } from '/_102029_/l2/runtimeConfigTypes.js';
 import { readOnboardingConfig, type OrganizationBinding } from '/_102034_/l1/server/layer_1_external/config/onboardingConfig.js';
 import { AppError, type RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
-import { ensureOrganizationCompany } from '/_102034_/l1/mdm/layer_3_usecases/organizationBootstrap.js';
+import { ensureOrganizationCompany, ensureOrganizationIdentity } from '/_102034_/l1/mdm/layer_3_usecases/organizationBootstrap.js';
 import {
   attachPersonMembership,
   ensureSelfRegistration,
@@ -49,12 +49,22 @@ function projectIdFrom(config: ProjectsConfig): string {
   return projectId;
 }
 
-function onboardingFrom(config: ProjectsConfig): ProjectOnboardingConfig {
+/**
+ * The registration needs only a module id and a person type. Without an onboarding block (102047)
+ * the first member role stands in for it, and the company is the organization's own, with no company type.
+ * Without both, there is nothing to seed.
+ */
+function registrationFrom(
+  config: ProjectsConfig,
+  roles: readonly { moduleId: string; personType: string }[],
+): { onboarding: ProjectOnboardingConfig | null; registration: ProjectOnboardingConfig } {
   const onboarding = readOnboardingConfig(config);
-  if (!onboarding) {
-    throw new AppError('VALIDATION_ERROR', 'onboarding config is required', 400, { field: 'onboarding' });
+  if (onboarding) return { onboarding, registration: onboarding };
+  if (roles.length === 0) {
+    throw new AppError('VALIDATION_ERROR', 'onboarding config or a member role is required', 400, { field: 'onboarding' });
   }
-  return onboarding;
+  // entryPath and companyType are never read by the registration; the bench does not use them.
+  return { onboarding: null, registration: { moduleId: roles[0].moduleId, personType: roles[0].personType, entryPath: '/', companyType: '' } };
 }
 
 const MEMBER_ROLE = /^([A-Za-z][A-Za-z0-9]*)\.([A-Z][A-Za-z0-9]*)$/;
@@ -89,6 +99,7 @@ export function parseMemberRoles(config: ProjectsConfig, memberRoles: readonly s
  * overwrite a name, country, link or version the tester already stored.
  * A pending match or a link to another company is an error; nothing is released.
  * `memberRoles` attaches existing module roles; an empty list keeps the previous behavior.
+ * Without an onboarding block, at least one member role is required and the first one registers the people.
  */
 export async function ensureLocalTestPair(
   ctx: RequestContext,
@@ -98,8 +109,10 @@ export async function ensureLocalTestPair(
 ): Promise<LocalTestSeedResult> {
   const roles = parseMemberRoles(config, memberRoles);
   const projectId = projectIdFrom(config);
-  const onboarding = onboardingFrom(config);
-  const company = await ensureOrganizationCompany(ctx, binding, onboarding);
+  const { onboarding, registration } = registrationFrom(config, roles);
+  const company = onboarding
+    ? await ensureOrganizationCompany(ctx, binding, onboarding)
+    : await ensureOrganizationIdentity(ctx, binding);
   const personas: LocalTestPersona[] = [];
 
   for (const alias of LOCAL_TEST_ALIASES) {
@@ -122,7 +135,7 @@ export async function ensureLocalTestPair(
       }
     }
 
-    const registered = await ensureSelfRegistration(ctx, binding, onboarding, {
+    const registered = await ensureSelfRegistration(ctx, binding, registration, {
       email,
       name: BENCH_NAMES[alias],
     });

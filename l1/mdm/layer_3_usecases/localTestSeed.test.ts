@@ -13,7 +13,7 @@ import { resetResolvedTableDefinitionsCache } from '/_102034_/l1/server/layer_1_
 import { createRequestContext } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
 import type { RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import { createMemoryDataRuntime } from '/_102034_/l1/mdm/layer_1_external/data/memory/MdmDataRuntimeMemory.js';
-import { ensureOrganizationCompany } from '/_102034_/l1/mdm/layer_3_usecases/organizationBootstrap.js';
+import { ensureOrganizationCompany, ensureOrganizationIdentity } from '/_102034_/l1/mdm/layer_3_usecases/organizationBootstrap.js';
 import { ensureLocalTestPair, localTestEmail, localTestSub } from '/_102034_/l1/mdm/layer_3_usecases/localTestSeed.js';
 import { assertLocalSeedEnvironment } from '/_102034_/l1/scripts/seedLocalTest.js';
 
@@ -59,15 +59,17 @@ function binding(): OrganizationBinding {
   return { key: 'org-bench', name: 'Bench Org', source: 'project-file' };
 }
 
-function projectsConfig(projectId = '102047', moduleIds: string[] = []): ProjectsConfig {
+function projectsConfig(projectId = '102047', moduleIds: string[] = [], withOnboarding = true): ProjectsConfig {
   return {
     defaultProjectId: projectId,
-    onboarding: {
-      moduleId: 'mod-bench',
-      entryPath: '/inicio',
-      personType: 'Member',
-      companyType: 'mod-bench.Company',
-    },
+    ...(withOnboarding ? {
+      onboarding: {
+        moduleId: 'mod-bench',
+        entryPath: '/inicio',
+        personType: 'Member',
+        companyType: 'mod-bench.Company',
+      },
+    } : { organization: { source: 'development-project' } }),
     projects: moduleIds.length === 0 ? {} : {
       [projectId]: {
         root: './client',
@@ -298,4 +300,60 @@ test('omitting member roles leaves the bench without a module role', async () =>
     const person = await ctx.mdm.entity.get({ mdmId: persona.personMdmId });
     assert.equal(person.details.tags.includes('tarefas.MembroEquipe'), false);
   }
+});
+
+test('without onboarding, a member role seeds two Active people in the organization company', async () => {
+  const ctx = ctxAt('2026-10-18');
+  const config = projectsConfig('102047', ['tarefas'], false);
+  // The boot creates the organization company before any seed runs.
+  const boot = await ensureOrganizationIdentity(ctx, binding());
+  const seeded = await ensureLocalTestPair(ctx, config, binding(), ['tarefas.MembroEquipe']);
+  assert.equal(seeded.companyMdmId, boot.companyMdmId);
+  assert.equal(seeded.organizationKey, 'org-bench');
+  assert.equal(seeded.personas.length, 2);
+  assert.notEqual(seeded.personas[0].sub, seeded.personas[1].sub);
+  assert.notEqual(seeded.personas[0].personMdmId, seeded.personas[1].personMdmId);
+  for (const persona of seeded.personas) {
+    assert.equal(persona.email, localTestEmail('102047', persona.alias));
+    assert.equal(persona.sub, localTestSub('102047', persona.alias));
+    const person = await ctx.mdm.entity.get({ mdmId: persona.personMdmId });
+    assert.equal(person.details.status, 'Active');
+    assert.equal(person.details.tags.includes('tarefas.MembroEquipe'), true);
+    assert.equal(await ctx.mdm.identity.findByLogin(persona.email), persona.personMdmId);
+    const links = await ctx.data.mdmRelationship.findMany({ where: { fromId: persona.personMdmId, type: 'AssignedTo' } });
+    assert.equal(links.length, 1);
+    assert.equal(links[0].toId, boot.companyMdmId);
+    assert.equal(links[0].status, 'Active');
+  }
+  const company = await ctx.mdm.entity.get({ mdmId: boot.companyMdmId });
+  assert.equal(company.details.tags.some((tag) => tag.endsWith('.Company')), false);
+  const companies = await ctx.data.mdmEntityIndex.findMany({ where: { subtype: 'Company' } });
+  assert.equal(companies.length, 1);
+});
+
+test('without onboarding, a repeat keeps ids and versions', async () => {
+  const ctx = ctxAt('2026-10-18');
+  const config = projectsConfig('102047', ['tarefas'], false);
+  const first = await ensureLocalTestPair(ctx, config, binding(), ['tarefas.MembroEquipe']);
+  const versions = new Map<string, number>();
+  for (const persona of first.personas) {
+    versions.set(persona.personMdmId, (await ctx.mdm.entity.get({ mdmId: persona.personMdmId })).version);
+  }
+  const second = await ensureLocalTestPair(ctx, config, binding(), ['tarefas.MembroEquipe']);
+  assert.deepEqual(second, first);
+  for (const persona of second.personas) {
+    assert.equal((await ctx.mdm.entity.get({ mdmId: persona.personMdmId })).version, versions.get(persona.personMdmId));
+  }
+  assert.equal((await ctx.data.mdmEntityIndex.findMany({ where: { subtype: 'Person' } })).length, 2);
+  assert.equal((await ctx.data.mdmEntityIndex.findMany({ where: { subtype: 'Company' } })).length, 1);
+});
+
+test('without onboarding and without a member role nothing is written', async () => {
+  const ctx = ctxAt('2026-10-18');
+  await assert.rejects(
+    ensureLocalTestPair(ctx, projectsConfig('102047', ['tarefas'], false), binding()),
+    /onboarding config or a member role is required/,
+  );
+  assert.equal((await ctx.data.mdmEntityIndex.findMany({ where: { subtype: 'Person' } })).length, 0);
+  assert.equal((await ctx.data.mdmEntityIndex.findMany({ where: { subtype: 'Company' } })).length, 0);
 });
