@@ -10,7 +10,7 @@ import type { ResolvedTableDefinition, TableDefinition } from '/_102034_/l1/serv
 import { buildCreateIndexSql, buildCreateTableSql } from '/_102034_/l1/server/layer_1_external/persistence/schemaBootstrap.js';
 import { tableDefinitions } from '/_102034_/l1/server/persistence.js';
 import type { ModuleWakeEvent } from '/_102036_/l2/shared/interfaces.js';
-import { workflowWakeCommandId } from '/_102034_/l1/workflow/wakeContracts.js';
+import { parseWorkflowWakeEvent, sameWorkflowWakeIdentity, workflowWakeCommandId } from '/_102034_/l1/workflow/wakeContracts.js';
 import { createPostgresWorkflowWakeInbox } from '/_102034_/l1/workflow/wakeInboxPostgres.js';
 
 const integration = process.env.RUN_INTEGRATION_TESTS === 'true'
@@ -461,3 +461,79 @@ test('an effect committed before the inbox receipt is not repeated on retry', { 
   }
 }));
 
+
+function llmEnd(recordId: string, commandId = `wf_${recordId}:pesquisar:1`): ModuleWakeEvent {
+  const taskId = `task-${recordId}`;
+  return {
+    ...event({ recordId, stepKey: 'pesquisar', routine: 'pesquisar', eventId: `${taskId}:pesquisar:llm:${commandId}` }),
+    kind: 'llm-step-finished',
+    commandId,
+    state: 'completed',
+  };
+}
+
+test('the LLM end notice is stored whole, read back and repeated as accepted', { skip: !integration, timeout: 10000 }, async () => serial(async () => {
+  const shared = await pg();
+  const notice = llmEnd(`llm-${randomBytes(3).toString('hex')}`);
+  const inbox = storeFor(shared);
+  const first = await inbox.enqueue(notice);
+  assert.equal(first.statusCode, 202);
+  const stored = (await rowOf(shared, notice.eventId)).payload;
+  assert.equal(stored.kind, 'llm-step-finished');
+  assert.equal(stored.commandId, notice.commandId);
+  assert.equal(stored.state, 'completed');
+  assert.equal(sameWorkflowWakeIdentity(parseWorkflowWakeEvent(stored), notice), true);
+  let delivered: ModuleWakeEvent | undefined;
+  assert.equal(await inbox.runNext('102030', async (incoming) => {
+    delivered = incoming;
+    return 'accepted';
+  }), 'accepted');
+  assert.equal(delivered?.kind, 'llm-step-finished');
+  assert.equal(delivered?.commandId, notice.commandId);
+  assert.equal(delivered?.state, 'completed');
+  const again = await inbox.enqueue({ ...notice, attempt: 2 });
+  assert.equal(again.statusCode, 200);
+  assert.equal(again.receipt.outcome, 'accepted');
+  // A plain wake keeps the stored shape of today: no kind, commandId or state.
+  const wake = event({ recordId: `wk-${randomBytes(3).toString('hex')}` });
+  await inbox.enqueue(wake);
+  const plain = (await rowOf(shared, wake.eventId)).payload as unknown as Record<string, unknown>;
+  assert.equal('kind' in plain || 'commandId' in plain || 'state' in plain, false);
+}));
+
+test('an unreadable row is postponed with its code and the next row is delivered in the same round', { skip: !integration, timeout: 10000 }, async () => serial(async () => {
+  const shared = await pg();
+  const suffix = randomBytes(3).toString('hex');
+  const inbox = storeFor(shared);
+  const bad = event({ recordId: `bad-${suffix}` });
+  await inbox.enqueue(bad);
+  // The old defect: an LLM eventId stored without kind. The row cannot be parsed.
+  const ghost = `task-ghost-${suffix}:pesquisar:llm:wf_ghost:pesquisar:1`;
+  await shared.query(
+    `UPDATE platform_workflow_wake_inbox SET "eventId" = $2, "payload" = jsonb_set("payload", '{eventId}', to_jsonb($2::text))
+     WHERE "eventId" = $1`,
+    [bad.eventId, ghost],
+  );
+  const good = event({ recordId: `good-${suffix}`, scheduledAt: '2026-10-20T12:00:01.000Z' });
+  await inbox.enqueue(good);
+  // The ghost row must be first in line.
+  await shared.query(`UPDATE platform_workflow_wake_inbox SET "nextAttemptAt" = NOW() - INTERVAL '1 hour' WHERE "eventId" = $1`, [ghost]);
+  const seen: string[] = [];
+  const results: string[] = [];
+  for (let n = 0; n < 3; n += 1) {
+    const result = await inbox.runNext('102030', async (incoming) => {
+      seen.push(incoming.eventId);
+      return 'accepted';
+    });
+    results.push(result);
+    if (result === 'empty') break;
+  }
+  assert.deepEqual(results, ['retry', 'accepted', 'empty']);
+  assert.deepEqual(seen, [good.eventId]);
+  const parked = await rowOf(shared, ghost);
+  assert.equal(parked.state, 'pending');
+  assert.equal(parked.attempts, 1);
+  assert.equal(parked.lastErrorCode, 'WORKFLOW_WAKE_EVENT_UNREADABLE');
+  assert.equal(parked.due, false);
+  assert.equal((await rowOf(shared, good.eventId)).state, 'completed');
+}));

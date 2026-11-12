@@ -163,7 +163,18 @@ export function createPostgresWorkflowWakeInbox(
         }
         const event = storedEvent(due);
         if (!event || event.ref.project !== projectId) {
-          throw new AppError('WORKFLOW_WAKE_UNAVAILABLE', 'Wake inbox row cannot be read.', 503);
+          // An unreadable row is postponed with its error code and the round goes on: throwing here would
+          // leave it first in line and stall every other event of the application.
+          await retryLater(
+            client,
+            resolved.definition,
+            projectId,
+            due.eventId,
+            event ? 'WORKFLOW_WAKE_SCOPE_INVALID' : 'WORKFLOW_WAKE_EVENT_UNREADABLE',
+          );
+          await client.query('COMMIT');
+          opened = false;
+          return 'retry';
         }
         const locked = await tryOccurrenceLock(client, event);
         if (!locked) {
@@ -229,7 +240,12 @@ function quoteIdent(identifier: string): string {
 }
 
 function wirePayload(event: ModuleWakeEvent): ModuleWakeEvent {
+  // `kind`, `commandId` and `state` exist only on the LLM end notice. The wake is stored as before.
+  const llmEnd = event.kind === 'llm-step-finished'
+    ? { kind: event.kind, commandId: event.commandId, state: event.state }
+    : {};
   return {
+    ...llmEnd,
     eventId: event.eventId,
     scheduledAt: event.scheduledAt,
     attempt: event.attempt,
