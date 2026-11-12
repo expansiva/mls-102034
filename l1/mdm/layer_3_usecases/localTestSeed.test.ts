@@ -151,25 +151,48 @@ test('an ambiguous contact is not released', async () => {
   assert.equal(await ctx.mdm.identity.findByLogin(email), null);
 });
 
-test('a login already linked to another company is refused', async () => {
+const otherOnboarding = { moduleId: 'mod-other', entryPath: '/inicio', personType: 'Member', companyType: 'mod-other.Company' };
+
+async function activeCompanies(ctx: RequestContext, personMdmId: string): Promise<string[]> {
+  const links = await ctx.data.mdmRelationship.findMany({ where: { fromId: personMdmId, type: 'AssignedTo' } });
+  return links.filter((link) => link.status === 'Active').map((link) => link.toId);
+}
+
+test('a bench login linked to another company is moved to the current one', async () => {
   const ctx = ctxAt('2026-10-18');
-  const other = await ensureOrganizationCompany(ctx, { key: 'org-other', name: 'Other', source: 'project-file' }, {
-    moduleId: 'mod-other',
-    entryPath: '/inicio',
-    personType: 'Member',
-    companyType: 'mod-other.Company',
-  });
-  const email = localTestEmail('102047', 'responsavel');
-  const person = await ctx.mdm.entity.create({ details: { subtype: 'Person', name: 'Taken', countryCode: '' } });
-  await ctx.mdm.identity.setLogin(person.mdmId, email);
-  await ctx.mdm.entity.link({ fromId: person.mdmId, toId: other.companyMdmId, type: 'AssignedTo', role: 'member' });
-  await assert.rejects(
-    ensureLocalTestPair(ctx, projectsConfig(), binding()),
-    /linked to another company/,
-  );
-  const links = await ctx.data.mdmRelationship.findMany({ where: { fromId: person.mdmId, type: 'AssignedTo' } });
-  assert.equal(links.length, 1);
-  assert.equal(links[0].toId, other.companyMdmId);
+  const first = await ensureLocalTestPair(ctx, projectsConfig(), binding());
+  assert.deepEqual(first.personas.map((persona) => persona.relinked), [false, false]);
+
+  const moved = await ensureLocalTestPair(ctx, projectsConfig(), { key: 'org-moved', name: 'Moved', source: 'project-file' });
+  assert.notEqual(moved.companyMdmId, first.companyMdmId);
+  assert.deepEqual(moved.personas.map((persona) => persona.relinked), [true, true]);
+  for (const [index, persona] of moved.personas.entries()) {
+    assert.equal(persona.personMdmId, first.personas[index].personMdmId);
+    assert.deepEqual(await activeCompanies(ctx, persona.personMdmId), [moved.companyMdmId]);
+    const links = await ctx.data.mdmRelationship.findMany({ where: { fromId: persona.personMdmId, type: 'AssignedTo' } });
+    const old = links.filter((link) => link.toId === first.companyMdmId);
+    assert.equal(old.length, 1);
+    assert.equal(old[0].status, 'Inactive');
+  }
+
+  const again = await ensureLocalTestPair(ctx, projectsConfig(), { key: 'org-moved', name: 'Moved', source: 'project-file' });
+  assert.equal(again.companyMdmId, moved.companyMdmId);
+  assert.deepEqual(again.personas.map((persona) => persona.relinked), [false, false]);
+  assert.deepEqual(again.personas.map((persona) => persona.personMdmId), moved.personas.map((persona) => persona.personMdmId));
+});
+
+test('a person that is not a bench login keeps its link to another company', async () => {
+  const ctx = ctxAt('2026-10-18');
+  const other = await ensureOrganizationCompany(ctx, { key: 'org-other', name: 'Other', source: 'project-file' }, otherOnboarding);
+  const stranger = await ctx.mdm.entity.create({ details: { subtype: 'Person', name: 'Stranger', countryCode: '' } });
+  await ctx.mdm.identity.setLogin(stranger.mdmId, 'someone@example.com');
+  await ctx.mdm.entity.link({ fromId: stranger.mdmId, toId: other.companyMdmId, type: 'AssignedTo', role: 'member' });
+
+  const first = await ensureLocalTestPair(ctx, projectsConfig(), binding());
+  await ensureLocalTestPair(ctx, projectsConfig(), { key: 'org-moved', name: 'Moved', source: 'project-file' });
+
+  assert.deepEqual(await activeCompanies(ctx, stranger.mdmId), [other.companyMdmId]);
+  assert.equal(first.personas.some((persona) => persona.personMdmId === stranger.mdmId), false);
 });
 
 test('the cli refuses before a write when mode or url is missing', () => {

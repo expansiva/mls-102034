@@ -25,6 +25,8 @@ export interface LocalTestPersona {
   name: string;
   sub: string;
   personMdmId: string;
+  /** True when an Active link to another company was inactivated and the person now belongs to this one. */
+  relinked: boolean;
 }
 
 export interface LocalTestSeedResult {
@@ -97,7 +99,8 @@ export function parseMemberRoles(config: ProjectsConfig, memberRoles: readonly s
 /**
  * Company plus two bench people. Repeated calls keep the same ids and do not
  * overwrite a name, country, link or version the tester already stored.
- * A pending match or a link to another company is an error; nothing is released.
+ * A pending match is an error; nothing is released. A bench login linked to another company
+ * (the organization key changed) is moved: the old link becomes Inactive and `relinked` is true.
  * `memberRoles` attaches existing module roles; an empty list keeps the previous behavior.
  * Without an onboarding block, at least one member role is required and the first one registers the people.
  */
@@ -117,23 +120,15 @@ export async function ensureLocalTestPair(
 
   for (const alias of LOCAL_TEST_ALIASES) {
     const email = localTestEmail(projectId, alias);
+    // The reserved bench login is the seed's own identity: whoever holds it is the persona, so a link to
+    // another company (the organization key changed since the last run) is moved, not refused.
     const existing = await personByLogin(ctx, email);
-    if (existing) {
-      const relationships = await ctx.data.mdmRelationship.findMany({ where: { fromId: existing.mdmId } });
-      const foreign = relationships.some((relationship) =>
+    const staleLinks = existing
+      ? (await ctx.data.mdmRelationship.findMany({ where: { fromId: existing.mdmId } })).filter((relationship) =>
         relationship.type === 'AssignedTo'
         && relationship.status === 'Active'
-        && relationship.toId !== company.companyMdmId,
-      );
-      if (foreign) {
-        throw new AppError(
-          'LOCAL_TEST_LINK_INVALID',
-          `local test login ${email} is linked to another company`,
-          409,
-          { personMdmId: existing.mdmId },
-        );
-      }
-    }
+        && relationship.toId !== company.companyMdmId)
+      : [];
 
     const registered = await ensureSelfRegistration(ctx, binding, registration, {
       email,
@@ -154,6 +149,11 @@ export async function ensureLocalTestPair(
         409,
         { companyMdmId: registered.company.mdmId },
       );
+    }
+
+    // Registered first, so an interrupted run still has the new link; a repeat inactivates what is left.
+    for (const link of staleLinks) {
+      await ctx.mdm.entity.unlink({ relationshipId: link.id });
     }
 
     const person = await ctx.mdm.entity.get({ mdmId: registered.person.mdmId });
@@ -192,6 +192,7 @@ export async function ensureLocalTestPair(
       name: stored.details.name,
       sub,
       personMdmId: stored.mdmId,
+      relinked: staleLinks.length > 0,
     });
   }
 
