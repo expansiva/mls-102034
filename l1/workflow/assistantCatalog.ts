@@ -27,6 +27,8 @@ export interface AssistantCatalogItem {
   actors: string[];
   assistant: 'included' | 'excluded';
   risk?: string;
+  /** Inputs of the operation; the one with `role: 'version'` is where `expectVersion` goes. */
+  inputs?: Array<{ path?: string; role?: string; [field: string]: unknown }>;
   [field: string]: unknown;
 }
 

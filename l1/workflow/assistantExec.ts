@@ -9,7 +9,7 @@ import {
 import type { AssistantCatalogItem, AssistantCatalogSource } from '/_102034_/l1/workflow/assistantCatalog.js';
 
 /**
- * The assistant's `exec` request, queries only (commands arrive in R3). It runs the same operation the screen runs,
+ * The assistant's `exec` request, commands and queries alike. It runs the same operation the screen runs,
  * through the server entry (`execMessage`), as the person: their login e-mail from the register and their module
  * authorities, never anything the body claims. A `commandId` is taken once, by an insert that fails on a repeat,
  * BEFORE anything runs; repeating it returns what was kept and never runs again. No module name lives here.
@@ -71,10 +71,45 @@ export function mapBffResult(response: BffResponse, statusCode: number, item: Pi
     }
     return { outcome: 'not_found', error: { code, message } };
   }
-  if (code === 'CONCURRENCY_CONFLICT') return { outcome: 'stale_version', error: { code, message } };
-  if (statusCode === 400 || statusCode === 422 || code === 'VALIDATION_ERROR') return { outcome: 'invalid_input', error: { code, message } };
+  if (code === 'VERSION_CONFLICT' || code === 'CONCURRENCY_CONFLICT') return { outcome: 'stale_version', error: { code, message } };
+  if (statusCode === 400 || code === 'VALIDATION_ERROR' || code === 'INVALID_INPUT') return { outcome: 'invalid_input', error: { code, message } };
+  // Every other 4xx of the module is its own rule saying no (422 and a 409 of a rule included), with its code and message.
   if (statusCode >= 400 && statusCode < 500) return { outcome: 'refused_rule', error: { code, message } };
   return { outcome: 'unavailable', error: { code, message: FIXED_UNAVAILABLE } };
+}
+
+/**
+ * `expectVersion` goes where the catalog says the version lives: the input whose `role` is `version`. An action with
+ * no such input cannot be given one; an `expectVersion` that arrives for it is the caller's mistake, not ignored.
+ */
+function withExpectedVersion(
+  item: AssistantCatalogItem,
+  value: unknown,
+  expectVersion: number | undefined,
+): { value: unknown } | { error: AssistantExecError } {
+  if (expectVersion === undefined) return { value };
+  const inputs = Array.isArray(item.inputs) ? (item.inputs as Array<{ path?: unknown; role?: unknown }>) : [];
+  const field = inputs.find((entry) => entry?.role === 'version' && typeof entry.path === 'string' && entry.path.length > 0);
+  if (!field || typeof field.path !== 'string') {
+    return { error: { code: 'ASSISTANT_NO_VERSION_FIELD', message: 'The action has no version field to set expectVersion in.' } };
+  }
+  if (!isRecord(value)) {
+    return { error: { code: 'ASSISTANT_INPUT_NOT_OBJECT', message: 'The input must be an object to carry expectVersion.' } };
+  }
+  const copy: Record<string, unknown> = structuredClone(value);
+  const parts = field.path.split('.');
+  let cursor = copy;
+  for (const part of parts.slice(0, -1)) {
+    const next = cursor[part];
+    if (next !== undefined && !isRecord(next)) {
+      return { error: { code: 'ASSISTANT_INPUT_NOT_OBJECT', message: 'The input does not fit the version field path.' } };
+    }
+    const child: Record<string, unknown> = isRecord(next) ? next : {};
+    cursor[part] = child;
+    cursor = child;
+  }
+  cursor[parts[parts.length - 1]] = expectVersion;
+  return { value: copy };
 }
 
 interface Found { moduleId: string; item: AssistantCatalogItem }
@@ -112,10 +147,10 @@ export async function execAssistantAction(
   if (item.assistant !== 'included') {
     return { outcome: 'invalid_input', error: { code: 'ASSISTANT_ACTION_EXCLUDED', message: 'The action is not available to the assistant.' } };
   }
-  // Commands arrive in R3. Refused before any reservation, so nothing is kept for them.
-  if (item.kind !== 'qry') {
-    return { outcome: 'invalid_input', error: { code: 'ASSISTANT_COMMAND_NOT_YET', message: 'commands arrive in R3' } };
-  }
+  // A command follows exactly the path of a query. Nothing here depends on the item's `risk`: it is information
+  // for whoever confirms with the person, and the app does not treat a sensitive action differently (decision 49).
+  const params = withExpectedVersion(item, input.input, input.expectVersion);
+  if ('error' in params) return { outcome: 'invalid_input', error: params.error };
 
   const entry = deps.modules.find((candidate) => candidate.moduleId === moduleId);
   const held = entry ? await assistantModuleAuthorities(deps, input.onBehalfOf, entry) : [];
@@ -151,7 +186,7 @@ export async function execAssistantAction(
   try {
     const answer = await deps.execMessage({
       routine: item.route,
-      params: input.input,
+      params: params.value,
       meta: { requestId: input.commandId, verifiedEmail: email, userId: email, actorScope: held },
     }, ctx);
     result = mapBffResult(answer.response, answer.statusCode, item);

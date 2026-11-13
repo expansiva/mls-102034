@@ -14,7 +14,11 @@ function item(actionId: string, kind: 'cmd' | 'qry', actors: string[], assistant
 
 const CATALOG = {
   schemaVersion: ASSISTANT_CATALOG_SCHEMA, module: 'modA', lookups: [], entities: [], issues: [],
-  commands: [item('modA.accept', 'cmd', ['boss'])],
+  commands: [
+    { ...item('modA.accept', 'cmd', ['boss']), risk: 'sensitive', inputs: [{ path: 'id', role: 'ref' }, { path: 'version', role: 'version' }] },
+    { ...item('modA.note', 'cmd', ['boss']), risk: 'write', inputs: [{ path: 'id', role: 'ref' }, { path: 'details.rev', role: 'version' }] },
+    { ...item('modA.create', 'cmd', ['boss']), risk: 'write', inputs: [{ path: 'details.title', role: 'value' }] },
+  ],
   queries: [item('modA.list', 'qry', ['boss', 'worker']), item('modA.hidden', 'qry', ['boss'], 'excluded')],
 };
 
@@ -81,12 +85,61 @@ test('two requests at once with one commandId run the operation once', async () 
   assert.equal(other.error?.code, 'ASSISTANT_COMMAND_UNRESOLVED');
 });
 
-test('a command is refused before anything is reserved or run', async () => {
+test('a command runs once as the person, and a sensitive one is treated exactly like a write', async () => {
+  const { ctx, deps, calls } = setup(() => ({ response: { ok: true, data: { id: 'x', version: 4 }, error: null }, statusCode: 200 }));
+  const sensitive = await execAssistantAction(ctx, deps, input({ actionId: 'modA.accept', input: { id: 'x', version: 3 }, commandId: 'c-sensitive' }, ['modA:boss']));
+  const write = await execAssistantAction(ctx, deps, input({ actionId: 'modA.create', input: { details: { title: 't' } }, commandId: 'c-write' }, ['modA:boss']));
+  assert.deepEqual(sensitive, { outcome: 'done', data: { id: 'x', version: 4 } });
+  assert.deepEqual(write, sensitive);
+  assert.equal(calls.requests.length, 2);
+  assert.deepEqual(calls.requests[0].meta, { requestId: 'c-sensitive', verifiedEmail: 'ana@example.test', userId: 'ana@example.test', actorScope: ['modA:boss'] });
+  assert.deepEqual(calls.requests[0].params, { id: 'x', version: 3 });
+  const again = await execAssistantAction(ctx, deps, input({ actionId: 'modA.accept', input: { id: 'x', version: 3 }, commandId: 'c-sensitive' }, ['modA:boss']));
+  assert.deepEqual(again, sensitive);
+  assert.equal(calls.requests.length, 2);
+});
+
+test('expectVersion goes into the field the catalog marks as the version; the caller input is not changed', async () => {
   const { ctx, deps, calls } = setup();
-  const result = await execAssistantAction(ctx, deps, input({ actionId: 'modA.accept' }, ['modA:boss']));
-  assert.deepEqual(result, { outcome: 'invalid_input', error: { code: 'ASSISTANT_COMMAND_NOT_YET', message: 'commands arrive in R3' } });
+  const original = { id: 'x' };
+  await execAssistantAction(ctx, deps, input({ actionId: 'modA.accept', input: original, expectVersion: 7, commandId: 'v1' }, ['modA:boss']));
+  assert.deepEqual(calls.requests[0].params, { id: 'x', version: 7 });
+  assert.deepEqual(original, { id: 'x' });
+  await execAssistantAction(ctx, deps, input({ actionId: 'modA.note', input: { id: 'x', details: { keep: 1 } }, expectVersion: 2, commandId: 'v2' }, ['modA:boss']));
+  assert.deepEqual(calls.requests[1].params, { id: 'x', details: { keep: 1, rev: 2 } });
+  await execAssistantAction(ctx, deps, input({ actionId: 'modA.note', input: { id: 'x' }, expectVersion: 3, commandId: 'v3' }, ['modA:boss']));
+  assert.deepEqual(calls.requests[2].params, { id: 'x', details: { rev: 3 } });
+});
+
+test('expectVersion for an action with no version field, or with an input that is not an object, is invalid_input and nothing is kept', async () => {
+  const { ctx, deps, calls } = setup();
+  const noField = await execAssistantAction(ctx, deps, input({ actionId: 'modA.create', input: { details: {} }, expectVersion: 1, commandId: 'n1' }, ['modA:boss']));
+  assert.equal(noField.outcome, 'invalid_input');
+  assert.equal(noField.error?.code, 'ASSISTANT_NO_VERSION_FIELD');
+  const notObject = await execAssistantAction(ctx, deps, input({ actionId: 'modA.accept', input: 'text', expectVersion: 1, commandId: 'n2' }, ['modA:boss']));
+  assert.equal(notObject.error?.code, 'ASSISTANT_INPUT_NOT_OBJECT');
+  const clash = await execAssistantAction(ctx, deps, input({ actionId: 'modA.note', input: { details: 'text' }, expectVersion: 1, commandId: 'n3' }, ['modA:boss']));
+  assert.equal(clash.error?.code, 'ASSISTANT_INPUT_NOT_OBJECT');
   assert.equal(calls.requests.length, 0);
-  assert.equal(await getMdmKv(ctx, { key: 'assistant:cmd-1' }), null);
+  assert.equal(await getMdmKv(ctx, { key: 'assistant:n1' }), null);
+});
+
+test('a stale expectVersion answers stale_version, and a 422 of the module rule answers refused_rule with its code', async () => {
+  const stale = setup(() => ({ response: { ok: false, data: null, error: { code: 'VERSION_CONFLICT', message: 'changed' } }, statusCode: 409 }));
+  const old = await execAssistantAction(stale.ctx, stale.deps, input({ actionId: 'modA.accept', input: { id: 'x' }, expectVersion: 1 }, ['modA:boss']));
+  assert.deepEqual(old, { outcome: 'stale_version', error: { code: 'VERSION_CONFLICT', message: 'changed' } });
+  const rule = setup(() => ({ response: { ok: false, data: null, error: { code: 'COMPRADOR_FORA_DA_LISTA', message: 'escolha da lista' } }, statusCode: 422 }));
+  const refused = await execAssistantAction(rule.ctx, rule.deps, input({ actionId: 'modA.create', input: { details: {} } }, ['modA:boss']));
+  assert.deepEqual(refused, { outcome: 'refused_rule', error: { code: 'COMPRADOR_FORA_DA_LISTA', message: 'escolha da lista' } });
+  assert.equal(rule.calls.requests.length, 1);
+});
+
+test('a command without authority and alpha off is forbidden and does not run', async () => {
+  const { ctx, deps, calls } = setup();
+  const result = await execAssistantAction(ctx, deps, input({ actionId: 'modA.accept', input: { id: 'x' } }, ['modA:worker']));
+  assert.equal(result.outcome, 'forbidden');
+  assert.deepEqual(result.error?.required, ['boss']);
+  assert.equal(calls.requests.length, 0);
 });
 
 test('without authority in the module and alpha off it is forbidden with the required actors; alpha on lets it through', async () => {
@@ -120,7 +173,12 @@ test('the module answers map to the contract: forbidden, not_found, invalid_inpu
   assert.equal(mapBffResult(fail('ROUTINE_NOT_FOUND', 'x'), 404, actors).outcome, 'unavailable');
   assert.equal(mapBffResult(fail('MODULE_NOT_REGISTERED', 'x'), 404, actors).outcome, 'unavailable');
   assert.equal(mapBffResult(fail('VALIDATION_ERROR', 'x'), 400, actors).outcome, 'invalid_input');
+  assert.equal(mapBffResult(fail('INVALID_INPUT', 'x'), 422, actors).outcome, 'invalid_input');
+  assert.equal(mapBffResult(fail('SOME_CODE', 'x'), 400, actors).outcome, 'invalid_input');
   assert.equal(mapBffResult(fail('CONCURRENCY_CONFLICT', 'x'), 409, actors).outcome, 'stale_version');
+  assert.equal(mapBffResult(fail('VERSION_CONFLICT', 'x'), 409, actors).outcome, 'stale_version');
+  assert.equal(mapBffResult(fail('COMPRADOR_FORA_DA_LISTA', 'x'), 422, actors).outcome, 'refused_rule');
+  assert.equal(mapBffResult(fail('SOLICITACAO_FECHADA', 'x'), 409, actors).outcome, 'refused_rule');
   const rule = mapBffResult(fail('SOLICITACAO_FECHADA', 'a regra do módulo'), 409, actors);
   assert.deepEqual(rule, { outcome: 'refused_rule', error: { code: 'SOLICITACAO_FECHADA', message: 'a regra do módulo' } });
   const down = mapBffResult(fail('INTERNAL_ERROR', 'secret stack detail'), 500, actors);
