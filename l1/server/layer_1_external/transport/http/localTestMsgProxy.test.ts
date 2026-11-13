@@ -28,6 +28,8 @@ interface Hit {
   orgId: string;
   cookie: string;
   body: string;
+  /** The `x-user-authorities` header as received; null when the request had none. */
+  authorities: string | null;
 }
 
 function persona(alias: 'responsavel' | 'membro', cmUserId: string): LocalTestConfig['personas']['responsavel'] {
@@ -78,6 +80,7 @@ async function listenUpstream(): Promise<{ url: string; hits: Hit[]; close: () =
         orgId: String(req.headers['x-org-id'] ?? ''),
         cookie: String(req.headers.cookie ?? ''),
         body: Buffer.concat(chunks).toString('utf8'),
+        authorities: typeof req.headers['x-user-authorities'] === 'string' ? req.headers['x-user-authorities'] : null,
       };
       hits.push(hit);
       const payload = req.url === '/whoami'
@@ -238,4 +241,65 @@ test('local bench proxy separates two cookies and refuses a forged body', async 
   assert.equal(upstream.hits.length, disabledHits + 1);
   assert.equal(upstream.hits.at(-1)?.userId, DEV_USER);
   assert.equal(upstream.hits.at(-1)?.orgId, 'org-desenv');
+});
+
+test('local bench proxy sends the session authorities to the cm and never a browser-made list', async (t) => {
+  for (const key of ENV_KEYS) savedEnv.set(key, process.env[key]);
+  const upstream = await listenUpstream();
+  const state = config(upstream.url);
+  state.personas.responsavel = { ...state.personas.responsavel, authorities: ['modA:actor', 'modB:other'] };
+  process.env.MSG_PROXY_TARGET = upstream.url;
+  process.env.MSG_PROXY_TOKEN = TOKEN;
+  process.env.MSG_PROXY_USER_ID = DEV_USER;
+  process.env.MSG_PROXY_ORG_ID = 'org-desenv';
+  const load = () => state;
+  setLocalTestConfigLoaderForTests(load);
+  setLocalTestProxyConfigLoaderForTests(load);
+  const app = Fastify();
+  registerMsgProxy(app);
+  t.after(async () => {
+    setLocalTestConfigLoaderForTests();
+    setLocalTestProxyConfigLoaderForTests();
+    for (const key of ENV_KEYS) {
+      const previous = savedEnv.get(key);
+      if (previous === undefined) delete process.env[key];
+      else process.env[key] = previous;
+    }
+    await app.close();
+    await upstream.close();
+  });
+  const send = (alias: 'responsavel' | 'membro', cmUserId: string, extra: Record<string, string> = {}) => app.inject({
+    method: 'POST',
+    url: '/msg',
+    headers: { host: HOST, origin: ORIGIN, cookie: cookieFor(alias, state), 'content-type': 'application/json', ...extra },
+    payload: { action: 'getUserUpdate', userId: cmUserId },
+  });
+
+  assert.equal((await send('responsavel', 'cm-responsavel')).statusCode, 200);
+  assert.equal(upstream.hits.at(-1)?.authorities, JSON.stringify(['modA:actor', 'modB:other']));
+
+  assert.equal((await send('membro', 'cm-membro')).statusCode, 200);
+  assert.equal(upstream.hits.at(-1)?.authorities, '[]');
+
+  // A list the browser makes is replaced by the session's, for the one that has authorities and for the one that has none.
+  const forged = JSON.stringify(['modA:everything']);
+  assert.equal((await send('responsavel', 'cm-responsavel', { 'x-user-authorities': forged })).statusCode, 200);
+  assert.equal(upstream.hits.at(-1)?.authorities, JSON.stringify(['modA:actor', 'modB:other']));
+  assert.equal((await send('membro', 'cm-membro', { 'X-User-Authorities': forged })).statusCode, 200);
+  assert.equal(upstream.hits.at(-1)?.authorities, '[]');
+
+  // A refused request reaches nobody, and the header never rides on the dev identity when the bench is off.
+  const before = upstream.hits.length;
+  assert.equal((await send('responsavel', 'cm-membro', { 'x-user-authorities': forged })).statusCode, 403);
+  assert.equal(upstream.hits.length, before);
+  setLocalTestConfigLoaderForTests(() => ({ enabled: false }));
+  setLocalTestProxyConfigLoaderForTests(() => ({ enabled: false }));
+  const off = await app.inject({
+    method: 'POST', url: '/msg',
+    headers: { host: HOST, 'x-user-authorities': forged, 'content-type': 'application/json' },
+    payload: { userId: 'cm-membro' },
+  });
+  assert.equal(off.statusCode, 200);
+  assert.equal(upstream.hits.at(-1)?.authorities, null);
+  assert.equal(JSON.stringify(upstream.hits).includes('modA:everything'), false);
 });

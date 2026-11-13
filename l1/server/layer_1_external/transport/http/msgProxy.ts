@@ -10,7 +10,7 @@
 // MSG_PROXY_ENABLED=false disables the route entirely.
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { resolveBffSession } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
+import { claimAuthorities, resolveBffSession } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
 import { localTestCookieName } from '/_102034_/l1/server/layer_1_external/auth/localTestSession.js';
 import {
   assertLocalTestProxyTarget,
@@ -22,6 +22,9 @@ import {
 import { ensureEnvFileLoaded } from '/_102034_/l1/server/layer_1_external/config/env.js';
 
 const DEFAULT_TARGET = 'http://127.0.0.1:8180';
+
+/** JSON list of texts: the authorities of the bench session, for the cm's assistant (`onBehalfOf.authorities`). */
+const AUTHORITIES_HEADER = 'x-user-authorities';
 
 const SERVICE_IDENTITY_ERROR = 'MSG_PROXY_TOKEN is set but MSG_PROXY_USER_ID is empty — service identity not injected';
 
@@ -98,7 +101,7 @@ function stripLocalTestCookie(cookie: string, projectId: string): string {
 type BenchForward =
   | { kind: 'legacy' }
   | { kind: 'stop'; status: number; msg: string }
-  | { kind: 'inject'; headers: { authorization: string; 'x-user-id': string; 'x-org-id'?: string }; projectId: string };
+  | { kind: 'inject'; headers: { authorization: string; 'x-user-id': string; 'x-org-id'?: string }; projectId: string; authorities: string[] };
 
 /**
  * Active bench: one selected persona per request. A disabled bench keeps the
@@ -147,7 +150,8 @@ async function benchForward(request: FastifyRequest): Promise<BenchForward> {
     console.warn('[msgProxy] service identity is not configured for the local test session');
     return { kind: 'stop', status: 503, msg: 'collab-messages service identity is not configured' };
   }
-  return { kind: 'inject', headers: identity.inject, projectId: state.projectId };
+  // The persona's own authorities, raw (no alpha), by the same function the screen uses.
+  return { kind: 'inject', headers: identity.inject, projectId: state.projectId, authorities: claimAuthorities(outcome.claims) };
 }
 
 async function forward(request: FastifyRequest, reply: FastifyReply): Promise<void> {
@@ -163,6 +167,10 @@ async function forward(request: FastifyRequest, reply: FastifyReply): Promise<vo
     if (HOP_BY_HOP.has(name.toLowerCase()) || value === undefined) continue;
     headers[name] = Array.isArray(value) ? value.join(', ') : String(value);
   }
+  // The authorities header is the proxy's to set. Whatever the browser sent under that name never goes upstream.
+  for (const name of Object.keys(headers)) {
+    if (name.toLowerCase() === AUTHORITIES_HEADER) delete headers[name];
+  }
   if (bench.kind === 'inject') {
     delete headers.authorization;
     delete headers['x-user-id'];
@@ -175,6 +183,7 @@ async function forward(request: FastifyRequest, reply: FastifyReply): Promise<vo
     headers.authorization = bench.headers.authorization;
     headers['x-user-id'] = bench.headers['x-user-id'];
     if (bench.headers['x-org-id']) headers['x-org-id'] = bench.headers['x-org-id'];
+    headers[AUTHORITIES_HEADER] = JSON.stringify(bench.authorities);
   } else if (serviceHeaders) {
     for (const [name, value] of Object.entries(serviceHeaders)) {
       headers[name] = value;
