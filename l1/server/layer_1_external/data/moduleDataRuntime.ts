@@ -214,6 +214,9 @@ function compareValues(left: unknown, right: unknown): number {
   return String(left ?? '').localeCompare(String(right ?? ''));
 }
 
+/** Postgres SQLSTATE of a unique-key violation. The memory runtime raises the same code. */
+export const UNIQUE_VIOLATION = '23505';
+
 function getPrimaryKey(definition: ResolvedTableDefinition, record: Record<string, unknown>) {
   return Object.fromEntries(definition.primaryKey.map((key) => [key, record[key]]));
 }
@@ -297,6 +300,12 @@ class MemoryTableRepository<TRecord extends object> implements ITableRepository<
   }
 
   public async insert(input: { record: TRecord }): Promise<void> {
+    // Like the database: a second row with the same primary key is refused (`23505`). Check and push run in one
+    // step, so two concurrent inserts of one key cannot both win. Without this the memory runtime hid the defect.
+    const key = getPrimaryKey(this.definition, input.record as Record<string, unknown>);
+    if (this.definition.primaryKey.length > 0 && this.records.some((entry) => matchesWhere(entry, key as Partial<TRecord>))) {
+      throw Object.assign(new Error('duplicate key value violates unique constraint'), { code: UNIQUE_VIOLATION });
+    }
     this.records.push({ ...input.record });
   }
 
