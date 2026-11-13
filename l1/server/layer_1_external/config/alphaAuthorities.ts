@@ -1,5 +1,6 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/config/alphaAuthorities.ts" enhancement="_blank" />
 import { existsSync } from 'node:fs';
+import { isLocalTestNoAlpha } from '/_102034_/l1/server/layer_1_external/config/localTestConfig.js';
 import { resolveProjectDistPath, resolveProjectModuleImportUrl, readProjectsConfig } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 
 // Release switch: l5/config.json top-level `"alphaAllAuthorities": true`, copied to the
@@ -9,12 +10,21 @@ type AlphaConfig = { alphaAllAuthorities?: unknown };
 let decided: boolean | null = null;
 const actorCache = new Map<string, Promise<string[]>>();
 
-/** Per-release alpha switch. True only when config.json has alphaAllAuthorities === true. */
+/**
+ * Per-release alpha switch. True only when config.json has alphaAllAuthorities === true, and never on a lima bench
+ * whose manifest says `noAlpha` (the manifest is read only where the bench is switched on).
+ */
 export function isAlphaAllAuthorities(
   _projectId?: string | number,
   readConfig: () => AlphaConfig = () => readProjectsConfig() as AlphaConfig,
+  benchNoAlpha: () => boolean = () => isLocalTestNoAlpha(),
 ): boolean {
   if (decided !== null) return decided;
+  if (benchNoAlpha()) {
+    console.warn('[alpha] OFF by local test manifest (noAlpha)');
+    decided = false;
+    return false;
+  }
   const on = readConfig().alphaAllAuthorities === true;
   if (on) {
     console.warn('[alpha] alphaAllAuthorities ON (config.json) — every signed-in user gets every actor of every module (remove before beta)');

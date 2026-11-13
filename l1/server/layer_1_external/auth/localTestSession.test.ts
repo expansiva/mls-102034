@@ -30,6 +30,7 @@ function bench(): LocalTestConfig {
     storagePrefix: 'desenv_',
     allowedOrigins: [ORIGIN, `http://127.0.0.1:${PORT}`],
     cookieKey: KEY,
+    noAlpha: false,
     personas: {
       responsavel: {
         alias: 'responsavel',

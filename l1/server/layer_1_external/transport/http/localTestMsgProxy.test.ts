@@ -55,6 +55,7 @@ function config(cmTarget: string): LocalTestConfig {
     storagePrefix: 'desenv_',
     allowedOrigins: [ORIGIN],
     cookieKey: '0123456789abcdef0123456789abcdef',
+    noAlpha: false,
     personas: {
       responsavel: persona('responsavel', 'cm-responsavel'),
       membro: persona('membro', 'cm-membro'),

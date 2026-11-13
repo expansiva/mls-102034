@@ -172,6 +172,22 @@ test('semPapel is optional: a manifest of two and of three people are valid, and
   }
 });
 
+test('noAlpha: absent means false, a boolean is kept, anything else invalidates the manifest', () => {
+  const read = (extra: Record<string, unknown>) => loadLocalTestConfig(enabledEnv(), deps(JSON.stringify(manifest(extra))));
+  const absent = read({});
+  assert.equal(absent.enabled && absent.noAlpha, false);
+  const off = read({ noAlpha: false });
+  assert.equal(off.enabled && off.noAlpha, false);
+  const on = read({ noAlpha: true });
+  assert.equal(on.enabled && on.noAlpha, true);
+  for (const bad of ['true', 1, null, [], {}]) {
+    assert.throws(
+      () => read({ noAlpha: bad }),
+      (error: LocalTestConfigError) => error.message === 'local test session manifest is invalid',
+    );
+  }
+});
+
 test('missing file, relative path, bad mode, project and origin fail closed without secrets', () => {
   assert.throws(
     () => loadLocalTestConfig({ LOCAL_TEST_SESSION_ENABLED: 'true' }, deps('{}')),

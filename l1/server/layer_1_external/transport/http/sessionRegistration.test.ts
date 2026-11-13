@@ -336,6 +336,7 @@ test('route default loader runs when loadScope is omitted and reports missing on
     storagePrefix: 'desenv_',
     allowedOrigins: [origin],
     cookieKey: 'k'.repeat(32),
+    noAlpha: false,
     personas: {
       responsavel: {
         alias: 'responsavel',

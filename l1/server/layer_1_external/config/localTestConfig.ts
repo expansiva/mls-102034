@@ -31,6 +31,8 @@ export interface LocalTestConfig {
   storagePrefix: string;
   allowedOrigins: readonly string[];
   cookieKey: string;
+  /** The bench runs without the alpha super user and with the screen's refusal on. Absent in the manifest = false. */
+  noAlpha: boolean;
   personas: Record<(typeof REQUIRED_ALIASES)[number], LocalTestPersona> & Partial<Record<LocalTestAlias, LocalTestPersona>>;
 }
 
@@ -136,6 +138,13 @@ function parseAuthorities(value: unknown): string[] {
   return items;
 }
 
+/** Absent = false (an old manifest stays valid). Anything that is not a boolean fails closed. */
+function parseNoAlpha(value: unknown): boolean {
+  if (value === undefined) return false;
+  if (typeof value !== 'boolean') fail('local test session manifest is invalid');
+  return value;
+}
+
 function parsePersona(alias: LocalTestAlias, value: unknown): LocalTestPersona {
   if (value === null || typeof value !== 'object') fail('local test session manifest is invalid');
   const record = value as Record<string, unknown>;
@@ -207,6 +216,7 @@ function parseManifest(raw: unknown, projectId: string): LocalTestConfig {
     storagePrefix,
     allowedOrigins,
     cookieKey,
+    noAlpha: parseNoAlpha(manifest.noAlpha),
     personas: semPapel ? { responsavel, membro, semPapel } : { responsavel, membro },
   };
 }
@@ -273,6 +283,17 @@ export function getLocalTestConfig(
   }
   if ('error' in cache) throw cache.error;
   return cache.state;
+}
+
+/**
+ * Is the bench in the mode without the alpha? Only a bench that is switched on (flag set) reads its manifest, so
+ * production and the remote VM never do. A manifest that cannot be read throws, as `getLocalTestConfig` does:
+ * the alpha is never turned on or off in silence.
+ */
+export function isLocalTestNoAlpha(env: NodeJS.ProcessEnv = process.env, deps: LocalTestConfigDeps = {}): boolean {
+  if (!isEnabledFlag(env)) return false;
+  const state = getLocalTestConfig(env, deps);
+  return state.enabled && state.noAlpha;
 }
 
 export function resetLocalTestConfigCache(): void {

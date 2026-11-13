@@ -15,6 +15,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { createRemoteJWKSet, jwtVerify, errors as joseErrors, decodeJwt, type JWTPayload } from 'jose';
 import { activeOrganizationId, parseCookies, resolveJwtSession } from '/_102034_/l1/server/layer_1_external/cbe/cbeAuthJwt.js';
 import { localTestSessionFromHeaders } from '/_102034_/l1/server/layer_1_external/auth/localTestSession.js';
+import { isLocalTestNoAlpha } from '/_102034_/l1/server/layer_1_external/config/localTestConfig.js';
 
 export interface CollabAuthClaims extends JWTPayload {
   sub: string;
@@ -71,8 +72,9 @@ export function moduleAuthorities(claims: CollabAuthClaims | undefined, moduleId
  * of every module, so it waits behind its own flag (`BFF_ACTORS_ENFORCED`, default false) — the same staged
  * shape as the authentication itself.
  */
-export function isActorEnforcementOn(): boolean {
-  return process.env.BFF_ACTORS_ENFORCED === 'true';
+export function isActorEnforcementOn(benchNoAlpha: () => boolean = () => isLocalTestNoAlpha()): boolean {
+  // A lima bench in the mode without the alpha turns the refusal on too (its manifest, read only where the bench is on).
+  return process.env.BFF_ACTORS_ENFORCED === 'true' || benchNoAlpha();
 }
 
 // Read at USE time, never at import: the app's `.env` enters the process after this module is imported.
