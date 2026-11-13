@@ -158,7 +158,10 @@ export async function listAssistantCatalog(
   const person = await assistantPerson(ctx, deps, input.onBehalfOf.cmUserId);
   if (person === null) return { outcome: 'no_person', release, allowed: [], partial: [] };
 
-  const answers = await Promise.all(deps.modules.map(async (entry) => {
+  type Answer =
+    | { moduleId: string; catalog: AssistantCatalog; allowed: string[] }
+    | { moduleId: string; code: string };
+  const answers = await Promise.all(deps.modules.map(async (entry): Promise<Answer> => {
     const loaded = await deps.catalogs.get(entry.moduleId);
     if (!loaded.ok) return { moduleId: entry.moduleId, code: loaded.code };
     try {
