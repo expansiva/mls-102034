@@ -251,7 +251,7 @@ function indexFrom(row: Record<string, unknown>, lang: DraftDataLang): DraftLogi
     status: requiredString(row, 'status', lang),
     docType: nullableString(row, 'docType'),
     docId: nullableString(row, 'docId'),
-    countryCode: requiredString(row, 'countryCode', lang),
+    countryCode: typeof row.countryCode === 'string' ? row.countryCode : fail('incomplete', lang, 'countryCode'),
     tags: row.tags ?? [],
     searchVector: typeof row.searchVector === 'string' ? row.searchVector : '',
     mergedInto: nullableString(row, 'mergedInto'),

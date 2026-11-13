@@ -8,18 +8,22 @@ import { join } from 'node:path';
 import { Client, Pool } from 'pg';
 import type { AppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { CacheRuntimeMemory } from '/_102034_/l1/server/layer_1_external/cache/CacheRuntimeMemory.js';
+import type { ProjectOnboardingConfig } from '/_102029_/l2/runtimeConfigTypes.js';
 import { draftDatabaseName, draftDatabaseUrl, draftDirOf } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
 import {
   ensureDraftLoginCopied,
   forgetDraftLoginCopy,
 } from '/_102034_/l1/server/layer_1_external/cbe/draftLoginCopy.js';
+import type { OrganizationBinding } from '/_102034_/l1/server/layer_1_external/config/onboardingConfig.js';
 import { createPostgresDataRuntime } from '/_102034_/l1/mdm/layer_1_external/data/postgres/MdmDataRuntimePostgres.js';
-import { organizationReservationKey } from '/_102034_/l1/mdm/layer_3_usecases/organizationBootstrap.js';
+import { organizationReservationKey, ensureOrganizationCompany } from '/_102034_/l1/mdm/layer_3_usecases/organizationBootstrap.js';
 import { resolveSessionPerson } from '/_102034_/l1/mdm/layer_3_usecases/identityUsecases.js';
+import { ensureSelfRegistration } from '/_102034_/l1/mdm/layer_3_usecases/selfRegistration.js';
 import { tableDefinitions } from '/_102034_/l1/mdm/persistence.js';
 import type { ResolvedTableDefinition } from '/_102034_/l1/server/layer_1_external/persistence/contracts.js';
 import { buildCreateIndexSql, buildCreateTableSql } from '/_102034_/l1/server/layer_1_external/persistence/schemaBootstrap.js';
 import type { RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
+import { createRequestContext } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
 
 const optedIn = process.env.RUN_INTEGRATION_TESTS === 'true';
 const TABLES = ['mdmEntityIndex', 'mdmDocumentCache', 'mdmRelationship', 'mdmTag', 'mdmKv'] as const;
@@ -83,6 +87,30 @@ async function createSchema(connectionString: string): Promise<void> {
   await client.connect();
   try {
     for (const definition of definitions()) {
+      await client.query(buildCreateTableSql(definition));
+      for (const sql of buildCreateIndexSql(definition)) await client.query(sql);
+    }
+  } finally {
+    await client.end();
+  }
+}
+
+function allDefinitions(): ResolvedTableDefinition[] {
+  return tableDefinitions.map((definition) => ({
+    ...definition,
+    tableName: definition.tableName,
+    projectId: 'draft-login-copy',
+    repositoryName: definition.repositoryName ?? definition.tableName,
+    logicalTableName: definition.tableName,
+    dynamoResolvedTableName: null,
+  }));
+}
+
+async function createSelfSchema(connectionString: string): Promise<void> {
+  const client = new Client({ connectionString });
+  await client.connect();
+  try {
+    for (const definition of allDefinitions()) {
       await client.query(buildCreateTableSql(definition));
       for (const sql of buildCreateIndexSql(definition)) await client.query(sql);
     }
@@ -376,6 +404,130 @@ test('a login missing at the origin does not block; the next request copies it a
   } finally {
     console.warn = originalWarn;
     forgetDraftLoginCopy(draftKey);
+    rmSync(base, { recursive: true, force: true });
+    for (const name of [sourceName, draftName]) {
+      try {
+        await admin.query(`DROP DATABASE IF EXISTS ${quoteDb(name)} WITH (FORCE)`);
+      } catch (err) {
+        console.error(`[cbe] draft login copy drop failed: ${scrub(err)}`);
+      }
+    }
+    await admin.end();
+  }
+});
+
+test('self-registration with empty countryCode copies into a disposable draft database', { skip: !optedIn, timeout: 60_000 }, async () => {
+  const adminUrl = tunnelUrl();
+  const hex = randomBytes(4).toString('hex');
+  const sourceName = `collab_app_draft_st73s1_${hex}`;
+  const slug = `user-${randomBytes(8).toString('hex')}`;
+  const projectId = 102047;
+  const draftName = draftDatabaseName(slug, projectId);
+  const sourceUrl = withDatabase(adminUrl, sourceName);
+  const draftUrl = withDatabase(adminUrl, draftName);
+  const email = `st73-${hex}@example.com`;
+  const binding: OrganizationBinding = { key: `st73-${hex}`, name: 'St73 Org', source: 'development-project' };
+  const config: ProjectOnboardingConfig = {
+    moduleId: 'inicio',
+    entryPath: '/inicio',
+    personType: 'inicio.Pessoa',
+    companyType: 'inicio.Organizacao',
+  };
+  const env = { appEnv: 'development' } as AppEnv;
+  const base = mkdtempSync(join(tmpdir(), 'draft-login-pg-self-'));
+  const admin = new Client({ connectionString: adminUrl });
+  await admin.connect();
+  let sourcePool: Pool | undefined;
+  let draftPool: Pool | undefined;
+  try {
+    await admin.query(`CREATE DATABASE ${quoteDb(sourceName)}`);
+    await admin.query(`CREATE DATABASE ${quoteDb(draftName)}`);
+    await createSelfSchema(sourceUrl);
+    await createSelfSchema(draftUrl);
+
+    sourcePool = new Pool({ connectionString: sourceUrl, max: 1 });
+    const sourceCtx = createRequestContext(createPostgresDataRuntime(env, sourcePool));
+    await ensureOrganizationCompany(sourceCtx, binding, config);
+    const registered = await ensureSelfRegistration(sourceCtx, binding, config, { email, name: 'Ada' });
+    const personId = registered.person?.mdmId;
+    assert.equal(typeof personId, 'string');
+    assert.equal(registered.status, 'incomplete');
+    await sourcePool.end();
+    sourcePool = undefined;
+
+    const sourceCountry = await rowsOf(
+      sourceUrl,
+      `SELECT "countryCode" FROM "mdm_documents_entities_index" WHERE "mdmId" = $1`,
+      [personId],
+    );
+    assert.equal(sourceCountry[0]?.countryCode, '');
+
+    draftPool = new Pool({ connectionString: draftUrl, max: 1 });
+    const draftCtx = createRequestContext(createPostgresDataRuntime(env, draftPool));
+    await ensureOrganizationCompany(draftCtx, binding, config);
+    await draftPool.end();
+    draftPool = undefined;
+
+    const copied = await ensureDraftLoginCopied({
+      base,
+      slug,
+      projectId,
+      email,
+      lang: 'en',
+      parentDatabaseUrl: sourceUrl,
+      waitUntilReady: async () => true,
+    });
+    assert.deepEqual(copied, { ok: true, copied: true });
+
+    const personCols = `"mdmId", subtype, name, status, "docType", "docId", "countryCode", tags, "searchVector", "mergedInto", "dynamoPk"`;
+    const sourcePerson = await rowsOf(
+      sourceUrl,
+      `SELECT ${personCols} FROM "mdm_documents_entities_index" WHERE "mdmId" = $1`,
+      [personId],
+    );
+    const draftPerson = await rowsOf(
+      draftUrl,
+      `SELECT ${personCols} FROM "mdm_documents_entities_index" WHERE "mdmId" = $1`,
+      [personId],
+    );
+    assert.equal(sourcePerson[0]?.countryCode, '');
+    assert.deepEqual(draftPerson, sourcePerson);
+
+    const sourceDoc = await rowsOf(
+      sourceUrl,
+      `SELECT "mdmId", version, details FROM "mdm_documents" WHERE "mdmId" = $1`,
+      [personId],
+    );
+    const draftDoc = await rowsOf(
+      draftUrl,
+      `SELECT "mdmId", version, details FROM "mdm_documents" WHERE "mdmId" = $1`,
+      [personId],
+    );
+    assert.deepEqual(draftDoc, sourceDoc);
+
+    const sourceLogin = await rowsOf(
+      sourceUrl,
+      `SELECT "entityType", "entityId", lower(tag) AS tag, namespace, module FROM "mdm_tag" WHERE namespace = 'login' AND "entityId" = $1`,
+      [personId],
+    );
+    const draftLogin = await rowsOf(
+      draftUrl,
+      `SELECT "entityType", "entityId", lower(tag) AS tag, namespace, module FROM "mdm_tag" WHERE namespace = 'login' AND "entityId" = $1`,
+      [personId],
+    );
+    assert.deepEqual(draftLogin, sourceLogin);
+    assert.equal(draftLogin[0]?.tag, email);
+  } catch (err) {
+    if (err instanceof assert.AssertionError) throw err;
+    throw new Error(scrub(err));
+  } finally {
+    if (sourcePool) await sourcePool.end().catch((err: unknown) => {
+      console.error(`[cbe] draft login copy source pool close failed: ${scrub(err)}`);
+    });
+    if (draftPool) await draftPool.end().catch((err: unknown) => {
+      console.error(`[cbe] draft login copy draft pool close failed: ${scrub(err)}`);
+    });
+    forgetDraftLoginCopy(draftDirOf(base, slug));
     rmSync(base, { recursive: true, force: true });
     for (const name of [sourceName, draftName]) {
       try {

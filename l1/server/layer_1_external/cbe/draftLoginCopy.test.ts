@@ -12,6 +12,7 @@ import {
   draftLoginCopyText,
   ensureDraftLoginCopied,
   forgetDraftLoginCopy,
+  loadDraftLogin,
   planDraftLoginCopy,
   writeDraftLoginPlan,
   type DraftLoginDocumentRow,
@@ -115,6 +116,94 @@ const bomb: Sql = {
     throw new Error('sql should not run');
   },
 };
+
+function rawLogin(): Record<string, unknown> {
+  return {
+    id: 'tag-1',
+    entityType: 'MdmEntity',
+    entityId: PERSON,
+    tag: EMAIL,
+    namespace: 'login',
+    module: 'organization',
+    createdBy: 'app',
+    createdByType: 'system',
+    createdAt: '2026-11-11T00:00:00.000Z',
+  };
+}
+
+function rawIndex(countryCode: unknown): Record<string, unknown> {
+  return {
+    mdmId: PERSON,
+    subtype: 'Person',
+    name: 'Ada',
+    status: 'Active',
+    docType: null,
+    docId: null,
+    countryCode,
+    tags: [],
+    searchVector: 'ada',
+    mergedInto: null,
+    dynamoPk: PERSON,
+    createdAt: '2026-11-11T00:00:00.000Z',
+    updatedAt: '2026-11-11T00:00:00.000Z',
+  };
+}
+
+function rawDocument(): Record<string, unknown> {
+  return { mdmId: PERSON, version: 1, details: { subtype: 'Person', name: 'Ada' } };
+}
+
+function sqlFrom(tables: {
+  tag?: Record<string, unknown>[];
+  index?: Record<string, unknown>[];
+  document?: Record<string, unknown>[];
+  relationship?: Record<string, unknown>[];
+  kv?: Record<string, unknown>[];
+  draftIds?: string[];
+}): Sql {
+  return {
+    async query<T extends Record<string, unknown> = Record<string, unknown>>(text: string) {
+      const line = text.replace(/\s+/gu, ' ');
+      if (line.includes('FROM "mdm_tag"')) return { rows: (tables.tag ?? []) as T[] };
+      if (line.includes('FROM "mdm_relationship"')) return { rows: (tables.relationship ?? []) as T[] };
+      if (line.includes('FROM "mdm_kv"')) return { rows: (tables.kv ?? []) as T[] };
+      if (line.includes('FROM "mdm_documents"')) return { rows: (tables.document ?? []) as T[] };
+      if (line.includes('FROM "mdm_documents_entities_index"')) {
+        if (line.startsWith('SELECT "mdmId" FROM')) {
+          return { rows: (tables.draftIds ?? []).map((mdmId) => ({ mdmId })) as unknown as T[] };
+        }
+        return { rows: (tables.index ?? []) as T[] };
+      }
+      throw new Error(`unexpected sql: ${line}`);
+    },
+  };
+}
+
+test('plan copies a person whose countryCode is empty text and refuses a null countryCode', async () => {
+  const loaded = await loadDraftLogin(
+    sqlFrom({ tag: [rawLogin()], index: [rawIndex('')], document: [rawDocument()] }),
+    sqlFrom({}),
+    EMAIL,
+    'en',
+  );
+  const plan = planDraftLoginCopy(loaded);
+  assert.equal(plan.indexes.length, 1);
+  assert.equal(plan.indexes[0]?.countryCode, '');
+
+  await assert.rejects(
+    () => loadDraftLogin(
+      sqlFrom({ tag: [rawLogin()], index: [rawIndex(null)], document: [rawDocument()] }),
+      sqlFrom({}),
+      EMAIL,
+      'en',
+    ),
+    (err: unknown) => {
+      assert.ok(err instanceof DraftLoginCopyError);
+      assert.equal(err.message, `${draftLoginCopyText('incomplete', 'en')} (countryCode)`);
+      return true;
+    },
+  );
+});
 
 test('plan copies the login, one hop, and reuses the boot company', () => {
   const plan = planDraftLoginCopy(loaded());
