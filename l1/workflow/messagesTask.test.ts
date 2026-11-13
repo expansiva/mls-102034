@@ -42,6 +42,11 @@ function identities(seen: string[]): MessagesWorkflowIdentities {
       if (mdm === undefined) throw new AppError('IDENTITY_NOT_FOUND', `missing ${userId}`, 404);
       return mdm;
     },
+    async toCmUserIds(ctx, mdmIds) {
+      const out = new Map<string, string>();
+      for (const mdmId of mdmIds) if (!out.has(mdmId)) out.set(mdmId, await this.toCmUserId(ctx, mdmId));
+      return out;
+    },
     async toMdmIds(ctx, userIds) {
       const out = new Map<string, string>();
       for (const userId of userIds) if (!out.has(userId)) out.set(userId, await this.toMdmId(ctx, userId));

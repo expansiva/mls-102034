@@ -18,6 +18,7 @@ import type {
 } from '/_102034_/l1/workflow/contracts.js';
 import { prepareWorkflowPlan, type WorkflowPlan } from '/_102034_/l1/workflow/plan.js';
 import type { MessagesWorkflowIdentities } from '/_102034_/l1/workflow/messagesTask.js';
+import { createMessagesWorkflowIdentities } from '/_102034_/l1/workflow/messagesIdentities.js';
 import { createMessagesTaskOccurrencePort } from '/_102034_/l1/workflow/messagesOccurrence.js';
 
 const PAIRS: Record<string, string> = { 'mdm-owner': 'cm-owner', 'mdm-by': 'cm-by', 'mdm-actor': 'cm-actor', 'mdm-member': 'cm-member' };
@@ -36,6 +37,11 @@ function identities(seen: string[]): MessagesWorkflowIdentities {
       const mdm = CM_OF[userId];
       if (mdm === undefined) throw new AppError('IDENTITY_NOT_FOUND', `missing ${userId}`, 404);
       return mdm;
+    },
+    async toCmUserIds(ctx, mdmIds) {
+      const out = new Map<string, string>();
+      for (const mdmId of mdmIds) if (!out.has(mdmId)) out.set(mdmId, await this.toCmUserId(ctx, mdmId));
+      return out;
     },
     async toMdmIds(ctx, userIds) {
       const out = new Map<string, string>();
@@ -551,4 +557,56 @@ test('factory rejects an empty binding', () => {
     identities: identities([]),
     client: scripted(async () => envelope(200, { statusCode: 404, msg: 'not_found' })).client,
   }), (error: unknown) => error instanceof AppError && error.code === 'MSG_APP_NOT_CONFIGURED');
+});
+
+/** The real codec over a cm that logs its `resolveModulePeople` calls in the same list as the task calls. */
+function loggedPort(log: string[], task: (call: Call) => Promise<{ httpStatus: number; body: ResponseBase & Record<string, unknown> }>) {
+  const routed = scripted(async (call) => {
+    log.push(call.name);
+    return task(call);
+  });
+  const cm = {
+    async resolveModulePeople(_asUserId: string, input: { mdmIds?: string[]; cmUserIds?: string[] }) {
+      log.push('resolve');
+      const people = [
+        ...(input.mdmIds ?? []).map((mdm) => ({ mdmId: mdm, cmUserId: PAIRS[mdm], state: 'linked' })),
+        ...(input.cmUserIds ?? []).map((cm) => ({ mdmId: CM_OF[cm], cmUserId: cm, state: 'linked' })),
+      ];
+      return { httpStatus: 200, body: { statusCode: 200, people } } as never;
+    },
+    async linkModulePerson() {
+      throw new Error('not expected');
+    },
+  };
+  const real = createMessagesWorkflowIdentities({ projectId: '10', client: cm as never });
+  return createMessagesTaskOccurrencePort({ projectId: '10', moduleId: 'tarefas', asUserId: 'tech-user', identities: real, client: routed.client });
+}
+
+function ctx10(): RequestContext {
+  const context = ctx();
+  context.sessionContext.project.projectId = '10';
+  return context;
+}
+
+test('open translates the people of the command in at most two calls before it posts', async () => {
+  const log: string[] = [];
+  const occurrence = loggedPort(log, async (call) => {
+    if (call.name === 'get') return envelope(200, { statusCode: 404, msg: 'not_found' });
+    return envelope(200, { statusCode: 200, task: task(), room: room(), created: true });
+  });
+  // owner, actor (also the executor), origin and the member: four distinct people, five translations before.
+  await occurrence.open(ctx10(), openCommand());
+  const beforePost = log.slice(0, log.indexOf('open'));
+  assert.equal(beforePost.filter((name) => name === 'resolve').length, 2);
+});
+
+test('advance translates the people of the command in at most two calls before it posts', async () => {
+  const log: string[] = [];
+  const occurrence = loggedPort(log, async (call) => {
+    if (call.name === 'get') return envelope(200, { statusCode: 200, task: task({ revision: 9 }), room: room() });
+    return envelope(200, { statusCode: 200, task: task({ revision: 9 }), moduleAdvance: { commandId: 'cmd-2', outcome: 'unchanged' } });
+  });
+  await occurrence.advance(ctx10(), KEY, { ...advanceCommand(), actorNow: 'mdm-by', executor: { kind: 'person', mdmId: 'mdm-actor' } });
+  const beforePost = log.slice(0, log.indexOf('advance'));
+  assert.equal(beforePost.filter((name) => name === 'resolve').length, 2);
 });

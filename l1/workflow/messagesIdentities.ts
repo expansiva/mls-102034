@@ -188,6 +188,108 @@ export function createMessagesWorkflowIdentities(options: MessagesWorkflowIdenti
     return person.mdmId;
   }
 
+  /**
+   * `toCmUserId` for many people at once: at most two calls to the cm for the people already linked, whatever the count
+   * (one resolves every distinct person, one confirms every linked pair). A person not linked yet goes through
+   * `toCmUserId`, one by one, at its place in the order. The first refusal in the order given decides the error, with
+   * the rule `toCmUserId` has for that person; nothing is returned in part.
+   */
+  async function toCmUserIds(ctx: RequestContext, mdmIds: readonly string[]): Promise<Map<string, string>> {
+    assertContext(ctx);
+    const distinct: string[] = [];
+    for (const mdmId of mdmIds) {
+      if (idText(mdmId) === undefined) protocol();
+      if (!distinct.includes(mdmId)) distinct.push(mdmId);
+    }
+    const out = new Map<string, string>();
+    if (distinct.length === 0) return out;
+
+    const resolved = peopleOf(await transport(() => client.resolveModulePeople(asUserId, { mdmIds: distinct })));
+    if (resolved.length !== distinct.length) protocol();
+    const byMdm = new Map<string, Person>();
+    for (const person of resolved) {
+      if (person.mdmId === undefined || !distinct.includes(person.mdmId) || byMdm.has(person.mdmId)) protocol();
+      byMdm.set(person.mdmId, person);
+    }
+
+    // What `toCmUserId` would do with each person; a refusal is kept as the error it throws.
+    type Plan = { kind: 'linked'; cmUserId: string } | { kind: 'unlinked' } | { kind: 'refused'; error: unknown };
+    const plan = new Map<string, Plan>();
+    for (const mdmId of distinct) {
+      const person = byMdm.get(mdmId) as Person;
+      try {
+        if (person.state === 'inconsistent') incomplete();
+        if (person.state === 'removed') {
+          if (person.cmUserId === undefined) protocol();
+          removed();
+        }
+        if (person.state === 'linked') {
+          if (person.cmUserId === undefined) protocol();
+          plan.set(mdmId, { kind: 'linked', cmUserId: person.cmUserId });
+          continue;
+        }
+        if (person.cmUserId !== undefined) protocol();
+        plan.set(mdmId, { kind: 'unlinked' });
+      } catch (error) {
+        plan.set(mdmId, { kind: 'refused', error });
+        break; // nothing after the first refusal is looked at
+      }
+    }
+
+    // One confirmation for every linked pair that comes before the first refusal.
+    const linked = distinct.flatMap((mdmId) => {
+      const step = plan.get(mdmId);
+      return step?.kind === 'linked' ? [{ mdmId, cmUserId: step.cmUserId }] : [];
+    });
+    const checked = new Map<string, unknown>();
+    if (linked.length > 0) {
+      const mdmList = linked.map((pair) => pair.mdmId);
+      const cmList = [...new Set(linked.map((pair) => pair.cmUserId))];
+      const confirmed = peopleOf(await transport(() => client.resolveModulePeople(asUserId, { mdmIds: mdmList, cmUserIds: cmList })));
+      let shape: unknown;
+      const confirmedByMdm = new Map<string, Person>();
+      const confirmedByCm = new Map<string, Person>();
+      try {
+        if (confirmed.length !== mdmList.length + cmList.length) incomplete();
+        for (const person of confirmed.slice(0, mdmList.length)) {
+          if (person.mdmId === undefined || confirmedByMdm.has(person.mdmId)) incomplete();
+          confirmedByMdm.set(person.mdmId, person);
+        }
+        for (const person of confirmed.slice(mdmList.length)) {
+          if (person.cmUserId === undefined || confirmedByCm.has(person.cmUserId)) incomplete();
+          confirmedByCm.set(person.cmUserId, person);
+        }
+      } catch (error) {
+        shape = error;
+      }
+      for (const pair of linked) {
+        try {
+          if (shape !== undefined) throw shape;
+          const left = confirmedByMdm.get(pair.mdmId);
+          const right = confirmedByCm.get(pair.cmUserId);
+          if (left === undefined || right === undefined) incomplete();
+          checkPair(left, right, pair.mdmId, pair.cmUserId, 'forward');
+        } catch (error) {
+          checked.set(pair.mdmId, error);
+        }
+      }
+    }
+
+    // The order given decides: each person is settled where it stands, the unlinked ones one by one.
+    for (const mdmId of distinct) {
+      const step = plan.get(mdmId);
+      if (step === undefined) break;
+      if (step.kind === 'refused') throw step.error;
+      if (step.kind === 'unlinked') {
+        out.set(mdmId, await toCmUserId(ctx, mdmId));
+        continue;
+      }
+      if (checked.has(mdmId)) throw checked.get(mdmId);
+      out.set(mdmId, step.cmUserId);
+    }
+    return out;
+  }
+
   /** What `toMdmId` decides for one resolved person: the pair to confirm, or the error it throws. */
   function judge(person: Person): { mdmId: string; cmUserId: string; direction: Direction } {
     if (person.state === 'inconsistent') incomplete();
@@ -258,5 +360,5 @@ export function createMessagesWorkflowIdentities(options: MessagesWorkflowIdenti
     return out;
   }
 
-  return { toCmUserId, toMdmId, toMdmIds };
+  return { toCmUserId, toCmUserIds, toMdmId, toMdmIds };
 }

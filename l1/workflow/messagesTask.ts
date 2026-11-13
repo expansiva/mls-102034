@@ -24,6 +24,8 @@ import { ownerOf, prepareWorkflowPlan, type WorkflowPlanStepInput } from '/_1020
 /** Server-bound MDM ↔ CM user translation. This codec has no default. */
 export interface MessagesWorkflowIdentities {
   toCmUserId(ctx: RequestContext, mdmId: string): Promise<string>;
+  /** `toCmUserId` for many people: at most two calls for the linked ones, same rule per person, all or an error. */
+  toCmUserIds(ctx: RequestContext, mdmIds: readonly string[]): Promise<ReadonlyMap<string, string>>;
   toMdmId(ctx: RequestContext, userId: string): Promise<string>;
   /** `toMdmId` for many users: at most two calls to the cm, same rule per person, all or an error. */
   toMdmIds(ctx: RequestContext, userIds: readonly string[]): Promise<ReadonlyMap<string, string>>;
@@ -124,9 +126,36 @@ async function groupedIdentities(
     }
   }
   return {
-    toCmUserId: (callCtx, mdmId) => identities.toCmUserId(callCtx, mdmId),
+    ...identities,
     toMdmId: async (callCtx, userId) => known.get(userId) ?? identities.toMdmId(callCtx, userId),
-    toMdmIds: (callCtx, ids) => identities.toMdmIds(callCtx, ids),
+  };
+}
+
+/**
+ * The identities of one write: every person the command sends is translated in one grouped call, in the order the
+ * command translates them; the command takes the answers from there. A person the caller did not list is translated
+ * one by one, never skipped.
+ */
+export async function groupedCmIdentities(
+  ctx: RequestContext,
+  identities: MessagesWorkflowIdentities,
+  mdmIds: ReadonlyArray<string | null | undefined>,
+): Promise<MessagesWorkflowIdentities> {
+  const wanted = mdmIds.flatMap((value) => {
+    const id = text(value);
+    return id === undefined ? [] : [id];
+  });
+  let known: ReadonlyMap<string, string> = new Map();
+  if (wanted.length > 0) {
+    try {
+      known = await identities.toCmUserIds(ctx, wanted);
+    } catch (error) {
+      rethrowIdentity(error);
+    }
+  }
+  return {
+    ...identities,
+    toCmUserId: async (callCtx, mdmId) => known.get(mdmId) ?? identities.toCmUserId(callCtx, mdmId),
   };
 }
 
@@ -181,6 +210,14 @@ export async function encodeOpenModuleTask(
 ): Promise<RequestOpenModuleTask> {
   const planSteps = command.plan.steps.map((step) => wirePlanStep(step));
   if (!planSteps.some((step) => step.key === command.firstStep)) protocol();
+  // Every person of the command, in the order it is translated below, in one grouped call.
+  identities = await groupedCmIdentities(ctx, identities, [
+    command.origin.by,
+    ...(command.room.members ?? []),
+    command.executor.kind === 'person' ? command.executor.mdmId : undefined,
+    command.owner,
+    command.actorNow,
+  ]);
   const plan: ModulePlan = {
     processId: command.plan.processId,
     title: command.plan.title,

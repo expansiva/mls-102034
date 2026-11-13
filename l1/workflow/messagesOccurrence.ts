@@ -25,6 +25,7 @@ import type {
 import {
   decodeTaskSnapshot,
   encodeOpenModuleTask,
+  groupedCmIdentities,
   projectMessage,
   toCm,
   type MessagesWorkflowIdentities,
@@ -287,6 +288,11 @@ export function createMessagesTaskOccurrencePort(options: MessagesTaskOccurrence
       if (currentTask === undefined || !sameRef(currentTask, key)) protocol();
       if (currentTask.PK !== command.taskId) mismatch();
       usableThread(currentTask, current.body.room, readRoomIssue(current.body));
+      // The people of the command, in the order they are translated below, in one grouped call.
+      const people = await groupedCmIdentities(ctx, identities, [
+        command.actorNow,
+        command.executor.kind === 'person' ? command.executor.mdmId : undefined,
+      ]);
       const intent: AgentIntentModuleAdvance = {
         type: 'module-advance',
         taskId: command.taskId,
@@ -294,9 +300,9 @@ export function createMessagesTaskOccurrencePort(options: MessagesTaskOccurrence
         expectedRevision: command.expectedRevision,
         from: command.from,
         to: command.to,
-        actorNow: command.actorNow === null ? null : await toCm(ctx, identities, command.actorNow),
+        actorNow: command.actorNow === null ? null : await toCm(ctx, people, command.actorNow),
         done: command.done,
-        executor: await encodeExecutor(ctx, identities, command.executor),
+        executor: await encodeExecutor(ctx, people, command.executor),
       };
       if (command.note !== undefined) intent.note = command.note;
       // Beside `note`, never inside `executor`, and only when the person is the executor: the cm refuses `via` otherwise.
