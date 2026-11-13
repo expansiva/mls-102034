@@ -52,6 +52,29 @@ test('MdmEntity.create writes document and promoted index for canonical module t
   assert.deepEqual(listed.items.map((item) => item.mdmId), [table.mdmId]);
 });
 
+test('MdmEntity.create refuses a missing or unknown subtype with 400 and writes nothing', async () => {
+  const ctx = createRequestContext(createMemoryDataRuntime());
+  const before = (await ctx.data.mdmEntityIndex.findMany({})).length;
+  for (const subtype of [undefined, '', 'Widget', 'person']) {
+    await assert.rejects(
+      () => ctx.mdm.entity.create({ details: { ...(subtype === undefined ? {} : { subtype }), name: 'No subtype', tags: [] } } as never),
+      (error: unknown) => error instanceof AppError
+        && error.code === 'VALIDATION_ERROR'
+        && error.statusCode === 400
+        && (error.details as { field?: string } | undefined)?.field === 'subtype',
+    );
+  }
+  assert.equal((await ctx.data.mdmEntityIndex.findMany({})).length, before);
+});
+
+test('MdmEntity.create keeps accepting every platform subtype that is otherwise valid', async () => {
+  const ctx = createRequestContext(createMemoryDataRuntime());
+  const person = await ctx.mdm.entity.create({ details: { subtype: 'Person', name: 'Ana', tags: [] } } as never);
+  const company = await ctx.mdm.entity.create({ details: { subtype: 'Company', name: 'Acme', legalName: 'Acme Ltda', tags: [] } } as never);
+  assert.equal((await ctx.mdm.entity.get({ mdmId: person.mdmId })).details.subtype, 'Person');
+  assert.equal((await ctx.mdm.entity.get({ mdmId: company.mdmId })).details.subtype, 'Company');
+});
+
 test('MdmEntity.update keeps document and index fields consistent and enforces expectedVersion', async () => {
   const ctx = createRequestContext();
   ctx.log.error = () => undefined;

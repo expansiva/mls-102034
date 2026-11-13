@@ -25,6 +25,7 @@ import {
   isProtectedPrivacyCountry,
   isTwoLetterCountry,
 } from '/_102034_/l1/mdm/personAccess.js';
+import { NS4_LEVEL1_SUBTYPE_VALUES } from '/_102034_/l1/mdm/defs/level1Types.js';
 
 export { isPersonAccessComplete, isProtectedPrivacyCountry };
 
@@ -595,6 +596,14 @@ export function normalizeStatus(detail: MdmDetailRecord): MdmStatus | MdmProspec
 }
 
 export function validateDetail(detail: MdmDetailRecord): void {
+  // The platform subtype set is closed. Checked here so the memory and Postgres runtimes refuse alike
+  // (Postgres alone used to answer a missing subtype with a 500 from the NOT NULL column).
+  if (!(NS4_LEVEL1_SUBTYPE_VALUES as readonly unknown[]).includes(detail.subtype)) {
+    throw new AppError('VALIDATION_ERROR', `subtype must be one of ${NS4_LEVEL1_SUBTYPE_VALUES.join(', ')}`, 400, {
+      field: 'subtype',
+    });
+  }
+
   const draftPersonOrCompany = detail.registrationDraft === true
     && (detail.subtype === 'Person' || detail.subtype === 'Company');
   if (!draftPersonOrCompany && !detail.name?.trim()) {
