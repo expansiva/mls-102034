@@ -11,6 +11,8 @@ import type {
 } from '/_102036_/l2/shared/interfaces.js';
 import type { OccurrenceKey, TaskOccurrenceOpenCommand } from '/_102034_/l1/workflow/contracts.js';
 import { prepareWorkflowPlan, type WorkflowPlan } from '/_102034_/l1/workflow/plan.js';
+import type { ServerMessagesClient } from '/_102034_/l1/server/layer_1_external/collabMessages/client.js';
+import { createMessagesWorkflowIdentities } from '/_102034_/l1/workflow/messagesIdentities.js';
 import {
   decodeTaskSnapshot,
   encodeOpenModuleTask,
@@ -39,6 +41,11 @@ function identities(seen: string[]): MessagesWorkflowIdentities {
       const mdm = CM_OF[userId];
       if (mdm === undefined) throw new AppError('IDENTITY_NOT_FOUND', `missing ${userId}`, 404);
       return mdm;
+    },
+    async toMdmIds(ctx, userIds) {
+      const out = new Map<string, string>();
+      for (const userId of userIds) if (!out.has(userId)) out.set(userId, await this.toMdmId(ctx, userId));
+      return out;
     },
   };
 }
@@ -364,4 +371,79 @@ test('invalid task shapes and a missing identity do not fall back', async () => 
     (error: unknown) => error instanceof AppError && error.code === 'IDENTITY_NOT_FOUND' && error.statusCode === 404
       && error.message === 'Identity could not be resolved.',
   );
+});
+
+/** The real codec over a cm that counts its calls; every user of the task is linked unless `broken` names it. */
+function countingIdentities(broken?: { cmUserId: string; as: 'unlinked' | 'inconsistent' | 'removed' }) {
+  const calls: Array<{ mdmIds?: string[]; cmUserIds?: string[] }> = [];
+  const state = (cm: string) => (broken?.cmUserId === cm ? broken.as : 'linked');
+  const view = (mdmId: string, cmUserId: string, asked: 'mdm' | 'cm') => {
+    const as = state(cmUserId);
+    if (as === 'unlinked') return asked === 'mdm' ? { mdmId, state: 'unlinked' } : { cmUserId, state: 'unlinked' };
+    return { mdmId, cmUserId, state: as };
+  };
+  const client = {
+    async resolveModulePeople(_asUserId: string, input: { mdmIds?: string[]; cmUserIds?: string[] }) {
+      calls.push({ ...input });
+      const people = [
+        ...(input.mdmIds ?? []).map((mdm) => view(mdm, PAIRS[mdm], 'mdm')),
+        ...(input.cmUserIds ?? []).map((cm) => view(CM_OF[cm], cm, 'cm')),
+      ];
+      return { httpStatus: 200, body: { statusCode: 200, people } } as never;
+    },
+    async linkModulePerson() {
+      throw new Error('not expected');
+    },
+  } as unknown as Pick<ServerMessagesClient, 'linkModulePerson' | 'resolveModulePeople'>;
+  const context = ctx();
+  context.sessionContext.project.projectId = '10';
+  return { calls, context, identities: createMessagesWorkflowIdentities({ projectId: '10', client }) };
+}
+
+function withHistory(source: TaskData, entries: number): TaskData {
+  const task = structuredClone(source);
+  for (let index = 0; index < entries; index += 1) {
+    task.module!.history.push(historyEntry({
+      commandId: `c-extra-${index}`,
+      step: 'S',
+      done: false,
+      executor: { kind: 'person', userId: index % 2 === 0 ? 'cm-old' : 'cm-actor' },
+      actorNow: index % 2 === 0 ? 'cm-by' : 'cm-actor',
+    }));
+  }
+  return task;
+}
+
+test('a reading takes at most two resolveModulePeople calls whatever the history holds', async () => {
+  const source = taskOf({ current: 'A', passes: 2, actorNow: 'cm-actor' });
+  const results = [];
+  for (const extra of [0, 2, 8]) {
+    const { calls, context, identities: real } = countingIdentities();
+    const view = await decodeTaskSnapshot(context, real, withHistory(source, extra), KEY, 'room-1');
+    assert.equal(view.history.length, 2 + extra);
+    assert.equal(calls.length, 2, `${2 + extra} history entries`);
+    results.push(view);
+  }
+  // The same people, translated the same way, as the old one-by-one reading.
+  const old = await decodeTaskSnapshot(ctx(), identities([]), withHistory(source, 8), KEY, 'room-1');
+  assert.deepEqual(results[2], old);
+});
+
+test('a person that cannot be translated fails the whole reading with the resolver code', async () => {
+  const source = withHistory(taskOf({ current: 'A', passes: 2, actorNow: 'cm-actor' }), 4);
+  for (const [as, code] of [['unlinked', 'WORKFLOW_IDENTITY_UNLINKED'], ['inconsistent', 'WORKFLOW_IDENTITY_INCOMPLETE']] as const) {
+    const { context, identities: real } = countingIdentities({ cmUserId: 'cm-old', as });
+    await assert.rejects(
+      () => decodeTaskSnapshot(context, real, structuredClone(source), KEY, 'room-1'),
+      (error: unknown) => error instanceof AppError && error.code === code && error.message === 'Identity could not be resolved.',
+    );
+  }
+});
+
+test('a removed person in the history is accepted, as before', async () => {
+  const source = withHistory(taskOf({ current: 'A', passes: 2, actorNow: 'cm-actor' }), 2);
+  const { calls, context, identities: real } = countingIdentities({ cmUserId: 'cm-old', as: 'removed' });
+  const view = await decodeTaskSnapshot(context, real, source, KEY, 'room-1');
+  assert.equal(view.history[0].by, 'mdm-old');
+  assert.equal(calls.length, 2);
 });

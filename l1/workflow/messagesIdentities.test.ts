@@ -310,3 +310,133 @@ test('an inconsistent record is an incomplete link in both directions, and ident
     (error: unknown) => error instanceof AppError && error.statusCode === 507 && !error.message.includes('@'),
   );
 });
+
+// --- grouped translation: `toMdmIds` -------------------------------------------------------------------------------
+
+type Row = { mdmId: string; state: 'linked' | 'removed' | 'unlinked' | 'inconsistent'; confirmAs?: Person[] };
+
+/** A cm with a book of users: `resolveModulePeople` answers `mdmIds` first and `cmUserIds` after, one entry per id. */
+function bookClient(book: Record<string, Row>, options: { reverse?: boolean } = {}): IdentityClient & { calls: RoutedCall[] } {
+  const byMdm = new Map(Object.entries(book).map(([cmUserId, row]) => [row.mdmId, { cmUserId, row }]));
+  return routed((call) => {
+    assert.equal(call.method, 'resolve');
+    const mdmIds = (call.input.mdmIds as string[] | undefined) ?? [];
+    const cmUserIds = (call.input.cmUserIds as string[] | undefined) ?? [];
+    const people: Person[] = [];
+    for (const id of mdmIds) {
+      const hit = byMdm.get(id);
+      if (!hit) throw new Error(`unscripted mdm ${id}`);
+      people.push(hit.row.state === 'unlinked' ? { mdmId: id, state: 'unlinked' } : { mdmId: id, cmUserId: hit.cmUserId, state: hit.row.state as Person['state'] });
+    }
+    for (const id of cmUserIds) {
+      const row = book[id];
+      if (!row) throw new Error(`unscripted cm ${id}`);
+      people.push(row.state === 'unlinked' ? { cmUserId: id, state: 'unlinked' } : { mdmId: row.mdmId, cmUserId: id, state: row.state as Person['state'] });
+    }
+    if (mdmIds.length > 0 && cmUserIds.length > 0) {
+      // Confirmation call: a row may answer something else for its own pair.
+      for (const [index, id] of mdmIds.entries()) {
+        const hit = byMdm.get(id);
+        if (hit?.row.confirmAs) people[index] = hit.row.confirmAs[0];
+      }
+      for (const [index, id] of cmUserIds.entries()) {
+        const row = book[id];
+        if (row?.confirmAs) people[mdmIds.length + index] = row.confirmAs[1];
+      }
+    }
+    return ok({ people: options.reverse ? [...people.slice(0, mdmIds.length).reverse(), ...people.slice(mdmIds.length).reverse()] : people }) as never;
+  }) as IdentityClient & { calls: RoutedCall[] };
+}
+
+function manyUsers(count: number): Record<string, Row> {
+  const book: Record<string, Row> = {};
+  for (let index = 0; index < count; index += 1) book[`cm-${index}`] = { mdmId: `mdm-${index}`, state: 'linked' };
+  return book;
+}
+
+test('toMdmIds: 1, 4 and 10 users take two calls each, repeated ids count once, and none takes none', async () => {
+  for (const count of [1, 4, 10]) {
+    const book = manyUsers(count);
+    const client = bookClient(book);
+    const ids = createMessagesWorkflowIdentities({ projectId: 'app-a', client });
+    const asked = Object.keys(book).flatMap((id) => [id, id]);
+    const out = await ids.toMdmIds(ctxOf('app-a'), asked);
+    assert.deepEqual([...out.entries()], Object.entries(book).map(([cm, row]) => [cm, row.mdmId]));
+    assert.equal(client.calls.length, 2, `${count} users`);
+    assert.deepEqual(client.calls[0].input, { cmUserIds: Object.keys(book) });
+    assert.deepEqual(client.calls[1].input, { mdmIds: Object.values(book).map((row) => row.mdmId), cmUserIds: Object.keys(book) });
+  }
+  const idle = bookClient({});
+  assert.equal((await createMessagesWorkflowIdentities({ projectId: 'app-a', client: idle }).toMdmIds(ctxOf('app-a'), [])).size, 0);
+  assert.equal(idle.calls.length, 0);
+});
+
+test('toMdmIds: an answer out of order gives the same result', async () => {
+  const book = manyUsers(5);
+  const ordered = await createMessagesWorkflowIdentities({ projectId: 'app-a', client: bookClient(book) }).toMdmIds(ctxOf('app-a'), Object.keys(book));
+  const reversed = await createMessagesWorkflowIdentities({ projectId: 'app-a', client: bookClient(book, { reverse: true }) }).toMdmIds(ctxOf('app-a'), Object.keys(book));
+  assert.deepEqual([...reversed.entries()], [...ordered.entries()]);
+});
+
+test('toMdmIds: a removed person is accepted as history, like toMdmId', async () => {
+  const book: Record<string, Row> = { 'cm-1': { mdmId: 'mdm-1', state: 'linked' }, 'cm-2': { mdmId: 'mdm-2', state: 'removed' } };
+  const ids = createMessagesWorkflowIdentities({ projectId: 'app-a', client: bookClient(book) });
+  const out = await ids.toMdmIds(ctxOf('app-a'), ['cm-1', 'cm-2']);
+  assert.deepEqual([...out.entries()], [['cm-1', 'mdm-1'], ['cm-2', 'mdm-2']]);
+  assert.equal(await ids.toMdmId(ctxOf('app-a'), 'cm-2'), 'mdm-2');
+});
+
+async function codeOf(work: Promise<unknown>): Promise<string> {
+  try {
+    await work;
+  } catch (error) {
+    assert.ok(error instanceof AppError);
+    return error.code;
+  }
+  return 'none';
+}
+
+test('toMdmIds: one bad person in the middle fails the whole reading with the code toMdmId gives, never a partial map', async () => {
+  const wrongPair = (cm: string): Person[] => [
+    { mdmId: 'mdm-b', cmUserId: 'cm-other', state: 'linked' },
+    { mdmId: 'mdm-other', cmUserId: cm, state: 'linked' },
+  ];
+  const cases: Array<[string, Row, string]> = [
+    ['inconsistent', { mdmId: 'mdm-b', state: 'inconsistent' }, 'WORKFLOW_IDENTITY_INCOMPLETE'],
+    ['unlinked', { mdmId: 'mdm-b', state: 'unlinked' }, 'WORKFLOW_IDENTITY_UNLINKED'],
+    ['swapped pair', { mdmId: 'mdm-b', state: 'linked', confirmAs: wrongPair('cm-b') }, 'WORKFLOW_IDENTITY_INCOMPLETE'],
+  ];
+  for (const [label, bad, code] of cases) {
+    const book: Record<string, Row> = {
+      'cm-a': { mdmId: 'mdm-a', state: 'linked' },
+      'cm-b': bad,
+      'cm-c': { mdmId: 'mdm-c', state: 'linked' },
+    };
+    const client = bookClient(book);
+    const ids = createMessagesWorkflowIdentities({ projectId: 'app-a', client });
+    assert.equal(await codeOf(ids.toMdmIds(ctxOf('app-a'), ['cm-a', 'cm-b', 'cm-c'])), code, label);
+    assert.equal(client.calls.length <= 2, true, label);
+    // The one-person path says the same for that person.
+    assert.equal(await codeOf(createMessagesWorkflowIdentities({ projectId: 'app-a', client: bookClient(book) }).toMdmId(ctxOf('app-a'), 'cm-b')), code, label);
+  }
+});
+
+test('toMdmIds: the first refusal in the order given decides, as the sequential reading did', async () => {
+  const book: Record<string, Row> = {
+    'cm-a': { mdmId: 'mdm-a', state: 'linked', confirmAs: [{ mdmId: 'mdm-a', cmUserId: 'cm-x', state: 'linked' }, { mdmId: 'mdm-a', cmUserId: 'cm-x', state: 'linked' }] },
+    'cm-b': { mdmId: 'mdm-b', state: 'unlinked' },
+  };
+  const ids = createMessagesWorkflowIdentities({ projectId: 'app-a', client: bookClient(book) });
+  assert.equal(await codeOf(ids.toMdmIds(ctxOf('app-a'), ['cm-a', 'cm-b'])), 'WORKFLOW_IDENTITY_INCOMPLETE');
+  assert.equal(await codeOf(ids.toMdmIds(ctxOf('app-a'), ['cm-b', 'cm-a'])), 'WORKFLOW_IDENTITY_UNLINKED');
+});
+
+test('toMdmIds: an answer that does not match the question is a protocol error and a bad id stops before any call', async () => {
+  const short = routed(() => ok({ people: [{ mdmId: 'mdm-1', cmUserId: 'cm-1', state: 'linked' }] }) as never);
+  const ids = createMessagesWorkflowIdentities({ projectId: 'app-a', client: short });
+  assert.equal(await codeOf(ids.toMdmIds(ctxOf('app-a'), ['cm-1', 'cm-2'])), 'WORKFLOW_CM_PROTOCOL_ERROR');
+  const before = short.calls.length;
+  assert.equal(await codeOf(ids.toMdmIds(ctxOf('app-a'), ['cm-1', ' '])), 'WORKFLOW_CM_PROTOCOL_ERROR');
+  assert.equal(short.calls.length, before);
+  assert.equal(await codeOf(ids.toMdmIds(ctxOf('app-b'), ['cm-1'])), 'MSG_APP_SCOPE_INVALID');
+});

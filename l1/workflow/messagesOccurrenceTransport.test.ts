@@ -195,6 +195,11 @@ function testIdentities(people: People): MessagesWorkflowIdentities {
       if (mdm === undefined) throw new AppError('IDENTITY_NOT_FOUND', 'missing', 404);
       return mdm;
     },
+    async toMdmIds(ctx, userIds) {
+      const out = new Map<string, string>();
+      for (const userId of userIds) if (!out.has(userId)) out.set(userId, await this.toMdmId(ctx, userId));
+      return out;
+    },
   };
 }
 
@@ -619,6 +624,7 @@ test('a new port does not keep the previous response, and a dropped person trans
         return testIdentities(item.people).toCmUserId(_ctx, mdmId);
       },
       toMdmId: (_ctx, userId) => testIdentities(item.people).toMdmId(_ctx, userId),
+      toMdmIds: (_ctx, userIds) => testIdentities(item.people).toMdmIds(_ctx, userIds),
     };
     // Documented stand-in for a reverted codec edit that skips owner translation:
     // the call fails closed and the raw MDM id is not posted.

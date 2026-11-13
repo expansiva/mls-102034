@@ -25,6 +25,8 @@ import { ownerOf, prepareWorkflowPlan, type WorkflowPlanStepInput } from '/_1020
 export interface MessagesWorkflowIdentities {
   toCmUserId(ctx: RequestContext, mdmId: string): Promise<string>;
   toMdmId(ctx: RequestContext, userId: string): Promise<string>;
+  /** `toMdmId` for many users: at most two calls to the cm, same rule per person, all or an error. */
+  toMdmIds(ctx: RequestContext, userIds: readonly string[]): Promise<ReadonlyMap<string, string>>;
 }
 
 const PROTOCOL = 'Module task payload is not valid.';
@@ -70,6 +72,62 @@ async function toMdm(ctx: RequestContext, identities: MessagesWorkflowIdentities
   } catch (error) {
     rethrowIdentity(error);
   }
+}
+
+/** The user ids a reading translates, in the order the reading translates them. Anything malformed is left to the reading. */
+function userIdsOf(
+  task: TaskData,
+  meta: NonNullable<TaskData['module']>,
+  children: AIModuleStep[],
+): string[] {
+  const ids: string[] = [];
+  const add = (value: unknown): void => {
+    const id = text(value);
+    if (id !== undefined) ids.push(id);
+  };
+  add(meta.owner);
+  if (isRecord(meta.origin)) add(meta.origin.by);
+  if (isRecord(meta.room) && Array.isArray(meta.room.members)) for (const member of meta.room.members) add(member);
+  const history = Array.isArray(meta.history) ? meta.history : [];
+  for (const entry of history) {
+    if (!isRecord(entry)) continue;
+    if (isRecord(entry.executor) && entry.executor.kind === 'person') add(entry.executor.userId);
+    add(entry.actorNow);
+  }
+  // The actor read last is the one of the step that closed the task, or of the one in progress.
+  if (task.status === 'done') {
+    const last = history[history.length - 1];
+    const closed = isRecord(last) ? children.find((child) => child.module.key === last.step) : undefined;
+    if (closed !== undefined) add(closed.module.actorNow);
+  } else {
+    const current = children.filter((child) => child.status === 'in_progress');
+    if (current.length === 1) add(current[0].module.actorNow);
+  }
+  return ids;
+}
+
+/**
+ * The identities of one reading: every user of the task is translated in one grouped call, and the reading takes the
+ * answers from there. A user the pre-walk did not see (it should not happen) is translated one by one, never skipped.
+ */
+async function groupedIdentities(
+  ctx: RequestContext,
+  identities: MessagesWorkflowIdentities,
+  userIds: readonly string[],
+): Promise<MessagesWorkflowIdentities> {
+  let known: ReadonlyMap<string, string> = new Map();
+  if (userIds.length > 0) {
+    try {
+      known = await identities.toMdmIds(ctx, userIds);
+    } catch (error) {
+      rethrowIdentity(error);
+    }
+  }
+  return {
+    toCmUserId: (callCtx, mdmId) => identities.toCmUserId(callCtx, mdmId),
+    toMdmId: async (callCtx, userId) => known.get(userId) ?? identities.toMdmId(callCtx, userId),
+    toMdmIds: (callCtx, ids) => identities.toMdmIds(callCtx, ids),
+  };
 }
 
 function isModuleStep(step: AIPayload): step is AIModuleStep {
@@ -315,11 +373,12 @@ export async function decodeTaskSnapshot(
   }
   const firstKey = steps[0].stepId;
   const title = requiredText(task.title);
-  const owner = await toMdm(ctx, identities, requiredText(moduleMeta.owner));
-  const origin = await decodeOrigin(ctx, identities, moduleMeta.origin);
-  const room = await decodeRoom(ctx, identities, moduleMeta.room);
-  const history = await decodeHistory(ctx, identities, moduleMeta.history);
-  const progress = await readProgress(ctx, identities, task, root, children, firstKey, history);
+  const people = await groupedIdentities(ctx, identities, userIdsOf(task, moduleMeta, children));
+  const owner = await toMdm(ctx, people, requiredText(moduleMeta.owner));
+  const origin = await decodeOrigin(ctx, people, moduleMeta.origin);
+  const room = await decodeRoom(ctx, people, moduleMeta.room);
+  const history = await decodeHistory(ctx, people, moduleMeta.history);
+  const progress = await readProgress(ctx, people, task, root, children, firstKey, history);
   return {
     ref: {
       project: moduleMeta.ref.project,

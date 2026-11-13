@@ -125,14 +125,8 @@ export function createMessagesWorkflowIdentities(options: MessagesWorkflowIdenti
     return onePerson(peopleOf(result), expected);
   }
 
-  async function confirmPair(mdmId: string, cmUserId: string, direction: Direction): Promise<void> {
-    const result = await transport(() => client.resolveModulePeople(asUserId, {
-      mdmIds: [mdmId],
-      cmUserIds: [cmUserId],
-    }));
-    const people = peopleOf(result);
-    if (people.length !== 2) incomplete();
-    const [byMdm, byCm] = people;
+  /** The rules of a confirmed pair, shared by the one-person and the grouped paths. */
+  function checkPair(byMdm: Person, byCm: Person, mdmId: string, cmUserId: string, direction: Direction): void {
     // The producer reports a record whose two sides disagree as `inconsistent`, never as linked.
     if (byMdm.state === 'inconsistent' || byCm.state === 'inconsistent') incomplete();
     if (byMdm.mdmId !== mdmId || byCm.cmUserId !== cmUserId || !samePair(byMdm, byCm)) incomplete();
@@ -142,6 +136,16 @@ export function createMessagesWorkflowIdentities(options: MessagesWorkflowIdenti
     }
     if (byMdm.state === 'removed') removed();
     if (byMdm.state !== 'linked') incomplete();
+  }
+
+  async function confirmPair(mdmId: string, cmUserId: string, direction: Direction): Promise<void> {
+    const result = await transport(() => client.resolveModulePeople(asUserId, {
+      mdmIds: [mdmId],
+      cmUserIds: [cmUserId],
+    }));
+    const people = peopleOf(result);
+    if (people.length !== 2) incomplete();
+    checkPair(people[0], people[1], mdmId, cmUserId, direction);
   }
 
   async function toCmUserId(ctx: RequestContext, mdmId: string): Promise<string> {
@@ -184,5 +188,75 @@ export function createMessagesWorkflowIdentities(options: MessagesWorkflowIdenti
     return person.mdmId;
   }
 
-  return { toCmUserId, toMdmId };
+  /** What `toMdmId` decides for one resolved person: the pair to confirm, or the error it throws. */
+  function judge(person: Person): { mdmId: string; cmUserId: string; direction: Direction } {
+    if (person.state === 'inconsistent') incomplete();
+    if (person.state === 'unlinked') unlinked();
+    if (person.mdmId === undefined || person.cmUserId === undefined) protocol();
+    return { mdmId: person.mdmId, cmUserId: person.cmUserId, direction: person.state === 'removed' ? 'historical' : 'forward' };
+  }
+
+  /**
+   * `toMdmId` for many users at once: at most two calls to the cm, whatever the count, with the same rule per person.
+   * One call resolves every distinct user; one call confirms every resolved pair. The first person, in the order given,
+   * that `toMdmId` would refuse decides the error, and no partial result is returned. The cm answers `mdmIds` first and
+   * `cmUserIds` after, one entry per id; the entries are matched by id, never by position.
+   */
+  async function toMdmIds(ctx: RequestContext, userIds: readonly string[]): Promise<Map<string, string>> {
+    assertContext(ctx);
+    const distinct: string[] = [];
+    for (const userId of userIds) {
+      if (idText(userId) === undefined) protocol();
+      if (!distinct.includes(userId)) distinct.push(userId);
+    }
+    const out = new Map<string, string>();
+    if (distinct.length === 0) return out;
+
+    const resolved = peopleOf(await transport(() => client.resolveModulePeople(asUserId, { cmUserIds: distinct })));
+    if (resolved.length !== distinct.length) protocol();
+    const byUser = new Map<string, Person>();
+    for (const person of resolved) {
+      if (person.cmUserId === undefined || !distinct.includes(person.cmUserId) || byUser.has(person.cmUserId)) protocol();
+      byUser.set(person.cmUserId, person);
+    }
+
+    // Every user is judged as `toMdmId` would, in order; the first refusal ends the list of pairs to confirm.
+    const pairs: Array<{ userId: string; mdmId: string; cmUserId: string; direction: Direction }> = [];
+    let refusal: unknown;
+    for (const userId of distinct) {
+      try {
+        pairs.push({ userId, ...judge(byUser.get(userId) as Person) });
+      } catch (error) {
+        refusal = error;
+        break;
+      }
+    }
+    if (pairs.length > 0) {
+      const mdmIds = [...new Set(pairs.map((pair) => pair.mdmId))];
+      const cmUserIds = [...new Set(pairs.map((pair) => pair.cmUserId))];
+      const confirmed = peopleOf(await transport(() => client.resolveModulePeople(asUserId, { mdmIds, cmUserIds })));
+      if (confirmed.length !== mdmIds.length + cmUserIds.length) incomplete();
+      const byMdm = new Map<string, Person>();
+      for (const person of confirmed.slice(0, mdmIds.length)) {
+        if (person.mdmId === undefined || byMdm.has(person.mdmId)) incomplete();
+        byMdm.set(person.mdmId, person);
+      }
+      const byCm = new Map<string, Person>();
+      for (const person of confirmed.slice(mdmIds.length)) {
+        if (person.cmUserId === undefined || byCm.has(person.cmUserId)) incomplete();
+        byCm.set(person.cmUserId, person);
+      }
+      for (const pair of pairs) {
+        const left = byMdm.get(pair.mdmId);
+        const right = byCm.get(pair.cmUserId);
+        if (left === undefined || right === undefined) incomplete();
+        checkPair(left, right, pair.mdmId, pair.cmUserId, pair.direction);
+        out.set(pair.userId, pair.mdmId);
+      }
+    }
+    if (refusal !== undefined) throw refusal;
+    return out;
+  }
+
+  return { toCmUserId, toMdmId, toMdmIds };
 }

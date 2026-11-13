@@ -288,6 +288,26 @@ function personView(row: Stored, asked: 'mdm' | 'cm'): Record<string, unknown> {
   return { mdmId: row.mdmId, cmUserId: row.cmUserId, state: row.state };
 }
 
+/** The cm's `resolveModulePeople`: every `mdmIds` entry first, then every `cmUserIds` entry, one per id, in order. */
+function resolvePeopleLike(
+  book: { byMdm: Map<string, Stored>; byCm: Map<string, Stored> },
+  body: Record<string, unknown>,
+  diverge?: (row: Stored) => boolean,
+): Record<string, unknown>[] {
+  const people: Record<string, unknown>[] = [];
+  for (const id of (body.mdmIds as string[] | undefined) ?? []) {
+    const row = book.byMdm.get(id);
+    assert.ok(row);
+    people.push(diverge?.(row) ? { mdmId: row.mdmId, cmUserId: 'cm-other', state: 'linked' } : personView(row, 'mdm'));
+  }
+  for (const id of (body.cmUserIds as string[] | undefined) ?? []) {
+    const row = book.byCm.get(id);
+    if (!row || row.state === 'unlinked') people.push({ cmUserId: id, state: 'unlinked' });
+    else people.push(diverge?.(row) ? { mdmId: 'mdm-other', cmUserId: row.cmUserId, state: 'linked' } : personView(row, 'cm'));
+  }
+  return people;
+}
+
 function planOf(item: Directed, which: 'stored' | 'templateB'): WorkflowPlanInput {
   return {
     processId: item.processId,
@@ -511,23 +531,7 @@ test('real factory links through server login and resumes the canonical plan', a
           row.state = 'linked';
           return ok({ cmUserId: row.cmUserId, outcome: 'linked' });
         }
-        if (action === 'resolveModulePeople') {
-          const mdmIds = body.mdmIds as string[] | undefined;
-          const cmUserIds = body.cmUserIds as string[] | undefined;
-          if (mdmIds && cmUserIds) {
-            const row = book.byMdm.get(mdmIds[0]);
-            assert.ok(row);
-            return ok({ people: [personView(row, 'mdm'), personView(row, 'cm')] });
-          }
-          if (mdmIds) {
-            const row = book.byMdm.get(mdmIds[0]);
-            assert.ok(row);
-            return ok({ people: [personView(row, 'mdm')] });
-          }
-          const row = book.byCm.get((cmUserIds ?? [])[0]);
-          if (!row || row.state === 'unlinked') return ok({ people: [{ cmUserId: (cmUserIds ?? [])[0], state: 'unlinked' }] });
-          return ok({ people: [personView(row, 'cm')] });
-        }
+        if (action === 'resolveModulePeople') return ok({ people: resolvePeopleLike(book, body) });
         if (action === 'getModuleTask') {
           if (!opened) return { httpStatus: 200, body: { statusCode: 404, msg: 'not_found' } };
           return ok({ task: taskOf(item, item.revision, 'pending'), room: { threadId: item.threadId } });
@@ -583,27 +587,7 @@ test('real factory links through server login and resumes the canonical plan', a
           return ok({ cmUserId: row.cmUserId, outcome: 'linked' });
         }
         if (action === 'resolveModulePeople') {
-          const mdmIds = body.mdmIds as string[] | undefined;
-          const cmUserIds = body.cmUserIds as string[] | undefined;
-          if (mdmIds && cmUserIds) {
-            const row = book.byMdm.get(mdmIds[0]);
-            assert.ok(row);
-            if (mode === 'diverge-owner' && row.mdmId === item.people.ownerMdm) {
-              return ok({ people: [
-                { mdmId: row.mdmId, cmUserId: 'cm-other', state: 'linked' },
-                { mdmId: 'mdm-other', cmUserId: row.cmUserId, state: 'linked' },
-              ] });
-            }
-            return ok({ people: [personView(row, 'mdm'), personView(row, 'cm')] });
-          }
-          if (mdmIds) {
-            const row = book.byMdm.get(mdmIds[0]);
-            assert.ok(row);
-            return ok({ people: [personView(row, 'mdm')] });
-          }
-          const row = book.byCm.get((cmUserIds ?? [])[0]);
-          if (!row || row.state === 'unlinked') return ok({ people: [{ cmUserId: (cmUserIds ?? [])[0], state: 'unlinked' }] });
-          return ok({ people: [personView(row, 'cm')] });
+          return ok({ people: resolvePeopleLike(book, body, mode === 'diverge-owner' ? (row) => row.mdmId === item.people.ownerMdm : undefined) });
         }
         if (action === 'getModuleTask') {
           const ref = body.ref as { recordId?: string } | undefined;
