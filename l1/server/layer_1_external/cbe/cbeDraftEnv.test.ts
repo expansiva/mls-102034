@@ -153,6 +153,7 @@ const state = {
       sub: 'sub-responsavel',
       personMdmId: 'mdm-responsavel',
       cmUserId: 'cm-responsavel',
+      authorities: [],
     },
     membro: {
       alias: 'membro',
@@ -161,6 +162,7 @@ const state = {
       sub: 'sub-membro',
       personMdmId: 'mdm-membro',
       cmUserId: 'cm-membro',
+      authorities: [],
     },
   },
 };

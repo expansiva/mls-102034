@@ -30,6 +30,7 @@ function bench(): LocalTestConfig {
         sub: `local-test:${PROJECT}:responsavel`,
         personMdmId: 'person-responsavel',
         cmUserId: 'cm-responsavel',
+        authorities: [],
       },
       membro: {
         alias: 'membro',
@@ -38,6 +39,7 @@ function bench(): LocalTestConfig {
         sub: `local-test:${PROJECT}:membro`,
         personMdmId: 'person-membro',
         cmUserId: 'cm-membro',
+        authorities: [],
       },
     },
   };

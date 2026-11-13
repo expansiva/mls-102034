@@ -162,6 +162,7 @@ export function claimsForLocalTestPersona(persona: LocalTestPersona, state: Loca
     email: persona.email,
     name: persona.name,
     active_org: { id: state.cmOrgId },
+    ...(persona.authorities.length > 0 ? { authorities: [...persona.authorities] } : {}),
   };
 }
 

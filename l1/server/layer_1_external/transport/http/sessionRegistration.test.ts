@@ -344,6 +344,7 @@ test('route default loader runs when loadScope is omitted and reports missing on
         sub: `local-test:${projectId}:responsavel`,
         personMdmId: 'person-1',
         cmUserId: 'cm-1',
+        authorities: [],
       },
       membro: {
         alias: 'membro',
@@ -352,6 +353,7 @@ test('route default loader runs when loadScope is omitted and reports missing on
         sub: `local-test:${projectId}:membro`,
         personMdmId: 'person-2',
         cmUserId: 'cm-2',
+        authorities: [],
       },
     },
   };

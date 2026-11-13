@@ -38,6 +38,7 @@ function persona(alias: 'responsavel' | 'membro', cmUserId: string): LocalTestCo
     sub: `sub-${alias}`,
     personMdmId: `mdm-${alias}`,
     cmUserId,
+    authorities: [],
   };
 }
 

@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import test from 'node:test';
-import { claimAuthorities, resolveBffSession } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
+import { claimAuthorities, moduleAuthorities, resolveBffSession } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
 import {
   LOCAL_TEST_MAX_AGE_SEC,
   mintLocalTestCookie,
@@ -38,6 +38,7 @@ function bench(): LocalTestConfig {
         sub: `local-test:${PROJECT}:responsavel`,
         personMdmId: 'person-responsavel',
         cmUserId: 'cm-responsavel',
+        authorities: [],
       },
       membro: {
         alias: 'membro',
@@ -46,6 +47,7 @@ function bench(): LocalTestConfig {
         sub: `local-test:${PROJECT}:membro`,
         personMdmId: 'person-membro',
         cmUserId: 'cm-membro',
+        authorities: [],
       },
     },
   };
@@ -89,6 +91,24 @@ test('two cookies resolve to their own claims and ignore body or header identity
     assert.equal((responsavel.claims as LocalTestSessionClaims & { personMdmId?: string }).personMdmId, undefined);
     assert.equal((responsavel.claims as { cmUserId?: string }).cmUserId, undefined);
     assert.notEqual(responsavel.claims?.sub, membro.claims?.sub);
+  } finally {
+    setLocalTestConfigLoaderForTests();
+  }
+});
+
+test('a persona with authorities issues them in the claims; one without carries none', async () => {
+  const state = bench();
+  state.personas.responsavel = { ...state.personas.responsavel, authorities: ['modA:actor', 'modA:other', 'modB:third'] };
+  setLocalTestConfigLoaderForTests(() => state);
+  try {
+    const responsavel = await resolveBffSession(headers(cookieHeader('responsavel', state)));
+    const membro = await resolveBffSession(headers(cookieHeader('membro', state)));
+    assert.deepEqual(claimAuthorities(responsavel.claims), ['modA:actor', 'modA:other', 'modB:third']);
+    assert.deepEqual(moduleAuthorities(responsavel.claims, 'modA'), ['modA:actor', 'modA:other']);
+    assert.deepEqual(moduleAuthorities(responsavel.claims, 'modB'), ['modB:third']);
+    assert.deepEqual(moduleAuthorities(responsavel.claims, 'modC'), []);
+    assert.deepEqual(claimAuthorities(membro.claims), []);
+    assert.equal('authorities' in (membro.claims ?? {}), false);
   } finally {
     setLocalTestConfigLoaderForTests();
   }

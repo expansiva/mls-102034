@@ -15,6 +15,8 @@ export interface LocalTestPersona {
   sub: string;
   personMdmId: string;
   cmUserId: string;
+  /** `<moduleId>:<actorId>` the bench session issues for this person. Empty: the session carries none. */
+  authorities: readonly string[];
 }
 
 export interface LocalTestConfig {
@@ -118,6 +120,20 @@ function assertOrigin(origin: string, port: number): void {
   }
 }
 
+const AUTHORITY = /^[A-Za-z][A-Za-z0-9]*:[A-Za-z][A-Za-z0-9]*$/u;
+
+/** Absent = none (an old manifest stays valid). Every item `<moduleId>:<actorId>`, no repeat. */
+function parseAuthorities(value: unknown): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) fail('local test session manifest is invalid');
+  const items: string[] = [];
+  for (const item of value) {
+    if (typeof item !== 'string' || !AUTHORITY.test(item) || items.includes(item)) fail('local test session manifest is invalid');
+    items.push(item);
+  }
+  return items;
+}
+
 function parsePersona(alias: LocalTestAlias, value: unknown): LocalTestPersona {
   if (value === null || typeof value !== 'object') fail('local test session manifest is invalid');
   const record = value as Record<string, unknown>;
@@ -128,7 +144,7 @@ function parsePersona(alias: LocalTestAlias, value: unknown): LocalTestPersona {
   const cmUserId = stringField(record.cmUserId);
   if (!email || !name || !sub || !personMdmId || !cmUserId) fail('local test session manifest is invalid');
   if (!/^[^\s@]+@[^\s@]+\.test$/u.test(email)) fail('local test session manifest is invalid');
-  return { alias, email, name, sub, personMdmId, cmUserId };
+  return { alias, email, name, sub, personMdmId, cmUserId, authorities: parseAuthorities(record.authorities) };
 }
 
 function parseManifest(raw: unknown, projectId: string): LocalTestConfig {

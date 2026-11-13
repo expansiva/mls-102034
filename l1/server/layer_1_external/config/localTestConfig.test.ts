@@ -94,6 +94,33 @@ test('two profiles resolve by alias, email and sub, not by id', () => {
   assert.throws(() => assertLocalTestProxyTarget('http://10.0.0.8:8180', state), /refused/u);
 });
 
+function withAuthorities(responsavel: unknown, membro?: unknown): Record<string, unknown> {
+  const base = manifest();
+  const personas = base.personas as Record<string, Record<string, unknown>>;
+  const next = { responsavel: { ...personas.responsavel }, membro: { ...personas.membro } };
+  if (responsavel !== undefined) next.responsavel.authorities = responsavel;
+  if (membro !== undefined) next.membro.authorities = membro;
+  return { ...base, personas: next };
+}
+
+test('persona authorities: a list is kept, absent means none, a bad item or a repeat fails closed', () => {
+  const withList = loadLocalTestConfig(enabledEnv(), deps(JSON.stringify(withAuthorities(['modA:actor', 'modB:other'], []))));
+  assert.equal(withList.enabled, true);
+  if (!withList.enabled) return;
+  assert.deepEqual(withList.personas.responsavel.authorities, ['modA:actor', 'modB:other']);
+  assert.deepEqual(withList.personas.membro.authorities, []);
+  const old = loadLocalTestConfig(enabledEnv(), deps(JSON.stringify(manifest())));
+  if (!old.enabled) return;
+  assert.deepEqual(old.personas.responsavel.authorities, []);
+  assert.deepEqual(old.personas.membro.authorities, []);
+  for (const bad of [['actor'], ['modA:'], [':actor'], ['modA:actor:x'], ['modA:actor', 'modA:actor'], [7], 'modA:actor', null]) {
+    assert.throws(
+      () => loadLocalTestConfig(enabledEnv(), deps(JSON.stringify(withAuthorities(bad)))),
+      (error: LocalTestConfigError) => error.message === 'local test session manifest is invalid',
+    );
+  }
+});
+
 test('missing file, relative path, bad mode, project and origin fail closed without secrets', () => {
   assert.throws(
     () => loadLocalTestConfig({ LOCAL_TEST_SESSION_ENABLED: 'true' }, deps('{}')),
