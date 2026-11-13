@@ -161,6 +161,40 @@ test('resolveSessionInfoBody projects the MDM person of a linked login and keeps
   assert.deepEqual(Object.keys(body.person ?? {}), ['mdmId']);
 });
 
+test('resolveSessionInfoBody asks for the chat link of the person it resolved, and only then', async () => {
+  const ctx = createRequestContext();
+  const aluno = await personWithLogin(ctx, 'Aluno Link', 'link@academia.test');
+  const asked: string[] = [];
+  const linker = async (_ctx: unknown, mdmId: string) => { asked.push(mdmId); };
+  const body = await resolveSessionInfoBody(
+    ctx,
+    { claims: claimsFor('sub-link', 'link@academia.test'), reject: false, reason: 'ok' },
+    'development',
+    null,
+    null,
+    linker,
+  );
+  assert.deepEqual(body.person, { mdmId: aluno.mdmId });
+  assert.deepEqual(asked, [aluno.mdmId]);
+  await resolveSessionInfoBody(ctx, { claims: claimsFor('sub-none', 'nobody@academia.test'), reject: false, reason: 'ok' }, 'development', null, null, linker);
+  await resolveSessionInfoBody(ctx, { reject: false, reason: 'missing-token' }, 'development', null, null, linker);
+  assert.deepEqual(asked, [aluno.mdmId]);
+});
+
+test('a chat link that fails, throws or hangs does not change the session answer', async () => {
+  const ctx = createRequestContext();
+  await personWithLogin(ctx, 'Aluno Falha', 'falha@academia.test');
+  const session = { claims: claimsFor('sub-falha', 'falha@academia.test'), reject: false as const, reason: 'ok' as const };
+  const plain = await resolveSessionInfoBody(ctx, session, 'development', null, null, async () => {});
+  const rejecting = await resolveSessionInfoBody(ctx, session, 'development', null, null, () => Promise.reject(new Error('cm down')));
+  const throwing = await resolveSessionInfoBody(ctx, session, 'development', null, null, () => { throw new Error('before a promise'); });
+  const hung = await resolveSessionInfoBody(ctx, session, 'development', null, null, () => new Promise<void>(() => {}));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(rejecting, plain);
+  assert.deepEqual(throwing, plain);
+  assert.deepEqual(hung, plain);
+});
+
 test('resolveSessionInfoBody returns person null without a login row, without an e-mail, and when anonymous', async () => {
   const ctx = createRequestContext();
   const unbound = await resolveSessionInfoBody(

@@ -57,6 +57,9 @@ import {
   parseRuntimeMetricsQuery,
 } from '/_102034_/l1/monitor/layer_3_usecases/runtimeMetricsUsecases.js';
 import type { BffRequest, FrontendAppRegistration, RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
+import { createDefaultPersonCmLinker, type PersonCmLinker } from '/_102034_/l1/workflow/personCmLink.js';
+
+const defaultPersonCmLinker = createDefaultPersonCmLinker(resolveClientProjectId);
 
 /** Session JSON projection. The IdP `sub` stays `userId`; this is only the MDM person. */
 export type SessionInfoPerson = { mdmId: string };
@@ -507,6 +510,7 @@ export async function resolveSessionInfoBody(
   mode: ProjectMode,
   override: AuthorityOverride | null,
   gate?: SessionOnboardingSource | null,
+  linkPerson: PersonCmLinker = defaultPersonCmLinker,
 ) {
   const email = session.claims?.email;
   const companyId = ctx.sessionContext.activeCompanyId || null;
@@ -515,7 +519,15 @@ export async function resolveSessionInfoBody(
   if (email) {
     try {
       const resolved = await applyVerifiedEmailToSession(ctx, ctx.sessionContext, email);
-      if (resolved.person?.mdmId) person = { mdmId: resolved.person.mdmId };
+      if (resolved.person?.mdmId) {
+        person = { mdmId: resolved.person.mdmId };
+        // The chat link for the assistant. Not awaited, and nothing it does reaches the login: the answer is the same.
+        try {
+          void linkPerson(ctx, resolved.person.mdmId).catch(() => undefined);
+        } catch {
+          // a linker that throws before returning a promise is ignored the same way
+        }
+      }
     } catch (error) {
       const code = error instanceof AppError ? error.code : 'lookup-failed';
       console.error(`session/info person unresolved: ${code}`);
