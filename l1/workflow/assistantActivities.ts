@@ -143,13 +143,15 @@ export async function listAssistantActivities(
     verifiedAuthorities: [...onBehalfOf.authorities],
   };
 
-  const answers = await Promise.all(asked.map(async (entry) => {
+  type Answer = { moduleId: string; page: { items: WorkflowActivityListItem[]; cursor?: string } } | { moduleId: string; code: string };
+  const answers = await Promise.all(asked.map(async (entry): Promise<Answer> => {
     try {
       const withAlpha = await deps.withAlpha(meta, entry.moduleId, deps.projectId, entry.backendControllers);
       const actorRefs = actorRefsOf(withAlpha?.verifiedAuthorities ?? [], entry.moduleId);
+      const moduleCursor = wanted?.[entry.moduleId];
       const page = await deps.storeFor(entry.moduleId).list(ctx, {
         subject: { personMdmId, actorRefs },
-        ...(wanted?.[entry.moduleId] !== undefined ? { cursor: wanted[entry.moduleId] } : {}),
+        ...(moduleCursor !== undefined ? { cursor: moduleCursor } : {}),
         ...(input.includeNonActionable === true ? { includeNonActionable: true } : {}),
       });
       return { moduleId: entry.moduleId, page };

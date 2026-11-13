@@ -11,6 +11,7 @@ import { resetConfiguredModuleCompositionCache } from '/_102034_/l1/server/layer
 import { WORKFLOW_WAKE_BODY_LIMIT_BYTES, type WorkflowWakeInbox } from '/_102034_/l1/workflow/wakeContracts.js';
 import { resetWorkflowWakeRegistryForTests } from '/_102034_/l1/workflow/wakeRegistry.js';
 import type { ModuleWakeEvent } from '/_102036_/l2/shared/interfaces.js';
+import type { AssistantActivitiesRunner } from '/_102034_/l1/workflow/assistantRuntime.js';
 import { registerWorkflowWakeRoutes } from '/_102034_/l1/server/layer_1_external/transport/http/workflowWake.js';
 
 const APP_ID = '910106';
@@ -120,7 +121,7 @@ class MemoryStore implements WorkflowWakeInbox {
   }
 }
 
-async function harness(): Promise<Harness> {
+async function harness(assistant?: (projectId: string) => AssistantActivitiesRunner): Promise<Harness> {
   const previousCwd = process.cwd();
   const previousFiles = process.env.CBE_PROJECT_FILES_DIR;
   const previousEnvToken = process.env.MSG_PROXY_TOKEN;
@@ -157,6 +158,7 @@ registerWorkflowWakeHandler(${JSON.stringify({
       constructions += 1;
       return store;
     },
+    ...(assistant ? { createAssistantActivities: assistant } : {}),
   });
   await app.ready();
   return {
@@ -342,5 +344,126 @@ test('invalid body, size limit, scope and commit failure return no receipt', asy
     }
   } finally {
     await env.restore();
+  }
+});
+
+function assistantBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    kind: 'activities',
+    onBehalfOf: { cmUserId: 'cm-1', authorities: ['modA:actor'], snapshotAt: '2026-11-13T10:00:00.000Z', via: 'nora' },
+    ...overrides,
+  };
+}
+
+async function postAssistant(app: FastifyInstance, payload: unknown, headers: Record<string, string | string[]> = authHeaders()): Promise<LightMyRequestResponse> {
+  return app.inject({
+    method: 'POST',
+    url: '/exec/assistant',
+    headers: { 'content-type': 'application/json', ...headers },
+    payload: typeof payload === 'string' ? payload : JSON.stringify(payload),
+  });
+}
+
+test('assistant: the same authentication as the wake, and nothing runs before it passes', async () => {
+  let built = 0;
+  const h = await harness(() => { built += 1; return async () => { throw new Error('must not run'); }; });
+  try {
+    assert.equal((await postAssistant(h.app, assistantBody(), {})).statusCode, 401);
+    assert.equal((await postAssistant(h.app, assistantBody(), authHeaders(TOKEN_APP, OTHER_APP))).statusCode, 403);
+    assert.equal((await postAssistant(h.app, assistantBody(), authHeaders(TOKEN_ENV))).statusCode, 403);
+    assert.equal((await postAssistant(h.app, assistantBody(), authHeaders(TOKEN_OTHER))).statusCode, 403);
+    assert.equal(built, 0);
+  } finally {
+    await h.restore();
+  }
+});
+
+test('assistant: activities answers 200 with items, cursor and partial, and the runner gets only the checked fields', async () => {
+  const seen: unknown[] = [];
+  const h = await harness((projectId) => {
+    assert.equal(projectId, APP_ID);
+    return async (input) => {
+      seen.push(input);
+      return { outcome: 'done', items: [], cursor: 'next', partial: [{ moduleId: 'modB', code: 'X' }] };
+    };
+  });
+  try {
+    const response = await postAssistant(h.app, assistantBody({ includeNonActionable: true, cursor: 'abc', cmUserId: 'ignored', userId: 'ignored' }));
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(JSON.parse(response.body), { outcome: 'done', items: [], cursor: 'next', partial: [{ moduleId: 'modB', code: 'X' }] });
+    assert.deepEqual(seen, [{
+      onBehalfOf: { cmUserId: 'cm-1', authorities: ['modA:actor'], snapshotAt: '2026-11-13T10:00:00.000Z', via: 'nora' },
+      includeNonActionable: true,
+      cursor: 'abc',
+    }]);
+    await postAssistant(h.app, assistantBody());
+    assert.equal(h.constructions(), 0); // the wake inbox is not touched
+    assertNoSecrets(response);
+  } finally {
+    await h.restore();
+  }
+});
+
+test('assistant: catalog, exec and an unknown kind are refused with 400 until their step exists', async () => {
+  const h = await harness(() => async () => { throw new Error('must not run'); });
+  try {
+    for (const kind of ['catalog', 'exec', 'other', 7, undefined]) {
+      const response = await postAssistant(h.app, assistantBody({ kind }));
+      assert.equal(response.statusCode, 400);
+      assert.equal(JSON.parse(response.body).code, 'ASSISTANT_KIND_UNSUPPORTED');
+    }
+  } finally {
+    await h.restore();
+  }
+});
+
+test('assistant: an invalid body is a 400 and never reaches the runner', async () => {
+  const h = await harness(() => async () => { throw new Error('must not run'); });
+  const good = assistantBody().onBehalfOf as Record<string, unknown>;
+  try {
+    const bodies: unknown[] = [
+      '[]', 'null', '{ nope',
+      assistantBody({ onBehalfOf: undefined }),
+      assistantBody({ onBehalfOf: { ...good, cmUserId: '' } }),
+      assistantBody({ onBehalfOf: { ...good, authorities: 'modA:actor' } }),
+      assistantBody({ onBehalfOf: { ...good, authorities: [1] } }),
+      assistantBody({ onBehalfOf: { ...good, authorities: Array.from({ length: 300 }, (_, i) => `m:a${i}`) } }),
+      assistantBody({ onBehalfOf: { ...good, snapshotAt: 'yesterday' } }),
+      assistantBody({ onBehalfOf: { ...good, via: undefined } }),
+      assistantBody({ includeNonActionable: 'yes' }),
+      assistantBody({ cursor: '' }),
+    ];
+    for (const body of bodies) {
+      const response = await postAssistant(h.app, body);
+      assert.equal(response.statusCode, 400, JSON.stringify(body));
+    }
+  } finally {
+    await h.restore();
+  }
+});
+
+test('assistant: a failure shows its code and a fixed sentence, never the module message', async () => {
+  let mode: 'cursor' | 'identity' | 'plain' = 'cursor';
+  const h = await harness(() => async () => {
+    if (mode === 'cursor') throw new AppError('ASSISTANT_CURSOR_INVALID', 'The cursor is not valid.', 400);
+    if (mode === 'identity') throw new AppError('WORKFLOW_IDENTITY_INCOMPLETE', 'secret-note-rt106-s5', 503);
+    throw new Error('secret-note-rt106-s5');
+  });
+  try {
+    const cursor = await postAssistant(h.app, assistantBody());
+    assert.equal(cursor.statusCode, 400);
+    assert.equal(JSON.parse(cursor.body).code, 'ASSISTANT_CURSOR_INVALID');
+    mode = 'identity';
+    const identity = await postAssistant(h.app, assistantBody());
+    assert.equal(identity.statusCode, 503);
+    assert.equal(JSON.parse(identity.body).code, 'WORKFLOW_IDENTITY_INCOMPLETE');
+    assertNoSecrets(identity);
+    mode = 'plain';
+    const plain = await postAssistant(h.app, assistantBody());
+    assert.equal(plain.statusCode, 503);
+    assert.equal(JSON.parse(plain.body).code, 'ASSISTANT_UNAVAILABLE');
+    assertNoSecrets(plain);
+  } finally {
+    await h.restore();
   }
 });

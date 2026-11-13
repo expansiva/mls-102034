@@ -11,6 +11,11 @@ import {
   type WorkflowWakeInbox,
   type WorkflowWakeScope,
 } from '/_102034_/l1/workflow/wakeContracts.js';
+import {
+  createAssistantActivitiesRunner,
+  type AssistantActivitiesRunner,
+} from '/_102034_/l1/workflow/assistantRuntime.js';
+import type { AssistantActivitiesInput } from '/_102034_/l1/workflow/assistantActivities.js';
 import { createPostgresWorkflowWakeInbox } from '/_102034_/l1/workflow/wakeInboxPostgres.js';
 import { resolveWorkflowWakeHandler } from '/_102034_/l1/workflow/wakeRegistry.js';
 import type { WorkflowWakeHandler } from '/_102034_/l1/workflow/wakeContracts.js';
@@ -22,6 +27,8 @@ export interface WorkflowWakeRouteDeps {
   readConfig?: () => ProjectsConfig;
   resolveHandler?: (scope: WorkflowWakeScope) => Promise<WorkflowWakeHandler>;
   createInbox?: (projectId: string) => WorkflowWakeInbox;
+  /** The assistant's `activities` request. Production builds it lazily, once per app. */
+  createAssistantActivities?: (projectId: string) => AssistantActivitiesRunner;
 }
 
 interface WakeBody {
@@ -87,6 +94,55 @@ function moduleConfigured(config: ProjectsConfig, projectId: string, moduleId: s
   return listed && persisted;
 }
 
+const ASSISTANT_MAX_AUTHORITIES = 256;
+const ASSISTANT_MAX_TEXT = 256;
+
+function assistantInvalid(message: string): HttpFailure {
+  return failure(400, 'ASSISTANT_REQUEST_INVALID', message);
+}
+
+/** The body of `kind: 'activities'`, checked field by field. Anything else is a 400, never an exception. */
+function parseAssistantActivities(body: Record<string, unknown>): AssistantActivitiesInput | HttpFailure {
+  const behalf = body.onBehalfOf;
+  if (behalf === null || typeof behalf !== 'object' || Array.isArray(behalf)) return assistantInvalid('onBehalfOf must be an object');
+  const record = behalf as Record<string, unknown>;
+  const text = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= ASSISTANT_MAX_TEXT;
+  if (!text(record.cmUserId)) return assistantInvalid('onBehalfOf.cmUserId is required');
+  if (!Array.isArray(record.authorities) || record.authorities.length > ASSISTANT_MAX_AUTHORITIES || !record.authorities.every(text)) {
+    return assistantInvalid('onBehalfOf.authorities must be a list of texts');
+  }
+  if (!text(record.snapshotAt) || Number.isNaN(Date.parse(record.snapshotAt))) return assistantInvalid('onBehalfOf.snapshotAt must be a date');
+  if (!text(record.via)) return assistantInvalid('onBehalfOf.via is required');
+  if (body.includeNonActionable !== undefined && typeof body.includeNonActionable !== 'boolean') {
+    return assistantInvalid('includeNonActionable must be a boolean');
+  }
+  if (body.cursor !== undefined && !(typeof body.cursor === 'string' && body.cursor.length > 0 && body.cursor.length <= 4096)) {
+    return assistantInvalid('cursor must be a text');
+  }
+  return {
+    onBehalfOf: {
+      cmUserId: record.cmUserId,
+      authorities: [...(record.authorities as string[])],
+      snapshotAt: record.snapshotAt,
+      via: record.via,
+    },
+    ...(body.includeNonActionable === true ? { includeNonActionable: true } : {}),
+    ...(typeof body.cursor === 'string' ? { cursor: body.cursor } : {}),
+  };
+}
+
+/** What the cm may read of a failure: the code and a fixed sentence, never the module's own message. */
+function assistantFailure(error: unknown): HttpFailure {
+  const appError = asAppError(error);
+  if (appError && appError.statusCode === 400 && appError.code.startsWith('ASSISTANT_')) {
+    return failure(400, appError.code, appError.message);
+  }
+  if (appError && appError.statusCode >= 400 && appError.statusCode <= 599) {
+    return failure(appError.statusCode, appError.code, 'The assistant request could not be served.');
+  }
+  return failure(503, 'ASSISTANT_UNAVAILABLE', 'The assistant request could not be served.');
+}
+
 function asAppError(error: unknown): AppError | null {
   return error instanceof AppError ? error : null;
 }
@@ -119,6 +175,8 @@ export function registerWorkflowWakeRoutes(app: FastifyInstance, deps: WorkflowW
   const readConfig = deps.readConfig ?? readProjectsConfig;
   const resolveHandler = deps.resolveHandler ?? resolveWorkflowWakeHandler;
   const createInbox = deps.createInbox ?? ((projectId: string) => createPostgresWorkflowWakeInbox({ projectId }));
+  const createAssistant = deps.createAssistantActivities ?? createAssistantActivitiesRunner;
+  let assistant: { projectId: string; run: AssistantActivitiesRunner } | undefined;
   let inbox: { projectId: string; store: WorkflowWakeInbox } | undefined;
 
   function storeFor(projectId: string): WorkflowWakeInbox {
@@ -261,6 +319,34 @@ export function registerWorkflowWakeRoutes(app: FastifyInstance, deps: WorkflowW
         eventId: stored.receipt.eventId,
         outcome: stored.receipt.outcome,
       });
+    });
+
+    // The assistant's request (cm → app). Same scope, same authentication; the body says which kind.
+    scope.post('/exec/assistant', async (request, reply) => {
+      const projectId = authorizedAppIds.get(request);
+      if (!projectId) {
+        return sendFailure(reply, failure(401, 'WORKFLOW_WAKE_AUTH_REQUIRED', 'Workflow wake authentication is required.'));
+      }
+      const raw = request.body as WakeBody | undefined;
+      const body = raw && typeof raw === 'object' && 'value' in raw ? raw.value : undefined;
+      if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+        return sendFailure(reply, assistantInvalid('assistant body must be an object'));
+      }
+      const record = body as Record<string, unknown>;
+      const kind = record.kind;
+      // `catalog` and `exec` arrive with R2 and R3; until then they answer like any unknown kind.
+      if (kind !== 'activities') {
+        return sendFailure(reply, failure(400, 'ASSISTANT_KIND_UNSUPPORTED', 'This assistant request kind is not supported.'));
+      }
+      const input = parseAssistantActivities(record);
+      if ('statusCode' in input) return sendFailure(reply, input);
+      try {
+        if (!assistant || assistant.projectId !== projectId) assistant = { projectId, run: createAssistant(projectId) };
+        const result = await assistant.run(input);
+        return sendJson(reply, 200, result);
+      } catch (error) {
+        return sendFailure(reply, assistantFailure(error));
+      }
     });
 
     done();
