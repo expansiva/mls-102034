@@ -121,6 +121,57 @@ test('persona authorities: a list is kept, absent means none, a bad item or a re
   }
 });
 
+function withThird(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  const base = manifest();
+  const personas = base.personas as Record<string, unknown>;
+  return {
+    ...base,
+    personas: {
+      ...personas,
+      semPapel: {
+        email: `semPapel.${PROJECT}@runtime.test`,
+        name: 'Sem papel',
+        sub: `local-test:${PROJECT}:semPapel`,
+        personMdmId: 'person-semPapel',
+        cmUserId: 'cm-semPapel',
+        ...extra,
+      },
+    },
+  };
+}
+
+test('semPapel is optional: a manifest of two and of three people are valid, and the third is validated like the others', () => {
+  const two = loadLocalTestConfig(enabledEnv(), deps(JSON.stringify(manifest())));
+  assert.equal(two.enabled, true);
+  if (!two.enabled) return;
+  assert.equal(two.personas.semPapel, undefined);
+  assert.equal(lookupLocalTestPersona({ alias: 'semPapel' }, two), null);
+
+  const three = loadLocalTestConfig(enabledEnv(), deps(JSON.stringify(withThird())));
+  assert.equal(three.enabled, true);
+  if (!three.enabled) return;
+  assert.deepEqual(three.personas.semPapel?.authorities, []);
+  assert.equal(lookupLocalTestPersona({ alias: 'semPapel' }, three)?.cmUserId, 'cm-semPapel');
+  assert.equal(lookupLocalTestPersona({ sub: `local-test:${PROJECT}:semPapel` }, three)?.alias, 'semPapel');
+
+  const withList = loadLocalTestConfig(enabledEnv(), deps(JSON.stringify(withThird({ authorities: ['modA:actor'] }))));
+  if (withList.enabled) assert.deepEqual(withList.personas.semPapel?.authorities, ['modA:actor']);
+
+  const invalid = [
+    withThird({ authorities: ['actor'] }),
+    withThird({ authorities: ['modA:actor', 'modA:actor'] }),
+    withThird({ cmUserId: 'cm-membro' }),
+    withThird({ email: 'semPapel@example.com' }),
+    { ...withThird(), personas: { ...(withThird().personas as Record<string, unknown>), outro: {} } },
+  ];
+  for (const bad of invalid) {
+    assert.throws(
+      () => loadLocalTestConfig(enabledEnv(), deps(JSON.stringify(bad))),
+      (error: LocalTestConfigError) => error.message === 'local test session manifest is invalid',
+    );
+  }
+});
+
 test('missing file, relative path, bad mode, project and origin fail closed without secrets', () => {
   assert.throws(
     () => loadLocalTestConfig({ LOCAL_TEST_SESSION_ENABLED: 'true' }, deps('{}')),

@@ -53,7 +53,7 @@ function bench(): LocalTestConfig {
   };
 }
 
-function cookieHeader(alias: 'responsavel' | 'membro', state = bench()): string {
+function cookieHeader(alias: 'responsavel' | 'membro' | 'semPapel', state = bench()): string {
   return `collab_local_test_${state.projectId}=${mintLocalTestCookie(alias, state, nowMs)}`;
 }
 
@@ -226,6 +226,28 @@ test('a broken manifest rejects a leftover local cookie and still skips a reques
     const open = await resolveBffSession({ host: HOST });
     assert.equal(open.reason, 'missing-token');
     assert.equal(open.reject, false);
+  } finally {
+    setLocalTestConfigLoaderForTests();
+  }
+});
+
+test('semPapel resolves from its cookie and its claims carry no authorities', async () => {
+  const state = bench();
+  state.personas.semPapel = {
+    alias: 'semPapel',
+    email: `semPapel.${PROJECT}@runtime.test`,
+    name: 'Sem papel',
+    sub: `local-test:${PROJECT}:semPapel`,
+    personMdmId: 'person-semPapel',
+    cmUserId: 'cm-semPapel',
+    authorities: [],
+  };
+  setLocalTestConfigLoaderForTests(() => state);
+  try {
+    const session = await resolveBffSession(headers(cookieHeader('semPapel', state)));
+    assert.equal(session.claims?.email, `semPapel.${PROJECT}@runtime.test`);
+    assert.deepEqual(claimAuthorities(session.claims), []);
+    assert.equal('authorities' in (session.claims ?? {}), false);
   } finally {
     setLocalTestConfigLoaderForTests();
   }

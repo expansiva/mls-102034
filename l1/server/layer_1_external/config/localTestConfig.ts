@@ -5,8 +5,10 @@ import { hasDeclaredProjectMode, isTestMode, readProjectMode } from '/_102034_/l
 import { readProjectsConfig } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 
 /** Aliases provisioned by the lima bench. Browser-supplied MDM or cm ids are not a lookup key. */
-export const LOCAL_TEST_ALIASES = ['responsavel', 'membro'] as const;
+export const LOCAL_TEST_ALIASES = ['responsavel', 'membro', 'semPapel'] as const;
 export type LocalTestAlias = (typeof LOCAL_TEST_ALIASES)[number];
+/** The two a manifest must carry; `semPapel` is optional (a manifest of two people stays valid). */
+const REQUIRED_ALIASES = ['responsavel', 'membro'] as const;
 
 export interface LocalTestPersona {
   alias: LocalTestAlias;
@@ -29,7 +31,7 @@ export interface LocalTestConfig {
   storagePrefix: string;
   allowedOrigins: readonly string[];
   cookieKey: string;
-  personas: Record<LocalTestAlias, LocalTestPersona>;
+  personas: Record<(typeof REQUIRED_ALIASES)[number], LocalTestPersona> & Partial<Record<LocalTestAlias, LocalTestPersona>>;
 }
 
 export type LocalTestConfigState = { enabled: false } | LocalTestConfig;
@@ -182,17 +184,17 @@ function parseManifest(raw: unknown, projectId: string): LocalTestConfig {
   }
   const personaRecord = personasRaw as Record<string, unknown>;
   const keys = Object.keys(personaRecord);
-  if (keys.length !== LOCAL_TEST_ALIASES.length || LOCAL_TEST_ALIASES.some((alias) => !keys.includes(alias))) {
+  if (
+    REQUIRED_ALIASES.some((alias) => !keys.includes(alias))
+    || keys.some((key) => !(LOCAL_TEST_ALIASES as readonly string[]).includes(key))
+  ) {
     fail('local test session manifest is invalid');
   }
   const responsavel = parsePersona('responsavel', personaRecord.responsavel);
   const membro = parsePersona('membro', personaRecord.membro);
-  const identities = [
-    responsavel.email, membro.email,
-    responsavel.sub, membro.sub,
-    responsavel.personMdmId, membro.personMdmId,
-    responsavel.cmUserId, membro.cmUserId,
-  ];
+  const semPapel = keys.includes('semPapel') ? parsePersona('semPapel', personaRecord.semPapel) : undefined;
+  const people = semPapel ? [responsavel, membro, semPapel] : [responsavel, membro];
+  const identities = people.flatMap((person) => [person.email, person.sub, person.personMdmId, person.cmUserId]);
   if (new Set(identities).size !== identities.length) fail('local test session manifest is invalid');
 
   return {
@@ -205,7 +207,7 @@ function parseManifest(raw: unknown, projectId: string): LocalTestConfig {
     storagePrefix,
     allowedOrigins,
     cookieKey,
-    personas: { responsavel, membro },
+    personas: semPapel ? { responsavel, membro, semPapel } : { responsavel, membro },
   };
 }
 
@@ -283,7 +285,7 @@ export function lookupLocalTestPersona(
   state: LocalTestConfigState = getLocalTestConfig(),
 ): LocalTestPersona | null {
   if (!state.enabled) return null;
-  const personas = LOCAL_TEST_ALIASES.map((alias) => state.personas[alias]);
+  const personas = LOCAL_TEST_ALIASES.flatMap((alias) => state.personas[alias] ?? []);
   const matches = personas.filter((persona) => {
     if (query.alias !== undefined && persona.alias !== query.alias) return false;
     if (query.email !== undefined && persona.email !== query.email) return false;

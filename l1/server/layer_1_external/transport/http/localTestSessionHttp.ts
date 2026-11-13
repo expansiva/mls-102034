@@ -95,7 +95,7 @@ function readPersona(body: unknown): LocalTestAlias | null | 'bad' {
   if (Object.keys(record).length !== 1 || !Object.prototype.hasOwnProperty.call(record, 'persona')) return 'bad';
   const persona = record.persona;
   if (persona === null) return null;
-  if (persona === 'responsavel' || persona === 'membro') return persona;
+  if (persona === 'responsavel' || persona === 'membro' || persona === 'semPapel') return persona;
   return 'bad';
 }
 
@@ -123,6 +123,7 @@ function selectorHtml(alias: string): string {
 <p id="error"></p>
 <button type="button" id="pick-responsavel"></button>
 <button type="button" id="pick-membro"></button>
+<button type="button" id="pick-semPapel"></button>
 <button type="button" id="pick-none"></button>
 <script>
 (function () {
@@ -134,6 +135,7 @@ function selectorHtml(alias: string): string {
   document.getElementById('limit').textContent = 'One browser profile per user. Close other tabs of this origin before switching.';
   document.getElementById('pick-responsavel').textContent = 'responsavel';
   document.getElementById('pick-membro').textContent = 'membro';
+  document.getElementById('pick-semPapel').textContent = 'semPapel';
   document.getElementById('pick-none').textContent = 'Leave session';
   var CLEAR_MS = 3000;
   function clearCmCache() {
@@ -184,6 +186,7 @@ function selectorHtml(alias: string): string {
   }
   document.getElementById('pick-responsavel').addEventListener('click', function () { select('responsavel'); });
   document.getElementById('pick-membro').addEventListener('click', function () { select('membro'); });
+  document.getElementById('pick-semPapel').addEventListener('click', function () { select('semPapel'); });
   document.getElementById('pick-none').addEventListener('click', function () { select(null); });
 }());
 </script>
@@ -213,7 +216,7 @@ export function registerLocalTestSessionRoutes(app: FastifyInstance): void {
       return REJECTED;
     }
     const persona = readPersona(request.body);
-    if (persona === 'bad') {
+    if (persona === 'bad' || (persona !== null && !state.personas[persona])) {
       reply.status(400).header('cache-control', 'no-store');
       return REJECTED;
     }

@@ -9,14 +9,15 @@ import {
   personByLogin,
 } from '/_102034_/l1/mdm/layer_3_usecases/selfRegistration.js';
 
-/** Bench profiles. They are not role grants; both people keep the alpha super user. */
-export const LOCAL_TEST_ALIASES = ['responsavel', 'membro'] as const;
+/** Bench profiles. They are not role grants; all keep the alpha super user. `semPapel` gets no member role. */
+export const LOCAL_TEST_ALIASES = ['responsavel', 'membro', 'semPapel'] as const;
 
 export type LocalTestAlias = (typeof LOCAL_TEST_ALIASES)[number];
 
 const BENCH_NAMES: Record<LocalTestAlias, string> = {
   responsavel: 'Bench responsible',
   membro: 'Bench member',
+  semPapel: 'Bench no role',
 };
 
 export interface LocalTestPersona {
@@ -97,7 +98,7 @@ export function parseMemberRoles(config: ProjectsConfig, memberRoles: readonly s
 }
 
 /**
- * Company plus two bench people. Repeated calls keep the same ids and do not
+ * Company plus three bench people (the third gets no member role). Repeated calls keep the same ids and do not
  * overwrite a name, country, link or version the tester already stored.
  * A pending match is an error; nothing is released. A bench login linked to another company
  * (the organization key changed) is moved: the old link becomes Inactive and `relinked` is true.
@@ -161,7 +162,7 @@ export async function ensureLocalTestPair(
     if (sub === person.mdmId) {
       throw new AppError('LOCAL_TEST_LINK_INVALID', 'local test sub collided with a person id', 409, { sub });
     }
-    for (const role of roles) {
+    for (const role of alias === 'semPapel' ? [] : roles) {
       await attachPersonMembership(ctx, {
         personMdmId: person.mdmId,
         companyMdmId: company.companyMdmId,
@@ -175,17 +176,19 @@ export async function ensureLocalTestPair(
           role: role.tag,
         });
       }
-      if (attached.details.status !== 'Active') {
-        throw new AppError(
-          'LOCAL_TEST_PERSON_INACTIVE',
-          `local test person ${email} is not Active`,
-          409,
-          { personMdmId: person.mdmId, status: attached.details.status },
-        );
-      }
     }
 
+    // With member roles every person must end Active, `semPapel` included (it has none of its own).
+    // Without any role the people stay as registered, as before.
     const stored = roles.length > 0 ? await ctx.mdm.entity.get({ mdmId: person.mdmId }) : person;
+    if (roles.length > 0 && stored.details.status !== 'Active') {
+      throw new AppError(
+        'LOCAL_TEST_PERSON_INACTIVE',
+        `local test person ${email} is not Active`,
+        409,
+        { personMdmId: person.mdmId, status: stored.details.status },
+      );
+    }
     personas.push({
       alias,
       email,
