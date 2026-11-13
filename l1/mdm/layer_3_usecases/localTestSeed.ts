@@ -96,6 +96,28 @@ export function parseMemberRoles(config: ProjectsConfig, memberRoles: readonly s
   });
 }
 
+/** Extra roles for one bench persona, `<moduleId>.<Tipo>` each. */
+export type LocalTestAliasRoles = Readonly<Partial<Record<string, readonly string[]>>>;
+
+/** Common roles plus the persona's own, parsed and de-duplicated by tag. No writes. */
+function parseAliasRoles(
+  config: ProjectsConfig,
+  aliasRoles: LocalTestAliasRoles,
+  common: readonly { moduleId: string; personType: string; tag: string }[],
+): Record<LocalTestAlias, { moduleId: string; personType: string; tag: string }[]> {
+  for (const alias of Object.keys(aliasRoles)) {
+    if (!(LOCAL_TEST_ALIASES as readonly string[]).includes(alias)) {
+      throw new AppError('VALIDATION_ERROR', `alias '${alias}' is not a bench persona`, 400, { alias });
+    }
+  }
+  const result = {} as Record<LocalTestAlias, { moduleId: string; personType: string; tag: string }[]>;
+  for (const alias of LOCAL_TEST_ALIASES) {
+    const own = parseMemberRoles(config, aliasRoles[alias] ?? []);
+    result[alias] = [...common, ...own.filter((role) => !common.some((item) => item.tag === role.tag))];
+  }
+  return result;
+}
+
 /**
  * Company plus two bench people. Repeated calls keep the same ids and do not
  * overwrite a name, country, link or version the tester already stored.
@@ -103,14 +125,18 @@ export function parseMemberRoles(config: ProjectsConfig, memberRoles: readonly s
  * (the organization key changed) is moved: the old link becomes Inactive and `relinked` is true.
  * `memberRoles` attaches existing module roles; an empty list keeps the previous behavior.
  * Without an onboarding block, at least one member role is required and the first one registers the people.
+ * `aliasRoles` adds roles to one bench persona only (same `<moduleId>.<Tipo>` form and checks as `memberRoles`);
+ * an alias outside LOCAL_TEST_ALIASES or a module outside the project config is refused before any write.
  */
 export async function ensureLocalTestPair(
   ctx: RequestContext,
   config: ProjectsConfig,
   binding: OrganizationBinding,
   memberRoles: readonly string[] = [],
+  aliasRoles: LocalTestAliasRoles = {},
 ): Promise<LocalTestSeedResult> {
   const roles = parseMemberRoles(config, memberRoles);
+  const rolesByAlias = parseAliasRoles(config, aliasRoles, roles);
   const projectId = projectIdFrom(config);
   const { onboarding, registration } = registrationFrom(config, roles);
   const company = onboarding
@@ -161,7 +187,8 @@ export async function ensureLocalTestPair(
     if (sub === person.mdmId) {
       throw new AppError('LOCAL_TEST_LINK_INVALID', 'local test sub collided with a person id', 409, { sub });
     }
-    for (const role of roles) {
+    const personaRoles = rolesByAlias[alias];
+    for (const role of personaRoles) {
       await attachPersonMembership(ctx, {
         personMdmId: person.mdmId,
         companyMdmId: company.companyMdmId,
@@ -185,7 +212,7 @@ export async function ensureLocalTestPair(
       }
     }
 
-    const stored = roles.length > 0 ? await ctx.mdm.entity.get({ mdmId: person.mdmId }) : person;
+    const stored = personaRoles.length > 0 ? await ctx.mdm.entity.get({ mdmId: person.mdmId }) : person;
     personas.push({
       alias,
       email,

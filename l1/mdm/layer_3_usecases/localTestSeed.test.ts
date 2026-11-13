@@ -15,7 +15,7 @@ import type { RequestContext } from '/_102034_/l1/server/layer_2_controllers/con
 import { createMemoryDataRuntime } from '/_102034_/l1/mdm/layer_1_external/data/memory/MdmDataRuntimeMemory.js';
 import { ensureOrganizationCompany, ensureOrganizationIdentity } from '/_102034_/l1/mdm/layer_3_usecases/organizationBootstrap.js';
 import { ensureLocalTestPair, localTestEmail, localTestSub } from '/_102034_/l1/mdm/layer_3_usecases/localTestSeed.js';
-import { assertLocalSeedEnvironment } from '/_102034_/l1/scripts/seedLocalTest.js';
+import { assertLocalSeedEnvironment, readAliasRoles } from '/_102034_/l1/scripts/seedLocalTest.js';
 
 const previousCwd = process.cwd();
 const workspace = mkdtempSync(join(tmpdir(), 'rt85-s1-'));
@@ -281,6 +281,54 @@ test('member roles tag both people and a repeat does not change the version', as
   }
   const people = await ctx.data.mdmEntityIndex.findMany({ where: { subtype: 'Person' } });
   assert.equal(people.length, 2);
+});
+
+test('an alias role goes to that persona only, and a repeat keeps ids and versions', async () => {
+  const ctx = ctxAt('2026-10-18');
+  const config = projectsConfig('102047', ['tarefas', 'compras']);
+  const aliasRoles = { responsavel: ['compras.Comprador'] };
+  const first = await ensureLocalTestPair(ctx, config, binding(), ['tarefas.Participante'], aliasRoles);
+  const versions = new Map<string, number>();
+  for (const persona of first.personas) {
+    const person = await ctx.mdm.entity.get({ mdmId: persona.personMdmId });
+    assert.equal(person.details.status, 'Active');
+    assert.equal(person.details.tags.includes('tarefas.Participante'), true);
+    assert.equal(person.details.tags.includes('compras.Comprador'), persona.alias === 'responsavel');
+    versions.set(persona.personMdmId, person.version);
+  }
+  const second = await ensureLocalTestPair(ctx, config, binding(), ['tarefas.Participante'], aliasRoles);
+  assert.deepEqual(second.personas.map((persona) => persona.personMdmId), first.personas.map((persona) => persona.personMdmId));
+  for (const persona of second.personas) {
+    const person = await ctx.mdm.entity.get({ mdmId: persona.personMdmId });
+    assert.equal(person.version, versions.get(persona.personMdmId));
+    assert.equal(person.details.tags.filter((tag) => tag === 'compras.Comprador').length, persona.alias === 'responsavel' ? 1 : 0);
+  }
+});
+
+test('an unknown alias or a module outside the project is refused before any write', async () => {
+  const ctx = ctxAt('2026-10-18');
+  const config = projectsConfig('102047', ['tarefas']);
+  await assert.rejects(
+    ensureLocalTestPair(ctx, config, binding(), ['tarefas.Participante'], { gerente: ['tarefas.Participante'] }),
+    /not a bench persona/,
+  );
+  await assert.rejects(
+    ensureLocalTestPair(ctx, config, binding(), ['tarefas.Participante'], { responsavel: ['compras.Comprador'] }),
+    /not in the project config/,
+  );
+  assert.equal((await ctx.data.mdmEntityIndex.findMany({ where: { subtype: 'Person' } })).length, 0);
+  assert.equal((await ctx.data.mdmEntityIndex.findMany({ where: { subtype: 'Company' } })).length, 0);
+});
+
+test('--alias-role is read as repeatable alias=module.Type and refuses a bad value', () => {
+  assert.deepEqual(
+    readAliasRoles(['--member-role', 'tarefas.Participante', '--alias-role', 'responsavel=compras.Comprador', '--alias-role', 'responsavel=x.Y']),
+    { responsavel: ['compras.Comprador', 'x.Y'] },
+  );
+  assert.deepEqual(readAliasRoles([]), {});
+  for (const value of [undefined, 'responsavel', '=compras.Comprador', 'responsavel=', 'gerente=compras.Comprador', '--member-role']) {
+    assert.throws(() => readAliasRoles(value === undefined ? ['--alias-role'] : ['--alias-role', value]), /alias-role/);
+  }
 });
 
 test('a module outside the project config is refused before any write', async () => {

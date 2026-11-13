@@ -11,7 +11,7 @@ import {
   type ProjectMode,
 } from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
 import { createDefaultRequestContext } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
-import { ensureLocalTestPair, type LocalTestSeedResult } from '/_102034_/l1/mdm/layer_3_usecases/localTestSeed.js';
+import { ensureLocalTestPair, LOCAL_TEST_ALIASES, type LocalTestSeedResult } from '/_102034_/l1/mdm/layer_3_usecases/localTestSeed.js';
 
 export interface LocalTestSeedEnvironment {
   declared: boolean;
@@ -74,7 +74,7 @@ export async function runLocalTestSeed(): Promise<LocalTestSeedResult> {
   if (!binding) {
     throw new Error('onboarding organization binding is missing');
   }
-  return ensureLocalTestPair(createDefaultRequestContext(), projects, binding, readMemberRoles(process.argv.slice(2)));
+  return ensureLocalTestPair(createDefaultRequestContext(), projects, binding, readMemberRoles(process.argv.slice(2)), readAliasRoles(process.argv.slice(2)));
 }
 
 /** Repeatable `--member-role <moduleId>.<Tipo>`. */
@@ -87,6 +87,26 @@ export function readMemberRoles(argv: readonly string[]): string[] {
       throw new Error('--member-role requires <moduleId>.<Tipo>');
     }
     roles.push(value);
+    i += 1;
+  }
+  return roles;
+}
+
+/** Repeatable `--alias-role <alias>=<moduleId>.<Tipo>`: a role for one bench persona only. */
+export function readAliasRoles(argv: readonly string[]): Record<string, string[]> {
+  const roles: Record<string, string[]> = {};
+  for (let i = 0; i < argv.length; i += 1) {
+    if (argv[i] !== '--alias-role') continue;
+    const value = argv[i + 1];
+    const at = value ? value.indexOf('=') : -1;
+    if (!value || value.startsWith('--') || at <= 0 || at === value.length - 1) {
+      throw new Error('--alias-role requires <alias>=<moduleId>.<Tipo>');
+    }
+    const alias = value.slice(0, at);
+    if (!(LOCAL_TEST_ALIASES as readonly string[]).includes(alias)) {
+      throw new Error(`--alias-role alias '${alias}' is not one of ${LOCAL_TEST_ALIASES.join(', ')}`);
+    }
+    (roles[alias] ??= []).push(value.slice(at + 1));
     i += 1;
   }
   return roles;
