@@ -12,10 +12,12 @@ import {
   type WorkflowWakeScope,
 } from '/_102034_/l1/workflow/wakeContracts.js';
 import {
-  createAssistantActivitiesRunner,
-  type AssistantActivitiesRunner,
+  createAssistantRunners,
+  type AssistantRunners,
 } from '/_102034_/l1/workflow/assistantRuntime.js';
-import type { AssistantActivitiesInput } from '/_102034_/l1/workflow/assistantActivities.js';
+import type { AssistantActivitiesInput, AssistantOnBehalfOf } from '/_102034_/l1/workflow/assistantActivities.js';
+import type { AssistantCatalogInput } from '/_102034_/l1/workflow/assistantCatalog.js';
+import type { AssistantExecInput } from '/_102034_/l1/workflow/assistantExec.js';
 import { createPostgresWorkflowWakeInbox } from '/_102034_/l1/workflow/wakeInboxPostgres.js';
 import { resolveWorkflowWakeHandler } from '/_102034_/l1/workflow/wakeRegistry.js';
 import type { WorkflowWakeHandler } from '/_102034_/l1/workflow/wakeContracts.js';
@@ -27,8 +29,8 @@ export interface WorkflowWakeRouteDeps {
   readConfig?: () => ProjectsConfig;
   resolveHandler?: (scope: WorkflowWakeScope) => Promise<WorkflowWakeHandler>;
   createInbox?: (projectId: string) => WorkflowWakeInbox;
-  /** The assistant's `activities` request. Production builds it lazily, once per app. */
-  createAssistantActivities?: (projectId: string) => AssistantActivitiesRunner;
+  /** The assistant's requests. Production builds them lazily, once per app. */
+  createAssistant?: (projectId: string) => AssistantRunners;
 }
 
 interface WakeBody {
@@ -101,33 +103,62 @@ function assistantInvalid(message: string): HttpFailure {
   return failure(400, 'ASSISTANT_REQUEST_INVALID', message);
 }
 
-/** The body of `kind: 'activities'`, checked field by field. Anything else is a 400, never an exception. */
-function parseAssistantActivities(body: Record<string, unknown>): AssistantActivitiesInput | HttpFailure {
+type Parsed<T> = T | HttpFailure;
+
+const isFailure = (value: unknown): value is HttpFailure =>
+  typeof value === 'object' && value !== null && 'statusCode' in value && 'code' in value && 'message' in value;
+
+function assistantText(value: unknown, max = ASSISTANT_MAX_TEXT): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= max;
+}
+
+/** `onBehalfOf` of every kind, checked field by field. Anything else is a 400, never an exception. */
+function parseOnBehalfOf(body: Record<string, unknown>): Parsed<AssistantOnBehalfOf> {
   const behalf = body.onBehalfOf;
   if (behalf === null || typeof behalf !== 'object' || Array.isArray(behalf)) return assistantInvalid('onBehalfOf must be an object');
   const record = behalf as Record<string, unknown>;
-  const text = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= ASSISTANT_MAX_TEXT;
-  if (!text(record.cmUserId)) return assistantInvalid('onBehalfOf.cmUserId is required');
-  if (!Array.isArray(record.authorities) || record.authorities.length > ASSISTANT_MAX_AUTHORITIES || !record.authorities.every(text)) {
+  if (!assistantText(record.cmUserId)) return assistantInvalid('onBehalfOf.cmUserId is required');
+  if (!Array.isArray(record.authorities) || record.authorities.length > ASSISTANT_MAX_AUTHORITIES || !record.authorities.every((item) => assistantText(item))) {
     return assistantInvalid('onBehalfOf.authorities must be a list of texts');
   }
-  if (!text(record.snapshotAt) || Number.isNaN(Date.parse(record.snapshotAt))) return assistantInvalid('onBehalfOf.snapshotAt must be a date');
-  if (!text(record.via)) return assistantInvalid('onBehalfOf.via is required');
+  if (!assistantText(record.snapshotAt) || Number.isNaN(Date.parse(record.snapshotAt))) return assistantInvalid('onBehalfOf.snapshotAt must be a date');
+  if (!assistantText(record.via)) return assistantInvalid('onBehalfOf.via is required');
+  return { cmUserId: record.cmUserId, authorities: [...(record.authorities as string[])], snapshotAt: record.snapshotAt, via: record.via };
+}
+
+function parseAssistantActivities(body: Record<string, unknown>): Parsed<AssistantActivitiesInput> {
+  const onBehalfOf = parseOnBehalfOf(body);
+  if (isFailure(onBehalfOf)) return onBehalfOf;
   if (body.includeNonActionable !== undefined && typeof body.includeNonActionable !== 'boolean') {
     return assistantInvalid('includeNonActionable must be a boolean');
   }
-  if (body.cursor !== undefined && !(typeof body.cursor === 'string' && body.cursor.length > 0 && body.cursor.length <= 4096)) {
-    return assistantInvalid('cursor must be a text');
-  }
+  if (body.cursor !== undefined && !assistantText(body.cursor, 4096)) return assistantInvalid('cursor must be a text');
   return {
-    onBehalfOf: {
-      cmUserId: record.cmUserId,
-      authorities: [...(record.authorities as string[])],
-      snapshotAt: record.snapshotAt,
-      via: record.via,
-    },
+    onBehalfOf,
     ...(body.includeNonActionable === true ? { includeNonActionable: true } : {}),
     ...(typeof body.cursor === 'string' ? { cursor: body.cursor } : {}),
+  };
+}
+
+function parseAssistantCatalog(body: Record<string, unknown>): Parsed<AssistantCatalogInput> {
+  const onBehalfOf = parseOnBehalfOf(body);
+  if (isFailure(onBehalfOf)) return onBehalfOf;
+  if (body.knownRelease !== undefined && !assistantText(body.knownRelease)) return assistantInvalid('knownRelease must be a text');
+  return { onBehalfOf, ...(typeof body.knownRelease === 'string' ? { knownRelease: body.knownRelease } : {}) };
+}
+
+function parseAssistantExec(body: Record<string, unknown>): Parsed<AssistantExecInput> {
+  const onBehalfOf = parseOnBehalfOf(body);
+  if (isFailure(onBehalfOf)) return onBehalfOf;
+  if (!assistantText(body.actionId)) return assistantInvalid('actionId is required');
+  if (!assistantText(body.commandId, 128)) return assistantInvalid('commandId is required');
+  if (body.expectVersion !== undefined && !Number.isSafeInteger(body.expectVersion)) return assistantInvalid('expectVersion must be an integer');
+  return {
+    onBehalfOf,
+    actionId: body.actionId,
+    commandId: body.commandId,
+    input: body.input ?? {},
+    ...(typeof body.expectVersion === 'number' ? { expectVersion: body.expectVersion } : {}),
   };
 }
 
@@ -175,8 +206,8 @@ export function registerWorkflowWakeRoutes(app: FastifyInstance, deps: WorkflowW
   const readConfig = deps.readConfig ?? readProjectsConfig;
   const resolveHandler = deps.resolveHandler ?? resolveWorkflowWakeHandler;
   const createInbox = deps.createInbox ?? ((projectId: string) => createPostgresWorkflowWakeInbox({ projectId }));
-  const createAssistant = deps.createAssistantActivities ?? createAssistantActivitiesRunner;
-  let assistant: { projectId: string; run: AssistantActivitiesRunner } | undefined;
+  const createAssistant = deps.createAssistant ?? createAssistantRunners;
+  let assistant: { projectId: string; runners: AssistantRunners } | undefined;
   let inbox: { projectId: string; store: WorkflowWakeInbox } | undefined;
 
   function storeFor(projectId: string): WorkflowWakeInbox {
@@ -334,19 +365,20 @@ export function registerWorkflowWakeRoutes(app: FastifyInstance, deps: WorkflowW
       }
       const record = body as Record<string, unknown>;
       const kind = record.kind;
-      // `catalog` and `exec` arrive with R2 and R3; until then they answer like any unknown kind.
-      if (kind !== 'activities') {
-        return sendFailure(reply, failure(400, 'ASSISTANT_KIND_UNSUPPORTED', 'This assistant request kind is not supported.'));
-      }
-      const input = parseAssistantActivities(record);
-      if ('statusCode' in input) return sendFailure(reply, input);
-      try {
-        if (!assistant || assistant.projectId !== projectId) assistant = { projectId, run: createAssistant(projectId) };
-        const result = await assistant.run(input);
-        return sendJson(reply, 200, result);
-      } catch (error) {
-        return sendFailure(reply, assistantFailure(error));
-      }
+      const run = async (parse: () => Parsed<unknown>, call: (runners: AssistantRunners, input: never) => Promise<unknown>): Promise<unknown> => {
+        const input = parse();
+        if (isFailure(input)) return sendFailure(reply, input);
+        try {
+          if (!assistant || assistant.projectId !== projectId) assistant = { projectId, runners: createAssistant(projectId) };
+          return sendJson(reply, 200, await call(assistant.runners, input as never));
+        } catch (error) {
+          return sendFailure(reply, assistantFailure(error));
+        }
+      };
+      if (kind === 'activities') return run(() => parseAssistantActivities(record), (runners, input) => runners.activities(input));
+      if (kind === 'catalog') return run(() => parseAssistantCatalog(record), (runners, input) => runners.catalog(input));
+      if (kind === 'exec') return run(() => parseAssistantExec(record), (runners, input) => runners.exec(input));
+      return sendFailure(reply, failure(400, 'ASSISTANT_KIND_UNSUPPORTED', 'This assistant request kind is not supported.'));
     });
 
     done();

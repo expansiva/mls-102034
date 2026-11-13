@@ -11,7 +11,7 @@ import { resetConfiguredModuleCompositionCache } from '/_102034_/l1/server/layer
 import { WORKFLOW_WAKE_BODY_LIMIT_BYTES, type WorkflowWakeInbox } from '/_102034_/l1/workflow/wakeContracts.js';
 import { resetWorkflowWakeRegistryForTests } from '/_102034_/l1/workflow/wakeRegistry.js';
 import type { ModuleWakeEvent } from '/_102036_/l2/shared/interfaces.js';
-import type { AssistantActivitiesRunner } from '/_102034_/l1/workflow/assistantRuntime.js';
+import type { AssistantActivitiesRunner, AssistantRunners } from '/_102034_/l1/workflow/assistantRuntime.js';
 import { registerWorkflowWakeRoutes } from '/_102034_/l1/server/layer_1_external/transport/http/workflowWake.js';
 
 const APP_ID = '910106';
@@ -121,7 +121,7 @@ class MemoryStore implements WorkflowWakeInbox {
   }
 }
 
-async function harness(assistant?: (projectId: string) => AssistantActivitiesRunner): Promise<Harness> {
+async function harness(assistant?: (projectId: string) => Partial<AssistantRunners>): Promise<Harness> {
   const previousCwd = process.cwd();
   const previousFiles = process.env.CBE_PROJECT_FILES_DIR;
   const previousEnvToken = process.env.MSG_PROXY_TOKEN;
@@ -158,7 +158,7 @@ registerWorkflowWakeHandler(${JSON.stringify({
       constructions += 1;
       return store;
     },
-    ...(assistant ? { createAssistantActivities: assistant } : {}),
+    ...(assistant ? { createAssistant: assistant as (projectId: string) => AssistantRunners } : {}),
   });
   await app.ready();
   return {
@@ -366,7 +366,7 @@ async function postAssistant(app: FastifyInstance, payload: unknown, headers: Re
 
 test('assistant: the same authentication as the wake, and nothing runs before it passes', async () => {
   let built = 0;
-  const h = await harness(() => { built += 1; return async () => { throw new Error('must not run'); }; });
+  const h = await harness(() => { built += 1; return { activities: async () => { throw new Error('must not run'); } }; });
   try {
     assert.equal((await postAssistant(h.app, assistantBody(), {})).statusCode, 401);
     assert.equal((await postAssistant(h.app, assistantBody(), authHeaders(TOKEN_APP, OTHER_APP))).statusCode, 403);
@@ -382,9 +382,11 @@ test('assistant: activities answers 200 with items, cursor and partial, and the 
   const seen: unknown[] = [];
   const h = await harness((projectId) => {
     assert.equal(projectId, APP_ID);
-    return async (input) => {
-      seen.push(input);
-      return { outcome: 'done', items: [], cursor: 'next', partial: [{ moduleId: 'modB', code: 'X' }] };
+    return {
+      activities: async (input) => {
+        seen.push(input);
+        return { outcome: 'done', items: [], cursor: 'next', partial: [{ moduleId: 'modB', code: 'X' }] };
+      },
     };
   });
   try {
@@ -404,10 +406,10 @@ test('assistant: activities answers 200 with items, cursor and partial, and the 
   }
 });
 
-test('assistant: catalog, exec and an unknown kind are refused with 400 until their step exists', async () => {
-  const h = await harness(() => async () => { throw new Error('must not run'); });
+test('assistant: an unknown or missing kind is refused with 400', async () => {
+  const h = await harness(() => ({ activities: async () => { throw new Error('must not run'); } }));
   try {
-    for (const kind of ['catalog', 'exec', 'other', 7, undefined]) {
+    for (const kind of ['other', 'activity', 7, undefined]) {
       const response = await postAssistant(h.app, assistantBody({ kind }));
       assert.equal(response.statusCode, 400);
       assert.equal(JSON.parse(response.body).code, 'ASSISTANT_KIND_UNSUPPORTED');
@@ -417,8 +419,69 @@ test('assistant: catalog, exec and an unknown kind are refused with 400 until th
   }
 });
 
+test('assistant: catalog and exec answer 200 with their outcome and get only the checked fields', async () => {
+  const seen: Record<string, unknown> = {};
+  const h = await harness(() => ({
+    catalog: async (input) => { seen.catalog = input; return { outcome: 'done', release: 'rel-1', allowed: ['modA.list'], partial: [] }; },
+    exec: async (input) => { seen.exec = input; return { outcome: 'done', data: { rows: 1 } }; },
+  }));
+  const onBehalfOf = { cmUserId: 'cm-1', authorities: ['modA:actor'], snapshotAt: '2026-11-13T10:00:00.000Z', via: 'nora' };
+  try {
+    const catalog = await postAssistant(h.app, assistantBody({ kind: 'catalog', knownRelease: 'rel-0', extra: 'ignored' }));
+    assert.equal(catalog.statusCode, 200);
+    assert.deepEqual(JSON.parse(catalog.body), { outcome: 'done', release: 'rel-1', allowed: ['modA.list'], partial: [] });
+    assert.deepEqual(seen.catalog, { onBehalfOf, knownRelease: 'rel-0' });
+    const exec = await postAssistant(h.app, assistantBody({ kind: 'exec', actionId: 'modA.list', commandId: 'c-1', input: { page: 2 }, expectVersion: 3, userId: 'ignored' }));
+    assert.equal(exec.statusCode, 200);
+    assert.deepEqual(JSON.parse(exec.body), { outcome: 'done', data: { rows: 1 } });
+    assert.deepEqual(seen.exec, { onBehalfOf, actionId: 'modA.list', commandId: 'c-1', input: { page: 2 }, expectVersion: 3 });
+    await postAssistant(h.app, assistantBody({ kind: 'exec', actionId: 'modA.list', commandId: 'c-2' }));
+    assert.deepEqual((seen.exec as { input: unknown }).input, {});
+  } finally {
+    await h.restore();
+  }
+});
+
+test('assistant: the same authentication guards catalog and exec', async () => {
+  let built = 0;
+  const h = await harness(() => { built += 1; return {}; });
+  try {
+    for (const kind of ['catalog', 'exec']) {
+      const body = assistantBody({ kind, actionId: 'a', commandId: 'c' });
+      assert.equal((await postAssistant(h.app, body, {})).statusCode, 401);
+      assert.equal((await postAssistant(h.app, body, authHeaders(TOKEN_ENV))).statusCode, 403);
+      assert.equal((await postAssistant(h.app, body, authHeaders(TOKEN_APP, OTHER_APP))).statusCode, 403);
+    }
+    assert.equal(built, 0);
+  } finally {
+    await h.restore();
+  }
+});
+
+test('assistant: an invalid catalog or exec body is a 400 and never reaches the runner', async () => {
+  const h = await harness(() => ({ catalog: async () => { throw new Error('must not run'); }, exec: async () => { throw new Error('must not run'); } }));
+  try {
+    const bodies = [
+      assistantBody({ kind: 'catalog', knownRelease: 7 }),
+      assistantBody({ kind: 'catalog', onBehalfOf: null }),
+      assistantBody({ kind: 'exec', commandId: 'c' }),
+      assistantBody({ kind: 'exec', actionId: 'a' }),
+      assistantBody({ kind: 'exec', actionId: 'a', commandId: 'c'.repeat(200) }),
+      assistantBody({ kind: 'exec', actionId: 'a', commandId: 'c', expectVersion: 1.5 }),
+      assistantBody({ kind: 'exec', actionId: '', commandId: 'c' }),
+    ];
+    for (const body of bodies) {
+      const response = await postAssistant(h.app, body);
+      assert.equal(response.statusCode, 400, JSON.stringify(body));
+      assert.equal(JSON.parse(response.body).code, 'ASSISTANT_REQUEST_INVALID');
+    }
+  } finally {
+    await h.restore();
+  }
+});
+
 test('assistant: an invalid body is a 400 and never reaches the runner', async () => {
-  const h = await harness(() => async () => { throw new Error('must not run'); });
+  const h = await harness(() => ({ activities: async () => { throw new Error('must not run'); } }));
   const good = assistantBody().onBehalfOf as Record<string, unknown>;
   try {
     const bodies: unknown[] = [
@@ -444,11 +507,11 @@ test('assistant: an invalid body is a 400 and never reaches the runner', async (
 
 test('assistant: a failure shows its code and a fixed sentence, never the module message', async () => {
   let mode: 'cursor' | 'identity' | 'plain' = 'cursor';
-  const h = await harness(() => async () => {
+  const h = await harness(() => ({ activities: async () => {
     if (mode === 'cursor') throw new AppError('ASSISTANT_CURSOR_INVALID', 'The cursor is not valid.', 400);
     if (mode === 'identity') throw new AppError('WORKFLOW_IDENTITY_INCOMPLETE', 'secret-note-rt106-s5', 503);
     throw new Error('secret-note-rt106-s5');
-  });
+  } }));
   try {
     const cursor = await postAssistant(h.app, assistantBody());
     assert.equal(cursor.statusCode, 400);
