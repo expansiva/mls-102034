@@ -329,6 +329,35 @@ test('advance confirms the canonical task and trusts moduleAdvance over revision
   assert.equal(seen.includes('cm:nightly'), false);
 });
 
+async function advanceIntent(context: RequestContext, executor: TaskOccurrenceAdvanceCommand['executor']): Promise<AgentIntentModuleAdvance> {
+  let sent: AgentIntentModuleAdvance | undefined;
+  const routed = scripted(async (call) => {
+    if (call.name === 'get') return envelope(200, { statusCode: 200, task: task({ revision: 9 }), room: room() });
+    sent = call.body as AgentIntentModuleAdvance;
+    return envelope(200, { statusCode: 200, task: task({ revision: 9 }), moduleAdvance: { commandId: 'cmd-2', outcome: 'unchanged' } });
+  });
+  await port(routed.client, []).advance(context, KEY, { ...advanceCommand(), executor });
+  assert.ok(sent);
+  return sent;
+}
+
+test('via nora goes beside note when the session carries it and the executor is a person; nowhere else', async () => {
+  const viaNora = ctx();
+  viaNora.sessionContext.via = 'nora';
+  const person = await advanceIntent(viaNora, { kind: 'person', mdmId: 'mdm-actor' });
+  assert.equal(person.via, 'nora');
+  assert.equal(person.note, 'kept');
+  assert.deepEqual(Object.keys(person.executor).sort(), ['kind', 'userId']);
+  assert.equal('via' in (person.executor as object), false);
+
+  const routine = await advanceIntent(viaNora, { kind: 'routine', name: 'nightly' });
+  assert.equal('via' in routine, false);
+
+  const screen = await advanceIntent(ctx(), { kind: 'person', mdmId: 'mdm-actor' });
+  assert.equal('via' in screen, false);
+  assert.deepEqual(Object.keys(screen.executor).sort(), ['kind', 'userId']);
+});
+
 test('applied stays advanced and a lost response is not retried', async () => {
   const applied = scripted(async (call) => {
     if (call.name === 'get') return envelope(200, { statusCode: 200, task: task(), room: room() });

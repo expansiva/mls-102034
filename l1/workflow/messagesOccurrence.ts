@@ -299,6 +299,8 @@ export function createMessagesTaskOccurrencePort(options: MessagesTaskOccurrence
         executor: await encodeExecutor(ctx, identities, command.executor),
       };
       if (command.note !== undefined) intent.note = command.note;
+      // Beside `note`, never inside `executor`, and only when the person is the executor: the cm refuses `via` otherwise.
+      if (ctx.sessionContext?.via === 'nora' && command.executor.kind === 'person') intent.via = 'nora';
       if (command.wake !== undefined) intent.wake = { ...command.wake };
       if (command.message !== undefined) intent.message = { content: command.message.content };
       const result = await client.advanceModuleTask(asUserId, intent);

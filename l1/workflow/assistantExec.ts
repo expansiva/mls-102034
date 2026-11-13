@@ -187,7 +187,13 @@ export async function execAssistantAction(
     const answer = await deps.execMessage({
       routine: item.route,
       params: params.value,
-      meta: { requestId: input.commandId, verifiedEmail: email, userId: email, actorScope: held },
+      meta: {
+        requestId: input.commandId,
+        verifiedEmail: email,
+        userId: email,
+        actorScope: held,
+        ...(input.onBehalfOf.via === 'nora' ? { via: 'nora' as const } : {}),
+      },
     }, ctx);
     result = mapBffResult(answer.response, answer.statusCode, item);
   } catch {

@@ -128,6 +128,11 @@ export function trustedIdentityClaims(meta: BffRequest['meta']): BffRequest['met
     : undefined;
 }
 
+/** "Through the assistant": only a `message` request (a server-side caller) can say it, and only as `nora`. */
+export function trustedVia(meta: BffRequest['meta']): 'nora' | undefined {
+  return meta?.source === 'message' && meta.via === 'nora' ? 'nora' : undefined;
+}
+
 function normalizeRequest(request: BffRequest): BffRequest {
   if (!request || typeof request !== 'object') {
     throw new AppError('INVALID_REQUEST', 'Request must be an object', 400);
@@ -298,6 +303,9 @@ export async function execBff(
         // `workspaceId` stays client-supplied on purpose: it is not WHO the caller is, it is WHICH screen
         // it is on — navigation context only the page knows, and nothing authorizes by it.
         workspaceId: normalizedRequest.meta?.workspaceId ?? ctx.sessionContext.workspaceId,
+        // Who acts "through the assistant" is the server-side caller's to say, never the browser's: only a
+        // `message` request, only the value `nora`. A context that came in carrying it does not pass it on.
+        via: trustedVia(normalizedRequest.meta),
       }),
       requestMeta: {
         requestId: normalizedRequest.meta?.requestId,
@@ -485,6 +493,7 @@ export function createSessionContext(overrides: SessionContextInput = {}): Reque
   const actorScope = overrides.actorScope?.length ? overrides.actorScope : (overrides.actorSession?.scope?.length ? overrides.actorSession.scope : env.actorScope);
   const workspaceId = readString(overrides.workspaceId) ?? readString(overrides.currentWorkspace?.workspaceId) ?? env.currentWorkspaceId;
   const person = overrides.person;
+  const via = overrides.via === 'nora' ? 'nora' as const : undefined;
   const project = {
     projectId: readString(overrides.project?.projectId) ?? env.projectId ?? runtime.projectId,
     domain: readString(overrides.project?.domain) ?? env.projectDomain ?? runtime.domain,
@@ -501,6 +510,7 @@ export function createSessionContext(overrides: SessionContextInput = {}): Reque
     actorScope,
     workspaceId,
     ...(person ? { person } : {}),
+    ...(via ? { via } : {}),
     businessContext: { activeCompanyId, activeUnitId },
     actorSession: { actorId, scope: actorScope },
     currentWorkspace: { workspaceId },

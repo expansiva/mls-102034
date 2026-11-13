@@ -54,7 +54,7 @@ test('a query runs as the person, with the login e-mail and the module authoriti
   assert.deepEqual(calls.requests[0], {
     routine: 'modA.page.modA.list',
     params: { page: 1 },
-    meta: { requestId: 'cmd-1', verifiedEmail: 'ana@example.test', userId: 'ana@example.test', actorScope: ['modA:worker'] },
+    meta: { requestId: 'cmd-1', verifiedEmail: 'ana@example.test', userId: 'ana@example.test', actorScope: ['modA:worker'], via: 'nora' },
   });
   const kept = (await getMdmKv(ctx, { key: 'assistant:cmd-1' }))?.value as Record<string, unknown>;
   assert.equal(kept.state, 'done');
@@ -92,7 +92,7 @@ test('a command runs once as the person, and a sensitive one is treated exactly 
   assert.deepEqual(sensitive, { outcome: 'done', data: { id: 'x', version: 4 } });
   assert.deepEqual(write, sensitive);
   assert.equal(calls.requests.length, 2);
-  assert.deepEqual(calls.requests[0].meta, { requestId: 'c-sensitive', verifiedEmail: 'ana@example.test', userId: 'ana@example.test', actorScope: ['modA:boss'] });
+  assert.deepEqual(calls.requests[0].meta, { requestId: 'c-sensitive', verifiedEmail: 'ana@example.test', userId: 'ana@example.test', actorScope: ['modA:boss'], via: 'nora' });
   assert.deepEqual(calls.requests[0].params, { id: 'x', version: 3 });
   const again = await execAssistantAction(ctx, deps, input({ actionId: 'modA.accept', input: { id: 'x', version: 3 }, commandId: 'c-sensitive' }, ['modA:boss']));
   assert.deepEqual(again, sensitive);
@@ -208,4 +208,10 @@ test('a commandId used by another person or for another action is not answered w
   const sameKeyOtherAction = await execAssistantAction(ctx, deps, input({ actionId: 'modA.hidden' }, ['modA:boss']));
   assert.notEqual(sameKeyOtherAction.outcome, 'done');
   assert.equal(calls.requests.length, 1);
+});
+
+test('only the value nora is sent as via; anything else the caller wrote is not passed on', async () => {
+  const { ctx, deps, calls } = setup();
+  await execAssistantAction(ctx, deps, { ...input(), commandId: 'via-1', onBehalfOf: { ...input().onBehalfOf, via: 'other' } });
+  assert.equal('via' in (calls.requests[0].meta ?? {}), false);
 });

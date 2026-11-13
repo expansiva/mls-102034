@@ -31,6 +31,11 @@ export interface BffRequest {
     verifiedAuthorities?: string[];
     traceId?: string;
     source?: 'http' | 'message' | 'test';
+    /**
+     * "Done through the assistant". Read ONLY when `source` is `message` (a server-side caller) and only the value
+     * `nora`; over `http` it is discarded like every other identity claim.
+     */
+    via?: 'nora';
     actorId?: string;
     actorScope?: string[];
     activeCompanyId?: string;
@@ -210,6 +215,8 @@ export interface RequestSessionContext {
   actorId?: string;
   actorScope?: string[];
   workspaceId?: string;
+  /** Set by `execBff` for a `message` request that carries `via: 'nora'`; never from `http`. The workflow advance marks the history with it. */
+  via?: 'nora';
   /** Typed projection of the Person: set when `mdm.identity.findByLogin` resolves the verified e-mail, or by the monitor runner from its sandbox fixture. */
   person?: PlatformSessionPerson;
   businessContext: RequestBusinessContext;
