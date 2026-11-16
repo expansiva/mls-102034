@@ -106,6 +106,28 @@ export function createAssistantCatalogSource(options: AssistantCatalogSourceOpti
   };
 }
 
+/**
+ * Builds the catalog of every module in the background (at boot), inside the per-release cache: a `catalog` request that
+ * comes while it runs waits for the same promise, and one that comes after finds it done. A module that fails is
+ * logged with its code and does not stop the others; this never throws.
+ */
+export async function warmAssistantCatalogs(
+  source: AssistantCatalogSource,
+  moduleIds: readonly string[],
+  log: { info: (message: string) => void; error: (message: string) => void } = console,
+): Promise<void> {
+  const started = Date.now();
+  const loaded = await Promise.all(moduleIds.map(async (moduleId) => {
+    try {
+      return { moduleId, result: await source.get(moduleId) };
+    } catch (error) {
+      return { moduleId, result: { ok: false as const, code: error instanceof Error ? error.message : String(error) } };
+    }
+  }));
+  for (const entry of loaded) if (!entry.result.ok) log.error(`[assistant] catalog of module ${entry.moduleId} not ready: ${entry.result.code}`);
+  log.info(`[assistant] catalogs warmed: ${loaded.filter((entry) => entry.result.ok).length}/${loaded.length} module(s) in ${Date.now() - started}ms`);
+}
+
 export interface AssistantCatalogDeps extends AssistantAccessDeps {
   catalogs: AssistantCatalogSource;
   /** Id of the release running now. */

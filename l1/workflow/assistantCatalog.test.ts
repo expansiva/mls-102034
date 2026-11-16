@@ -8,6 +8,7 @@ import {
   createAssistantCatalogSource,
   listAssistantCatalog,
   parseAssistantCatalog,
+  warmAssistantCatalogs,
   type AssistantCatalogDeps,
   type AssistantCatalogItem,
 } from '/_102034_/l1/workflow/assistantCatalog.js';
@@ -121,4 +122,46 @@ test('parse and allowed use only the fields the generator emits', () => {
   assert.deepEqual(allowedActions(parsed.catalog, ['modA:worker']), ['modA.list']);
   assert.deepEqual(allowedActions(parsed.catalog, ['modB:boss']), []);
   assert.equal(parseAssistantCatalog(null, 'modA').ok, false);
+});
+
+test('the boot warm-up builds every module inside the release cache: a catalog request during it waits for the same promise, one after finds it done', async () => {
+  const imports: string[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const source = createAssistantCatalogSource({
+    projectId: '102047',
+    releaseId: () => 'rel-1',
+    importCatalog: async (moduleId) => {
+      imports.push(moduleId);
+      await gate;
+      return catalogOf(moduleId, [item('a', 'cmd', ['x'])], []);
+    },
+  });
+  const lines: string[] = [];
+  const warming = warmAssistantCatalogs(source, ['m1', 'm2'], { info: (line) => lines.push(line), error: (line) => lines.push(line) });
+  const during = source.get('m1');
+  assert.deepEqual(imports, ['m1', 'm2']);
+  release();
+  await warming;
+  assert.equal((await during).ok, true);
+  assert.equal((await source.get('m2')).ok, true);
+  assert.deepEqual(imports, ['m1', 'm2']);
+  assert.match(lines.join('\n'), /warmed: 2\/2/);
+});
+
+test('the warm-up logs a module that fails with its code, keeps the others and never throws', async () => {
+  const source = createAssistantCatalogSource({
+    projectId: '102047',
+    releaseId: () => 'rel-1',
+    importCatalog: async (moduleId) => {
+      if (moduleId === 'bad') throw new Error('broken defs');
+      if (moduleId === 'none') return undefined;
+      return catalogOf(moduleId, [item('a', 'cmd', ['x'])], []);
+    },
+  });
+  const lines: string[] = [];
+  await warmAssistantCatalogs(source, ['good', 'bad', 'none'], { info: (line) => lines.push(line), error: (line) => lines.push(line) });
+  assert.ok(lines.some((line) => line.includes('module bad not ready: ASSISTANT_CATALOG_INVALID')));
+  assert.ok(lines.some((line) => line.includes('module none not ready: ASSISTANT_CATALOG_MISSING')));
+  assert.ok(lines.some((line) => line.includes('warmed: 1/3')));
 });

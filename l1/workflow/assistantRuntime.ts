@@ -22,6 +22,7 @@ import { execMessage } from '/_102034_/l1/server/layer_1_external/transport/mess
 import {
   createAssistantCatalogSource,
   listAssistantCatalog,
+  warmAssistantCatalogs,
   type AssistantCatalogInput,
   type AssistantCatalogResult,
 } from '/_102034_/l1/workflow/assistantCatalog.js';
@@ -61,6 +62,8 @@ export interface AssistantRunners {
   activities: AssistantActivitiesRunner;
   catalog: (input: AssistantCatalogInput) => Promise<AssistantCatalogResult>;
   exec: (input: AssistantExecInput) => Promise<AssistantExecResult>;
+  /** Builds the catalog of every module of the release now, inside the cache the `catalog` request uses; never throws. */
+  warmCatalogs: () => Promise<void>;
 }
 
 /** Production wiring of the assistant's requests: the real cm identities, the Postgres stores, the screen's alpha. */
@@ -85,6 +88,7 @@ export function createAssistantRunners(projectId: string): AssistantRunners {
     return ctx;
   }
   return {
+    warmCatalogs: () => warmAssistantCatalogs(catalogs, assistantExecModules(projectId).map((entry) => entry.moduleId)),
     activities: (input) => listAssistantActivities(newContext(), {
       projectId,
       modules: assistantModules(projectId),
@@ -118,6 +122,18 @@ export function createAssistantRunners(projectId: string): AssistantRunners {
       kv: { reserve: (ctx, params) => reserveMdmKv(ctx, params), put: (ctx, params) => putMdmKv(ctx, params) },
     }, input),
   };
+}
+
+const sharedRunners = new Map<string, AssistantRunners>();
+
+/** The runners of the app, built once per process: the boot warm-up and the route share one catalog cache. */
+export function sharedAssistantRunners(projectId: string): AssistantRunners {
+  let runners = sharedRunners.get(projectId);
+  if (!runners) {
+    runners = createAssistantRunners(projectId);
+    sharedRunners.set(projectId, runners);
+  }
+  return runners;
 }
 
 /** Kept for the route's default: the `activities` runner alone. */

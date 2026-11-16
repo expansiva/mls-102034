@@ -33,6 +33,7 @@ import { registerMsgProxy } from '/_102034_/l1/server/layer_1_external/transport
 import { registerGitRoutes } from '/_102034_/l1/server/layer_1_external/transport/http/gitHttp.js';
 import { registerSessionRegistrationRoutes } from '/_102034_/l1/server/layer_1_external/transport/http/sessionRegistration.js';
 import { registerLocalTestSessionRoutes } from '/_102034_/l1/server/layer_1_external/transport/http/localTestSessionHttp.js';
+import { sharedAssistantRunners } from '/_102034_/l1/workflow/assistantRuntime.js';
 import { registerWorkflowWakeRoutes } from '/_102034_/l1/server/layer_1_external/transport/http/workflowWake.js';
 import { WorkflowWakeInboxLoop } from '/_102034_/l1/workflow/wakeLoop.js';
 import { OnboardingConfigError, readOnboardingConfig, resolveOrganizationBinding } from '/_102034_/l1/server/layer_1_external/config/onboardingConfig.js';
@@ -1163,6 +1164,14 @@ if (isMainModule) {
     console.info(`MDM BFF listening on port ${env.port}`);
     console.info(`Registered frontend apps: ${apps.map((app) => `${app.appId}:${app.basePath}`).join(', ')}`);
     warmCompiledProjects(listServableProjectIds());
+    if (env.runtimeMode === 'postgres') {
+      // The assistant's catalogs take a few seconds to build: do it now, in the background, inside the release cache.
+      try {
+        void sharedAssistantRunners(resolveClientProjectId()).warmCatalogs();
+      } catch (error) {
+        console.error('[assistant] catalog warm-up not started:', error);
+      }
+    }
     if (runtimeMetricsCollector) {
       void runtimeMetricsCollector.start()
         .then(() => console.info('Runtime metrics collection enabled every 5000ms'))

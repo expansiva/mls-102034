@@ -12,7 +12,7 @@ import {
   type WorkflowWakeScope,
 } from '/_102034_/l1/workflow/wakeContracts.js';
 import {
-  createAssistantRunners,
+  sharedAssistantRunners,
   type AssistantRunners,
 } from '/_102034_/l1/workflow/assistantRuntime.js';
 import type { AssistantActivitiesInput, AssistantOnBehalfOf } from '/_102034_/l1/workflow/assistantActivities.js';
@@ -206,7 +206,7 @@ export function registerWorkflowWakeRoutes(app: FastifyInstance, deps: WorkflowW
   const readConfig = deps.readConfig ?? readProjectsConfig;
   const resolveHandler = deps.resolveHandler ?? resolveWorkflowWakeHandler;
   const createInbox = deps.createInbox ?? ((projectId: string) => createPostgresWorkflowWakeInbox({ projectId }));
-  const createAssistant = deps.createAssistant ?? createAssistantRunners;
+  const createAssistant = deps.createAssistant ?? sharedAssistantRunners;
   let assistant: { projectId: string; runners: AssistantRunners } | undefined;
   let inbox: { projectId: string; store: WorkflowWakeInbox } | undefined;
 
