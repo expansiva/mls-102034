@@ -3,11 +3,14 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { resolveProjectsPath } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import { ASSISTANT_CATALOG_SCHEMA, type AssistantCatalogItem } from '/_102034_/l1/workflow/assistantCatalog.js';
+import { inputsOfRoute, readOntologyEntity, returnsOnlyOptions, type CatalogInput, type OntologyEntity } from '/_102034_/l1/workflow/assistantCatalogInputs.js';
+import { parseContractSource, type AsContractRoute, type AsTypeNode } from '/_102034_/l1/workflow/assistantContractSource.js';
 
 /**
  * The assistant catalog of one module, assembled from the defs the release carries (`dist/local/_<app>_/`): requests,
  * use cases, controllers, authority map, outbound events, L1 workflows, the L4 of the module (when the release has it),
- * `l5/project.json` (live routes), `l5/config.json` (page addresses) and the shared pages (inputs, when they list them).
+ * `l5/project.json` (live routes), `l5/config.json` (page addresses), the shared pages (record param, journey steps) and
+ * the L2 contract sources (inputs, options-only queries).
  * It is a function of the release: no emitted file, no module name, nothing derived that can be stale.
  */
 export interface DefsReader {
@@ -17,6 +20,8 @@ export interface DefsReader {
   read(file: string, exportName: 'definition' | 'default'): Promise<unknown | undefined>;
   /** A JSON file of the dist; `undefined` when absent. */
   json(file: string): unknown | undefined;
+  /** A text file of the dist (the L2 contract sources); `undefined` when absent. */
+  text(file: string): string | undefined;
 }
 
 type Rec = Record<string, unknown>;
@@ -59,6 +64,10 @@ export function distDefsReader(projectId: string): DefsReader {
       const path = distPath(file);
       return existsSync(path) ? (JSON.parse(readFileSync(path, 'utf8')) as unknown) : undefined;
     },
+    text(file) {
+      const path = distPath(file);
+      return existsSync(path) ? readFileSync(path, 'utf8') : undefined;
+    },
   };
 }
 
@@ -86,7 +95,8 @@ interface TaskNode {
 interface Facts {
   usecases: Map<string, UsecaseFacts>;
   actorsOfRoute: Map<string, string[]>;
-  entityFields: Map<string, Map<string, { type: string; ref: string }>>;
+  ontology: Map<string, OntologyEntity>;
+  contracts: Map<string, { route: AsContractRoute; types: Record<string, AsTypeNode> }>;
   outbound: Set<string>;
   operationSteps: Map<string, string[]>;
   tasks: Map<string, TaskNode>;
@@ -108,6 +118,8 @@ interface RequestFacts {
   /** Entity the request acts on or returns, `''` when unknown. */
   entity: string;
   writeUsecases: string[];
+  /** Paging params of a query: the caller sends the first page, they are not inputs. */
+  pagingParams: string[];
 }
 
 async function readEach(
@@ -243,29 +255,8 @@ function titleOf(request: RequestFacts, facts: Facts): string {
   return first?.title || request.purpose;
 }
 
-type Input = { path: string; required: boolean; role: 'value' | 'version' | 'ref'; ref?: string; valueType?: string };
-
-/** Inputs listed by the shared page of the request; `[]` when the page does not list them. */
-function inputsOf(request: RequestFacts, facts: Facts): Input[] {
-  const listed = rec(rec(facts.shared.get(request.pageId)?.requests)[request.requestId]).input;
-  const fields = facts.entityFields.get(request.entity);
-  const inputs: Input[] = [];
-  for (const raw of arr(listed).map(rec)) {
-    const path = str(raw.name);
-    if (!path) continue;
-    const field = fields?.get(path);
-    const input: Input = { path, required: raw.optional !== true, role: 'value' };
-    if (field) input.valueType = field.type;
-    if (path === 'version') input.role = 'version';
-    else if (path === 'id' && request.entity) Object.assign(input, { role: 'ref', ref: request.entity });
-    else if (field?.type === 'record' && field.ref) Object.assign(input, { role: 'ref', ref: field.ref });
-    inputs.push(input);
-  }
-  return inputs;
-}
-
-function signatureOf(inputs: Input[]): string {
-  return inputs.map((input) => `${input.path}\u0000${input.required ? '1' : '0'}`).sort().join('\n');
+function signatureOf(inputs: CatalogInput[]): string {
+  return inputs.map((input) => `${input.path}\u0000${input.wireType}\u0000${input.required ? '1' : '0'}`).sort().join('\n');
 }
 
 function union(lists: string[][]): string[] {
@@ -275,7 +266,7 @@ function union(lists: string[][]): string[] {
 async function collectFacts(reader: DefsReader, moduleId: string, issues: string[]): Promise<Facts> {
   const l1 = `l1/${moduleId}`;
   const l4 = `l4/${moduleId}`;
-  const [usecases, controllers, authority, outbound, operations, entities, journeys, ontologies, l4Workflows, config] = await Promise.all([
+  const [usecases, controllers, authority, outbound, operations, journeys, ontologies, l4Workflows, config] = await Promise.all([
     readEach(reader, `${l1}/layer_2_application/usecases`, 'definition', issues),
     readEach(reader, `${l1}/layer_1_external/adapters/http/controllers`, 'definition', issues),
     reader.read(`${l1}/layer_1_external/auth/authorityMap.defs.js`, 'definition').catch((error: unknown) => {
@@ -287,7 +278,6 @@ async function collectFacts(reader: DefsReader, moduleId: string, issues: string
       return undefined;
     }),
     readEach(reader, `${l1}/layer_2_application/workflows`, 'definition', issues),
-    readEach(reader, `${l1}/layer_3_domain/entities`, 'definition', issues),
     readEach(reader, `${l4}/journeys`, 'default', issues),
     readEach(reader, `${l4}/ontology`, 'default', issues),
     reader.read(`${l4}/workflows.defs.js`, 'default').catch((error: unknown) => {
@@ -300,7 +290,8 @@ async function collectFacts(reader: DefsReader, moduleId: string, issues: string
   const facts: Facts = {
     usecases: new Map(),
     actorsOfRoute: new Map(),
-    entityFields: new Map(),
+    ontology: new Map(),
+    contracts: new Map(),
     outbound: new Set(),
     operationSteps: new Map(),
     tasks: new Map(),
@@ -328,13 +319,6 @@ async function collectFacts(reader: DefsReader, moduleId: string, issues: string
       if (!route) continue;
       facts.actorsOfRoute.set(route, union([[...(facts.actorsOfRoute.get(route) ?? [])], strs(handler.grantIds).map((grant) => actorOfGrant.get(grant) ?? '').filter(Boolean)]));
     }
-  }
-
-  for (const definition of entities.ok) {
-    const data = dataOf(definition);
-    const entityId = str(data.entityId);
-    if (!entityId) continue;
-    facts.entityFields.set(entityId, new Map(arr(data.fields).map(rec).filter((field) => str(field.name) !== '').map((field) => [str(field.name), { type: str(field.type), ref: str(field.ref) }])));
   }
 
   for (const event of arr(dataOf(outbound).events).map(rec)) if (str(event.on)) facts.outbound.add(str(event.on));
@@ -371,6 +355,8 @@ async function collectFacts(reader: DefsReader, moduleId: string, issues: string
   for (const ontology of ontologies.ok.map(rec)) {
     const entityId = str(ontology.entityId);
     if (!entityId) continue;
+    const entity = readOntologyEntity(ontology);
+    if (entity) facts.ontology.set(entityId, entity);
     const finals = finalStatesOf(ontology);
     facts.finals.set(entityId, {
       transitions: new Map(arr(ontology.transitions).map(rec).filter((item) => str(item.transitionId) !== '').map((item) => [str(item.transitionId), { to: str(item.to), final: finals.has(str(item.to)) }])),
@@ -420,6 +406,11 @@ export async function buildCatalogFromDefs(reader: DefsReader, projectId: string
         purpose: str(rec(raw.doc).purpose),
         entity: kind === 'cmd' ? (facts.usecases.get(writeUsecases[0] ?? '')?.entityId ?? '') : str(main?.entity),
         writeUsecases,
+        pagingParams: [
+          ...arr(raw.params).map(rec).filter((param) => str(param.pages) !== '').map((param) => str(param.name)),
+          str(main?.page).split('.').pop() ?? '',
+          str(main?.pageSize).split('.').pop() ?? '',
+        ].filter(Boolean),
       });
     }
   }
@@ -434,14 +425,41 @@ export async function buildCatalogFromDefs(reader: DefsReader, projectId: string
     }
   }
 
-  const items = requests.map((request): AssistantCatalogItem => {
+  for (const pageId of new Set(requests.map((request) => request.pageId))) {
+    const text = reader.text(`l2/${moduleId}/web/contracts/${pageId}.defs.ts`);
+    if (text === undefined) continue;
+    try {
+      const parsed = parseContractSource(text);
+      for (const route of parsed.routes) facts.contracts.set(route.route, { route, types: parsed.types });
+    } catch (error) {
+      issues.push(`CONTRACT_UNREADABLE: ${pageId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  type Built = { item: AssistantCatalogItem; inputs: CatalogInput[] | undefined };
+  const built: Array<Built | undefined> = requests.map((request): Built | undefined => {
+    const contract = facts.contracts.get(request.route);
+    let inputs: CatalogInput[] | undefined;
+    let optionsOnly = false;
+    if (!contract) issues.push(`CONTRACT_MISSING: ${request.route}`);
+    else {
+      const writes = contract.route.writes.split('.')[0];
+      inputs = inputsOfRoute(contract.route, contract.types, facts.ontology.get(request.kind === 'cmd' ? writes : request.entity), {
+        query: request.kind === 'qry',
+        skip: new Set(request.kind === 'qry' ? request.pagingParams : []),
+      });
+      if (inputs === undefined) {
+        issues.push(`${request.route}: input has shapes the assistant cannot fill`);
+        return undefined;
+      }
+      optionsOnly = request.kind === 'qry' && returnsOnlyOptions(contract.route, contract.types);
+    }
     const actors = facts.actorsOfRoute.get(request.route) ?? [];
     if (actors.length === 0) issues.push(`ACTORS_UNRESOLVED: ${request.route}`);
     const address = pageAddress(facts.config, projectId, moduleId, request.pageId);
     if (!address) issues.push(`PAGE_UNRESOLVED: ${request.route}`);
     const param = recordParam(facts.shared.get(request.pageId));
-    const inputs = inputsOf(request, facts);
-    return {
+    return { inputs, item: {
       route: request.route,
       routes: [request.route],
       module: moduleId,
@@ -449,39 +467,52 @@ export async function buildCatalogFromDefs(reader: DefsReader, projectId: string
       actionId: request.route,
       title: titleOf(request, facts),
       actors,
-      assistant: 'included',
+      assistant: optionsOnly ? 'excluded' : 'included',
       risk: request.kind === 'qry' ? 'read' : riskOfCommand(request, facts),
-      inputs,
+      inputs: (inputs ?? []).map((input) => ({ ...input })),
       ...(address ? { page: param ? { address, recordParam: param } : { address } } : {}),
-    };
+    } };
   });
 
-  // Commands that share their single write use case and have the same inputs are one action; without inputs, none merges.
-  const byUsecase = new Map<string, number[]>();
-  requests.forEach((request, index) => {
-    if (request.kind !== 'cmd' || request.writeUsecases.length !== 1) return;
-    byUsecase.set(request.writeUsecases[0], [...(byUsecase.get(request.writeUsecases[0]) ?? []), index]);
-  });
-  const dropped = new Set<number>();
-  for (const [usecaseId, indexes] of byUsecase) {
-    if (indexes.length < 2) continue;
-    const group = indexes.map((index) => items[index]);
-    const signatures = new Set(group.map((item) => signatureOf((item.inputs ?? []) as Input[])));
-    if (signatures.size !== 1 || group.some((item) => (item.inputs ?? []).length === 0)) {
-      issues.push(`ACTION_NOT_MERGED: ${group.map((item) => item.route).join(', ')} share the write use case ${usecaseId}`);
-      continue;
-    }
-    const first = items[indexes[0]];
-    items[indexes[0]] = {
-      ...first,
-      actionId: `${moduleId}.${usecaseId}`,
-      routes: group.map((item) => item.route),
-      actors: union(group.map((item) => item.actors)),
-      risk: group.some((item) => item.risk === 'sensitive') ? 'sensitive' : 'write',
-    };
-    for (const index of indexes.slice(1)) dropped.add(index);
+  // Commands that share their single write use case and have the same inputs are one action (`<module>.<useCase>`).
+  // Without a contract there are no inputs to compare, so those commands stay apart.
+  const survivors = built.map((entry, index) => ({ entry, index })).filter((x): x is { entry: Built; index: number } => x.entry !== undefined);
+  const byUsecase = new Map<string, Array<{ entry: Built; index: number }>>();
+  for (const x of survivors) {
+    const request = requests[x.index];
+    if (request.kind !== 'cmd' || request.writeUsecases.length !== 1) continue;
+    byUsecase.set(request.writeUsecases[0], [...(byUsecase.get(request.writeUsecases[0]) ?? []), x]);
   }
-  const kept = items.filter((_item, index) => !dropped.has(index));
+  const used = new Set(survivors.map((x) => x.entry.item.actionId));
+  const merged = new Map<number, AssistantCatalogItem>();
+  const dropped = new Set<number>();
+  for (const [usecaseId, group] of byUsecase) {
+    if (group.length < 2) continue;
+    const partitions = new Map<string, Array<{ entry: Built; index: number }>>();
+    for (const x of group.filter((member) => member.entry.inputs !== undefined)) {
+      const key = signatureOf(x.entry.inputs ?? []);
+      partitions.set(key, [...(partitions.get(key) ?? []), x]);
+    }
+    for (const part of partitions.values()) {
+      const actionId = `${moduleId}.${usecaseId}`;
+      if (part.length < 2 || used.has(actionId)) {
+        issues.push(`ACTION_NOT_MERGED: ${part.map((x) => x.entry.item.route).join(', ')} share the write use case ${usecaseId} but the inputs differ or the action id is taken`);
+        continue;
+      }
+      used.add(actionId);
+      const items = part.map((x) => x.entry.item);
+      merged.set(part[0].index, {
+        ...items[0],
+        actionId,
+        routes: items.map((item) => item.route),
+        actors: union(items.map((item) => item.actors)),
+        risk: items.some((item) => item.risk === 'sensitive') ? 'sensitive' : 'write',
+      });
+      for (const x of part.slice(1)) dropped.add(x.index);
+    }
+    if (group.some((member) => member.entry.inputs === undefined)) issues.push(`ACTION_NOT_MERGED: ${group.filter((member) => member.entry.inputs === undefined).map((x) => x.entry.item.route).join(', ')} have no contract`);
+  }
+  const kept = survivors.filter((x) => !dropped.has(x.index)).map((x) => merged.get(x.index) ?? x.entry.item);
 
   return {
     schemaVersion: ASSISTANT_CATALOG_SCHEMA,

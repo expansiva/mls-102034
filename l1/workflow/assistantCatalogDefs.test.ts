@@ -8,7 +8,7 @@ const APP = '999001';
 
 type Files = Record<string, unknown>;
 
-/** A release in memory: `definition` for L1/L2 files, `default` for L4; a `Error` value is a file that cannot be read. */
+/** A release in memory: `definition` for L1/L2 files, `default` for L4, a string for a contract source; an `Error` value is a file that cannot be read. */
 function reader(files: Files, json: Record<string, unknown>): DefsReader & { reads: string[] } {
   const reads: string[] = [];
   return {
@@ -21,6 +21,7 @@ function reader(files: Files, json: Record<string, unknown>): DefsReader & { rea
       return value;
     },
     json: (file) => json[file],
+    text: (file) => (typeof files[file] === 'string' ? (files[file] as string) : undefined),
   };
 }
 
@@ -30,6 +31,19 @@ function request(route: string, kind: 'cmd' | 'qry', uses: string[], purpose: st
   return { route, kind, uses, output, doc: { purpose } };
 }
 
+const CONTRACT_ONE = `
+export interface Row { id: string; name: string; }
+export interface Option { id: string; label: string; }
+export interface PageOneContracts {
+  'modA.pageOne.qryItems': { kind: 'qry'; input: { page: number; pageSize: number; search?: string }; output: { items: Row[]; page: number } };
+  'modA.pageOne.qryOptions': { kind: 'qry'; input: { search?: string }; output: { owners: Option[] } };
+  'modA.pageOne.cmdStart': { kind: 'cmd'; writes: 'Thing.start'; input: { id: string; version: number; mode: 'fast' | 'slow' }; output: { ok: boolean } };
+  'modA.pageOne.cmdRemove': { kind: 'cmd'; writes: 'Thing.delete'; input: { id: string; ownerId?: string }; output: { ok: boolean } };
+  'modA.pageOne.cmdSend': { kind: 'cmd'; writes: 'Thing.send'; input: { id: string; version: number }; output: { ok: boolean } };
+  'modA.pageOne.cmdBulk': { kind: 'cmd'; writes: 'Thing.update'; input: { items: Row[] }; output: { ok: boolean } };
+}
+`;
+
 const L1 = 'l1/modA/layer_2_application';
 const CTRL = 'l1/modA/layer_1_external/adapters/http/controllers';
 
@@ -37,16 +51,20 @@ function releaseA(extra: Files = {}): { files: Files; json: Record<string, unkno
   const files: Files = {
     [`${L1}/requests/pageOne.defs.js`]: wrap({
       requests: [
-        request('modA.pageOne.qryItems', 'qry', ['listThing'], 'List the things', [{ kind: 'list', entity: 'Thing' }]),
+        request('modA.pageOne.qryItems', 'qry', ['listThing'], 'List the things', [{ kind: 'list', entity: 'Thing', page: 'items.page', pageSize: 'items.pageSize' }]),
         request('modA.pageOne.cmdStart', 'cmd', ['startThing'], 'Start a thing'),
         request('modA.pageOne.cmdRemove', 'cmd', ['removeThing'], 'Remove a thing'),
         request('modA.pageOne.cmdSend', 'cmd', ['sendThing'], 'Send a thing'),
+        request('modA.pageOne.qryOptions', 'qry', ['listThing'], 'Owner options', [{ kind: 'list', entity: 'Owner' }]),
+        request('modA.pageOne.cmdBulk', 'cmd', ['bulkThing'], 'Bulk update'),
         request('modA.pageOne.cmdHidden', 'cmd', ['startThing'], 'Not served by the backend'),
       ],
     }),
     [`${L1}/usecases/listThing.defs.js`]: wrap({ usecaseId: 'listThing', entityId: 'Thing', operation: 'list' }),
     [`${L1}/usecases/startThing.defs.js`]: wrap({ usecaseId: 'startThing', entityId: 'Thing', operation: 'transition', transitionRef: 'start', effects: [] }),
     [`${L1}/usecases/removeThing.defs.js`]: wrap({ usecaseId: 'removeThing', entityId: 'Thing', operation: 'delete', effects: [] }),
+    [`${L1}/usecases/bulkThing.defs.js`]: wrap({ usecaseId: 'bulkThing', entityId: 'Thing', operation: 'update', effects: [] }),
+    'l2/modA/web/contracts/pageOne.defs.ts': CONTRACT_ONE,
     [`${L1}/usecases/sendThing.defs.js`]: wrap({ usecaseId: 'sendThing', entityId: 'Thing', operation: 'transition', transitionRef: 'send', effects: [] }),
     [`${CTRL}/pageOne.defs.js`]: wrap({
       handlers: [
@@ -54,6 +72,8 @@ function releaseA(extra: Files = {}): { files: Files; json: Record<string, unkno
         { route: 'modA.pageOne.cmdStart', grantIds: ['g1', 'g3'] },
         { route: 'modA.pageOne.cmdRemove', grantIds: ['g3'] },
         { route: 'modA.pageOne.cmdSend', grantIds: ['g1'] },
+        { route: 'modA.pageOne.qryOptions', grantIds: ['g1'] },
+        { route: 'modA.pageOne.cmdBulk', grantIds: ['g3'] },
       ],
     }),
     'l1/modA/layer_1_external/auth/authorityMap.defs.js': wrap({
@@ -65,7 +85,7 @@ function releaseA(extra: Files = {}): { files: Files; json: Record<string, unkno
   const json: Record<string, unknown> = {
     'l5/project.json': {
       modules: [
-        { moduleName: 'modA', backend: { routeKeys: ['modA.pageOne.qryItems', 'modA.pageOne.cmdStart', 'modA.pageOne.cmdRemove', 'modA.pageOne.cmdSend'] } },
+        { moduleName: 'modA', backend: { routeKeys: ['modA.pageOne.qryItems', 'modA.pageOne.qryOptions', 'modA.pageOne.cmdStart', 'modA.pageOne.cmdRemove', 'modA.pageOne.cmdSend', 'modA.pageOne.cmdBulk'] } },
         { moduleName: 'modB', backend: { routeKeys: ['modB.page.qryRows', 'modB.page.cmdAdd'] } },
       ],
     },
@@ -92,13 +112,13 @@ test('the catalog built from the defs passes the shape the assistant checks', as
   const parsed = parseAssistantCatalog(catalog, 'modA');
   assert.equal(parsed.ok, true);
   assert.equal(catalog.schemaVersion, 'assistant-catalog-v1');
-  assert.equal(itemsOf(catalog).length, 4);
+  assert.equal(itemsOf(catalog).length, 5);
 });
 
 test('only the routes the backend serves enter, with the kind of the request', async () => {
   const { files, json } = releaseA();
   const catalog = await built(files, json);
-  assert.deepEqual((catalog.queries as AssistantCatalogItem[]).map((item) => item.route), ['modA.pageOne.qryItems']);
+  assert.deepEqual((catalog.queries as AssistantCatalogItem[]).map((item) => item.route), ['modA.pageOne.qryItems', 'modA.pageOne.qryOptions']);
   assert.deepEqual((catalog.commands as AssistantCatalogItem[]).map((item) => item.route), ['modA.pageOne.cmdStart', 'modA.pageOne.cmdRemove', 'modA.pageOne.cmdSend']);
   assert.ok(!itemsOf(catalog).some((item) => item.route === 'modA.pageOne.cmdHidden'));
 });
@@ -120,42 +140,76 @@ test('risk: query read; command write; sensitive when it deletes or publishes ou
   assert.equal(byRoute.get('modA.pageOne.cmdSend')?.risk, 'sensitive');
 });
 
-test('everything is included, the page comes from the config and the action id is the route when no input says otherwise', async () => {
+test('the page comes from the config; the action id is the route; only the query that returns just options is excluded', async () => {
   const { files, json } = releaseA();
   const items = itemsOf(await built(files, json));
-  assert.ok(items.every((item) => item.assistant === 'included'));
   assert.ok(items.every((item) => item.actionId === item.route));
+  assert.deepEqual(items.filter((item) => item.assistant === 'excluded').map((item) => item.route), ['modA.pageOne.qryOptions']);
   assert.deepEqual(items.find((item) => item.route === 'modA.pageOne.cmdStart')?.page, { address: '/modA/one' });
-  assert.deepEqual(items.find((item) => item.route === 'modA.pageOne.cmdStart')?.inputs, []);
   assert.equal(items.find((item) => item.route === 'modA.pageOne.cmdStart')?.title, 'Start a thing');
 });
 
-test('inputs listed by the shared page give the version and the reference, and commands with the same inputs and use case merge', async () => {
+test('inputs come from the type of the route in the contract: path, required, literals, version and reference; queries skip paging', async () => {
   const { files, json } = releaseA({
-    [`${L1}/requests/pageTwo.defs.js`]: wrap({ requests: [request('modA.pageTwo.cmdStartAgain', 'cmd', ['startThing'], 'Start from the second page')] }),
-    'l2/modA/web/shared/pageOne.defs.js': {
-      requests: { cmdStart: { input: [{ name: 'id' }, { name: 'version' }] }, cmdRemove: { input: [{ name: 'id' }, { name: 'ownerId', optional: true }] } },
+    'l4/modA/ontology/thing.defs.js': {
+      entityId: 'Thing',
+      title: 'The thing',
+      record: { fields: { ownerId: { title: 'Owner', description: 'Who owns it', type: 'record', to: ['Owner'] }, mode: { title: 'Mode', type: 'enum', values: [{ value: 'fast', title: 'Fast one' }] } } },
     },
-    'l2/modA/web/shared/pageTwo.defs.js': { requests: { cmdStartAgain: { input: [{ name: 'id' }, { name: 'version' }] } } },
-    'l1/modA/layer_3_domain/entities/thing.defs.js': wrap({ entityId: 'Thing', fields: [{ name: 'ownerId', type: 'record', ref: 'Owner' }] }),
   });
-  (json['l5/project.json'] as { modules: Array<{ backend: { routeKeys: string[] } }> }).modules[0].backend.routeKeys.push('modA.pageTwo.cmdStartAgain');
+  const catalog = await built(files, json);
+  const byRoute = new Map(itemsOf(catalog).map((item) => [item.route, item]));
+  const brief = (route: string) => (byRoute.get(route)?.inputs ?? []).map((input) => `${input.path}|${input.required}|${input.role}|${input.ref}|${input.wireType}`);
+  assert.deepEqual(brief('modA.pageOne.cmdStart'), ['id|true|ref|Thing|string', 'version|true|version||number', 'mode|true|value||string']);
+  assert.deepEqual(brief('modA.pageOne.cmdRemove'), ['id|true|ref|Thing|string', 'ownerId|false|ref|Owner|string']);
+  assert.deepEqual(brief('modA.pageOne.qryItems'), ['search|false|value||string']);
+  const start = byRoute.get('modA.pageOne.cmdStart')?.inputs as Array<{ label: string; enumValues: unknown[] }>;
+  assert.equal(start[0].label, 'The thing');
+  assert.deepEqual(start[2].enumValues, [{ value: 'fast', label: 'Fast one' }, { value: 'slow', label: 'slow' }]);
+  const remove = byRoute.get('modA.pageOne.cmdRemove')?.inputs as Array<{ label: string; description: string }>;
+  assert.deepEqual([remove[1].label, remove[1].description], ['Owner', 'Who owns it']);
+});
+
+test('a route with a required input the assistant cannot fill (an array of objects) is out, with the warning', async () => {
+  const { files, json } = releaseA();
+  const catalog = await built(files, json);
+  assert.ok(!itemsOf(catalog).some((item) => item.route === 'modA.pageOne.cmdBulk'));
+  assert.ok((catalog.issues as string[]).includes('modA.pageOne.cmdBulk: input has shapes the assistant cannot fill'));
+});
+
+test('commands with the same write use case and the same inputs merge into one action; different inputs stay apart', async () => {
+  const { files, json } = releaseA({
+    [`${L1}/requests/pageTwo.defs.js`]: wrap({
+      requests: [
+        request('modA.pageTwo.cmdStartAgain', 'cmd', ['startThing'], 'Start from the second page'),
+        request('modA.pageTwo.cmdStartOther', 'cmd', ['startThing'], 'Start with other inputs'),
+      ],
+    }),
+    'l2/modA/web/contracts/pageTwo.defs.ts': `export interface PageTwoContracts {
+      'modA.pageTwo.cmdStartAgain': { kind: 'cmd'; writes: 'Thing.start'; input: { id: string; version: number; mode: 'fast' | 'slow' } };
+      'modA.pageTwo.cmdStartOther': { kind: 'cmd'; writes: 'Thing.start'; input: { id: string; note: string } };
+    }`,
+  });
+  (json['l5/project.json'] as { modules: Array<{ backend: { routeKeys: string[] } }> }).modules[0].backend.routeKeys.push('modA.pageTwo.cmdStartAgain', 'modA.pageTwo.cmdStartOther');
   const catalog = await built(files, json);
   const items = itemsOf(catalog);
   const merged = items.find((item) => item.actionId === 'modA.startThing');
   assert.ok(merged);
   assert.deepEqual(merged.routes, ['modA.pageOne.cmdStart', 'modA.pageTwo.cmdStartAgain']);
-  assert.deepEqual(merged.inputs, [
-    { path: 'id', required: true, role: 'ref', ref: 'Thing' },
-    { path: 'version', required: true, role: 'version' },
-  ]);
   assert.equal(items.filter((item) => item.route === 'modA.pageTwo.cmdStartAgain').length, 0);
-  const remove = items.find((item) => item.route === 'modA.pageOne.cmdRemove');
-  assert.deepEqual(remove?.inputs, [
-    { path: 'id', required: true, role: 'ref', ref: 'Thing' },
-    { path: 'ownerId', required: false, role: 'ref', ref: 'Owner', valueType: 'record' },
-  ]);
+  assert.equal(items.find((item) => item.route === 'modA.pageTwo.cmdStartOther')?.actionId, 'modA.pageTwo.cmdStartOther');
+  assert.ok((catalog.issues as string[]).some((issue) => issue.startsWith('ACTION_NOT_MERGED: modA.pageTwo.cmdStartOther')));
   assert.equal(parseAssistantCatalog(catalog, 'modA').ok, true);
+});
+
+test('without the contract source the items stay, with no inputs, nothing merges and the warning is in issues', async () => {
+  const { files, json } = releaseA();
+  delete files['l2/modA/web/contracts/pageOne.defs.ts'];
+  const catalog = await built(files, json);
+  const items = itemsOf(catalog);
+  assert.equal(items.length, 6);
+  assert.ok(items.every((item) => (item.inputs ?? []).length === 0 && item.assistant === 'included'));
+  assert.ok((catalog.issues as string[]).includes('CONTRACT_MISSING: modA.pageOne.cmdStart'));
 });
 
 test('the L4 of the release gives the title of the journey step and the final state makes the command sensitive', async () => {
