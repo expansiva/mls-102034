@@ -21,11 +21,11 @@ import { putMdmKv, reserveMdmKv } from '/_102034_/l1/mdm/layer_3_usecases/kvUsec
 import { execMessage } from '/_102034_/l1/server/layer_1_external/transport/message/execMessage.js';
 import {
   createAssistantCatalogSource,
-  distAssistantCatalogImporter,
   listAssistantCatalog,
   type AssistantCatalogInput,
   type AssistantCatalogResult,
 } from '/_102034_/l1/workflow/assistantCatalog.js';
+import { defsCatalogImporter, distDefsReader } from '/_102034_/l1/workflow/assistantCatalogDefs.js';
 import { execAssistantAction, type AssistantExecInput, type AssistantExecResult } from '/_102034_/l1/workflow/assistantExec.js';
 
 export type AssistantActivitiesRunner = (input: AssistantActivitiesInput) => Promise<AssistantActivitiesResult>;
@@ -70,7 +70,7 @@ export function createAssistantRunners(projectId: string): AssistantRunners {
   const catalogs = createAssistantCatalogSource({
     projectId,
     releaseId: () => getRunningRelease()?.id ?? null,
-    importCatalog: distAssistantCatalogImporter(projectId),
+    importCatalog: defsCatalogImporter(distDefsReader(projectId), projectId),
   });
   const withAlpha = (meta: Parameters<typeof withAlphaAuthorities>[0], moduleId: string, project: string, controllersDir: string | undefined) =>
     withAlphaAuthorities(meta, moduleId, project, controllersDir);

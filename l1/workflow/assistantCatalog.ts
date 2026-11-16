@@ -1,6 +1,4 @@
 /// <mls fileReference="_102034_/l1/workflow/assistantCatalog.ts" enhancement="_blank"/>
-import { existsSync } from 'node:fs';
-import { resolveProjectDistPath, resolveProjectModuleImportUrl } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import type { RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import {
   assistantModuleAuthorities,
@@ -11,8 +9,8 @@ import type { AssistantOnBehalfOf } from '/_102034_/l1/workflow/assistantActivit
 
 /**
  * The assistant's `catalog` request: the actions each module of the release offers, and which of them this person
- * may use. The catalog is a file the generator emits per module (`assistantCatalog`); this code reads its fields
- * and never decides what is risky or included. No module name lives here.
+ * may use. The catalog of a module comes from `importCatalog` (production: `assistantCatalogDefs.ts`, assembled from
+ * the defs the release carries); this code checks and serves it. No module name lives here.
  */
 export const ASSISTANT_CATALOG_SCHEMA = 'assistant-catalog-v1';
 
@@ -76,7 +74,7 @@ export interface AssistantCatalogSourceOptions {
   projectId: string;
   /** Running release id, or null outside a release (nothing is cached then). */
   releaseId: () => string | null;
-  /** The module's `assistantCatalog` export, or `undefined` when the module has no catalog file. */
+  /** The module's catalog object, or `undefined` when the release has nothing to build it from. */
   importCatalog: (moduleId: string) => Promise<unknown | undefined>;
 }
 
@@ -105,16 +103,6 @@ export function createAssistantCatalogSource(options: AssistantCatalogSourceOpti
       }
       return pending;
     },
-  };
-}
-
-/** Production importer: the compiled `assistantCatalog` of the module, by the path the generator emits it to. */
-export function distAssistantCatalogImporter(projectId: string): (moduleId: string) => Promise<unknown | undefined> {
-  return async (moduleId) => {
-    const relative = `_${projectId}_/l1/${moduleId}/layer_2_application/assistant/assistantCatalog.js`;
-    if (!existsSync(resolveProjectDistPath(relative))) return undefined;
-    const mod = (await import(resolveProjectModuleImportUrl(relative))) as { assistantCatalog?: unknown };
-    return mod.assistantCatalog;
   };
 }
 

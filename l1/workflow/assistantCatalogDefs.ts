@@ -1,0 +1,500 @@
+/// <mls fileReference="_102034_/l1/workflow/assistantCatalogDefs.ts" enhancement="_blank"/>
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+import { resolveProjectsPath } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
+import { ASSISTANT_CATALOG_SCHEMA, type AssistantCatalogItem } from '/_102034_/l1/workflow/assistantCatalog.js';
+
+/**
+ * The assistant catalog of one module, assembled from the defs the release carries (`dist/local/_<app>_/`): requests,
+ * use cases, controllers, authority map, outbound events, L1 workflows, the L4 of the module (when the release has it),
+ * `l5/project.json` (live routes), `l5/config.json` (page addresses) and the shared pages (inputs, when they list them).
+ * It is a function of the release: no emitted file, no module name, nothing derived that can be stale.
+ */
+export interface DefsReader {
+  /** Sorted `*.defs.js` names of a folder of the app's dist (relative to `_<app>_/`); `[]` when the folder is absent. */
+  list(folder: string): string[];
+  /** One export (`definition`, or `default` for L4) of a dist file; `undefined` when the file is absent; throws when it cannot be read. */
+  read(file: string, exportName: 'definition' | 'default'): Promise<unknown | undefined>;
+  /** A JSON file of the dist; `undefined` when absent. */
+  json(file: string): unknown | undefined;
+}
+
+type Rec = Record<string, unknown>;
+type Risk = 'read' | 'write' | 'sensitive';
+
+function isRec(value: unknown): value is Rec {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+function rec(value: unknown): Rec {
+  return isRec(value) ? value : {};
+}
+function arr(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+function str(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+function strs(value: unknown): string[] {
+  return arr(value).map(str).filter((item) => item !== '');
+}
+function dataOf(definition: unknown): Rec {
+  return rec(rec(definition).data);
+}
+
+/** The reader of the running release: dist files only, never the source fallback. */
+export function distDefsReader(projectId: string): DefsReader {
+  const distPath = (file: string): string => resolveProjectsPath(`dist/local/_${projectId}_/${file}`);
+  return {
+    list(folder) {
+      const dir = distPath(folder);
+      return existsSync(dir) ? readdirSync(dir).filter((name) => name.endsWith('.defs.js')).sort() : [];
+    },
+    async read(file, exportName) {
+      const path = distPath(file);
+      if (!existsSync(path)) return undefined;
+      const loaded = (await import(pathToFileURL(path).href)) as Rec;
+      return loaded[exportName];
+    },
+    json(file) {
+      const path = distPath(file);
+      return existsSync(path) ? (JSON.parse(readFileSync(path, 'utf8')) as unknown) : undefined;
+    },
+  };
+}
+
+interface UsecaseFacts {
+  entityId: string;
+  operation: string;
+  transitionRef: string;
+  hasEffects: boolean;
+}
+
+interface JourneyStep {
+  key: string;
+  kind: string;
+  entity: string;
+  effect: string;
+  transitionRef: string;
+  title: string;
+}
+
+interface TaskNode {
+  kind: string;
+  next: string[];
+}
+
+interface Facts {
+  usecases: Map<string, UsecaseFacts>;
+  actorsOfRoute: Map<string, string[]>;
+  entityFields: Map<string, Map<string, { type: string; ref: string }>>;
+  outbound: Set<string>;
+  operationSteps: Map<string, string[]>;
+  tasks: Map<string, TaskNode>;
+  tasksOfJourney: Map<string, string[]>;
+  steps: JourneyStep[];
+  finals: Map<string, { transitions: Map<string, { to: string; final: boolean }> }>;
+  hasL4: boolean;
+  config: unknown;
+  shared: Map<string, Rec>;
+}
+
+interface RequestFacts {
+  route: string;
+  kind: 'cmd' | 'qry';
+  pageId: string;
+  requestId: string;
+  uses: string[];
+  purpose: string;
+  /** Entity the request acts on or returns, `''` when unknown. */
+  entity: string;
+  writeUsecases: string[];
+}
+
+async function readEach(
+  reader: DefsReader,
+  folder: string,
+  exportName: 'definition' | 'default',
+  issues: string[],
+): Promise<{ ok: unknown[]; failed: number }> {
+  const names = reader.list(folder);
+  const settled = await Promise.all(names.map(async (name) => {
+    try {
+      return { value: await reader.read(`${folder}/${name}`, exportName) };
+    } catch (error) {
+      issues.push(`DEF_UNREADABLE: ${folder}/${name}: ${error instanceof Error ? error.message : String(error)}`);
+      return { value: undefined, failed: true };
+    }
+  }));
+  return {
+    ok: settled.filter((item) => item.value !== undefined).map((item) => item.value),
+    failed: settled.filter((item) => 'failed' in item).length,
+  };
+}
+
+function liveRoutes(project: unknown, moduleId: string): string[] {
+  const entry = arr(rec(project).modules).map(rec).find((item) => str(item.moduleName) === moduleId);
+  return strs(rec(entry?.backend).routeKeys);
+}
+
+function pageAddress(config: unknown, projectId: string, moduleId: string, pageId: string): string {
+  const moduleNode = arr(rec(rec(rec(config).projects)[projectId]).modules).map(rec).find((item) => str(item.moduleId) === moduleId);
+  if (!moduleNode) return '';
+  const page = arr(rec(moduleNode.frontend).pages).map(rec).find((item) => str(item.pageId) === pageId);
+  const fromPage = str(page?.route);
+  if (fromPage) return fromPage;
+  return str(arr(moduleNode.navigation).map(rec).find((item) => str(item.id) === pageId)?.href);
+}
+
+/** The one param that comes only from the url is the record the page opens. */
+function recordParam(shared: Rec | undefined): string | undefined {
+  const params = rec(rec(shared?.entry).params);
+  const names = Object.keys(params).filter((name) => {
+    const sources = strs(rec(params[name]).sources);
+    return sources.length === 1 && sources[0] === 'url';
+  });
+  return names.length === 1 ? names[0] : undefined;
+}
+
+function finalStatesOf(ontology: Rec): Set<string> {
+  const from = new Set<string>();
+  const transitions = arr(ontology.transitions).map(rec);
+  for (const transition of transitions) for (const state of strs(transition.from)) from.add(state);
+  const finals = new Set<string>();
+  for (const state of arr(ontology.lifecycleStates).map((item) => str(rec(item).state))) if (state && !from.has(state)) finals.add(state);
+  for (const transition of transitions) {
+    const to = str(transition.to);
+    if (to && !from.has(to)) finals.add(to);
+  }
+  return finals;
+}
+
+function writeUsecaseIds(uses: string[], usecases: Map<string, UsecaseFacts>): string[] {
+  return uses.filter((id) => {
+    const facts = usecases.get(id);
+    return !facts || (facts.operation !== 'list' && facts.operation !== 'get');
+  });
+}
+
+function actionKey(facts: UsecaseFacts): string {
+  if (facts.operation === 'transition') return facts.transitionRef ? `${facts.entityId}.${facts.transitionRef}` : '';
+  return `${facts.entityId}.${facts.operation}`;
+}
+
+function reachesLlm(key: string, facts: Facts): boolean {
+  const queue: string[] = [];
+  for (const step of facts.operationSteps.get(key) ?? []) {
+    if (step.startsWith('task:')) queue.push(step.slice('task:'.length));
+    else if (step.startsWith('journey:')) {
+      const ref = step.slice('journey:'.length);
+      queue.push(...(facts.tasksOfJourney.get(ref.split('/')[0]) ?? []));
+    }
+  }
+  const seen = new Set<string>();
+  while (queue.length > 0) {
+    const taskId = queue.shift();
+    if (taskId === undefined || seen.has(taskId)) continue;
+    seen.add(taskId);
+    const task = facts.tasks.get(taskId);
+    if (!task) continue;
+    if (task.kind === 'llm') return true;
+    queue.push(...task.next);
+  }
+  return false;
+}
+
+/** Sensitive when the use case deletes, ends a lifecycle, has effects, publishes outside, reaches an LLM, or cannot be classified. */
+function riskOfCommand(request: RequestFacts, facts: Facts): Risk {
+  if (request.writeUsecases.length !== 1) return 'sensitive';
+  const usecase = facts.usecases.get(request.writeUsecases[0]);
+  if (!usecase || !usecase.entityId || !['create', 'update', 'transition', 'delete'].includes(usecase.operation)) return 'sensitive';
+  if (usecase.operation === 'delete' || usecase.hasEffects) return 'sensitive';
+  if (usecase.operation === 'transition') {
+    const target = facts.finals.get(usecase.entityId)?.transitions.get(usecase.transitionRef);
+    if (facts.hasL4 && (!target || target.final)) return 'sensitive';
+  }
+  const key = actionKey(usecase);
+  return key && (facts.outbound.has(key) || reachesLlm(key, facts)) ? 'sensitive' : 'write';
+}
+
+function stepsOnPage(shared: Rec | undefined): string[] {
+  return arr(shared?.journeys).map((item) => str(rec(item).step)).filter((step) => step.includes('/'));
+}
+
+/** The title of the journey step the route fulfils; the purpose of the request when no step says it. */
+function titleOf(request: RequestFacts, facts: Facts): string {
+  const onPage = stepsOnPage(facts.shared.get(request.pageId));
+  const rank = (step: JourneyStep): number => {
+    const at = onPage.indexOf(step.key);
+    return at < 0 ? Number.MAX_SAFE_INTEGER : at;
+  };
+  let candidates: JourneyStep[];
+  if (request.kind === 'cmd') {
+    const usecase = request.writeUsecases.length === 1 ? facts.usecases.get(request.writeUsecases[0]) : undefined;
+    candidates = usecase
+      ? facts.steps.filter((step) => step.kind === 'act' && step.entity === usecase.entityId
+        && (usecase.operation === 'transition' ? step.transitionRef !== '' && step.transitionRef === usecase.transitionRef : step.effect === usecase.operation))
+      : [];
+    const listed = candidates.filter((step) => rank(step) !== Number.MAX_SAFE_INTEGER);
+    const chosen = listed.length > 0 ? listed.reduce((best, step) => (rank(step) < rank(best) ? step : best)) : candidates[0];
+    return chosen?.title || request.purpose;
+  }
+  candidates = facts.steps.filter((step) => (step.kind === 'locate' || step.kind === 'inspect') && step.entity === request.entity && step.title !== '' && rank(step) !== Number.MAX_SAFE_INTEGER);
+  const first = candidates.reduce<JourneyStep | undefined>((best, step) => (!best || rank(step) < rank(best) ? step : best), undefined);
+  return first?.title || request.purpose;
+}
+
+type Input = { path: string; required: boolean; role: 'value' | 'version' | 'ref'; ref?: string; valueType?: string };
+
+/** Inputs listed by the shared page of the request; `[]` when the page does not list them. */
+function inputsOf(request: RequestFacts, facts: Facts): Input[] {
+  const listed = rec(rec(facts.shared.get(request.pageId)?.requests)[request.requestId]).input;
+  const fields = facts.entityFields.get(request.entity);
+  const inputs: Input[] = [];
+  for (const raw of arr(listed).map(rec)) {
+    const path = str(raw.name);
+    if (!path) continue;
+    const field = fields?.get(path);
+    const input: Input = { path, required: raw.optional !== true, role: 'value' };
+    if (field) input.valueType = field.type;
+    if (path === 'version') input.role = 'version';
+    else if (path === 'id' && request.entity) Object.assign(input, { role: 'ref', ref: request.entity });
+    else if (field?.type === 'record' && field.ref) Object.assign(input, { role: 'ref', ref: field.ref });
+    inputs.push(input);
+  }
+  return inputs;
+}
+
+function signatureOf(inputs: Input[]): string {
+  return inputs.map((input) => `${input.path}\u0000${input.required ? '1' : '0'}`).sort().join('\n');
+}
+
+function union(lists: string[][]): string[] {
+  return [...new Set(lists.flat())];
+}
+
+async function collectFacts(reader: DefsReader, moduleId: string, issues: string[]): Promise<Facts> {
+  const l1 = `l1/${moduleId}`;
+  const l4 = `l4/${moduleId}`;
+  const [usecases, controllers, authority, outbound, operations, entities, journeys, ontologies, l4Workflows, config] = await Promise.all([
+    readEach(reader, `${l1}/layer_2_application/usecases`, 'definition', issues),
+    readEach(reader, `${l1}/layer_1_external/adapters/http/controllers`, 'definition', issues),
+    reader.read(`${l1}/layer_1_external/auth/authorityMap.defs.js`, 'definition').catch((error: unknown) => {
+      issues.push(`DEF_UNREADABLE: authorityMap: ${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
+    }),
+    reader.read(`${l1}/layer_1_external/adapters/integration/outbound.defs.js`, 'definition').catch((error: unknown) => {
+      issues.push(`DEF_UNREADABLE: outbound: ${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
+    }),
+    readEach(reader, `${l1}/layer_2_application/workflows`, 'definition', issues),
+    readEach(reader, `${l1}/layer_3_domain/entities`, 'definition', issues),
+    readEach(reader, `${l4}/journeys`, 'default', issues),
+    readEach(reader, `${l4}/ontology`, 'default', issues),
+    reader.read(`${l4}/workflows.defs.js`, 'default').catch((error: unknown) => {
+      issues.push(`DEF_UNREADABLE: l4 workflows: ${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
+    }),
+    Promise.resolve(reader.json('l5/config.json')),
+  ]);
+
+  const facts: Facts = {
+    usecases: new Map(),
+    actorsOfRoute: new Map(),
+    entityFields: new Map(),
+    outbound: new Set(),
+    operationSteps: new Map(),
+    tasks: new Map(),
+    tasksOfJourney: new Map(),
+    steps: [],
+    finals: new Map(),
+    hasL4: journeys.ok.length + ontologies.ok.length > 0 || l4Workflows !== undefined,
+    config,
+    shared: new Map(),
+  };
+
+  for (const definition of usecases.ok) {
+    const data = dataOf(definition);
+    const id = str(data.usecaseId);
+    if (id) facts.usecases.set(id, { entityId: str(data.entityId), operation: str(data.operation), transitionRef: str(data.transitionRef), hasEffects: arr(data.effects).length > 0 });
+  }
+
+  const actorOfGrant = new Map<string, string>();
+  for (const entry of arr(dataOf(authority).entries).map(rec)) {
+    if (str(entry.grantId) && str(entry.actorRef)) actorOfGrant.set(str(entry.grantId), str(entry.actorRef));
+  }
+  for (const definition of controllers.ok) {
+    for (const handler of arr(dataOf(definition).handlers).map(rec)) {
+      const route = str(handler.route);
+      if (!route) continue;
+      facts.actorsOfRoute.set(route, union([[...(facts.actorsOfRoute.get(route) ?? [])], strs(handler.grantIds).map((grant) => actorOfGrant.get(grant) ?? '').filter(Boolean)]));
+    }
+  }
+
+  for (const definition of entities.ok) {
+    const data = dataOf(definition);
+    const entityId = str(data.entityId);
+    if (!entityId) continue;
+    facts.entityFields.set(entityId, new Map(arr(data.fields).map(rec).filter((field) => str(field.name) !== '').map((field) => [str(field.name), { type: str(field.type), ref: str(field.ref) }])));
+  }
+
+  for (const event of arr(dataOf(outbound).events).map(rec)) if (str(event.on)) facts.outbound.add(str(event.on));
+  for (const definition of operations.ok) {
+    for (const operation of arr(dataOf(definition).operations).map(rec)) {
+      const name = str(operation.operation);
+      if (name) facts.operationSteps.set(name, union([facts.operationSteps.get(name) ?? [], strs(operation.steps)]));
+    }
+  }
+
+  for (const process of arr(rec(l4Workflows).processes).map(rec)) {
+    for (const task of arr(process.tasks).map(rec)) {
+      const taskId = str(task.taskId);
+      if (!taskId || facts.tasks.has(taskId)) continue;
+      facts.tasks.set(taskId, { kind: str(task.kind), next: strs(task.next) });
+      if (str(task.journeyRef)) facts.tasksOfJourney.set(str(task.journeyRef), [...(facts.tasksOfJourney.get(str(task.journeyRef)) ?? []), taskId]);
+    }
+  }
+
+  for (const journey of journeys.ok.map(rec)) {
+    const journeyId = str(journey.journeyId);
+    for (const step of arr(rec(journey.business).steps).map(rec)) {
+      facts.steps.push({
+        key: `${journeyId}/${str(step.stepId)}`,
+        kind: str(step.kind),
+        entity: str(step.entity),
+        effect: str(step.effect),
+        transitionRef: str(step.transitionRef),
+        title: str(step.title),
+      });
+    }
+  }
+
+  for (const ontology of ontologies.ok.map(rec)) {
+    const entityId = str(ontology.entityId);
+    if (!entityId) continue;
+    const finals = finalStatesOf(ontology);
+    facts.finals.set(entityId, {
+      transitions: new Map(arr(ontology.transitions).map(rec).filter((item) => str(item.transitionId) !== '').map((item) => [str(item.transitionId), { to: str(item.to), final: finals.has(str(item.to)) }])),
+    });
+  }
+  return facts;
+}
+
+/**
+ * The catalog object of a module (`assistant-catalog-v1`), or `undefined` when the release has no request defs for it.
+ * Throws only when request defs exist and none can be read; a problem in one item goes to `issues` and the item is
+ * left out or lacks the field.
+ */
+export async function buildCatalogFromDefs(reader: DefsReader, projectId: string, moduleId: string): Promise<Rec | undefined> {
+  const requestsFolder = `l1/${moduleId}/layer_2_application/requests`;
+  if (reader.list(requestsFolder).length === 0) return undefined;
+  const issues: string[] = [];
+  const requestDefs = await readEach(reader, requestsFolder, 'definition', issues);
+  if (requestDefs.ok.length === 0) throw new Error(`No request def of the module can be read: ${issues.join('; ')}`);
+
+  const live = liveRoutes(reader.json('l5/project.json'), moduleId);
+  const facts = await collectFacts(reader, moduleId, issues);
+  const order = new Map(live.map((route, index) => [route, index]));
+
+  const requests: RequestFacts[] = [];
+  const seen = new Set<string>();
+  for (const definition of requestDefs.ok) {
+    for (const raw of arr(dataOf(definition).requests).map(rec)) {
+      const route = str(raw.route);
+      const kind = str(raw.kind);
+      if (!route || !order.has(route) || seen.has(route)) continue;
+      if (kind !== 'cmd' && kind !== 'qry') {
+        issues.push(`REQUEST_KIND_UNKNOWN: ${route}`);
+        continue;
+      }
+      seen.add(route);
+      const uses = strs(raw.uses);
+      const writeUsecases = writeUsecaseIds(uses, facts.usecases);
+      const main = arr(raw.output).map(rec).find((output) => ['entity', 'list'].includes(str(output.kind)));
+      const [, pageId = '', requestId = ''] = route.split('.');
+      requests.push({
+        route,
+        kind,
+        pageId,
+        requestId,
+        uses,
+        purpose: str(rec(raw.doc).purpose),
+        entity: kind === 'cmd' ? (facts.usecases.get(writeUsecases[0] ?? '')?.entityId ?? '') : str(main?.entity),
+        writeUsecases,
+      });
+    }
+  }
+  requests.sort((a, b) => (order.get(a.route) ?? 0) - (order.get(b.route) ?? 0));
+
+  for (const pageId of new Set(requests.map((request) => request.pageId))) {
+    try {
+      const shared = await reader.read(`l2/${moduleId}/web/shared/${pageId}.defs.js`, 'definition');
+      if (isRec(shared)) facts.shared.set(pageId, shared);
+    } catch (error) {
+      issues.push(`DEF_UNREADABLE: shared ${pageId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  const items = requests.map((request): AssistantCatalogItem => {
+    const actors = facts.actorsOfRoute.get(request.route) ?? [];
+    if (actors.length === 0) issues.push(`ACTORS_UNRESOLVED: ${request.route}`);
+    const address = pageAddress(facts.config, projectId, moduleId, request.pageId);
+    if (!address) issues.push(`PAGE_UNRESOLVED: ${request.route}`);
+    const param = recordParam(facts.shared.get(request.pageId));
+    const inputs = inputsOf(request, facts);
+    return {
+      route: request.route,
+      routes: [request.route],
+      module: moduleId,
+      kind: request.kind,
+      actionId: request.route,
+      title: titleOf(request, facts),
+      actors,
+      assistant: 'included',
+      risk: request.kind === 'qry' ? 'read' : riskOfCommand(request, facts),
+      inputs,
+      ...(address ? { page: param ? { address, recordParam: param } : { address } } : {}),
+    };
+  });
+
+  // Commands that share their single write use case and have the same inputs are one action; without inputs, none merges.
+  const byUsecase = new Map<string, number[]>();
+  requests.forEach((request, index) => {
+    if (request.kind !== 'cmd' || request.writeUsecases.length !== 1) return;
+    byUsecase.set(request.writeUsecases[0], [...(byUsecase.get(request.writeUsecases[0]) ?? []), index]);
+  });
+  const dropped = new Set<number>();
+  for (const [usecaseId, indexes] of byUsecase) {
+    if (indexes.length < 2) continue;
+    const group = indexes.map((index) => items[index]);
+    const signatures = new Set(group.map((item) => signatureOf((item.inputs ?? []) as Input[])));
+    if (signatures.size !== 1 || group.some((item) => (item.inputs ?? []).length === 0)) {
+      issues.push(`ACTION_NOT_MERGED: ${group.map((item) => item.route).join(', ')} share the write use case ${usecaseId}`);
+      continue;
+    }
+    const first = items[indexes[0]];
+    items[indexes[0]] = {
+      ...first,
+      actionId: `${moduleId}.${usecaseId}`,
+      routes: group.map((item) => item.route),
+      actors: union(group.map((item) => item.actors)),
+      risk: group.some((item) => item.risk === 'sensitive') ? 'sensitive' : 'write',
+    };
+    for (const index of indexes.slice(1)) dropped.add(index);
+  }
+  const kept = items.filter((_item, index) => !dropped.has(index));
+
+  return {
+    schemaVersion: ASSISTANT_CATALOG_SCHEMA,
+    module: moduleId,
+    commands: kept.filter((item) => item.kind === 'cmd'),
+    queries: kept.filter((item) => item.kind === 'qry'),
+    lookups: [],
+    entities: [],
+    issues,
+  };
+}
+
+/** The source of `createAssistantCatalogSource`: one catalog per module, assembled from the release's defs. */
+export function defsCatalogImporter(reader: DefsReader, projectId: string): (moduleId: string) => Promise<unknown | undefined> {
+  return (moduleId) => buildCatalogFromDefs(reader, projectId, moduleId);
+}
