@@ -17,6 +17,8 @@ export interface ConnectionContext {
   organizationId: string;
   /** The person of the action: the logged user, or on whose behalf the agent acts. */
   actorUserId?: string;
+  /** The person by the mdm id. A call out of the app may carry it instead of `actorUserId`: the connector translates it to the id in the cm and never sends it. */
+  actorMdmId?: string;
   /** An outside customer, when there is one. */
   customerId?: string;
   /** The agent involved, when there is one. */
@@ -45,6 +47,12 @@ export interface ConnectionOperation {
   hiddenFromAgents?: boolean;
   /** serve query: the answer has no row ceiling (describe). */
   noRowLimit?: boolean;
+  /**
+   * call: inputs that carry a person by the mdm id. The connector translates each `from` (an mdm id) to the id in the cm by
+   * the link of the login (the same as `actorMdmId`), puts it in `to` and takes `from` out; without the link the answer is
+   * `forbidden` and nothing is sent. The connector knows no operation by name: it reads this list.
+   */
+  personInputs?: Array<{ from: string; to: string }>;
 }
 
 export interface ConnectionCatalog {

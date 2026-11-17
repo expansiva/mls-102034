@@ -1,32 +1,58 @@
 /// <mls fileReference="_102034_/l4/ontology/connections/cm.defs.ts" enhancement="_blank"/>
 /**
  * The connection to collab-messages (the cm): the 14 operations of `todo/projetos/agents/docs/conexoes.md` §5. The fields
- * come from `todo/projetos/nora/docs/agents-modulo-spec.md` §4.2, §4.3, §4.4, §16.2, §17.3 and §18. A field the spec does not
- * name is marked "not in the spec" and is waiting for the manager; none was invented without a mark.
+ * come from `todo/projetos/nora/docs/agents-modulo-spec.md` §4.2, §4.3, §4.4, §16.2, §17.3 and §18; the fields that spec did not
+ * define were decided by the manager in `todo/projetos/agents/docs/conexoes.md` §6.
  *
  * Who the call is about (organization, the person, the customer, the agent) travels in `ConnectionContext`, never in `input`.
  * `expectVersion` and `idempotencyKey` travel in the call options, never in `input`.
  */
+import type { AssistantCatalogItem } from '/_102034_/l1/workflow/assistantCatalog.js';
 import type { ConnectionCatalog } from '/_102034_/l4/ontology/connections/types.defs.js';
 
-/** A tool of an agent: module, subject, action, with the purpose, the kind and the contract (§4.2). */
+/**
+ * A tool of an agent: module, subject, action, with the purpose, the kind and the contract (§4.2). The readable names of the
+ * tree come ready (conexoes.md §6 item 10): the cm and the screen derive no name.
+ */
 export interface CmTool {
   moduleId: string;
-  /** The subject the action is about (the "assunto" of the tree). Not in the spec: where it comes from is open. */
+  /** The title of the module (`title` of its `module.defs`). */
+  moduleTitle?: string;
+  /** The subject of the tree is the entity (`entityId`), not the page; `general` for an action that is about no entity (the screen labels it by the i18n). For a tool of the cm, a group the cm gives (e.g. `docs`). */
   subject: string;
+  /** The title of the entity in the ontology of the L4. */
+  subjectTitle?: string;
   actionId: string;
+  /** The title of the action (the step of the journey, or the purpose). */
+  title?: string;
   purpose: string;
   kind: 'cmd' | 'qry';
-  /** The inputs of the action, as the action catalog carries them. Not in the spec: the exact shape is open. */
-  inputs?: unknown[];
+  /** The whole catalog item of today (`route`, `kind`, `actionId`, `actors`, `title`, `risk`, `inputs`...): the type `buildCatalogFromDefs` already uses, imported and not redeclared. */
+  entry: AssistantCatalogItem;
 }
 
 export type CmAgentAudience = 'member' | 'room' | 'external';
-/** The situation of a draft agent (§17.2): the cm is preparing it, it is ready to review, or it was refused. Not in the spec by these names. */
+/** The situation of a draft agent (§17.2): the cm is preparing it, it is ready to review, or it was refused. */
 export type CmDraftStatus = 'preparing' | 'ready' | 'refused';
 
-/** What a company can adjust (§4.2): turn ceilings, language, a cost ceiling below the maximum. The names are the cm's `AssistantConfigOverride`; not in the spec. */
-export type CmAgentLimits = Record<string, string | number | boolean>;
+/**
+ * What a company can adjust (§4.2): turn ceilings, language, a cost ceiling below the maximum. The cm answers a list the screen
+ * shows without knowing the names: the `key` is a name of the cm's `AssistantConfigOverride` (only the cm knows them), the
+ * `label` is in the language of the `context`.
+ */
+export interface CmAgentLimit {
+  key: string;
+  label: string;
+  kind: 'number' | 'text' | 'boolean';
+  value: number | string | boolean;
+  max?: number;
+}
+export type CmAgentLimits = CmAgentLimit[];
+/** What `updateAgent` sends for a limit. */
+export interface CmAgentLimitValue {
+  key: string;
+  value: number | string | boolean;
+}
 
 export interface CmAgentCard {
   agentId: string;
@@ -36,6 +62,8 @@ export interface CmAgentCard {
   responsibleUserId?: string;
   /** Only on drafts. */
   draftStatus?: CmDraftStatus;
+  /** With `refused`: the reason in words (§17.1). */
+  refusedReason?: string;
 }
 
 export interface CmListAgentsInput {
@@ -46,6 +74,7 @@ export interface CmListAgentsOutput {
 }
 
 export interface CmReadAgentInput {
+  /** The id of an agent, or of a draft (`draftId`). */
   agentId: string;
 }
 export interface CmReadAgentOutput {
@@ -59,21 +88,26 @@ export interface CmReadAgentOutput {
   enabled: boolean;
   responsibleUserId?: string;
   limits: CmAgentLimits;
+  /** Only for the Nora: what the person of the context wrote for herself (§4.4, `agentConduct`). */
+  personal?: { role: string; state: string };
   /** One version for definition, behavior and tools; `expectVersion` of the next change is this. */
   version: string;
 }
 
 /** Change by prompt, or by field: turn on/off, the responsible, the limits (§6). Exactly one way per call. The author is `context.actorUserId`. */
 export interface CmUpdateAgentInput {
+  /** The id of an agent, or of a draft (`draftId`). */
   agentId: string;
+  /** `company` (default): the agent of the company; `personal`: the conduct of the person of the context. */
+  scope?: 'company' | 'personal';
   prompt?: string;
   enabled?: boolean;
   responsibleUserId?: string;
-  limits?: CmAgentLimits;
+  limits?: CmAgentLimitValue[];
 }
 export interface CmUpdateAgentOutput {
   version: string;
-  /** What `undoAgentChange` takes. Not in the spec: the undo has to name the change. */
+  /** What `undoAgentChange` takes: the undo names the change (and goes with `expectVersion` in the options). */
   changeId: string;
 }
 
@@ -98,13 +132,17 @@ export interface CmUndoAgentChangeOutput {
   version: string;
 }
 
-/** The levels of the first version (§7, §18.1): what it can, and what it understands. "What it would do" stays for later. Names not in the spec. */
+/** The levels of the first version (§7, §18.1): what it can, and what it understands. "What it would do" stays for later. */
 export type CmSimulationLevel = 'canDo' | 'understands';
+/** The connector translates `asMdmId` to `as` (see `personInputs` of `simulateAgent`): the module only knows the mdm id. */
 export interface CmSimulateAgentInput {
+  /** The id of an agent, or of a draft (`draftId`). */
   agentId: string;
   level: CmSimulationLevel;
-  /** Whom to simulate. The one who simulates is `context.actorUserId`. */
-  as: string;
+  /** A person to simulate, by the mdm id; the connector turns it into `as`. */
+  asMdmId?: string;
+  /** Whom to simulate: the id of the user in the cm (what reaches the cm when `asMdmId` is used), or a role `<moduleId>:<actorId>`. The one who simulates is `context.actorUserId`. */
+  as?: string;
   /** For `understands`: the sentence. */
   message?: string;
   /** To simulate a behavior not saved yet. */
@@ -130,7 +168,7 @@ export interface CmSimulateAgentOutput {
 export interface CmCreateAgentInput {
   /** The text of the person: what the agent is and what it does. */
   prompt: string;
-  /** The catalog of tools, so the cm can suggest tools in the same call (§18.3). */
+  /** The catalog of tools, so the cm can suggest tools in the same call (§18.3). The whole catalog travels only here and in `runAiPrompt`. */
   catalog?: CmTool[];
 }
 export interface CmCreateAgentOutput {
@@ -159,7 +197,7 @@ export interface CmListCmToolsOutput {
 
 export interface CmRunAiPromptInput {
   prompt: string;
-  /** The format of the answer the caller wants (§18.3). Not in the spec: a JSON schema is assumed. */
+  /** The format of the answer the caller wants (§18.3): a JSON schema. */
   outputFormat: Record<string, unknown>;
 }
 export interface CmRunAiPromptOutput {
@@ -169,8 +207,8 @@ export interface CmRunAiPromptOutput {
 export interface CmAgentDraftReadyInput {
   draftId: string;
   status: 'ready' | 'refused';
-  /** When refused: the reason in words. */
-  reason?: string;
+  /** When refused: the reason in words, the same as `refusedReason` of the card. */
+  refusedReason?: string;
   /** When ready: the tools the model suggests, by action id. */
   suggestedTools?: string[];
 }
@@ -180,13 +218,18 @@ export interface CmDescribeInput {
   agentId: string;
   /** The version the cm already has. */
   knownVersion?: string;
+  /** The raw authorities of the person, `<moduleId>:<actorId>`, as the `onBehalfOf` of today's `catalog` carries them: without them `allowed` cannot be computed (cm answer, 17/11). */
+  authorities: string[];
+  /** When the cm took those roles (ISO 8601), as the `onBehalfOf` of today's `catalog` carries it. */
+  snapshotAt: string;
 }
 export interface CmDescribeOutput {
   version: string;
   /** Left out when `knownVersion` is the current one: only what depends on the actor is answered. */
   toolsMode?: 'all' | 'tree';
+  /** Light `describe`: only the tools that are ON for the agent. */
   tools?: CmTool[];
-  /** The actions the actor of the context can use now. */
+  /** Only the ids of the actions the actor of the context can use now. */
   allowed: string[];
 }
 
@@ -221,7 +264,7 @@ export const cm: ConnectionCatalog = {
     { "operationId": "updateAgent", "direction": "call", "kind": "command", "description": "Change an agent by a prompt or by a field, with the version that was read and the author; also turn it on or off, set the responsible and the limits.", "inputType": "CmUpdateAgentInput", "outputType": "CmUpdateAgentOutput", "reply": "now" },
     { "operationId": "listAgentHistory", "direction": "call", "kind": "query", "description": "List the changes of an agent, with the author and the date.", "inputType": "CmListAgentHistoryInput", "outputType": "CmListAgentHistoryOutput", "reply": "now" },
     { "operationId": "undoAgentChange", "direction": "call", "kind": "command", "description": "Undo one change of an agent, with the version that was read.", "inputType": "CmUndoAgentChangeInput", "outputType": "CmUndoAgentChangeOutput", "reply": "now" },
-    { "operationId": "simulateAgent", "direction": "call", "kind": "command", "description": "Simulate an agent at the levels what it can and what it understands; nothing is saved.", "inputType": "CmSimulateAgentInput", "outputType": "CmSimulateAgentOutput", "reply": "now" },
+    { "operationId": "simulateAgent", "direction": "call", "kind": "command", "description": "Simulate an agent at the levels what it can and what it understands; nothing is saved.", "inputType": "CmSimulateAgentInput", "outputType": "CmSimulateAgentOutput", "reply": "now", "personInputs": [{ "from": "asMdmId", "to": "as" }] },
     { "operationId": "createAgent", "direction": "call", "kind": "command", "description": "Ask the cm to create an agent from a prompt: the answer is only the id of the draft, and the result comes later.", "inputType": "CmCreateAgentInput", "outputType": "CmCreateAgentOutput", "reply": "later", "resultOperation": "agentDraftReady" },
     { "operationId": "activateAgent", "direction": "call", "kind": "command", "description": "Make a reviewed draft the agent that is in force.", "inputType": "CmActivateAgentInput", "outputType": "CmActivateAgentOutput", "reply": "now" },
     { "operationId": "discardAgentDraft", "direction": "call", "kind": "command", "description": "Throw away a draft agent.", "inputType": "CmDiscardAgentDraftInput", "outputType": "CmDiscardAgentDraftOutput", "reply": "now" },

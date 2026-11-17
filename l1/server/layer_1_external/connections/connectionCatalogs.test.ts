@@ -70,6 +70,31 @@ test('the cm marks what the contract marks: describe and record hidden, describe
   assert.equal(cm.operations.filter((operation) => operation.hiddenFromAgents).length, 2);
 });
 
+test('describe takes the authorities and the snapshot of the person, so the allowed actions can be computed', () => {
+  const source = textOf('cm.defs.ts');
+  const body = /export interface CmDescribeInput \{([^}]+)\}/.exec(source)?.[1] ?? '';
+  assert.match(body, /agentId: string;/);
+  assert.match(body, /knownVersion\?: string;/);
+  assert.match(body, /authorities: string\[\];/);
+  assert.match(body, /snapshotAt: string;/);
+});
+
+test('the decisions of the manager and of the cm are in the types', () => {
+  const source = textOf('cm.defs.ts');
+  assert.match(source, /export interface CmTool \{[^}]*entry: AssistantCatalogItem;/s);
+  assert.doesNotMatch(/export interface CmTool \{[^}]*\}/s.exec(source)?.[0] ?? '', /\binputs\??:/);
+  for (const field of ['moduleTitle?: string;', 'subject: string;', 'subjectTitle?: string;', 'title?: string;']) {
+    assert.ok((/export interface CmTool \{[^}]*\}/s.exec(source)?.[0] ?? '').includes(field), field);
+  }
+  assert.deepEqual(cm.operations.find((operation) => operation.operationId === 'simulateAgent')?.personInputs, [{ from: 'asMdmId', to: 'as' }]);
+  assert.equal(cm.operations.filter((operation) => operation.personInputs !== undefined).length, 1);
+  assert.match(source, /personal\?: \{ role: string; state: string \};/);
+  assert.match(source, /scope\?: 'company' \| 'personal';/);
+  assert.match(source, /refusedReason\?: string;/);
+  assert.match(source, /export interface CmAgentLimit \{[^}]*label: string;[^}]*kind: 'number' \| 'text' \| 'boolean';/s);
+  assert.match(textOf('types.defs.ts'), /actorMdmId\?: string;/);
+});
+
 test('the platform catalog has releaseCatalogChanged as a hidden serve command', () => {
   assert.equal(platform.connectionId, 'platform');
   assert.deepEqual(platform.operations.map((operation) => [operation.operationId, operation.direction, operation.kind, operation.hiddenFromAgents]), [['releaseCatalogChanged', 'serve', 'command', true]]);

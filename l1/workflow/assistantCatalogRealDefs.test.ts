@@ -55,7 +55,7 @@ function readerOf(root: string): DefsReader {
   };
 }
 
-type Item = { route: string; routes?: string[]; actionId: string; purpose?: string };
+type Item = { route: string; routes?: string[]; actionId: string; purpose?: string; subject?: string; subjectTitle?: string; moduleTitle?: string };
 
 test('real defs of the 102047: every action says its purpose and every module its title and description, as the defs say', { skip: !existsSync(SOURCE) }, async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'catalog-real-'));
@@ -79,12 +79,15 @@ test('real defs of the 102047: every action says its purpose and every module it
         const expected = [...new Set(routes.map((route) => purposeOf.get(route) ?? '').filter((text) => text !== ''))].join(' ');
         assert.ok(expected !== '', `${item.actionId} has a purpose in its defs`);
         assert.equal(item.purpose, expected, `${item.actionId}: purpose`);
+        assert.ok(item.subject, `${item.actionId} has a subject`);
+        if (item.subject !== 'general') assert.ok(item.subjectTitle, `${item.actionId}: the title of the entity ${item.subject}`);
       }
       assert.equal(catalog.issues.some((issue) => issue.startsWith('PURPOSE_MISSING') || issue.startsWith('MODULE_')), false, catalog.issues.join('; '));
 
       const moduleDef = (await reader.read(`l4/${moduleId}/module.defs.js`, 'default')) as { title: string; sourcePrompt: string };
       assert.ok(moduleDef.title && moduleDef.sourcePrompt);
       assert.equal(catalog.title, moduleDef.title);
+      assert.ok(items.every((item) => item.moduleTitle === moduleDef.title), 'every action carries the title of its module');
       assert.equal(catalog.description, moduleDef.sourcePrompt);
     }
 

@@ -15,6 +15,10 @@ export interface PlatformCatalogAction {
   actionId: string;
   title: string;
   purpose?: string;
+  /** The entity the action is about (`entityId`), or `general`. */
+  subject: string;
+  subjectTitle?: string;
+  moduleTitle?: string;
   actors: string[];
   assistant: 'included' | 'excluded';
   risk: string;

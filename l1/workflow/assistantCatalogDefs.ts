@@ -108,6 +108,9 @@ interface Facts {
   shared: Map<string, Rec>;
 }
 
+/** The subject of an action that is not about any entity; the screens label it by the i18n. */
+const GENERAL_SUBJECT = 'general';
+
 interface RequestFacts {
   route: string;
   kind: 'cmd' | 'qry';
@@ -459,6 +462,7 @@ export async function buildCatalogFromDefs(reader: DefsReader, projectId: string
     const address = pageAddress(facts.config, projectId, moduleId, request.pageId);
     if (!address) issues.push(`PAGE_UNRESOLVED: ${request.route}`);
     if (!request.purpose) issues.push(`PURPOSE_MISSING: ${request.route}`);
+    if (!request.entity) issues.push(`SUBJECT_MISSING: ${request.route}`);
     const param = recordParam(facts.shared.get(request.pageId));
     return { inputs, item: {
       route: request.route,
@@ -468,6 +472,7 @@ export async function buildCatalogFromDefs(reader: DefsReader, projectId: string
       actionId: request.route,
       title: titleOf(request, facts),
       ...(request.purpose ? { purpose: request.purpose } : {}),
+      subject: request.entity || GENERAL_SUBJECT,
       actors,
       assistant: optionsOnly ? 'excluded' : 'included',
       risk: request.kind === 'qry' ? 'read' : riskOfCommand(request, facts),
@@ -522,7 +527,7 @@ export async function buildCatalogFromDefs(reader: DefsReader, projectId: string
     }
     if (group.some((member) => member.entry.inputs === undefined)) issues.push(`ACTION_NOT_MERGED: ${group.filter((member) => member.entry.inputs === undefined).map((x) => x.entry.item.route).join(', ')} have no contract`);
   }
-  const kept = survivors.filter((x) => !dropped.has(x.index)).map((x) => merged.get(x.index) ?? x.entry.item);
+  const keptItems = survivors.filter((x) => !dropped.has(x.index)).map((x) => merged.get(x.index) ?? x.entry.item);
 
   const moduleDef = rec(await reader.read(`l4/${moduleId}/module.defs.js`, 'default').catch((error: unknown) => {
     issues.push(`DEF_UNREADABLE: module.defs: ${error instanceof Error ? error.message : String(error)}`);
@@ -535,6 +540,18 @@ export async function buildCatalogFromDefs(reader: DefsReader, projectId: string
     if (!title) issues.push('MODULE_TITLE_MISSING');
     if (!description) issues.push('MODULE_DESCRIPTION_MISSING');
   }
+
+  // The readable names of the tree: the module's title, and the title of the entity the action is about (the subject).
+  const missingTitles = new Set<string>();
+  const kept = keptItems.map((item) => {
+    const subject = str(item.subject);
+    const subjectTitle = subject === GENERAL_SUBJECT ? '' : facts.ontology.get(subject)?.title ?? '';
+    if (subject !== GENERAL_SUBJECT && !subjectTitle && !missingTitles.has(subject)) {
+      missingTitles.add(subject);
+      issues.push(`SUBJECT_TITLE_MISSING: ${subject}`);
+    }
+    return { ...item, ...(title ? { moduleTitle: title } : {}), ...(subjectTitle ? { subjectTitle } : {}) };
+  });
 
   return {
     schemaVersion: ASSISTANT_CATALOG_SCHEMA,

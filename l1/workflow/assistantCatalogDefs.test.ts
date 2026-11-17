@@ -365,3 +365,41 @@ test('without module.defs, or without one of its fields, the field leaves the ca
   assert.ok((unreadable.issues as string[]).some((issue) => issue.startsWith('DEF_UNREADABLE: module.defs')));
   assert.ok((unreadable.issues as string[]).includes('MODULE_DEF_MISSING'));
 });
+
+test('the tree names: the subject is the entity, with the title of the module and of the entity, and general (with a line in issues) when there is none', async () => {
+  const { files, json } = releaseA({
+    'l4/modA/module.defs.js': { moduleName: 'modA', title: 'Module A title', sourcePrompt: 'About module A.' },
+    'l4/modA/ontology/thing.defs.js': { entityId: 'Thing', title: 'Things', lifecycleStates: [], transitions: [] },
+    [`${L1}/requests/pageTwo.defs.js`]: wrap({
+      requests: [request('modA.pageTwo.qryNothing', 'qry', ['listThing'], 'Answers with no entity', [{ kind: 'value' }])],
+    }),
+    'l2/modA/web/contracts/pageTwo.defs.ts': `export interface PageTwoContracts {
+      'modA.pageTwo.qryNothing': { kind: 'qry'; input: { search?: string }; output: { total: number } };
+    }`,
+  });
+  (json['l5/project.json'] as { modules: Array<{ backend: { routeKeys: string[] } }> }).modules[0].backend.routeKeys.push('modA.pageTwo.qryNothing');
+  const catalog = await built(files, json);
+  const byRoute = new Map(itemsOf(catalog).map((item) => [item.route, item]));
+  const thing = byRoute.get('modA.pageOne.qryItems');
+  assert.equal(thing?.subject, 'Thing');
+  assert.equal(thing?.subjectTitle, 'Things');
+  assert.equal(thing?.moduleTitle, 'Module A title');
+  assert.equal(byRoute.get('modA.pageOne.cmdRemove')?.subject, 'Thing');
+  const merged = itemsOf(catalog).find((item) => item.actionId === 'modA.pageOne.cmdStart' || item.actionId === 'modA.startThing');
+  assert.equal(merged?.subject, 'Thing');
+  const nothing = byRoute.get('modA.pageTwo.qryNothing');
+  assert.equal(nothing?.subject, 'general');
+  assert.equal('subjectTitle' in (nothing ?? {}), false);
+  const issues = catalog.issues as string[];
+  assert.ok(issues.includes('SUBJECT_MISSING: modA.pageTwo.qryNothing'));
+  assert.ok(issues.includes('SUBJECT_TITLE_MISSING: Owner'), 'an entity with no title in the ontology is said, once');
+  assert.equal(issues.filter((issue) => issue === 'SUBJECT_TITLE_MISSING: Owner').length, 1);
+  assert.equal(parseAssistantCatalog(catalog, 'modA').ok, true);
+});
+
+test('without module.defs the items carry the subject and no module title', async () => {
+  const { files, json } = releaseA();
+  const items = itemsOf(await built(files, json));
+  assert.ok(items.every((item) => typeof item.subject === 'string' && item.subject !== ''));
+  assert.ok(items.every((item) => !('moduleTitle' in item)));
+});
