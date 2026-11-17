@@ -458,6 +458,7 @@ export async function buildCatalogFromDefs(reader: DefsReader, projectId: string
     if (actors.length === 0) issues.push(`ACTORS_UNRESOLVED: ${request.route}`);
     const address = pageAddress(facts.config, projectId, moduleId, request.pageId);
     if (!address) issues.push(`PAGE_UNRESOLVED: ${request.route}`);
+    if (!request.purpose) issues.push(`PURPOSE_MISSING: ${request.route}`);
     const param = recordParam(facts.shared.get(request.pageId));
     return { inputs, item: {
       route: request.route,
@@ -466,6 +467,7 @@ export async function buildCatalogFromDefs(reader: DefsReader, projectId: string
       kind: request.kind,
       actionId: request.route,
       title: titleOf(request, facts),
+      ...(request.purpose ? { purpose: request.purpose } : {}),
       actors,
       assistant: optionsOnly ? 'excluded' : 'included',
       risk: request.kind === 'qry' ? 'read' : riskOfCommand(request, facts),
@@ -501,8 +503,16 @@ export async function buildCatalogFromDefs(reader: DefsReader, projectId: string
       }
       used.add(actionId);
       const items = part.map((x) => x.entry.item);
+      // The sentences of the merged routes, in the order of the routes, the same sentence once.
+      const purposes = [...new Set(items
+        .slice()
+        .sort((a, b) => (order.get(a.route) ?? 0) - (order.get(b.route) ?? 0))
+        .map((item) => str(item.purpose))
+        .filter((text) => text !== ''))];
+      const { purpose: _first, ...first } = items[0];
       merged.set(part[0].index, {
-        ...items[0],
+        ...first,
+        ...(purposes.length > 0 ? { purpose: purposes.join(' ') } : {}),
         actionId,
         routes: items.map((item) => item.route),
         actors: union(items.map((item) => item.actors)),
@@ -514,9 +524,23 @@ export async function buildCatalogFromDefs(reader: DefsReader, projectId: string
   }
   const kept = survivors.filter((x) => !dropped.has(x.index)).map((x) => merged.get(x.index) ?? x.entry.item);
 
+  const moduleDef = rec(await reader.read(`l4/${moduleId}/module.defs.js`, 'default').catch((error: unknown) => {
+    issues.push(`DEF_UNREADABLE: module.defs: ${error instanceof Error ? error.message : String(error)}`);
+    return undefined;
+  }));
+  const title = str(moduleDef.title);
+  const description = str(moduleDef.sourcePrompt);
+  if (Object.keys(moduleDef).length === 0) issues.push('MODULE_DEF_MISSING');
+  else {
+    if (!title) issues.push('MODULE_TITLE_MISSING');
+    if (!description) issues.push('MODULE_DESCRIPTION_MISSING');
+  }
+
   return {
     schemaVersion: ASSISTANT_CATALOG_SCHEMA,
     module: moduleId,
+    ...(title ? { title } : {}),
+    ...(description ? { description } : {}),
     commands: kept.filter((item) => item.kind === 'cmd'),
     queries: kept.filter((item) => item.kind === 'qry'),
     lookups: [],

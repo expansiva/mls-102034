@@ -295,3 +295,73 @@ test('the source reads the defs once per release and again on a new release', as
   const missing = await catalogs.get('modZ');
   assert.deepEqual(missing, { ok: false, code: 'ASSISTANT_CATALOG_MISSING' });
 });
+
+test('purpose: each item carries the sentence of its route; routes of a merged action give their sentences in route order, once', async () => {
+  const { files, json } = releaseA({
+    [`${L1}/requests/pageTwo.defs.js`]: wrap({
+      requests: [
+        request('modA.pageTwo.cmdStartAgain', 'cmd', ['startThing'], 'Start from the second page'),
+        request('modA.pageTwo.cmdStartTwin', 'cmd', ['startThing'], 'Start a thing'),
+      ],
+    }),
+    'l2/modA/web/contracts/pageTwo.defs.ts': `export interface PageTwoContracts {
+      'modA.pageTwo.cmdStartAgain': { kind: 'cmd'; writes: 'Thing.start'; input: { id: string; version: number; mode: 'fast' | 'slow' } };
+      'modA.pageTwo.cmdStartTwin': { kind: 'cmd'; writes: 'Thing.start'; input: { id: string; version: number; mode: 'fast' | 'slow' } };
+    }`,
+  });
+  (json['l5/project.json'] as { modules: Array<{ backend: { routeKeys: string[] } }> }).modules[0].backend.routeKeys.push('modA.pageTwo.cmdStartTwin', 'modA.pageTwo.cmdStartAgain');
+  const items = itemsOf(await built(files, json));
+  assert.equal(items.find((item) => item.route === 'modA.pageOne.qryItems')?.purpose, 'List the things');
+  assert.equal(items.find((item) => item.route === 'modA.pageOne.cmdRemove')?.purpose, 'Remove a thing');
+  const merged = items.find((item) => item.actionId === 'modA.startThing');
+  assert.deepEqual(merged?.routes, ['modA.pageOne.cmdStart', 'modA.pageTwo.cmdStartTwin', 'modA.pageTwo.cmdStartAgain']);
+  assert.equal(merged?.purpose, 'Start a thing Start from the second page');
+});
+
+test('purpose: a route with no sentence loses the field and the problem goes to issues; nothing is invented', async () => {
+  const { files, json } = releaseA();
+  files[`${L1}/requests/pageOne.defs.js`] = wrap({
+    requests: [
+      { route: 'modA.pageOne.qryItems', kind: 'qry', uses: ['listThing'], output: [{ kind: 'list', entity: 'Thing', page: 'items.page', pageSize: 'items.pageSize' }] },
+      request('modA.pageOne.cmdRemove', 'cmd', ['removeThing'], ''),
+    ],
+  });
+  const catalog = await built(files, json);
+  const byRoute = new Map(itemsOf(catalog).map((item) => [item.route, item]));
+  assert.equal('purpose' in (byRoute.get('modA.pageOne.qryItems') ?? {}), false);
+  assert.equal('purpose' in (byRoute.get('modA.pageOne.cmdRemove') ?? {}), false);
+  const issues = catalog.issues as string[];
+  assert.ok(issues.includes('PURPOSE_MISSING: modA.pageOne.qryItems'));
+  assert.ok(issues.includes('PURPOSE_MISSING: modA.pageOne.cmdRemove'));
+  assert.equal(parseAssistantCatalog(catalog, 'modA').ok, true);
+});
+
+test('the module title and description come from module.defs of the release, whole', async () => {
+  const prompt = `Module A.\n${'long sentence. '.repeat(300)}`;
+  const { files, json } = releaseA({ 'l4/modA/module.defs.js': { moduleName: 'modA', title: 'Module A title', sourcePrompt: prompt } });
+  const catalog = await built(files, json);
+  assert.equal(catalog.title, 'Module A title');
+  assert.equal(catalog.description, prompt);
+  assert.equal((catalog.issues as string[]).some((issue) => issue.startsWith('MODULE_')), false);
+  assert.equal(catalog.schemaVersion, 'assistant-catalog-v1');
+  assert.equal(parseAssistantCatalog(catalog, 'modA').ok, true);
+});
+
+test('without module.defs, or without one of its fields, the field leaves the catalog and the line goes to issues', async () => {
+  const none = await built(...Object.values(releaseA()) as [Files, Record<string, unknown>]);
+  assert.equal('title' in none, false);
+  assert.equal('description' in none, false);
+  assert.ok((none.issues as string[]).includes('MODULE_DEF_MISSING'));
+
+  const partial = releaseA({ 'l4/modA/module.defs.js': { moduleName: 'modA', title: 'Only the title' } });
+  const catalog = await built(partial.files, partial.json);
+  assert.equal(catalog.title, 'Only the title');
+  assert.equal('description' in catalog, false);
+  assert.ok((catalog.issues as string[]).includes('MODULE_DESCRIPTION_MISSING'));
+  assert.equal((catalog.issues as string[]).includes('MODULE_DEF_MISSING'), false);
+
+  const broken = releaseA({ 'l4/modA/module.defs.js': new Error('def of an old shape') });
+  const unreadable = await built(broken.files, broken.json);
+  assert.ok((unreadable.issues as string[]).some((issue) => issue.startsWith('DEF_UNREADABLE: module.defs')));
+  assert.ok((unreadable.issues as string[]).includes('MODULE_DEF_MISSING'));
+});
