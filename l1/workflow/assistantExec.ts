@@ -235,12 +235,14 @@ export async function execAssistantAction(
       params: params.value,
       meta: agent
         // No person in the session: the author is the agent, by its id and the `agent` type; the actors are those of this action only.
-        ? { requestId: input.commandId, userId: agent.agentId, actorId: agent.agentId, actorType: 'agent' as const, actorScope: held }
+        ? { requestId: input.commandId, userId: agent.agentId, actorId: agent.agentId, actorType: 'agent' as const, actorScope: held, verifiedAuthorities: held }
         : {
           requestId: input.commandId,
           verifiedEmail: email as string,
           userId: email as string,
           actorScope: held,
+          // The route's own `authorize` reads this one: the same value, so the route confirms what the engine did.
+          verifiedAuthorities: held,
           ...((behalf as AssistantOnBehalfOf).via === 'nora' ? { via: 'nora' as const } : {}),
         },
     }, ctx);

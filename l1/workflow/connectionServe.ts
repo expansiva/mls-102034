@@ -160,7 +160,9 @@ export function createConnectionServer(deps: ConnectionServerDeps): (input: Conn
           requestId: input.idempotencyKey ?? randomUUID(),
           userId: technical,
           actorId: technical,
+          // The same value in both: `actorScope` is read by the engine, `verifiedAuthorities` by the `authorize` the route carries.
           actorScope: [`${moduleId}:${technical}`],
+          verifiedAuthorities: [`${moduleId}:${technical}`],
           connection: {
             connectionId: input.connectionId,
             operationId: input.operationId,

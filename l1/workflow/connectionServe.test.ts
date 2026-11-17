@@ -5,6 +5,7 @@ import type { BffRequest, BffResponse, RequestContext } from '/_102034_/l1/serve
 import type { DefsReader } from '/_102034_/l1/workflow/assistantCatalogDefs.js';
 import { buildServeIndex, createConnectionServer, type ConnectionServerDeps, type ServeIndex } from '/_102034_/l1/workflow/connectionServe.js';
 import { exampleCatalog } from '/_102034_/testing/connections/connectionFixtures.js';
+import { createGeneratedRoute } from '/_102034_/testing/connections/generatedRoute.js';
 import cm from '/_102034_/l4/ontology/connections/cm.defs.js';
 import type { ConnectionCatalog, ConnectionContext } from '/_102034_/l4/ontology/connections/types.defs.js';
 
@@ -160,4 +161,35 @@ test('the person who asked an agent (requestedBy) arrives by the mdm id too, fro
   const result = await unlinked.serve(call('describe', { organizationId: 'org-1', agentId: 'agent-1', requestedBy: 'cm-boss', requestedByMdmId: 'forged' }));
   assert.equal(result.ok, true, 'never refused for this');
   assert.deepEqual(unlinked.requests[0].request.meta?.connection?.context, { organizationId: 'org-1', agentId: 'agent-1', requestedBy: 'cm-boss' });
+});
+
+test('the technical actor goes in verifiedAuthorities too, where the route confirms: a route that lists connection:<id> answers, one that does not is forbidden', async () => {
+  const listed = createGeneratedRoute(['connection:cm'], { version: 'v1' });
+  const lets = harness();
+  const served = createConnectionServer({
+    catalogOf: async () => cm,
+    index: async () => index({ 'cm.describe': [{ moduleId: 'modA', route: 'modA.agents.describe' }] }),
+    execMessage: async (request) => { lets.requests.push({ request, ctx: CTX }); return listed(request); },
+    newContext: () => CTX,
+    log: () => undefined,
+  });
+  assert.deepEqual(await served(call()), { ok: true, output: { version: 'v1' } });
+  assert.deepEqual(lets.requests[0].request.meta?.verifiedAuthorities, ['modA:connection:cm']);
+  assert.deepEqual(lets.requests[0].request.meta?.verifiedAuthorities, lets.requests[0].request.meta?.actorScope);
+
+  // a route that does not list the technical actor: 403 from the route, `forbidden` for the caller
+  const unlisted = createGeneratedRoute(['member']);
+  const refuses = createConnectionServer({
+    catalogOf: async () => cm,
+    index: async () => index({ 'cm.describe': [{ moduleId: 'modA', route: 'modA.agents.describe' }] }),
+    execMessage: async (request) => unlisted(request),
+    newContext: () => CTX,
+    log: () => undefined,
+  });
+  const result = await refuses(call());
+  assert.equal(result.ok === false && result.code, 'forbidden');
+
+  // the hole this closes: without verifiedAuthorities the same route lets any server call through
+  const withoutIt = await unlisted({ routine: 'modA.agents.describe', params: {}, meta: { source: 'message', actorScope: ['modA:connection:cm'] } });
+  assert.equal(withoutIt.statusCode, 200);
 });

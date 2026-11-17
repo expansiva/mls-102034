@@ -8,6 +8,7 @@ import { getMdmKv, putMdmKv, reserveMdmKv } from '/_102034_/l1/mdm/layer_3_useca
 import { createAssistantCatalogSource, ASSISTANT_CATALOG_SCHEMA, type AssistantCatalogItem } from '/_102034_/l1/workflow/assistantCatalog.js';
 import { execAssistantAction, mapBffResult, type AssistantAgentAccess, type AssistantExecDeps, type AssistantExecInput } from '/_102034_/l1/workflow/assistantExec.js';
 import type { AssistantOnBehalfOf } from '/_102034_/l1/workflow/assistantActivities.js';
+import { createGeneratedRoute } from '/_102034_/testing/connections/generatedRoute.js';
 
 function item(actionId: string, kind: 'cmd' | 'qry', actors: string[], assistant: 'included' | 'excluded' = 'included'): AssistantCatalogItem {
   return { route: `modA.page.${actionId}`, routes: [`modA.page.${actionId}`], kind, actionId, title: actionId, actors, assistant };
@@ -56,7 +57,7 @@ test('a query runs as the person, with the login e-mail and the module authoriti
   assert.deepEqual(calls.requests[0], {
     routine: 'modA.page.modA.list',
     params: { page: 1 },
-    meta: { requestId: 'cmd-1', verifiedEmail: 'ana@example.test', userId: 'ana@example.test', actorScope: ['modA:worker'], via: 'nora' },
+    meta: { requestId: 'cmd-1', verifiedEmail: 'ana@example.test', userId: 'ana@example.test', actorScope: ['modA:worker'], verifiedAuthorities: ['modA:worker'], via: 'nora' },
   });
   const kept = (await getMdmKv(ctx, { key: 'assistant:cmd-1' }))?.value as Record<string, unknown>;
   assert.equal(kept.state, 'done');
@@ -94,7 +95,7 @@ test('a command runs once as the person, and a sensitive one is treated exactly 
   assert.deepEqual(sensitive, { outcome: 'done', data: { id: 'x', version: 4 } });
   assert.deepEqual(write, sensitive);
   assert.equal(calls.requests.length, 2);
-  assert.deepEqual(calls.requests[0].meta, { requestId: 'c-sensitive', verifiedEmail: 'ana@example.test', userId: 'ana@example.test', actorScope: ['modA:boss'], via: 'nora' });
+  assert.deepEqual(calls.requests[0].meta, { requestId: 'c-sensitive', verifiedEmail: 'ana@example.test', userId: 'ana@example.test', actorScope: ['modA:boss'], verifiedAuthorities: ['modA:boss'], via: 'nora' });
   assert.deepEqual(calls.requests[0].params, { id: 'x', version: 3 });
   const again = await execAssistantAction(ctx, deps, input({ actionId: 'modA.accept', input: { id: 'x', version: 3 }, commandId: 'c-sensitive' }, ['modA:boss']));
   assert.deepEqual(again, sensitive);
@@ -245,7 +246,7 @@ test('an agent with the tool ON runs it as itself: its id and the agent type, no
   assert.deepEqual(calls.requests[0], {
     routine: 'modA.page.modA.create',
     params: { details: { title: 'x' } },
-    meta: { requestId: 'agent-cmd-1', userId: 'agent-1', actorId: 'agent-1', actorType: 'agent', actorScope: ['modA:boss'] },
+    meta: { requestId: 'agent-cmd-1', userId: 'agent-1', actorId: 'agent-1', actorType: 'agent', actorScope: ['modA:boss'], verifiedAuthorities: ['modA:boss'] },
   });
   assert.equal('verifiedEmail' in (calls.requests[0].meta ?? {}), false, 'no person is the caller');
   assert.equal('via' in (calls.requests[0].meta ?? {}), false);
@@ -308,4 +309,36 @@ test('the person path does not change: the same request as before, with the nora
   assert.equal(meta.actorType, undefined);
   assert.equal(meta.via, 'nora');
   assert.equal(meta.verifiedEmail, 'ana@example.test');
+});
+
+// ---- the route confirms what the engine did (rt238) ----
+
+test('the same authorities go in actorScope and in verifiedAuthorities, for the person and for the agent', async () => {
+  const person = setup();
+  await execAssistantAction(person.ctx, person.deps, input({}, ['modA:worker', 'modA:boss']));
+  assert.deepEqual(person.calls.requests[0].meta?.verifiedAuthorities, person.calls.requests[0].meta?.actorScope);
+  const agent = setup(undefined, { agent: agentAccess(['modA.create']) });
+  await execAssistantAction(agent.ctx, agent.deps, agentInput());
+  assert.deepEqual(agent.calls.requests[0].meta?.verifiedAuthorities, ['modA:boss']);
+  assert.deepEqual(agent.calls.requests[0].meta?.verifiedAuthorities, agent.calls.requests[0].meta?.actorScope);
+});
+
+test('a route that lists the actor lets the person and the agent through; one that does not list it refuses with 403, and the answer is forbidden FROM THE ROUTE', async () => {
+  // modA.create is for `boss`. The route (as the generator emits it) lists `boss`:
+  const listed = createGeneratedRoute(['boss']);
+  const person = setup((request) => listed(request));
+  assert.equal((await execAssistantAction(person.ctx, person.deps, input({ actionId: 'modA.create', input: { details: { title: 't' } } }, ['modA:boss']))).outcome, 'done');
+  const agent = setup((request) => listed(request), { agent: agentAccess(['modA.create']) });
+  assert.equal((await execAssistantAction(agent.ctx, agent.deps, agentInput())).outcome, 'done');
+
+  // a route that lists only another actor: the engine's own check passes (boss holds it), the route says 403
+  const unlisted = createGeneratedRoute(['someoneElse']);
+  const refusedPerson = setup((request) => unlisted(request));
+  const byPerson = await execAssistantAction(refusedPerson.ctx, refusedPerson.deps, input({ actionId: 'modA.create', input: { details: { title: 't' } } }, ['modA:boss']));
+  assert.equal(byPerson.outcome, 'forbidden');
+  assert.equal(refusedPerson.calls.requests.length, 1, 'the route was reached and refused it');
+  const refusedAgent = setup((request) => unlisted(request), { agent: agentAccess(['modA.create']) });
+  const byAgent = await execAssistantAction(refusedAgent.ctx, refusedAgent.deps, agentInput());
+  assert.equal(byAgent.outcome, 'forbidden');
+  assert.equal(refusedAgent.calls.requests.length, 1);
 });
