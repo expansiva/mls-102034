@@ -109,6 +109,8 @@ export interface CmUpdateAgentOutput {
   version: string;
   /** What `undoAgentChange` takes: the undo names the change (and goes with `expectVersion` in the options). */
   changeId: string;
+  /** One-line summary of what a prompt change altered, made by the cm. */
+  summary?: string;
 }
 
 export interface CmListAgentHistoryInput {
@@ -119,6 +121,8 @@ export interface CmAgentChange {
   /** ISO 8601. */
   at: string;
   authorUserId: string;
+  /** One-line summary of what a prompt change altered, made by the cm. */
+  summary?: string;
 }
 export interface CmListAgentHistoryOutput {
   changes: CmAgentChange[];
