@@ -134,6 +134,8 @@ const EXTRA_ENV_KEYS = [
   'NODE_OPTIONS',
   'PATH',
   'pm_id',
+  // Boot calls isLocalTestNoAlpha. The child env does not set this, so the read is empty and the manifest stays closed.
+  'LOCAL_TEST_SESSION_ENABLED',
 ] as const;
 
 export class AncestorDenoConfigError extends Error {}

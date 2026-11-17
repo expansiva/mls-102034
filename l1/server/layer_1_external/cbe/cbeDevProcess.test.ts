@@ -100,10 +100,26 @@ test('memoryModeAllowEnv contains the measured env names once', () => {
   assert.equal(new Set(names).size, names.length);
 });
 
+/** `env.NAME = …` is a write. `==` stays a read. */
+function isEnvAssignment(after: string): boolean {
+  const rest = after.trimStart();
+  if (rest.startsWith('==')) return false;
+  return rest.startsWith('=')
+    || rest.startsWith('+=')
+    || rest.startsWith('-=')
+    || rest.startsWith('*=')
+    || rest.startsWith('/=')
+    || rest.startsWith('||=')
+    || rest.startsWith('&&=')
+    || rest.startsWith('??=');
+}
+
 function envNamesReadInL1(): Set<string> {
   const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
   const dot = /process\.env\.([A-Za-z_][A-Za-z0-9_]*)/gu;
   const bracket = /process\.env\[\s*['"]([A-Za-z0-9_]+)['"]\s*\]/gu;
+  // Parameter read: `env.NAME` or `<name>Env.NAME`. Not an assignment.
+  const param = /(?<![A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)\.([A-Z_][A-Z0-9_]*)/gu;
   const names = new Set<string>();
   const walk = (dir: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -116,6 +132,12 @@ function envNamesReadInL1(): Set<string> {
       const text = readFileSync(join(dir, entry.name), 'utf8');
       for (const match of text.matchAll(dot)) names.add(match[1]);
       for (const match of text.matchAll(bracket)) names.add(match[1]);
+      for (const match of text.matchAll(param)) {
+        const receiver = match[1];
+        if (receiver !== 'env' && !receiver.endsWith('Env')) continue;
+        if (isEnvAssignment(text.slice((match.index ?? 0) + match[0].length))) continue;
+        names.add(match[2]);
+      }
     }
   };
   walk(root);
@@ -130,6 +152,18 @@ function allowEnvCovers(allowNames: ReadonlySet<string>, name: string): boolean 
   return false;
 }
 
+/**
+ * Parameter reads the draft process does not execute. One reason per name.
+ * A name the draft does execute belongs in EXTRA_ENV_KEYS, not here.
+ */
+const DRAFT_UNEXECUTED_ENV: Record<string, string> = {
+  LOCAL_TEST_SESSIONS_FILE: 'draft boot (startServer.ts:1159) returns at isEnabledFlag (localTestConfig.ts:294) before the read at localTestConfig.ts:257; childEnv never sets the flag',
+  CANDIDATE_HUB_ORG_ID: 'only caller is cbeRoutes.ts:276, and only in local hub mode; the draft child has no CANDIDATE_HUB, so that branch does not run',
+  CBE_PROJECT_DRIVER_OVERRIDE: 'read at cbeLogin.ts:307 from cbe login (cbeRoutes.ts:1768); the parent serves that route and the draft process does not call it',
+  COLLAB_DRAFT_PORTS_FILE: 'read at cbeDraftPorts.ts:51 from the parent ensureDevProcess (cbeDevProcess.ts:492); the draft child does not spawn a draft',
+  COLLAB_PM2_BIN: 'read at messagesStatusUsecases.ts:105 by the monitor router only; startServer does not import that router',
+};
+
 test('dev --allow-env covers every l1 env read except DATABASE_URL', () => {
   const allow = buildDenoArgs('/tmp/base', SLUG, 4100, draftDatabaseUrl(PARENT_TEST_URL, SLUG, 102047))
     .find((arg) => arg.startsWith('--allow-env='));
@@ -139,7 +173,13 @@ test('dev --allow-env covers every l1 env read except DATABASE_URL', () => {
   assert.equal(allowNames.has('USERNAME'), true);
   assert.equal(allowNames.has('DATABASE_URL'), false);
   assert.equal(allowEnvCovers(allowNames, 'PGBINARY'), true);
-  const missing = [...envNamesReadInL1()].filter((name) => name !== 'DATABASE_URL' && !allowEnvCovers(allowNames, name));
+  const read = envNamesReadInL1();
+  for (const [name, reason] of Object.entries(DRAFT_UNEXECUTED_ENV)) {
+    assert.equal(reason.includes('\n'), false, name);
+    assert.equal(read.has(name), true, name);
+    assert.equal(allowEnvCovers(allowNames, name), false, name);
+  }
+  const missing = [...read].filter((name) => name !== 'DATABASE_URL' && !allowEnvCovers(allowNames, name) && !Object.hasOwn(DRAFT_UNEXECUTED_ENV, name));
   assert.deepEqual(missing, []);
 });
 
