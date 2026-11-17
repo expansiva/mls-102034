@@ -1,7 +1,7 @@
 import { ensureEnvFileLoaded } from '/_102034_/l1/server/layer_1_external/config/env.js';
-import { readMessagesIntegration } from '/_102034_/l1/server/layer_1_external/config/messagesIntegration.js';
 import { AppError } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import { msgProxyTarget, serviceIdentityHeaders } from '/_102034_/l1/server/layer_1_external/transport/http/msgProxy.js';
+import { moduleHeaders as moduleCredentialHeaders, postEnvelope } from '/_102034_/l1/server/layer_1_external/collabMessages/transport.js';
 import type {
   AgentIntentModuleAdvance,
   RequestAddMessage,
@@ -151,10 +151,6 @@ function localError(code: string, statusCode: number, message: string): AppError
 
 type CallAuth = 'common' | 'module';
 
-function isAbortError(err: unknown): boolean {
-  return typeof err === 'object' && err !== null && (err as { name?: string }).name === 'AbortError';
-}
-
 const MODULE_INTENT_UNSUPPORTED = 'Module intent is not accepted on this call.';
 
 function isModuleIntentType(type: unknown): boolean {
@@ -169,12 +165,6 @@ function containsModuleIntent(intents: unknown): boolean {
   });
 }
 
-function isEnvelope(value: unknown): value is Record<string, unknown> & { statusCode: number } {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
-  const statusCode = (value as { statusCode?: unknown }).statusCode;
-  return typeof statusCode === 'number' && Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599;
-}
-
 export function createServerMessagesClient(options: ServerMessagesClientOptions = {}): ServerMessagesClient {
   const timeoutMs = timeoutMsOf(options.timeoutMs);
   const fetchImpl = options.fetchImpl ?? fetch;
@@ -187,21 +177,7 @@ export function createServerMessagesClient(options: ServerMessagesClientOptions 
   };
 
   function moduleHeaders(asUserId: string, boundProject: string): Record<string, string> {
-    const projectId = options.projectId;
-    if (projectId === undefined) {
-      throw localError('MSG_APP_NOT_CONFIGURED', 503, 'Messages integration is not configured for this application.');
-    }
-    if (boundProject !== projectId) {
-      throw localError('MSG_APP_SCOPE_INVALID', 400, 'Module operation is outside the configured application.');
-    }
-    const integration = readMessagesIntegration(projectId);
-    return {
-      'Content-Type': 'application/json',
-      authorization: `Bearer ${integration.token}`,
-      'x-app-id': integration.projectId,
-      'x-org-id': integration.organizationId,
-      'x-user-id': asUserId,
-    };
+    return moduleCredentialHeaders(options.projectId, boundProject, asUserId);
   }
 
   function commonHeaders(action: ActionName, userId: string): Record<string, string> {
@@ -228,95 +204,14 @@ export function createServerMessagesClient(options: ServerMessagesClientOptions 
     const userId = callerUserId(asUserId);
     const headers = auth === 'module' ? moduleHeaders(userId, boundProject ?? '') : commonHeaders(action, userId);
 
-    const ac = new AbortController();
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      ac.abort();
-    }, timeoutMs);
-
-    const failTimeout = (): never => {
-      throw localError('MSG_SERVICE_TIMEOUT', 504, `collab-messages ${action} timed out`);
-    };
-
-    const failUnavailable = (): never => {
-      throw localError('MSG_SERVICE_UNAVAILABLE', 502, `collab-messages ${action} unavailable`);
-    };
-
-    const bounded = async <T>(work: Promise<T>): Promise<T> => {
-      if (timedOut || ac.signal.aborted) failTimeout();
-      return await new Promise<T>((resolve, reject) => {
-        const onAbort = (): void => {
-          reject(localError('MSG_SERVICE_TIMEOUT', 504, `collab-messages ${action} timed out`));
-        };
-        ac.signal.addEventListener('abort', onAbort, { once: true });
-        work.then(
-          (value) => {
-            ac.signal.removeEventListener('abort', onAbort);
-            if (timedOut || ac.signal.aborted) onAbort();
-            else resolve(value);
-          },
-          (err: unknown) => {
-            ac.signal.removeEventListener('abort', onAbort);
-            if (timedOut || ac.signal.aborted || isAbortError(err)) onAbort();
-            else reject(err);
-          },
-        );
-      });
-    };
-
-    try {
-      const response = await bounded(fetchImpl(`${msgProxyTarget(capturedEnv)}/msg`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(bodyOf(action, input, userId)),
-        redirect: 'manual',
-        signal: ac.signal,
-      })).catch((err: unknown): never => {
-        if (err instanceof AppError) throw err;
-        return failUnavailable();
-      });
-
-      if (response.status >= 300 && response.status < 400) {
-        await bounded(response.arrayBuffer()).catch((err: unknown) => {
-          if (err instanceof AppError) throw err;
-        });
-        throw localError(
-          'MSG_SERVICE_PROTOCOL_ERROR',
-          502,
-          `collab-messages ${action} protocol error (http ${response.status})`,
-        );
-      }
-
-      const text = await bounded(response.text()).catch((err: unknown): never => {
-        if (err instanceof AppError) throw err;
-        return failUnavailable();
-      });
-
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(text);
-      } catch {
-        throw localError(
-          'MSG_SERVICE_PROTOCOL_ERROR',
-          502,
-          `collab-messages ${action} protocol error (http ${response.status})`,
-        );
-      }
-      if (!isEnvelope(parsed)) {
-        throw localError(
-          'MSG_SERVICE_PROTOCOL_ERROR',
-          502,
-          `collab-messages ${action} protocol error (http ${response.status})`,
-        );
-      }
-      return {
-        httpStatus: response.status,
-        body: parsed as MessagesCallResult<T>['body'],
-      };
-    } finally {
-      clearTimeout(timer);
-    }
+    return postEnvelope({
+      fetchImpl,
+      url: `${msgProxyTarget(capturedEnv)}/msg`,
+      headers,
+      body: JSON.stringify(bodyOf(action, input, userId)),
+      timeoutMs,
+      label: action,
+    }) as Promise<MessagesCallResult<T>>;
   }
 
   return {

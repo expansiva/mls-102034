@@ -180,6 +180,7 @@ export interface CmActivateAgentInput {
   draftId: string;
 }
 export interface CmActivateAgentOutput {
+  /** The `draftId` of `createAgent` is already the final id: this is the same value, not a new one. */
   agentId: string;
 }
 
