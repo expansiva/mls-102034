@@ -7,6 +7,8 @@ export type { ModuleWakeEvent, ModuleWakeReceipt, TaskModuleRef };
 
 /** 32 KiB. The route checks the raw body as well. */
 export const WORKFLOW_WAKE_BODY_LIMIT_BYTES = 32 * 1024;
+/** The body of `/exec/connection`: its own ceiling (an agent's `record` or a delivered catalog is larger than a wake notice). */
+export const CONNECTION_BODY_LIMIT_BYTES = 1024 * 1024;
 
 export interface WorkflowWakeScope {
   projectId: string;

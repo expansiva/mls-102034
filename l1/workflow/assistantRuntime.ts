@@ -28,6 +28,9 @@ import {
 } from '/_102034_/l1/workflow/assistantCatalog.js';
 import { defsCatalogImporter, distDefsReader } from '/_102034_/l1/workflow/assistantCatalogDefs.js';
 import { execAssistantAction, type AssistantExecInput, type AssistantExecResult } from '/_102034_/l1/workflow/assistantExec.js';
+import { deliverReleaseCatalog, type ReleaseCatalogDelivery } from '/_102034_/l1/workflow/releaseCatalogDelivery.js';
+import { readMessagesIntegration } from '/_102034_/l1/server/layer_1_external/config/messagesIntegration.js';
+import { getMdmKv } from '/_102034_/l1/mdm/layer_3_usecases/kvUsecases.js';
 import { buildServeIndex, createConnectionServer, type ConnectionServeInput, type ServeIndex } from '/_102034_/l1/workflow/connectionServe.js';
 import { distConnectionCatalogs } from '/_102034_/l1/server/layer_1_external/connections/connectionCatalogs.js';
 import type { ConnectionResult } from '/_102034_/l4/ontology/connections/types.defs.js';
@@ -67,6 +70,8 @@ export interface AssistantRunners {
   exec: (input: AssistantExecInput) => Promise<AssistantExecResult>;
   /** An operation of a connection that the module serves (`/exec/connection`). Never throws: every failure is a code. */
   connection: (input: ConnectionServeInput) => Promise<ConnectionResult>;
+  /** Delivers the catalogs of the release to the module that serves `platform.releaseCatalogChanged`, once per change. Never throws. */
+  deliverReleaseCatalog: () => Promise<ReleaseCatalogDelivery>;
   /** Builds the catalog of every module of the release now, inside the cache the `catalog` request uses; never throws. */
   warmCatalogs: () => Promise<void>;
 }
@@ -113,6 +118,22 @@ export function createAssistantRunners(projectId: string): AssistantRunners {
   });
   return {
     connection: serveConnection,
+    deliverReleaseCatalog: () => deliverReleaseCatalog({
+      projectId,
+      releaseId: () => getRunningRelease()?.id ?? null,
+      moduleIds: () => assistantExecModules(projectId).map((entry) => entry.moduleId),
+      catalogs,
+      serve: serveConnection,
+      organizationId: () => {
+        try {
+          return readMessagesIntegration(projectId).organizationId;
+        } catch {
+          return undefined;
+        }
+      },
+      kv: { get: (ctx, params) => getMdmKv(ctx, params), put: (ctx, params) => putMdmKv(ctx, params) },
+      newContext,
+    }),
     warmCatalogs: () => warmAssistantCatalogs(catalogs, assistantExecModules(projectId).map((entry) => entry.moduleId)),
     activities: (input) => listAssistantActivities(newContext(), {
       projectId,

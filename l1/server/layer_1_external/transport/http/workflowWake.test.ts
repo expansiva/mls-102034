@@ -622,3 +622,32 @@ test('connection: a body that is not what the contract says is invalid (400) and
     await h.restore();
   }
 });
+
+test('connection: its own ceiling of 1 MiB: a body bigger than the wake takes goes in, one over 1 MiB is invalid in the envelope, and the wake keeps its 32 KiB', async () => {
+  const seen: unknown[] = [];
+  const h = await harness(() => ({ connection: async (input) => { seen.push(input); return { ok: true, output: { received: true } }; } }));
+  try {
+    const big = await postConnection(h.app, connectionBody({ input: { text: 'x'.repeat(200 * 1024) } }));
+    assert.equal(big.statusCode, 200, 'a body over 32 KiB is not refused here');
+    assert.deepEqual(JSON.parse(big.body), { statusCode: 200, ok: true, output: { received: true } });
+    assert.equal(seen.length, 1);
+
+    const huge = await postConnection(h.app, connectionBody({ input: { text: 'x'.repeat(1024 * 1024 + 10) } }));
+    assert.equal(huge.statusCode, 400);
+    const body = JSON.parse(huge.body) as { statusCode: number; ok: boolean; code: string; message: string };
+    assert.deepEqual({ statusCode: body.statusCode, ok: body.ok, code: body.code }, { statusCode: 400, ok: false, code: 'invalid' });
+    assert.match(body.message, /larger than 1048576 bytes/);
+    assert.equal(seen.length, 1, 'the runner did not run');
+
+    const notJson = await postConnection(h.app, '{not json');
+    assert.equal(notJson.statusCode, 400);
+    assert.equal(JSON.parse(notJson.body).code, 'invalid');
+    assert.equal(JSON.parse(notJson.body).ok, false);
+
+    // the wake route keeps its ceiling
+    const wake = await post(h.app, event({ secretNote: 'x'.repeat(WORKFLOW_WAKE_BODY_LIMIT_BYTES + 10) }));
+    assert.equal(wake.statusCode, 413);
+  } finally {
+    await h.restore();
+  }
+});

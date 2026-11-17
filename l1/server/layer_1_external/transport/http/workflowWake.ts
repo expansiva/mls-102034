@@ -8,6 +8,7 @@ import { AppError } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import {
   parseWorkflowWakeEvent,
   WORKFLOW_WAKE_BODY_LIMIT_BYTES,
+  CONNECTION_BODY_LIMIT_BYTES,
   type WorkflowWakeInbox,
   type WorkflowWakeScope,
 } from '/_102034_/l1/workflow/wakeContracts.js';
@@ -383,22 +384,59 @@ export function registerWorkflowWakeRoutes(app: FastifyInstance, deps: WorkflowW
       return sendFailure(reply, failure(400, 'ASSISTANT_KIND_UNSUPPORTED', 'This assistant request kind is not supported.'));
     });
 
-    // An operation of a connection that the module serves (the outside system → the app). Same scope, same authentication.
-    scope.post('/exec/connection', async (request, reply) => {
-      const projectId = authorizedAppIds.get(request);
-      if (!projectId) {
-        return sendFailure(reply, failure(401, 'WORKFLOW_WAKE_AUTH_REQUIRED', 'Workflow wake authentication is required.'));
-      }
-      const raw = request.body as WakeBody | undefined;
-      const body = raw && typeof raw === 'object' && 'value' in raw ? raw.value : undefined;
-      const parsed = parseConnectionServe(body);
-      if (isConnectionFailure(parsed)) return sendConnectionResult(reply, parsed);
-      try {
-        if (!assistant || assistant.projectId !== projectId) assistant = { projectId, runners: createAssistant(projectId) };
-        return sendConnectionResult(reply, await assistant.runners.connection(parsed));
-      } catch {
-        return sendConnectionResult(reply, { ok: false, code: 'unavailable', message: 'The operation could not be served now.' });
-      }
+    // An operation of a connection that the module serves (the outside system → the app). Same scope, same authentication
+    // (the hook above is inherited), its own body ceiling, and every failure in the envelope the caller reads.
+    scope.register((connection, _connectionOptions, connectionDone) => {
+      // The wake's parser (32 KiB) is inherited; this route has its own.
+      connection.removeContentTypeParser('application/json');
+      connection.addContentTypeParser(
+        'application/json',
+        { parseAs: 'buffer', bodyLimit: CONNECTION_BODY_LIMIT_BYTES },
+        (_request, raw, next) => {
+          const buffer = raw as Buffer;
+          if (buffer.byteLength > CONNECTION_BODY_LIMIT_BYTES) {
+            next(new AppError('CONNECTION_BODY_TOO_LARGE', 'too large', 413), undefined);
+            return;
+          }
+          try {
+            const body: WakeBody = { value: JSON.parse(buffer.toString('utf8')) as unknown, byteLength: buffer.byteLength };
+            next(null, body);
+          } catch {
+            next(new AppError('CONNECTION_BODY_INVALID', 'not json', 400), undefined);
+          }
+        },
+      );
+      connection.setErrorHandler((error: unknown, _request, reply) => {
+        const candidate = (typeof error === 'object' && error !== null ? error : {}) as { statusCode?: number; code?: string };
+        const statusCode = typeof candidate.statusCode === 'number' ? candidate.statusCode : 500;
+        const code = typeof candidate.code === 'string' ? candidate.code : '';
+        if (statusCode === 413) {
+          reply.send(sendConnectionResult(reply, { ok: false, code: 'invalid', message: `the body is larger than ${CONNECTION_BODY_LIMIT_BYTES} bytes` }));
+          return;
+        }
+        if (statusCode === 400 || code.includes('JSON') || code.includes('CTP') || code === 'CONNECTION_BODY_INVALID') {
+          reply.send(sendConnectionResult(reply, { ok: false, code: 'invalid', message: 'the body must be a JSON object' }));
+          return;
+        }
+        reply.send(sendConnectionResult(reply, { ok: false, code: 'unavailable', message: 'The operation could not be served now.' }));
+      });
+      connection.post('/exec/connection', async (request, reply) => {
+        const projectId = authorizedAppIds.get(request);
+        if (!projectId) {
+          return sendFailure(reply, failure(401, 'WORKFLOW_WAKE_AUTH_REQUIRED', 'Workflow wake authentication is required.'));
+        }
+        const raw = request.body as WakeBody | undefined;
+        const body = raw && typeof raw === 'object' && 'value' in raw ? raw.value : undefined;
+        const parsed = parseConnectionServe(body);
+        if (isConnectionFailure(parsed)) return sendConnectionResult(reply, parsed);
+        try {
+          if (!assistant || assistant.projectId !== projectId) assistant = { projectId, runners: createAssistant(projectId) };
+          return sendConnectionResult(reply, await assistant.runners.connection(parsed));
+        } catch {
+          return sendConnectionResult(reply, { ok: false, code: 'unavailable', message: 'The operation could not be served now.' });
+        }
+      });
+      connectionDone();
     });
 
     done();

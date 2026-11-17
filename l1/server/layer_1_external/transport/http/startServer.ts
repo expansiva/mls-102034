@@ -1167,7 +1167,9 @@ if (isMainModule) {
     if (env.runtimeMode === 'postgres') {
       // The assistant's catalogs take a few seconds to build: do it now, in the background, inside the release cache.
       try {
-        void sharedAssistantRunners(resolveClientProjectId()).warmCatalogs();
+        const runners = sharedAssistantRunners(resolveClientProjectId());
+        // Then, once the catalogs are warm, the release's catalog goes to the module that serves it (never waits, never fails the boot).
+        void runners.warmCatalogs().then(() => runners.deliverReleaseCatalog()).catch((error) => console.error('[release-catalog] not delivered:', error));
       } catch (error) {
         console.error('[assistant] catalog warm-up not started:', error);
       }
