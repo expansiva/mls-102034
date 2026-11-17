@@ -95,6 +95,14 @@ test('the decisions of the manager and of the cm are in the types', () => {
   assert.match(textOf('types.defs.ts'), /actorMdmId\?: string;/);
 });
 
+test('expectsVersion is on exactly updateAgent, undoAgentChange and activateAgent, and on no other operation of any catalog', () => {
+  const marked = (catalog: ConnectionCatalog): string[] => catalog.operations.filter((operation) => operation.expectsVersion !== undefined).map((operation) => operation.operationId);
+  assert.deepEqual(marked(cm), ['updateAgent', 'undoAgentChange', 'activateAgent']);
+  assert.ok(cm.operations.filter((operation) => operation.expectsVersion !== undefined).every((operation) => operation.expectsVersion === true && operation.direction === 'call' && operation.kind === 'command'));
+  assert.deepEqual(marked(platform), []);
+  assert.match(textOf('types.defs.ts'), /expectsVersion\?: true;/);
+});
+
 test('the platform catalog has releaseCatalogChanged as a hidden serve command', () => {
   assert.equal(platform.connectionId, 'platform');
   assert.deepEqual(platform.operations.map((operation) => [operation.operationId, operation.direction, operation.kind, operation.hiddenFromAgents]), [['releaseCatalogChanged', 'serve', 'command', true]]);

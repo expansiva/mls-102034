@@ -55,6 +55,8 @@ export interface ConnectionOperation {
    * `forbidden` and nothing is sent. The connector knows no operation by name: it reads this list.
    */
   personInputs?: Array<{ from: string; to: string }>;
+  /** The caller must send `expectVersion` (the version it read); without it the other side answers `invalid`, with a stale one `conflict`. */
+  expectsVersion?: true;
 }
 
 export interface ConnectionCatalog {
