@@ -1,0 +1,90 @@
+/// <mls fileReference="_102034_/l1/server/layer_1_external/connections/connectionCatalogs.test.ts" enhancement="_blank"/>
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+import cm from '/_102034_/l4/ontology/connections/cm.defs.js';
+import platform from '/_102034_/l4/ontology/connections/platform.defs.js';
+import type { ConnectionCatalog } from '/_102034_/l4/ontology/connections/types.defs.js';
+
+const FOLDER = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../l4/ontology/connections');
+const textOf = (name: string): string => readFileSync(path.join(FOLDER, name), 'utf8');
+
+/** `conexoes.md` §5: operation, direction, kind, reply. */
+const CM_TABLE: Array<[string, 'call' | 'serve', 'query' | 'command', 'now' | 'later']> = [
+  ['listAgents', 'call', 'query', 'now'],
+  ['readAgent', 'call', 'query', 'now'],
+  ['updateAgent', 'call', 'command', 'now'],
+  ['listAgentHistory', 'call', 'query', 'now'],
+  ['undoAgentChange', 'call', 'command', 'now'],
+  ['simulateAgent', 'call', 'command', 'now'],
+  ['createAgent', 'call', 'command', 'later'],
+  ['activateAgent', 'call', 'command', 'now'],
+  ['discardAgentDraft', 'call', 'command', 'now'],
+  ['listCmTools', 'call', 'query', 'now'],
+  ['runAiPrompt', 'call', 'command', 'now'],
+  ['agentDraftReady', 'serve', 'command', 'now'],
+  ['describe', 'serve', 'query', 'now'],
+  ['record', 'serve', 'command', 'now'],
+];
+
+function check(catalog: ConnectionCatalog, file: string): void {
+  assert.equal(catalog.schemaVersion, 'connection-catalog-v1');
+  assert.ok(catalog.title && catalog.description);
+  const ids = catalog.operations.map((operation) => operation.operationId);
+  assert.equal(new Set(ids).size, ids.length, 'operation ids are unique in the connection');
+  const source = textOf(file);
+  for (const operation of catalog.operations) {
+    assert.match(operation.operationId, /^[a-z][A-Za-z0-9]*$/, `${operation.operationId} is lowerCamel`);
+    assert.ok(operation.description.length > 0);
+    for (const typeName of [operation.inputType, operation.outputType]) {
+      assert.match(source, new RegExp(`export (interface|type) ${typeName}\\b`), `${typeName} is exported in ${file}`);
+    }
+    if (operation.reply === 'later') {
+      const result = catalog.operations.find((other) => other.operationId === operation.resultOperation);
+      assert.equal(result?.direction, 'serve', `${operation.operationId}: resultOperation is a serve operation`);
+      assert.equal(operation.direction, 'call');
+    } else {
+      assert.equal(operation.resultOperation, undefined);
+    }
+    if (operation.hiddenFromAgents || operation.noRowLimit) assert.equal(operation.direction, 'serve');
+    if (operation.noRowLimit) assert.equal(operation.kind, 'query');
+  }
+}
+
+test('the cm catalog has the 14 operations of the contract, with direction, kind and reply', () => {
+  assert.equal(cm.connectionId, 'cm');
+  assert.deepEqual(cm.operations.map((operation) => [operation.operationId, operation.direction, operation.kind, operation.reply]), CM_TABLE);
+  check(cm, 'cm.defs.ts');
+});
+
+test('the cm marks what the contract marks: describe and record hidden, describe without row ceiling, createAgent answers later, runAiPrompt waits longer', () => {
+  const byId = new Map(cm.operations.map((operation) => [operation.operationId, operation]));
+  assert.equal(byId.get('describe')?.hiddenFromAgents, true);
+  assert.equal(byId.get('describe')?.noRowLimit, true);
+  assert.equal(byId.get('record')?.hiddenFromAgents, true);
+  assert.equal(byId.get('record')?.noRowLimit, undefined);
+  assert.equal(byId.get('createAgent')?.resultOperation, 'agentDraftReady');
+  assert.ok((byId.get('runAiPrompt')?.timeoutMs ?? 0) > 60000);
+  assert.equal(cm.operations.filter((operation) => operation.hiddenFromAgents).length, 2);
+});
+
+test('the platform catalog has releaseCatalogChanged as a hidden serve command', () => {
+  assert.equal(platform.connectionId, 'platform');
+  assert.deepEqual(platform.operations.map((operation) => [operation.operationId, operation.direction, operation.kind, operation.hiddenFromAgents]), [['releaseCatalogChanged', 'serve', 'command', true]]);
+  check(platform, 'platform.defs.ts');
+});
+
+test('the seven error codes are exactly the ones of the contract', () => {
+  const source = textOf('types.defs.ts');
+  const declared = /export type ConnectionErrorCode =([^;]+);/.exec(source)?.[1].match(/'([a-z_]+)'/g)?.map((item) => item.slice(1, -1));
+  assert.deepEqual(declared, ['not_found', 'disabled', 'unavailable', 'conflict', 'refused', 'forbidden', 'invalid']);
+});
+
+test('the catalog files carry no code to run: no import of a value, no call', () => {
+  for (const file of ['cm.defs.ts', 'platform.defs.ts', 'types.defs.ts']) {
+    const source = textOf(file);
+    for (const line of source.split('\n').filter((item) => item.startsWith('import '))) assert.match(line, /^import type /);
+  }
+});
