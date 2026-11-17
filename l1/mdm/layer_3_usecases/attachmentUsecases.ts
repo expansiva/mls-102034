@@ -1,4 +1,5 @@
 /// <mls fileReference="_102034_/l1/mdm/layer_3_usecases/attachmentUsecases.ts" enhancement="_blank" />
+import { requestActorType } from '/_102034_/l1/mdm/layer_3_usecases/core/requestActor.js';
 import { AppError, type RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import { AuditLogService, runMonitoredWrite } from '/_102034_/l1/mdm/layer_3_usecases/core/DataRecordService.js';
 import type {
@@ -65,7 +66,7 @@ export async function attachFile(ctx: RequestContext, params: AttachFileParams) 
         routine: 'mdm.attachment.attach',
         before: null,
         after: record as unknown as Record<string, unknown>,
-        actor: { actorId: uploadedBy, actorType: ctx.requestMeta?.userId ? 'user' : 'system' },
+        actor: { actorId: uploadedBy, actorType: requestActorType(ctx) },
       });
       if (moduleConfig.persistence.writeMode === 'writeBehind') {
         await runtime.mdmOutbox.insert({ record: buildAttachmentOutbox(ctx, record) });

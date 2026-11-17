@@ -129,6 +129,11 @@ export function trustedIdentityClaims(meta: BffRequest['meta']): BffRequest['met
 }
 
 /** "Through the assistant": only a `message` request (a server-side caller) can say it, and only as `nora`. */
+/** "The author is an agent": only a `message` request (a server-side caller) can say it, and only as `agent`. */
+export function trustedActorType(meta: BffRequest['meta']): 'agent' | undefined {
+  return meta?.source === 'message' && meta.actorType === 'agent' ? 'agent' : undefined;
+}
+
 export function trustedVia(meta: BffRequest['meta']): 'nora' | undefined {
   return meta?.source === 'message' && meta.via === 'nora' ? 'nora' : undefined;
 }
@@ -317,6 +322,7 @@ export async function execBff(
         traceId: normalizedRequest.meta?.traceId,
         source: normalizedRequest.meta?.source,
         // Like `via`: a server-side caller says it, the browser never does.
+        ...(trustedActorType(normalizedRequest.meta) ? { actorType: trustedActorType(normalizedRequest.meta) } : {}),
         ...(normalizedRequest.meta?.source === 'message' && normalizedRequest.meta.connection ? { connection: normalizedRequest.meta.connection } : {}),
       },
     };

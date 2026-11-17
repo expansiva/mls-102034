@@ -18,7 +18,7 @@ import {
 } from '/_102034_/l1/workflow/assistantRuntime.js';
 import type { AssistantActivitiesInput, AssistantOnBehalfOf } from '/_102034_/l1/workflow/assistantActivities.js';
 import type { AssistantCatalogInput } from '/_102034_/l1/workflow/assistantCatalog.js';
-import type { AssistantExecInput } from '/_102034_/l1/workflow/assistantExec.js';
+import type { AssistantAgentBehalfOf, AssistantExecInput } from '/_102034_/l1/workflow/assistantExec.js';
 import type { ConnectionServeInput } from '/_102034_/l1/workflow/connectionServe.js';
 import type { ConnectionContext, ConnectionErrorCode, ConnectionResult } from '/_102034_/l4/ontology/connections/types.defs.js';
 import { createPostgresWorkflowWakeInbox } from '/_102034_/l1/workflow/wakeInboxPostgres.js';
@@ -150,8 +150,21 @@ function parseAssistantCatalog(body: Record<string, unknown>): Parsed<AssistantC
   return { onBehalfOf, ...(typeof body.knownRelease === 'string' ? { knownRelease: body.knownRelease } : {}) };
 }
 
+/** `exec` may come for a person (as always) or for an agent in its own name: `{ agentId, requestedBy?, via: 'agent' }`, never both. */
+function parseExecOnBehalfOf(body: Record<string, unknown>): Parsed<AssistantOnBehalfOf | AssistantAgentBehalfOf> {
+  const behalf = body.onBehalfOf;
+  if (behalf === null || typeof behalf !== 'object' || Array.isArray(behalf)) return assistantInvalid('onBehalfOf must be an object');
+  const record = behalf as Record<string, unknown>;
+  if (record.agentId === undefined && record.via !== 'agent') return parseOnBehalfOf(body);
+  if (record.via !== 'agent') return assistantInvalid("onBehalfOf.via must be 'agent' for an agent");
+  if (record.cmUserId !== undefined || record.authorities !== undefined) return assistantInvalid('onBehalfOf is a person or an agent, not both');
+  if (!assistantText(record.agentId)) return assistantInvalid('onBehalfOf.agentId is required');
+  if (record.requestedBy !== undefined && !assistantText(record.requestedBy)) return assistantInvalid('onBehalfOf.requestedBy must be a text');
+  return { agentId: record.agentId, via: 'agent', ...(record.requestedBy !== undefined ? { requestedBy: record.requestedBy as string } : {}) };
+}
+
 function parseAssistantExec(body: Record<string, unknown>): Parsed<AssistantExecInput> {
-  const onBehalfOf = parseOnBehalfOf(body);
+  const onBehalfOf = parseExecOnBehalfOf(body);
   if (isFailure(onBehalfOf)) return onBehalfOf;
   if (!assistantText(body.actionId)) return assistantInvalid('actionId is required');
   if (!assistantText(body.commandId, 128)) return assistantInvalid('commandId is required');

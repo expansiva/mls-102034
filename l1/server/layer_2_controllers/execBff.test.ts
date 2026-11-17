@@ -1,7 +1,8 @@
 /// <mls fileReference="_102034_/l1/server/layer_2_controllers/execBff.test.ts" enhancement="_blank" />
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createSessionContext, trustedVia, withAlphaAuthorities, type AlphaAuthorityDeps } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
+import { createSessionContext, trustedActorType,
+  trustedVia, withAlphaAuthorities, type AlphaAuthorityDeps } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
 import type { BffRequest } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 
 const moduleId = 'comanda';
@@ -68,4 +69,14 @@ test('the session context keeps via only as nora, and drops it when the request 
   assert.equal('via' in createSessionContext({ via: 'other' as never }), false);
   const inherited = createSessionContext({ via: 'nora' });
   assert.equal('via' in createSessionContext({ ...inherited, via: trustedVia({ source: 'http', via: 'nora' }) }), false);
+});
+
+test('the agent author is trusted only from a message request, never from http, test or another value', () => {
+  assert.equal(trustedActorType({ source: 'message', actorType: 'agent' }), 'agent');
+  assert.equal(trustedActorType({ source: 'http', actorType: 'agent' }), undefined);
+  assert.equal(trustedActorType({ source: 'test', actorType: 'agent' }), undefined);
+  assert.equal(trustedActorType({ actorType: 'agent' }), undefined);
+  assert.equal(trustedActorType({ source: 'message' }), undefined);
+  assert.equal(trustedActorType({ source: 'message', actorType: 'system' as never }), undefined);
+  assert.equal(trustedActorType(undefined), undefined);
 });

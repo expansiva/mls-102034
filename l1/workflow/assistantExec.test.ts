@@ -6,7 +6,8 @@ import { createMemoryDataRuntime } from '/_102034_/l1/mdm/layer_1_external/data/
 import { createRequestContext } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
 import { getMdmKv, putMdmKv, reserveMdmKv } from '/_102034_/l1/mdm/layer_3_usecases/kvUsecases.js';
 import { createAssistantCatalogSource, ASSISTANT_CATALOG_SCHEMA, type AssistantCatalogItem } from '/_102034_/l1/workflow/assistantCatalog.js';
-import { execAssistantAction, mapBffResult, type AssistantExecDeps, type AssistantExecInput } from '/_102034_/l1/workflow/assistantExec.js';
+import { execAssistantAction, mapBffResult, type AssistantAgentAccess, type AssistantExecDeps, type AssistantExecInput } from '/_102034_/l1/workflow/assistantExec.js';
+import type { AssistantOnBehalfOf } from '/_102034_/l1/workflow/assistantActivities.js';
 
 function item(actionId: string, kind: 'cmd' | 'qry', actors: string[], assistant: 'included' | 'excluded' = 'included'): AssistantCatalogItem {
   return { route: `modA.page.${actionId}`, routes: [`modA.page.${actionId}`], kind, actionId, title: actionId, actors, assistant };
@@ -41,7 +42,8 @@ function setup(answer: (request: BffRequest) => { response: BffResponse; statusC
   return { ctx, deps, calls };
 }
 
-const input = (over: Partial<AssistantExecInput> = {}, authorities = ['modA:worker']): AssistantExecInput => ({
+type PersonExec = Omit<AssistantExecInput, 'onBehalfOf'> & { onBehalfOf: AssistantOnBehalfOf };
+const input = (over: Partial<PersonExec> = {}, authorities = ['modA:worker']): PersonExec => ({
   onBehalfOf: { cmUserId: 'cm-1', authorities, snapshotAt: '2026-11-13T10:00:00.000Z', via: 'nora' },
   actionId: 'modA.list', input: { page: 1 }, commandId: 'cmd-1', ...over,
 });
@@ -214,4 +216,96 @@ test('only the value nora is sent as via; anything else the caller wrote is not 
   const { ctx, deps, calls } = setup();
   await execAssistantAction(ctx, deps, { ...input(), commandId: 'via-1', onBehalfOf: { ...input().onBehalfOf, via: 'other' } });
   assert.equal('via' in (calls.requests[0].meta ?? {}), false);
+});
+
+// ---- an agent acting in its own name ----
+
+const agentInput = (over: Partial<AssistantExecInput> = {}, behalf: { agentId: string; requestedBy?: string } = { agentId: 'agent-1', requestedBy: 'cm-boss' }): AssistantExecInput => ({
+  onBehalfOf: { ...behalf, via: 'agent' },
+  actionId: 'modA.create', input: { details: { title: 'x' } }, commandId: 'agent-cmd-1', ...over,
+});
+
+function agentAccess(allowed: readonly string[] | 'no_module' | 'unavailable', asked: unknown[] = []): AssistantAgentAccess {
+  return {
+    async allowedActions(request) {
+      asked.push(request);
+      if (allowed === 'no_module') return { ok: false, code: 'no_module', message: 'no module serves the description of the agent' };
+      if (allowed === 'unavailable') return { ok: false, code: 'unavailable', message: 'x' };
+      return { ok: true, allowed };
+    },
+  };
+}
+
+test('an agent with the tool ON runs it as itself: its id and the agent type, no person in the session, and only the actors of THAT action', async () => {
+  const asked: unknown[] = [];
+  const { ctx, deps, calls } = setup(undefined, { agent: agentAccess(['modA.create'], asked) });
+  const result = await execAssistantAction(ctx, deps, agentInput());
+  assert.equal(result.outcome, 'done');
+  assert.deepEqual(asked, [{ agentId: 'agent-1', requestedBy: 'cm-boss' }]);
+  assert.deepEqual(calls.requests[0], {
+    routine: 'modA.page.modA.create',
+    params: { details: { title: 'x' } },
+    meta: { requestId: 'agent-cmd-1', userId: 'agent-1', actorId: 'agent-1', actorType: 'agent', actorScope: ['modA:boss'] },
+  });
+  assert.equal('verifiedEmail' in (calls.requests[0].meta ?? {}), false, 'no person is the caller');
+  assert.equal('via' in (calls.requests[0].meta ?? {}), false);
+  const kept = (await getMdmKv(ctx, { key: 'assistant:agent-cmd-1' }))?.value as Record<string, unknown>;
+  assert.equal(kept.agentId, 'agent-1');
+  assert.equal('personMdmId' in kept, false);
+});
+
+test('a tool that is not ON for the agent is forbidden, and nothing runs', async () => {
+  const { ctx, deps, calls } = setup(undefined, { agent: agentAccess(['modA.list']) });
+  const result = await execAssistantAction(ctx, deps, agentInput());
+  assert.equal(result.outcome, 'forbidden');
+  assert.equal(result.error?.code, 'ASSISTANT_AGENT_TOOL_OFF');
+  assert.equal(calls.requests.length, 0);
+});
+
+test('with no module that answers for the agent, or no way to ask, it is forbidden and says so; an unavailable module is unavailable', async () => {
+  for (const extra of [{ agent: agentAccess('no_module') }, {}]) {
+    const { ctx, deps, calls } = setup(undefined, extra);
+    const result = await execAssistantAction(ctx, deps, agentInput());
+    assert.equal(result.outcome, 'forbidden');
+    assert.equal(result.error?.code, 'ASSISTANT_AGENT_NO_MODULE');
+    assert.equal(calls.requests.length, 0);
+  }
+  const down = setup(undefined, { agent: agentAccess('unavailable') });
+  assert.equal((await execAssistantAction(down.ctx, down.deps, agentInput())).outcome, 'unavailable');
+});
+
+test('the roles of whoever called the agent authorize nothing: a person who could run the action does not lend it', async () => {
+  // cm-1 is a person with the boss role of modA; the agent is called by them and still has the tool OFF.
+  const { ctx, deps, calls } = setup(undefined, { agent: agentAccess([]) });
+  const result = await execAssistantAction(ctx, deps, agentInput({}, { agentId: 'agent-1', requestedBy: 'cm-1' }));
+  assert.equal(result.outcome, 'forbidden');
+  assert.equal(calls.requests.length, 0);
+  // and the actors it runs with are the action's own, never the person's authorities
+  const on = setup(undefined, { agent: agentAccess(['modA.list']) });
+  await execAssistantAction(on.ctx, on.deps, agentInput({ actionId: 'modA.list', input: { page: 1 } }, { agentId: 'agent-1', requestedBy: 'cm-1' }));
+  assert.deepEqual(on.calls.requests[0].meta?.actorScope, ['modA:boss', 'modA:worker']);
+});
+
+test('the commandId of an agent is taken once: a repeat returns the first answer; another agent or another action with the same key is refused', async () => {
+  const { ctx, deps, calls } = setup(undefined, { agent: agentAccess(['modA.create', 'modA.list']) });
+  const first = await execAssistantAction(ctx, deps, agentInput());
+  const again = await execAssistantAction(ctx, deps, agentInput());
+  assert.deepEqual(again, first);
+  assert.equal(calls.requests.length, 1);
+  const otherAgent = await execAssistantAction(ctx, deps, agentInput({}, { agentId: 'agent-2' }));
+  assert.equal(otherAgent.error?.code, 'ASSISTANT_COMMAND_ID_REUSED');
+  const otherAction = await execAssistantAction(ctx, deps, agentInput({ actionId: 'modA.list' }));
+  assert.equal(otherAction.error?.code, 'ASSISTANT_COMMAND_ID_REUSED');
+  const person = await execAssistantAction(ctx, deps, { ...input(), commandId: 'agent-cmd-1' });
+  assert.equal(person.error?.code, 'ASSISTANT_COMMAND_ID_REUSED', 'a person cannot take the key of an agent');
+  assert.equal(calls.requests.length, 1);
+});
+
+test('the person path does not change: the same request as before, with the nora via and no agent type', async () => {
+  const { ctx, deps, calls } = setup(undefined, { agent: agentAccess(['modA.create']) });
+  await execAssistantAction(ctx, deps, input());
+  const meta = calls.requests[0].meta ?? {};
+  assert.equal(meta.actorType, undefined);
+  assert.equal(meta.via, 'nora');
+  assert.equal(meta.verifiedEmail, 'ana@example.test');
 });

@@ -136,12 +136,15 @@ export function createConnectionServer(deps: ConnectionServerDeps): (input: Conn
 
     const ctx = deps.newContext();
     // The module only sees the mdm id of the person, from the link; one that came in the body is never believed.
-    const { actorMdmId: _claimed, ...received } = input.context;
+    const { actorMdmId: _claimedActor, requestedByMdmId: _claimedRequester, ...received } = input.context;
     let context: ConnectionContext = received;
-    if (received.actorUserId && deps.toMdmId) {
+    // Both the person of the action and, for an agent in its own name, whoever asked it (without authority).
+    for (const [from, to] of [['actorUserId', 'actorMdmId'], ['requestedBy', 'requestedByMdmId']] as const) {
+      const cmUserId = received[from];
+      if (!cmUserId || !deps.toMdmId) continue;
       try {
-        const actorMdmId = await deps.toMdmId(ctx, received.actorUserId);
-        if (typeof actorMdmId === 'string' && actorMdmId !== '') context = { ...received, actorMdmId };
+        const mdmId = await deps.toMdmId(ctx, cmUserId);
+        if (typeof mdmId === 'string' && mdmId !== '') context = { ...context, [to]: mdmId };
       } catch {
         // No link: the call goes on without the mdm id; the module treats the person as unknown. It never guesses and never refuses for this.
       }

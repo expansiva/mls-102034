@@ -146,3 +146,18 @@ test('one log line per call, with no input and no context', async () => {
   assert.match(h.logs[1], /^\[connection\] serve cm\.nope ok=false code=invalid reason=unknown-operation ms=\d+$/);
   for (const line of h.logs) assert.equal(/sentinel/.test(line), false);
 });
+
+test('the person who asked an agent (requestedBy) arrives by the mdm id too, from the link, and the one in the body is never believed', async () => {
+  const linked = harness({ toMdmId: async (_ctx, cmUserId) => `mdm-of-${cmUserId}` });
+  await linked.serve(call('describe', { organizationId: 'org-1', agentId: 'agent-1', requestedBy: 'cm-boss', requestedByMdmId: 'forged' }));
+  assert.deepEqual(linked.requests[0].request.meta?.connection?.context, { organizationId: 'org-1', agentId: 'agent-1', requestedBy: 'cm-boss', requestedByMdmId: 'mdm-of-cm-boss' });
+
+  const both = harness({ toMdmId: async (_ctx, cmUserId) => `mdm-of-${cmUserId}` });
+  await both.serve(call('describe', { organizationId: 'org-1', actorUserId: 'cm-1', requestedBy: 'cm-boss' }));
+  assert.deepEqual(both.requests[0].request.meta?.connection?.context, { organizationId: 'org-1', actorUserId: 'cm-1', requestedBy: 'cm-boss', actorMdmId: 'mdm-of-cm-1', requestedByMdmId: 'mdm-of-cm-boss' });
+
+  const unlinked = harness({ toMdmId: async (_ctx, cmUserId) => { if (cmUserId === 'cm-boss') throw new Error('no link'); return 'mdm-of-other'; } });
+  const result = await unlinked.serve(call('describe', { organizationId: 'org-1', agentId: 'agent-1', requestedBy: 'cm-boss', requestedByMdmId: 'forged' }));
+  assert.equal(result.ok, true, 'never refused for this');
+  assert.deepEqual(unlinked.requests[0].request.meta?.connection?.context, { organizationId: 'org-1', agentId: 'agent-1', requestedBy: 'cm-boss' });
+});

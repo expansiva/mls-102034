@@ -1,4 +1,5 @@
 /// <mls fileReference="_102034_/l1/mdm/layer_3_usecases/commentUsecases.ts" enhancement="_blank" />
+import { requestActorType } from '/_102034_/l1/mdm/layer_3_usecases/core/requestActor.js';
 import { AppError, type RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import { AuditLogService, runMonitoredWrite } from '/_102034_/l1/mdm/layer_3_usecases/core/DataRecordService.js';
 import type {
@@ -62,7 +63,7 @@ export async function addComment(ctx: RequestContext, params: AddCommentParams) 
       }
     }
     const authorId = params.authorId ?? ctx.requestMeta?.userId ?? 'system';
-    const authorType = params.authorType ?? (ctx.requestMeta?.userId ? 'user' : 'system');
+    const authorType = params.authorType ?? requestActorType(ctx);
     const record: MdmCommentRecord = {
       id: ctx.idGenerator.newId(),
       entityType: params.entityType,

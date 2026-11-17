@@ -49,6 +49,11 @@ export interface BffRequest {
      * `nora`; over `http` it is discarded like every other identity claim.
      */
     via?: 'nora';
+    /**
+     * Who the author is, when it is not a person: `agent` is a virtual employee acting in its own name (its id is `userId`).
+     * Read ONLY when `source` is `message`; over `http` it is discarded like every other identity claim.
+     */
+    actorType?: 'agent';
     /** A call that arrives through a connection (`/exec/connection`). Read ONLY when `source` is `message`. */
     connection?: BffConnectionMeta;
     actorId?: string;
@@ -269,6 +274,8 @@ export interface RequestContext {
     userId?: string;
     traceId?: string;
     source?: 'http' | 'message' | 'test';
+    /** `agent` when a virtual employee acts in its own name (set only for a `message` request); the audit trail records it. */
+    actorType?: 'user' | 'agent' | 'system';
     /** The connection call that caused this request, when one did (set only for a `message` request). */
     connection?: BffConnectionMeta;
   };

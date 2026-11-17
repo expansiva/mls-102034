@@ -25,6 +25,8 @@ export interface ConnectionContext {
   agentId?: string;
   /** Who asked, without authority (an agent in its own name). */
   requestedBy?: string;
+  /** `requestedBy` by the mdm id, filled by the engine on arrival by the link of the login (never believed when it comes in the body); absent without the link. */
+  requestedByMdmId?: string;
 }
 
 export interface ConnectionOperation {

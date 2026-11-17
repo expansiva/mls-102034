@@ -17,8 +17,18 @@ import type { AssistantCatalogItem, AssistantCatalogSource } from '/_102034_/l1/
 export type AssistantOutcome =
   | 'done' | 'refused_rule' | 'forbidden' | 'no_person' | 'not_found' | 'stale_version' | 'invalid_input' | 'unavailable';
 
+/**
+ * A virtual employee acting in its own name. Its authority is the set of tools that are ON for it (what the module that serves
+ * its description answers), never the roles of whoever called it: `requestedBy` is the id of that person in the cm, without authority.
+ */
+export interface AssistantAgentBehalfOf {
+  agentId: string;
+  requestedBy?: string;
+  via: 'agent';
+}
+
 export interface AssistantExecInput {
-  onBehalfOf: AssistantOnBehalfOf;
+  onBehalfOf: AssistantOnBehalfOf | AssistantAgentBehalfOf;
   actionId: string;
   input: unknown;
   commandId: string;
@@ -38,7 +48,16 @@ export interface AssistantExecResult {
   error?: AssistantExecError;
 }
 
+/** The tools that are on for an agent, asked of the module that serves the agent's description. */
+export interface AssistantAgentAccess {
+  allowedActions(input: { agentId: string; requestedBy?: string }): Promise<
+    { ok: true; allowed: readonly string[] } | { ok: false; code: 'no_module' | 'unavailable' | 'refused'; message: string }
+  >;
+}
+
 export interface AssistantExecDeps extends AssistantAccessDeps {
+  /** Without it an agent cannot act: no module answers for it. */
+  agent?: AssistantAgentAccess;
   catalogs: AssistantCatalogSource;
   /** The login e-mail of the person, from the register. */
   loginEmailOf(ctx: RequestContext, personMdmId: string): Promise<string | null>;
@@ -133,8 +152,13 @@ export async function execAssistantAction(
   deps: AssistantExecDeps,
   input: AssistantExecInput,
 ): Promise<AssistantExecResult> {
-  const personMdmId = await assistantPerson(ctx, deps, input.onBehalfOf.cmUserId);
-  if (personMdmId === null) return { outcome: 'no_person' };
+  const behalf = input.onBehalfOf;
+  const agent = 'agentId' in behalf ? behalf : undefined;
+  let personMdmId: string | null = null;
+  if (!agent) {
+    personMdmId = await assistantPerson(ctx, deps, (behalf as AssistantOnBehalfOf).cmUserId);
+    if (personMdmId === null) return { outcome: 'no_person' };
+  }
 
   const found = await findAction(deps, input.actionId);
   if (found === 'catalog_failed') {
@@ -152,23 +176,45 @@ export async function execAssistantAction(
   const params = withExpectedVersion(item, input.input, input.expectVersion);
   if ('error' in params) return { outcome: 'invalid_input', error: params.error };
 
-  const entry = deps.modules.find((candidate) => candidate.moduleId === moduleId);
-  const held = entry ? await assistantModuleAuthorities(deps, input.onBehalfOf, entry) : [];
-  if (!item.actors.some((actor) => held.includes(`${moduleId}:${actor}`))) {
-    return {
-      outcome: 'forbidden',
-      error: { code: 'FORBIDDEN_ACTOR', message: `You have no authority for ${input.actionId}.`, required: [...item.actors] },
-    };
+  let held: string[];
+  let email: string | null = null;
+  if (agent) {
+    // The authority of an agent is the tool being ON for it, asked of the module that serves its description; the roles of whoever
+    // called it never enter. With the tool on, the run carries only the actors of THIS action, for this call.
+    const access = deps.agent ? await deps.agent.allowedActions({ agentId: agent.agentId, ...(agent.requestedBy !== undefined ? { requestedBy: agent.requestedBy } : {}) }) : undefined;
+    if (!access) {
+      return { outcome: 'forbidden', error: { code: 'ASSISTANT_AGENT_NO_MODULE', message: 'No module answers for the agent, so no tool is on for it.' } };
+    }
+    if (!access.ok) {
+      return access.code === 'unavailable'
+        ? { outcome: 'unavailable', error: { code: 'ASSISTANT_AGENT_UNAVAILABLE', message: FIXED_UNAVAILABLE } }
+        : { outcome: 'forbidden', error: { code: 'ASSISTANT_AGENT_NO_MODULE', message: access.message } };
+    }
+    if (!access.allowed.includes(input.actionId)) {
+      return { outcome: 'forbidden', error: { code: 'ASSISTANT_AGENT_TOOL_OFF', message: `The tool ${input.actionId} is not on for this agent.` } };
+    }
+    held = item.actors.map((actor) => `${moduleId}:${actor}`);
+  } else {
+    const entry = deps.modules.find((candidate) => candidate.moduleId === moduleId);
+    held = entry ? await assistantModuleAuthorities(deps, behalf as AssistantOnBehalfOf, entry) : [];
+    if (!item.actors.some((actor) => held.includes(`${moduleId}:${actor}`))) {
+      return {
+        outcome: 'forbidden',
+        error: { code: 'FORBIDDEN_ACTOR', message: `You have no authority for ${input.actionId}.`, required: [...item.actors] },
+      };
+    }
+    email = await deps.loginEmailOf(ctx, personMdmId as string);
+    if (email === null) return { outcome: 'no_person' };
   }
-  const email = await deps.loginEmailOf(ctx, personMdmId);
-  if (email === null) return { outcome: 'no_person' };
 
+  // The key belongs to whoever took it: the person, or the agent.
+  const owner: Record<string, unknown> = agent ? { agentId: agent.agentId } : { personMdmId };
   const key = `${KEY_PREFIX}${input.commandId}`;
   const at = (deps.now ?? (() => new Date().toISOString()))();
-  const taken = await deps.kv.reserve(ctx, { key, value: { state: 'reserved', personMdmId, actionId: input.actionId, at } });
+  const taken = await deps.kv.reserve(ctx, { key, value: { state: 'reserved', ...owner, actionId: input.actionId, at } });
   if (!taken.reserved) {
     const kept = isRecord(taken.record?.value) ? taken.record.value : null;
-    if (!kept || kept.personMdmId !== personMdmId || kept.actionId !== input.actionId) {
+    if (!kept || Object.entries(owner).some(([name, value]) => kept[name] !== value) || (agent ? kept.personMdmId !== undefined : kept.agentId !== undefined) || kept.actionId !== input.actionId) {
       return { outcome: 'invalid_input', error: { code: 'ASSISTANT_COMMAND_ID_REUSED', message: 'The commandId belongs to another request.' } };
     }
     if (kept.state === 'done' && typeof kept.outcome === 'string') {
@@ -187,13 +233,16 @@ export async function execAssistantAction(
     const answer = await deps.execMessage({
       routine: item.route,
       params: params.value,
-      meta: {
-        requestId: input.commandId,
-        verifiedEmail: email,
-        userId: email,
-        actorScope: held,
-        ...(input.onBehalfOf.via === 'nora' ? { via: 'nora' as const } : {}),
-      },
+      meta: agent
+        // No person in the session: the author is the agent, by its id and the `agent` type; the actors are those of this action only.
+        ? { requestId: input.commandId, userId: agent.agentId, actorId: agent.agentId, actorType: 'agent' as const, actorScope: held }
+        : {
+          requestId: input.commandId,
+          verifiedEmail: email as string,
+          userId: email as string,
+          actorScope: held,
+          ...((behalf as AssistantOnBehalfOf).via === 'nora' ? { via: 'nora' as const } : {}),
+        },
     }, ctx);
     result = mapBffResult(answer.response, answer.statusCode, item);
   } catch {
@@ -202,7 +251,7 @@ export async function execAssistantAction(
   try {
     await deps.kv.put(ctx, {
       key,
-      value: { state: 'done', personMdmId, actionId: input.actionId, at, outcome: result.outcome, ...(result.data !== undefined ? { data: result.data } : {}), ...(result.error ? { error: { ...result.error } } : {}) },
+      value: { state: 'done', ...owner, actionId: input.actionId, at, outcome: result.outcome, ...(result.data !== undefined ? { data: result.data } : {}), ...(result.error ? { error: { ...result.error } } : {}) },
     });
   } catch {
     // The result is returned anyway; the key stays reserved, so a repeat answers `unavailable` and never runs again.

@@ -1,4 +1,5 @@
 /// <mls fileReference="_102034_/l1/mdm/layer_3_usecases/tagUsecases.ts" enhancement="_blank" />
+import { requestActorType } from '/_102034_/l1/mdm/layer_3_usecases/core/requestActor.js';
 import { AppError, type RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import {
   AuditLogService,
@@ -83,7 +84,7 @@ export async function addTag(
     }
 
     const actorId = params.createdBy ?? ctx.requestMeta?.userId ?? 'system';
-    const actorType = params.createdByType ?? (ctx.requestMeta?.userId ? 'user' : 'system');
+    const actorType = params.createdByType ?? requestActorType(ctx);
     const record: MdmTagRecord = {
       id: ctx.idGenerator.newId(),
       entityType: params.entityType,

@@ -1,4 +1,5 @@
 /// <mls fileReference="_102034_/l1/mdm/layer_3_usecases/identityUsecases.ts" enhancement="_blank" />
+import { requestActorType } from '/_102034_/l1/mdm/layer_3_usecases/core/requestActor.js';
 import {
   AppError,
   type CollabAuthInviteClient,
@@ -157,10 +158,10 @@ export async function setLogin(
     routine: 'mdm.identity.setLogin',
     action: alreadyThisEmail ? 'update' : 'create',
     actorId: ctx.requestMeta?.userId ?? 'system',
-    actorType: ctx.requestMeta?.userId ? 'user' : 'system',
+    actorType: requestActorType(ctx),
   }, async () => {
     const actorId = ctx.requestMeta?.userId ?? 'system';
-    const actorType = ctx.requestMeta?.userId ? 'user' : 'system';
+    const actorType = requestActorType(ctx);
     const record: MdmTagRecord = alreadyThisEmail ?? {
       id: ctx.idGenerator.newId(),
       entityType: MDM_LOGIN_ENTITY_TYPE,

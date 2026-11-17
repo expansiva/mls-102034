@@ -651,3 +651,32 @@ test('connection: its own ceiling of 1 MiB: a body bigger than the wake takes go
     await h.restore();
   }
 });
+
+test('assistant exec: an agent in its own name is accepted (agentId, requestedBy, via agent); a person and an agent together, a wrong via or an empty id are refused', async () => {
+  const seen: unknown[] = [];
+  const h = await harness(() => ({ exec: async (input) => { seen.push(input); return { outcome: 'done' }; } }));
+  try {
+    const exec = (onBehalfOf: unknown) => postAssistant(h.app, { kind: 'exec', onBehalfOf, actionId: 'modA.x', commandId: 'c-1', input: {} });
+    const ok = await exec({ agentId: 'agent-1', requestedBy: 'cm-9', via: 'agent', extra: 'ignored' });
+    assert.equal(ok.statusCode, 200);
+    assert.deepEqual((seen[0] as { onBehalfOf: unknown }).onBehalfOf, { agentId: 'agent-1', requestedBy: 'cm-9', via: 'agent' });
+    assert.equal((await exec({ agentId: 'agent-1', via: 'agent' })).statusCode, 200);
+    for (const bad of [
+      { agentId: 'agent-1', via: 'nora' },
+      { agentId: 'agent-1' },
+      { via: 'agent' },
+      { agentId: '', via: 'agent' },
+      { agentId: 'agent-1', requestedBy: '', via: 'agent' },
+      { agentId: 'agent-1', via: 'agent', cmUserId: 'cm-1', authorities: [], snapshotAt: 'x' },
+    ]) {
+      const refused = await exec(bad);
+      assert.equal(refused.statusCode, 400, JSON.stringify(bad));
+    }
+    assert.equal(seen.length, 2, 'the refused ones never reach the runner');
+    // the person form is as it was
+    const person = await exec({ cmUserId: 'cm-1', authorities: ['modA:actor'], snapshotAt: '2026-11-13T10:00:00.000Z', via: 'nora' });
+    assert.equal(person.statusCode, 200);
+  } finally {
+    await h.restore();
+  }
+});

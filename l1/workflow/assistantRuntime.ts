@@ -27,7 +27,7 @@ import {
   type AssistantCatalogResult,
 } from '/_102034_/l1/workflow/assistantCatalog.js';
 import { defsCatalogImporter, distDefsReader } from '/_102034_/l1/workflow/assistantCatalogDefs.js';
-import { execAssistantAction, type AssistantExecInput, type AssistantExecResult } from '/_102034_/l1/workflow/assistantExec.js';
+import { execAssistantAction, type AssistantAgentAccess, type AssistantExecInput, type AssistantExecResult } from '/_102034_/l1/workflow/assistantExec.js';
 import { deliverReleaseCatalog, type ReleaseCatalogDelivery } from '/_102034_/l1/workflow/releaseCatalogDelivery.js';
 import { readMessagesIntegration } from '/_102034_/l1/server/layer_1_external/config/messagesIntegration.js';
 import { getMdmKv } from '/_102034_/l1/mdm/layer_3_usecases/kvUsecases.js';
@@ -116,6 +116,34 @@ export function createAssistantRunners(projectId: string): AssistantRunners {
     newContext,
     toMdmId: (ctx, cmUserId) => identities.toMdmId(ctx, cmUserId),
   });
+  // The tools that are ON for an agent: asked of the module that serves the description of the agent (the connection `cm.describe`),
+  // from inside and with no roles: the answer is the authority of the agent.
+  const agent: AssistantAgentAccess = {
+    async allowedActions({ agentId, requestedBy }) {
+      let organizationId: string | undefined;
+      try {
+        organizationId = readMessagesIntegration(projectId).organizationId;
+      } catch {
+        organizationId = undefined;
+      }
+      if (!organizationId) return { ok: false, code: 'unavailable', message: 'the app has no organization configured' };
+      const described = await serveConnection({
+        connectionId: 'cm',
+        operationId: 'describe',
+        input: { agentId, authorities: [], snapshotAt: new Date().toISOString() },
+        context: { organizationId, agentId, ...(requestedBy !== undefined ? { requestedBy } : {}) },
+      });
+      if (!described.ok) {
+        const code = described.code === 'not_found' ? 'no_module' : described.code === 'unavailable' ? 'unavailable' : 'refused';
+        return { ok: false, code, message: described.message };
+      }
+      const allowed = (described.output as { allowed?: unknown } | null)?.allowed;
+      if (!Array.isArray(allowed) || !allowed.every((item) => typeof item === 'string')) {
+        return { ok: false, code: 'unavailable', message: 'the description of the agent has no list of allowed actions' };
+      }
+      return { ok: true, allowed };
+    },
+  };
   return {
     connection: serveConnection,
     deliverReleaseCatalog: () => deliverReleaseCatalog({
@@ -159,6 +187,7 @@ export function createAssistantRunners(projectId: string): AssistantRunners {
     }, input),
     exec: (input) => execAssistantAction(newContext(), {
       projectId,
+      agent,
       modules: assistantExecModules(projectId),
       identities,
       withAlpha,

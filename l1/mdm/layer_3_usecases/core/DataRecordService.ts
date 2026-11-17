@@ -18,6 +18,7 @@ import type {
   MdmStatusHistoryRecord,
 } from '/_102034_/l1/mdm/module.js';
 import { moduleConfig } from '/_102034_/l1/mdm/module.js';
+import { requestActorType } from '/_102034_/l1/mdm/layer_3_usecases/core/requestActor.js';
 
 export interface DataWriteActor {
   actorId?: string;
@@ -86,7 +87,7 @@ function normalizeActor(
 ): Required<DataWriteActor> & { actorId: string; actorType: MdmActorType } {
   return {
     actorId: actor?.actorId ?? ctx.requestMeta?.userId ?? 'system',
-    actorType: actor?.actorType ?? (ctx.requestMeta?.userId ? 'user' : 'system'),
+    actorType: actor?.actorType ?? requestActorType(ctx),
     source: actor?.source ?? ctx.requestMeta?.source ?? 'system',
   };
 }
