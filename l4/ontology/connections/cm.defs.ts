@@ -100,6 +100,11 @@ export interface CmUpdateAgentInput {
   agentId: string;
   /** `company` (default): the agent of the company; `personal`: the conduct of the person of the context. */
   scope?: 'company' | 'personal';
+  /**
+   * The name the agent is called by in the chat (`@<name>`): one word of 2 to 24 characters, with letters, digits, `.`, `_` or `-`.
+   * Out of that form the cm answers `invalid`; a name already used answers `conflict`.
+   */
+  name?: string;
   prompt?: string;
   enabled?: boolean;
   responsibleUserId?: string;
