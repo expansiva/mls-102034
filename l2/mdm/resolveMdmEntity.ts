@@ -465,7 +465,8 @@ export function resolveModuleEntity(
     entityId: entity.entityId,
     title: entity.title,
     description: entity.description,
-    kind: entity.kind,
+    // An `external` record has no table and no platform branches: the tree reads it like a module table.
+    kind: entity.kind === 'external' ? 'entity' : entity.kind,
     subtype,
     displayField: entity.displayField,
     columns,
