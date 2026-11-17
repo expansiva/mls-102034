@@ -1,8 +1,8 @@
 /// <mls fileReference="_102034_/l4/ontology/connections/cm.defs.ts" enhancement="_blank"/>
 /**
- * The connection to collab-messages (the cm): the 14 operations of `todo/projetos/agents/docs/conexoes.md` §5. The fields
- * come from `todo/projetos/nora/docs/agents-modulo-spec.md` §4.2, §4.3, §4.4, §16.2, §17.3 and §18; the fields that spec did not
- * define were decided by the manager in `todo/projetos/agents/docs/conexoes.md` §6.
+ * The connection to collab-messages (the cm): the 14 operations of the connections contract (conexoes.md) §5. The fields
+ * come from the agents module spec §4.2, §4.3, §4.4, §16.2, §17.3 and §18; the fields that spec did not
+ * define were decided by the manager in the connections contract (conexoes.md) §6.
  *
  * Who the call is about (organization, the person, the customer, the agent) travels in `ConnectionContext`, never in `input`.
  * `expectVersion` and `idempotencyKey` travel in the call options, never in `input`.

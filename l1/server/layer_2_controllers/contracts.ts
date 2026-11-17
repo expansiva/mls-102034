@@ -2,6 +2,19 @@
 import type { IDataRuntime } from '/_102034_/l1/server/layer_1_external/data/runtime.js';
 import type { ICacheRuntime } from '/_102034_/l1/server/layer_1_external/cache/CacheRuntimeMemory.js';
 import type { MdmFacade } from '/_102034_/l1/mdm/layer_3_usecases/mdmFacade.js';
+import type { ConnectionContext } from '/_102034_/l4/ontology/connections/types.defs.js';
+
+/**
+ * What a route that serves an operation of a connection receives, next to the input: which operation, who the call is about
+ * (`context`, where the person is the only person) and the idempotency key. Only a `message` request (a server-side caller)
+ * can carry it; over `http` it is discarded.
+ */
+export interface BffConnectionMeta {
+  connectionId: string;
+  operationId: string;
+  context: ConnectionContext;
+  idempotencyKey?: string;
+}
 
 export interface BffRequestTelemetryEvent {
   eventType: string;
@@ -36,6 +49,8 @@ export interface BffRequest {
      * `nora`; over `http` it is discarded like every other identity claim.
      */
     via?: 'nora';
+    /** A call that arrives through a connection (`/exec/connection`). Read ONLY when `source` is `message`. */
+    connection?: BffConnectionMeta;
     actorId?: string;
     actorScope?: string[];
     activeCompanyId?: string;
@@ -254,6 +269,8 @@ export interface RequestContext {
     userId?: string;
     traceId?: string;
     source?: 'http' | 'message' | 'test';
+    /** The connection call that caused this request, when one did (set only for a `message` request). */
+    connection?: BffConnectionMeta;
   };
 }
 

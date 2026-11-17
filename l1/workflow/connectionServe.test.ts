@@ -1,0 +1,148 @@
+/// <mls fileReference="_102034_/l1/workflow/connectionServe.test.ts" enhancement="_blank"/>
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import type { BffRequest, BffResponse, RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
+import type { DefsReader } from '/_102034_/l1/workflow/assistantCatalogDefs.js';
+import { buildServeIndex, createConnectionServer, type ConnectionServerDeps, type ServeIndex } from '/_102034_/l1/workflow/connectionServe.js';
+import { exampleCatalog } from '/_102034_/testing/connections/connectionFixtures.js';
+import cm from '/_102034_/l4/ontology/connections/cm.defs.js';
+import type { ConnectionCatalog, ConnectionContext } from '/_102034_/l4/ontology/connections/types.defs.js';
+
+const CTX = {} as RequestContext;
+const CONTEXT: ConnectionContext = { organizationId: 'org-1', actorUserId: 'cm-1' };
+
+type Files = Record<string, unknown>;
+
+function reader(files: Files): DefsReader {
+  return {
+    list: (folder) => Object.keys(files).filter((file) => file.startsWith(`${folder}/`)).map((file) => file.slice(folder.length + 1)).sort(),
+    async read(file) {
+      const value = files[file];
+      if (value instanceof Error) throw value;
+      return value;
+    },
+    json: () => undefined,
+    text: () => undefined,
+  };
+}
+
+const defs = (requests: unknown[]): { data: { requests: unknown[] } } => ({ data: { requests } });
+const REQ = 'layer_2_application/requests';
+
+function index(entries: Record<string, Array<{ moduleId: string; route: string }>>): ServeIndex {
+  return { byOperation: new Map(Object.entries(entries)), issues: [] };
+}
+
+function harness(over: Partial<ConnectionServerDeps> & { served?: ServeIndex; answer?: { response: BffResponse; statusCode: number } | Error } = {}) {
+  const requests: Array<{ request: BffRequest; ctx: RequestContext }> = [];
+  const logs: string[] = [];
+  const catalogs: Record<string, ConnectionCatalog> = { cm, example: exampleCatalog };
+  const serve = createConnectionServer({
+    catalogOf: async (id) => catalogs[id],
+    index: async () => over.served ?? index({ 'cm.describe': [{ moduleId: 'modA', route: 'modA.agents.describe' }] }),
+    execMessage: async (request, ctx) => {
+      requests.push({ request, ctx });
+      const answer = over.answer ?? { response: { ok: true, data: { version: 'v1' } } as BffResponse, statusCode: 200 };
+      if (answer instanceof Error) throw answer;
+      return answer;
+    },
+    newContext: () => CTX,
+    toMdmId: over.toMdmId,
+    log: (line) => logs.push(line),
+  });
+  return { serve, requests, logs };
+}
+
+const call = (operationId = 'describe', context: ConnectionContext = CONTEXT, extra: Record<string, unknown> = {}) =>
+  ({ connectionId: 'cm', operationId, input: { agentId: 'nora' }, context, ...extra });
+
+test('the marks come from the request defs of the modules of the release, and a duplicate or a def that cannot be read is said, never silent', async () => {
+  const built = await buildServeIndex(reader({
+    [`l1/modA/${REQ}/agents.defs.js`]: defs([
+      { route: 'modA.agents.describe', serves: 'cm.describe' },
+      { route: 'modA.agents.list', kind: 'qry' },
+      { route: 'modA.agents.bad', serves: 'not a mark' },
+    ]),
+    [`l1/modB/${REQ}/other.defs.js`]: defs([{ route: 'modB.other.describe', serves: 'cm.describe' }, { route: 'modB.other.record', serves: 'cm.record' }]),
+    [`l1/modC/${REQ}/broken.defs.js`]: new Error('old shape'),
+  }), ['modA', 'modB', 'modC']);
+  assert.deepEqual(built.byOperation.get('cm.record'), [{ moduleId: 'modB', route: 'modB.other.record' }]);
+  assert.equal(built.byOperation.get('cm.describe')?.length, 2);
+  assert.ok(built.issues.some((issue) => issue.startsWith('SERVES_DUPLICATE: cm.describe')));
+  assert.ok(built.issues.includes('SERVES_INVALID: modA.agents.bad'));
+  assert.ok(built.issues.some((issue) => issue.startsWith('DEF_UNREADABLE: l1/modC/')));
+  assert.equal(built.byOperation.has('not a mark'), false);
+});
+
+test('the operation goes to the route with the mark, under the technical identity, with the context and the key in the request, and the route keeps its own authorization', async () => {
+  const h = harness();
+  const result = await h.serve(call('describe', CONTEXT, { idempotencyKey: 'key-1' }));
+  assert.deepEqual(result, { ok: true, output: { version: 'v1' } });
+  assert.equal(h.requests.length, 1);
+  const { request, ctx } = h.requests[0];
+  assert.equal(ctx, CTX);
+  assert.equal(request.routine, 'modA.agents.describe');
+  assert.deepEqual(request.params, { agentId: 'nora' });
+  assert.equal(request.meta?.userId, 'connection:cm');
+  assert.equal(request.meta?.actorId, 'connection:cm');
+  assert.deepEqual(request.meta?.actorScope, ['modA:connection:cm'], 'the technical actor the route has to allow; nothing wider');
+  assert.equal(request.meta?.requestId, 'key-1');
+  assert.deepEqual(request.meta?.connection, { connectionId: 'cm', operationId: 'describe', context: CONTEXT, idempotencyKey: 'key-1' });
+  assert.equal(request.meta?.verifiedEmail, undefined, 'no person is the caller');
+});
+
+test('not_found without a mark (a normal answer), invalid with a duplicate mark, a call direction or an unknown operation; nothing runs', async () => {
+  const none = harness({ served: index({}) });
+  assert.deepEqual(await none.serve(call('describe')), { ok: false, code: 'not_found', message: 'no route of this release serves cm.describe' });
+  const twice = harness({ served: index({ 'cm.describe': [{ moduleId: 'a', route: 'a.x.d' }, { moduleId: 'b', route: 'b.x.d' }] }) });
+  assert.equal((await twice.serve(call('describe'))).ok, false);
+  const wrongWay = harness();
+  for (const operationId of ['listAgents', 'nope']) {
+    const result = await wrongWay.serve(call(operationId));
+    assert.equal(result.ok === false && result.code, 'invalid', operationId);
+  }
+  assert.equal((await wrongWay.serve({ ...call('describe'), connectionId: 'nowhere' })).ok, false);
+  assert.equal(none.requests.length + twice.requests.length + wrongWay.requests.length, 0);
+  assert.equal((await wrongWay.serve(call('describe', { organizationId: '' }))).ok, false);
+});
+
+test('what the route answers becomes one of the seven codes: done, 403, 404, a version conflict, validation, another 4xx and a failure', async () => {
+  const cases: Array<[{ response: BffResponse; statusCode: number } | Error, string | null]> = [
+    [{ response: { ok: false, error: { code: 'FORBIDDEN_ACTOR', message: 'no' } } as BffResponse, statusCode: 403 }, 'forbidden'],
+    [{ response: { ok: false, error: { code: 'NOT_FOUND', message: 'gone' } } as BffResponse, statusCode: 404 }, 'not_found'],
+    [{ response: { ok: false, error: { code: 'VERSION_CONFLICT', message: 'stale' } } as BffResponse, statusCode: 409 }, 'conflict'],
+    [{ response: { ok: false, error: { code: 'VALIDATION_ERROR', message: 'bad' } } as BffResponse, statusCode: 400 }, 'invalid'],
+    [{ response: { ok: false, error: { code: 'RULE', message: 'rule says no' } } as BffResponse, statusCode: 422 }, 'refused'],
+    [{ response: { ok: false, error: { code: 'BOOM', message: 'x' } } as BffResponse, statusCode: 500 }, 'unavailable'],
+    [new Error('crash'), 'unavailable'],
+  ];
+  for (const [answer, code] of cases) {
+    const result = await harness({ answer }).serve(call());
+    assert.equal(result.ok === false && result.code, code);
+  }
+});
+
+test('the person: the mdm id is filled by the link and the one in the body is never believed; without the link it goes on without it', async () => {
+  const linked = harness({ toMdmId: async (_ctx, cmUserId) => `mdm-of-${cmUserId}` });
+  await linked.serve(call('describe', { organizationId: 'org-1', actorUserId: 'cm-1', actorMdmId: 'forged' }));
+  assert.deepEqual(linked.requests[0].request.meta?.connection?.context, { organizationId: 'org-1', actorUserId: 'cm-1', actorMdmId: 'mdm-of-cm-1' });
+
+  const unlinked = harness({ toMdmId: async () => { throw new Error('no link'); } });
+  const result = await unlinked.serve(call('describe', { organizationId: 'org-1', actorUserId: 'cm-1', actorMdmId: 'forged' }));
+  assert.equal(result.ok, true, 'never refused for this');
+  assert.deepEqual(unlinked.requests[0].request.meta?.connection?.context, { organizationId: 'org-1', actorUserId: 'cm-1' });
+
+  const noPerson = harness({ toMdmId: async () => 'should-not-be-asked' });
+  await noPerson.serve(call('describe', { organizationId: 'org-1' }));
+  assert.deepEqual(noPerson.requests[0].request.meta?.connection?.context, { organizationId: 'org-1' });
+});
+
+test('one log line per call, with no input and no context', async () => {
+  const h = harness();
+  await h.serve({ ...call('describe', { organizationId: 'org-1', actorUserId: 'context-sentinel' }), input: { secret: 'input-sentinel' } });
+  await h.serve(call('nope'));
+  assert.equal(h.logs.length, 2);
+  assert.match(h.logs[0], /^\[connection\] serve cm\.describe ok=true ms=\d+$/);
+  assert.match(h.logs[1], /^\[connection\] serve cm\.nope ok=false code=invalid reason=unknown-operation ms=\d+$/);
+  for (const line of h.logs) assert.equal(/sentinel/.test(line), false);
+});

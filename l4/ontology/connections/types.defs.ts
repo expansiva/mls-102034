@@ -1,7 +1,7 @@
 /// <mls fileReference="_102034_/l4/ontology/connections/types.defs.ts" enhancement="_blank"/>
 /**
  * The shape of a connection catalog: a closed list of typed operations between an app's backend and another system
- * (contract: `todo/projetos/agents/docs/conexoes.md` §1). Types only: a catalog file exports its own input and output
+ * (contract: the connections contract (conexoes.md) §1). Types only: a catalog file exports its own input and output
  * types next to its data, and generated code imports them from there; nobody redeclares them.
  */
 

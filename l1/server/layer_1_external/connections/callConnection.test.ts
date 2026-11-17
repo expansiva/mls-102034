@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
-import { createCmTransport, createConnectionCaller, type CallConnection } from '/_102034_/l1/server/layer_1_external/connections/callConnection.js';
+import { callConnection, createCmTransport, createConnectionCaller, createProductionConnectionCaller, type CallConnection } from '/_102034_/l1/server/layer_1_external/connections/callConnection.js';
 import { distConnectionCatalogs } from '/_102034_/l1/server/layer_1_external/connections/connectionCatalogs.js';
 import { CONNECTION_CODES, exampleCatalog } from '/_102034_/testing/connections/connectionFixtures.js';
 import cm from '/_102034_/l4/ontology/connections/cm.defs.js';
@@ -273,5 +273,63 @@ describe('the catalog of the release', () => {
     assert.equal(await catalogOf('missing'), undefined);
     await assert.rejects(() => catalogOf('broken'), /not valid/);
     assert.equal(await catalogOf('../../etc/passwd'), undefined, 'the id is not a path');
+  });
+});
+
+describe('callConnection: the export of the contract and the organization of the app', () => {
+  const OK = () => ({ body: { statusCode: 200, ok: true, output: {} } });
+
+  it('is exported with the name and the signature of conexoes.md §2, with no request context', () => {
+    const fixed: (connectionId: string, operationId: string, input: unknown, context: { actorMdmId?: string }, opts?: { idempotencyKey?: string; expectVersion?: string | number }) => Promise<unknown> = callConnection;
+    assert.equal(typeof fixed, 'function');
+    assert.equal(callConnection.length, 5);
+    assert.equal(callConnection.name, 'callConnection');
+  });
+
+  it('the connector fills the organization of the app when the caller leaves it out: the same one the app sends the cm as x-org-id', async () => {
+    const { seen, fetchImpl } = fakeCm(OK);
+    const call = createProductionConnectionCaller({
+      projectId: APP,
+      catalogOf: async (id) => (id === 'cm' ? cm : undefined),
+      env: { MSG_PROXY_TARGET: 'http://cm.test' },
+      fetchImpl,
+      toCmUserId: async () => 'cm-user-1',
+      log: () => undefined,
+    });
+    const result = await call('cm', 'listAgents', {}, { actorMdmId: 'mdm-1' });
+    assert.equal(result.ok, true);
+    assert.deepEqual(seen[0].body.context, { organizationId: ORG, actorUserId: 'cm-user-1' });
+    assert.equal(seen[0].headers['x-org-id'], ORG, 'the header and the context carry the same organization');
+    // one the caller gives is kept
+    await call('cm', 'listAgents', {}, { organizationId: 'org-given', actorUserId: 'cm-user-1' });
+    assert.equal((seen[1].body.context as ConnectionContext).organizationId, 'org-given');
+  });
+
+  it('with no organization in the configuration of the app the answer is invalid and the cm is not called', async () => {
+    const { seen, fetchImpl } = fakeCm(OK);
+    const call = createProductionConnectionCaller({
+      projectId: '102078',
+      catalogOf: async () => cm,
+      env: { MSG_PROXY_TARGET: 'http://cm.test' },
+      fetchImpl,
+      toCmUserId: async () => 'x',
+      log: () => undefined,
+    });
+    const result = await call('cm', 'listAgents', {}, { actorUserId: 'cm-user-1' });
+    assert.equal(result.ok === false && result.code, 'invalid');
+    assert.equal(seen.length, 0);
+  });
+
+  it('a caller that leaves the organization out and a connector with none configured is invalid', async () => {
+    const { seen, fetchImpl } = fakeCm(OK);
+    const call = createConnectionCaller({
+      catalogOf: async () => cm,
+      transports: { cm: createCmTransport({ projectId: APP, env: { MSG_PROXY_TARGET: 'http://cm.test' }, fetchImpl }) },
+      organizationId: () => undefined,
+      log: () => undefined,
+    });
+    const result = await call('cm', 'listAgents', {}, { actorUserId: 'cm-user-1' });
+    assert.equal(result.ok === false && result.code, 'invalid');
+    assert.equal(seen.length, 0);
   });
 });

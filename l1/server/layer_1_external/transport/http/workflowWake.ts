@@ -18,6 +18,8 @@ import {
 import type { AssistantActivitiesInput, AssistantOnBehalfOf } from '/_102034_/l1/workflow/assistantActivities.js';
 import type { AssistantCatalogInput } from '/_102034_/l1/workflow/assistantCatalog.js';
 import type { AssistantExecInput } from '/_102034_/l1/workflow/assistantExec.js';
+import type { ConnectionServeInput } from '/_102034_/l1/workflow/connectionServe.js';
+import type { ConnectionContext, ConnectionErrorCode, ConnectionResult } from '/_102034_/l4/ontology/connections/types.defs.js';
 import { createPostgresWorkflowWakeInbox } from '/_102034_/l1/workflow/wakeInboxPostgres.js';
 import { resolveWorkflowWakeHandler } from '/_102034_/l1/workflow/wakeRegistry.js';
 import type { WorkflowWakeHandler } from '/_102034_/l1/workflow/wakeContracts.js';
@@ -381,6 +383,62 @@ export function registerWorkflowWakeRoutes(app: FastifyInstance, deps: WorkflowW
       return sendFailure(reply, failure(400, 'ASSISTANT_KIND_UNSUPPORTED', 'This assistant request kind is not supported.'));
     });
 
+    // An operation of a connection that the module serves (the outside system → the app). Same scope, same authentication.
+    scope.post('/exec/connection', async (request, reply) => {
+      const projectId = authorizedAppIds.get(request);
+      if (!projectId) {
+        return sendFailure(reply, failure(401, 'WORKFLOW_WAKE_AUTH_REQUIRED', 'Workflow wake authentication is required.'));
+      }
+      const raw = request.body as WakeBody | undefined;
+      const body = raw && typeof raw === 'object' && 'value' in raw ? raw.value : undefined;
+      const parsed = parseConnectionServe(body);
+      if (isConnectionFailure(parsed)) return sendConnectionResult(reply, parsed);
+      try {
+        if (!assistant || assistant.projectId !== projectId) assistant = { projectId, runners: createAssistant(projectId) };
+        return sendConnectionResult(reply, await assistant.runners.connection(parsed));
+      } catch {
+        return sendConnectionResult(reply, { ok: false, code: 'unavailable', message: 'The operation could not be served now.' });
+      }
+    });
+
     done();
   });
+}
+
+/** The HTTP status of each answer of a connection; the caller decides by `code`, never by this. */
+const CONNECTION_STATUS: Record<ConnectionErrorCode, number> = {
+  invalid: 400,
+  forbidden: 403,
+  not_found: 404,
+  conflict: 409,
+  disabled: 409,
+  refused: 422,
+  unavailable: 503,
+};
+
+function sendConnectionResult(reply: FastifyReply, result: ConnectionResult): unknown {
+  if (result.ok) return sendJson(reply, 200, { statusCode: 200, ok: true, output: result.output });
+  const statusCode = CONNECTION_STATUS[result.code];
+  return sendJson(reply, statusCode, { statusCode, ok: false, code: result.code, message: result.message });
+}
+
+const isConnectionFailure = (value: ConnectionServeInput | ConnectionResult): value is ConnectionResult => 'ok' in value;
+
+function parseConnectionServe(body: unknown): ConnectionServeInput | ConnectionResult {
+  const invalid = (message: string): ConnectionResult => ({ ok: false, code: 'invalid', message });
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) return invalid('the body must be an object');
+  const record = body as Record<string, unknown>;
+  if (!assistantText(record.connectionId)) return invalid('connectionId is required');
+  if (!assistantText(record.operationId)) return invalid('operationId is required');
+  const context = record.context;
+  if (context === null || typeof context !== 'object' || Array.isArray(context)) return invalid('context must be an object');
+  if (!assistantText((context as Record<string, unknown>).organizationId)) return invalid('context.organizationId is required');
+  if (record.idempotencyKey !== undefined && !assistantText(record.idempotencyKey)) return invalid('idempotencyKey must be a text');
+  return {
+    connectionId: record.connectionId,
+    operationId: record.operationId,
+    input: record.input,
+    context: context as ConnectionContext,
+    ...(record.idempotencyKey !== undefined ? { idempotencyKey: record.idempotencyKey as string } : {}),
+  };
 }

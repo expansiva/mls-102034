@@ -1,4 +1,10 @@
+import { resolveClientProjectId } from '/_102034_/l1/server/layer_1_external/cbe/cbeDesenv.js';
+import { createServerMessagesClient } from '/_102034_/l1/server/layer_1_external/collabMessages/client.js';
 import { ensureEnvFileLoaded } from '/_102034_/l1/server/layer_1_external/config/env.js';
+import { readMessagesIntegration } from '/_102034_/l1/server/layer_1_external/config/messagesIntegration.js';
+import { distConnectionCatalogs } from '/_102034_/l1/server/layer_1_external/connections/connectionCatalogs.js';
+import { createAssistantContext } from '/_102034_/l1/workflow/assistantRuntime.js';
+import { createMessagesWorkflowIdentities } from '/_102034_/l1/workflow/messagesIdentities.js';
 import { moduleHeaders, postEnvelope } from '/_102034_/l1/server/layer_1_external/collabMessages/transport.js';
 import { msgProxyTarget } from '/_102034_/l1/server/layer_1_external/transport/http/msgProxy.js';
 import type {
@@ -11,7 +17,7 @@ import type {
 
 /**
  * `callConnection(connectionId, operationId, input, context, opts?)`: the one way a backend calls another system
- * (`todo/projetos/agents/docs/conexoes.md` §2). It checks the operation in the catalog, sends it through the one transport
+ * (the connections contract (conexoes.md) §2). It checks the operation in the catalog, sends it through the one transport
  * to collab-messages (`collabMessages/transport.ts`, shared with the server client), and answers `{ ok, output }` or
  * `{ ok: false, code, message }` with one of the seven codes. The decision is by the `code` of the body, never by the
  * HTTP status; an answer outside the envelope is `unavailable`. One log line per call, never the `input` or the `context`.
@@ -26,11 +32,14 @@ export interface CallConnectionOptions {
   expectVersion?: string | number;
 }
 
+/** The context of a call out of the app: the connector fills `organizationId` (the organization of the app), so the caller may leave it out. */
+export type CallConnectionContext = Omit<ConnectionContext, 'organizationId'> & { organizationId?: string };
+
 export type CallConnection = (
   connectionId: string,
   operationId: string,
   input: unknown,
-  context: ConnectionContext,
+  context: CallConnectionContext,
   opts?: CallConnectionOptions,
 ) => Promise<ConnectionResult>;
 
@@ -60,6 +69,8 @@ export interface ConnectionCallerDeps {
    * Without it a call that carries a person by the mdm id is `forbidden`. Throws when the person has no link.
    */
   toCmUserId?: (mdmId: string) => Promise<string>;
+  /** The organization of the app, to fill `context.organizationId` when the caller leaves it out. `undefined`: none is configured. */
+  organizationId?: () => string | undefined;
 }
 
 const CODES: Record<ConnectionErrorCode, true> = {
@@ -121,8 +132,10 @@ export function createConnectionCaller(deps: ConnectionCallerDeps): CallConnecti
     if (typeof connectionId !== 'string' || connectionId === '' || typeof operationId !== 'string' || operationId === '') {
       return fail('invalid', 'connectionId and operationId are required', 'ids');
     }
-    if (typeof context?.organizationId !== 'string' || context.organizationId === '') {
-      return fail('invalid', 'context.organizationId is required', 'context');
+    if (context === null || typeof context !== 'object') return fail('invalid', 'context is required', 'context');
+    const organizationId = typeof context.organizationId === 'string' && context.organizationId !== '' ? context.organizationId : deps.organizationId?.();
+    if (typeof organizationId !== 'string' || organizationId === '') {
+      return fail('invalid', 'context.organizationId is missing and the app has no organization configured', 'organization');
     }
 
     let catalog: ConnectionCatalog | undefined;
@@ -148,7 +161,7 @@ export function createConnectionCaller(deps: ConnectionCallerDeps): CallConnecti
         return undefined;
       }
     };
-    const { actorMdmId, ...sent } = context;
+    const { actorMdmId, ...sent } = { ...context, organizationId };
     let sentContext: ConnectionContext = sent;
     if (actorMdmId !== undefined && !context.actorUserId) {
       const actorUserId = await toCm(actorMdmId);
@@ -183,3 +196,51 @@ export function createConnectionCaller(deps: ConnectionCallerDeps): CallConnecti
     return fail('unavailable', `${connectionId}.${operationId} answered outside the envelope`, 'outside-envelope');
   };
 }
+
+export interface ProductionConnectionCallerOptions {
+  projectId: string;
+  catalogOf?: ConnectionCallerDeps['catalogOf'];
+  env?: NodeJS.ProcessEnv;
+  fetchImpl?: typeof fetch;
+  toCmUserId?: (mdmId: string) => Promise<string>;
+  log?: (line: string) => void;
+}
+
+/**
+ * The connector of the app: the catalogs the release carries, the transport to the cm as this application, the real link of the
+ * login (`toCmUserId` of the workflow identities, run in a context of its own, as the assistant's requests are), and the
+ * organization of the app. The organization is the one the app already sends the cm as `x-org-id`
+ * (`readMessagesIntegration(projectId).organizationId`, the `org.orgId` of the project file): it is what the cm reads on a call
+ * of a module app (`fastifyServer.ts`, `organizationId` of the perfil from `x-org-id`).
+ */
+export function createProductionConnectionCaller(options: ProductionConnectionCallerOptions): CallConnection {
+  const { projectId } = options;
+  const identities = options.toCmUserId
+    ? undefined
+    : createMessagesWorkflowIdentities({ projectId, client: createServerMessagesClient({ projectId }) });
+  return createConnectionCaller({
+    catalogOf: options.catalogOf ?? distConnectionCatalogs(),
+    transports: { cm: createCmTransport({ projectId, env: options.env, fetchImpl: options.fetchImpl }) },
+    toCmUserId: options.toCmUserId ?? ((mdmId) => (identities as NonNullable<typeof identities>).toCmUserId(createAssistantContext(projectId), mdmId)),
+    organizationId: () => {
+      try {
+        return readMessagesIntegration(projectId).organizationId;
+      } catch {
+        return undefined;
+      }
+    },
+    ...(options.log ? { log: options.log } : {}),
+  });
+}
+
+let production: { projectId: string; call: CallConnection } | undefined;
+
+/**
+ * `callConnection(connectionId, operationId, input, context, opts?)`: the name and the signature of `conexoes.md` §2, with no
+ * request context. The connector of the app is built once per process, with the application of this server.
+ */
+export const callConnection: CallConnection = (connectionId, operationId, input, context, opts) => {
+  const projectId = resolveClientProjectId();
+  if (!production || production.projectId !== projectId) production = { projectId, call: createProductionConnectionCaller({ projectId }) };
+  return production.call(connectionId, operationId, input, context, opts);
+};

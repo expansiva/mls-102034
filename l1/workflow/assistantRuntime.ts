@@ -28,6 +28,9 @@ import {
 } from '/_102034_/l1/workflow/assistantCatalog.js';
 import { defsCatalogImporter, distDefsReader } from '/_102034_/l1/workflow/assistantCatalogDefs.js';
 import { execAssistantAction, type AssistantExecInput, type AssistantExecResult } from '/_102034_/l1/workflow/assistantExec.js';
+import { buildServeIndex, createConnectionServer, type ConnectionServeInput, type ServeIndex } from '/_102034_/l1/workflow/connectionServe.js';
+import { distConnectionCatalogs } from '/_102034_/l1/server/layer_1_external/connections/connectionCatalogs.js';
+import type { ConnectionResult } from '/_102034_/l4/ontology/connections/types.defs.js';
 
 export type AssistantActivitiesRunner = (input: AssistantActivitiesInput) => Promise<AssistantActivitiesResult>;
 
@@ -62,8 +65,22 @@ export interface AssistantRunners {
   activities: AssistantActivitiesRunner;
   catalog: (input: AssistantCatalogInput) => Promise<AssistantCatalogResult>;
   exec: (input: AssistantExecInput) => Promise<AssistantExecResult>;
+  /** An operation of a connection that the module serves (`/exec/connection`). Never throws: every failure is a code. */
+  connection: (input: ConnectionServeInput) => Promise<ConnectionResult>;
   /** Builds the catalog of every module of the release now, inside the cache the `catalog` request uses; never throws. */
   warmCatalogs: () => Promise<void>;
+}
+
+/** The context a server-side caller of the app runs with (no person, no module): the assistant's requests and the connections. */
+export function createAssistantContext(projectId: string): RequestContext {
+  const companyId = getResolvedOrganizationCompanyId();
+  const ctx: RequestContext = createRequestContext(getSharedDataRuntime(), {
+    cache: getSharedIdentityCache(),
+    moduleId: 'assistant',
+    ...(companyId ? { sessionContext: { activeCompanyId: companyId } } : {}),
+  });
+  ctx.sessionContext.project = { ...ctx.sessionContext.project, projectId };
+  return ctx;
 }
 
 /** Production wiring of the assistant's requests: the real cm identities, the Postgres stores, the screen's alpha. */
@@ -77,17 +94,25 @@ export function createAssistantRunners(projectId: string): AssistantRunners {
   });
   const withAlpha = (meta: Parameters<typeof withAlphaAuthorities>[0], moduleId: string, project: string, controllersDir: string | undefined) =>
     withAlphaAuthorities(meta, moduleId, project, controllersDir);
-  function newContext(): RequestContext {
-    const companyId = getResolvedOrganizationCompanyId();
-    const ctx: RequestContext = createRequestContext(getSharedDataRuntime(), {
-      cache: getSharedIdentityCache(),
-      moduleId: 'assistant',
-      ...(companyId ? { sessionContext: { activeCompanyId: companyId } } : {}),
-    });
-    ctx.sessionContext.project = { ...ctx.sessionContext.project, projectId };
-    return ctx;
-  }
+  const newContext = (): RequestContext => createAssistantContext(projectId);
+  // The routes that serve an operation, read from the defs of the release and kept per release (none outside a release).
+  let served: { releaseId: string; index: Promise<ServeIndex> } | undefined;
+  const serveIndex = (): Promise<ServeIndex> => {
+    const releaseId = getRunningRelease()?.id ?? null;
+    const build = (): Promise<ServeIndex> => buildServeIndex(distDefsReader(projectId), assistantExecModules(projectId).map((entry) => entry.moduleId));
+    if (releaseId === null) return build();
+    if (!served || served.releaseId !== releaseId) served = { releaseId, index: build() };
+    return served.index;
+  };
+  const serveConnection = createConnectionServer({
+    catalogOf: distConnectionCatalogs(),
+    index: serveIndex,
+    execMessage: (request, ctx) => execMessage(request, ctx),
+    newContext,
+    toMdmId: (ctx, cmUserId) => identities.toMdmId(ctx, cmUserId),
+  });
   return {
+    connection: serveConnection,
     warmCatalogs: () => warmAssistantCatalogs(catalogs, assistantExecModules(projectId).map((entry) => entry.moduleId)),
     activities: (input) => listAssistantActivities(newContext(), {
       projectId,

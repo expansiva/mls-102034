@@ -316,6 +316,8 @@ export async function execBff(
         userId: normalizedRequest.meta?.verifiedEmail || normalizedRequest.meta?.userId,
         traceId: normalizedRequest.meta?.traceId,
         source: normalizedRequest.meta?.source,
+        // Like `via`: a server-side caller says it, the browser never does.
+        ...(normalizedRequest.meta?.source === 'message' && normalizedRequest.meta.connection ? { connection: normalizedRequest.meta.connection } : {}),
       },
     };
     handlerCtx.mdm = createMdmFacade(handlerCtx);

@@ -530,3 +530,95 @@ test('assistant: a failure shows its code and a fixed sentence, never the module
     await h.restore();
   }
 });
+
+async function postConnection(app: FastifyInstance, payload: unknown, headers: Record<string, string | string[]> = authHeaders()): Promise<LightMyRequestResponse> {
+  return app.inject({
+    method: 'POST',
+    url: '/exec/connection',
+    headers: { 'content-type': 'application/json', ...headers },
+    payload: typeof payload === 'string' ? payload : JSON.stringify(payload),
+  });
+}
+
+const connectionBody = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+  connectionId: 'cm',
+  operationId: 'describe',
+  input: { agentId: 'nora' },
+  context: { organizationId: 'org-1', actorUserId: 'cm-1' },
+  idempotencyKey: 'k-1',
+  ...overrides,
+});
+
+test('connection: the same authentication as the wake, and nothing runs before it passes (401 without it)', async () => {
+  let built = 0;
+  const h = await harness(() => { built += 1; return { connection: async () => { throw new Error('must not run'); } }; });
+  try {
+    const noAuth = await postConnection(h.app, connectionBody(), {});
+    assert.equal(noAuth.statusCode, 401);
+    assert.equal(JSON.parse(noAuth.body).code, 'WORKFLOW_WAKE_AUTH_REQUIRED');
+    assert.equal((await postConnection(h.app, connectionBody(), authHeaders(TOKEN_APP, OTHER_APP))).statusCode, 403);
+    assert.equal((await postConnection(h.app, connectionBody(), authHeaders(TOKEN_ENV))).statusCode, 403);
+    assert.equal(built, 0);
+  } finally {
+    await h.restore();
+  }
+});
+
+test('connection: the runner gets only the checked fields, and the answer has the envelope of the contract', async () => {
+  const seen: unknown[] = [];
+  const h = await harness((projectId) => {
+    assert.equal(projectId, APP_ID);
+    return { connection: async (input) => { seen.push(input); return { ok: true, output: { version: 'v1', allowed: [] } }; } };
+  });
+  try {
+    const response = await postConnection(h.app, connectionBody({ extra: 'ignored', operationIdX: 'ignored' }));
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(JSON.parse(response.body), { statusCode: 200, ok: true, output: { version: 'v1', allowed: [] } });
+    assert.deepEqual(seen, [{ connectionId: 'cm', operationId: 'describe', input: { agentId: 'nora' }, context: { organizationId: 'org-1', actorUserId: 'cm-1' }, idempotencyKey: 'k-1' }]);
+    assertNoSecrets(response);
+  } finally {
+    await h.restore();
+  }
+});
+
+test('connection: each failure code has its status and the body carries code and message; not_found is a normal answer', async () => {
+  const expected: Array<[string, number]> = [['invalid', 400], ['forbidden', 403], ['not_found', 404], ['conflict', 409], ['disabled', 409], ['refused', 422], ['unavailable', 503]];
+  for (const [code, status] of expected) {
+    const h = await harness(() => ({ connection: async () => ({ ok: false, code: code as 'invalid', message: `said ${code}` }) }));
+    try {
+      const response = await postConnection(h.app, connectionBody());
+      assert.equal(response.statusCode, status, code);
+      assert.deepEqual(JSON.parse(response.body), { statusCode: status, ok: false, code, message: `said ${code}` });
+    } finally {
+      await h.restore();
+    }
+  }
+});
+
+test('connection: a body that is not what the contract says is invalid (400) and the runner does not run; a runner that throws is unavailable', async () => {
+  let runs = 0;
+  const h = await harness(() => ({ connection: async () => { runs += 1; throw new Error('boom'); } }));
+  try {
+    const bodies: unknown[] = [
+      connectionBody({ connectionId: '' }),
+      connectionBody({ operationId: 7 }),
+      connectionBody({ context: null }),
+      connectionBody({ context: {} }),
+      connectionBody({ idempotencyKey: 5 }),
+      [],
+      '[]',
+    ];
+    for (const body of bodies) {
+      const response = await postConnection(h.app, body);
+      assert.equal(response.statusCode, 400, JSON.stringify(body));
+      assert.equal(JSON.parse(response.body).code, 'invalid');
+    }
+    assert.equal(runs, 0);
+    const thrown = await postConnection(h.app, connectionBody());
+    assert.equal(thrown.statusCode, 503);
+    assert.equal(JSON.parse(thrown.body).code, 'unavailable');
+    assertNoSecrets(thrown);
+  } finally {
+    await h.restore();
+  }
+});
