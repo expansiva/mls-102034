@@ -88,6 +88,8 @@ export interface CmReadAgentOutput {
   enabled: boolean;
   responsibleUserId?: string;
   limits: CmAgentLimits;
+  /** The member of the agent in the mdm of the app that asks; absent before the agent is active. */
+  mdmId?: string;
   /** Only for the Nora: what the person of the context wrote for herself (§4.4, `agentConduct`). */
   personal?: { role: string; state: string };
   /** One version for definition, behavior and tools; `expectVersion` of the next change is this. */
@@ -263,6 +265,15 @@ export interface CmRecordOutput {
   status: 'recorded' | 'existing';
 }
 
+export interface CmEnsureAgentMemberInput {
+  agentId: string;
+  name: string;
+  active: boolean;
+}
+export interface CmEnsureAgentMemberOutput {
+  mdmId: string;
+}
+
 export const cm: ConnectionCatalog = {
   "schemaVersion": "connection-catalog-v1",
   "connectionId": "cm",
@@ -282,6 +293,7 @@ export const cm: ConnectionCatalog = {
     { "operationId": "runAiPrompt", "direction": "call", "kind": "command", "description": "Run one standalone AI prompt with a wanted answer format, outside any process task (choosing the new tools of a release).", "inputType": "CmRunAiPromptInput", "outputType": "CmRunAiPromptOutput", "reply": "now", "timeoutMs": 120000 },
     { "operationId": "agentDraftReady", "direction": "serve", "kind": "command", "description": "The cm tells the module that the preparation of a draft agent ended: ready, with suggested tools, or refused, with the reason.", "inputType": "CmAgentDraftReadyInput", "outputType": "CmAgentDraftReadyOutput", "reply": "now" },
     { "operationId": "describe", "direction": "serve", "kind": "query", "description": "The cm asks which tools an agent has for the person of the context: the version, the way to choose among them, the tools and the ones allowed now.", "inputType": "CmDescribeInput", "outputType": "CmDescribeOutput", "reply": "now", "hiddenFromAgents": true, "noRowLimit": true },
+    { "operationId": "ensureAgentMember", "direction": "serve", "kind": "command", "description": "Make the agent a member of the organization (an mdm person, no login): create it, or set its name and whether it is active. Never deleted. Same agentId, same member.", "inputType": "CmEnsureAgentMemberInput", "outputType": "CmEnsureAgentMemberOutput", "reply": "now", "hiddenFromAgents": true, "servedBy": "platform" },
     { "operationId": "record", "direction": "serve", "kind": "command", "description": "The cm tells the module what an agent did in one execution; repeating the same execution does not record twice.", "inputType": "CmRecordInput", "outputType": "CmRecordOutput", "reply": "now", "hiddenFromAgents": true }
   ]
 };

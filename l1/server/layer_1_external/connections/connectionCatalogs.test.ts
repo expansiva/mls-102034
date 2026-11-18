@@ -26,6 +26,7 @@ const CM_TABLE: Array<[string, 'call' | 'serve', 'query' | 'command', 'now' | 'l
   ['runAiPrompt', 'call', 'command', 'now'],
   ['agentDraftReady', 'serve', 'command', 'now'],
   ['describe', 'serve', 'query', 'now'],
+  ['ensureAgentMember', 'serve', 'command', 'now'],
   ['record', 'serve', 'command', 'now'],
 ];
 
@@ -53,7 +54,7 @@ function check(catalog: ConnectionCatalog, file: string): void {
   }
 }
 
-test('the cm catalog has the 14 operations of the contract, with direction, kind and reply', () => {
+test('the cm catalog has the 15 operations of the contract, with direction, kind and reply', () => {
   assert.equal(cm.connectionId, 'cm');
   assert.deepEqual(cm.operations.map((operation) => [operation.operationId, operation.direction, operation.kind, operation.reply]), CM_TABLE);
   check(cm, 'cm.defs.ts');
@@ -67,7 +68,18 @@ test('the cm marks what the contract marks: describe and record hidden, describe
   assert.equal(byId.get('record')?.noRowLimit, undefined);
   assert.equal(byId.get('createAgent')?.resultOperation, 'agentDraftReady');
   assert.ok((byId.get('runAiPrompt')?.timeoutMs ?? 0) > 60000);
-  assert.equal(cm.operations.filter((operation) => operation.hiddenFromAgents).length, 2);
+  assert.equal(cm.operations.filter((operation) => operation.hiddenFromAgents).length, 3);
+});
+
+test('the only operation answered by the platform is ensureAgentMember, hidden from the agents', () => {
+  const platformServed = cm.operations.filter((operation) => operation.servedBy === 'platform');
+  assert.deepEqual(platformServed.map((operation) => operation.operationId), ['ensureAgentMember']);
+  assert.equal(platformServed[0]?.direction, 'serve');
+  assert.equal(platformServed[0]?.hiddenFromAgents, true);
+  const source = textOf('cm.defs.ts');
+  assert.match(/export interface CmEnsureAgentMemberInput \{([^}]+)\}/.exec(source)?.[1] ?? '', /agentId: string;[\s\S]*name: string;[\s\S]*active: boolean;/);
+  assert.match(/export interface CmEnsureAgentMemberOutput \{([^}]+)\}/.exec(source)?.[1] ?? '', /mdmId: string;/);
+  assert.match(/export interface CmReadAgentOutput \{([^}]+)\}/.exec(source)?.[1] ?? '', /mdmId\?: string;/);
 });
 
 test('describe takes the authorities and the snapshot of the person, so the allowed actions can be computed', () => {

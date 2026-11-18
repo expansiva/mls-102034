@@ -47,6 +47,8 @@ export interface ConnectionOperation {
   timeoutMs?: number;
   /** serve: stays out of the catalog of tools the agents see (describe, record). */
   hiddenFromAgents?: boolean;
+  /** serve: who answers is the platform (the engine), not a route of a module; no module marks `serves` for it. */
+  servedBy?: 'platform';
   /** serve query: the answer has no row ceiling (describe). */
   noRowLimit?: boolean;
   /**
