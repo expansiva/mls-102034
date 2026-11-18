@@ -13,7 +13,7 @@ import type {
   ConnectionErrorCode,
   ConnectionOperation,
   ConnectionResult,
-} from '/_102034_/l4/ontology/connections/types.defs.js';
+} from '/_102034_/l1/server/layer_1_external/connections/catalogs/types.js';
 
 /**
  * `callConnection(connectionId, operationId, input, context, opts?)`: the one way a backend calls another system

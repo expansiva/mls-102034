@@ -1,5 +1,5 @@
 import { distDefsReader, type DefsReader } from '/_102034_/l1/workflow/assistantCatalogDefs.js';
-import type { ConnectionCatalog } from '/_102034_/l4/ontology/connections/types.defs.js';
+import type { ConnectionCatalog } from '/_102034_/l1/server/layer_1_external/connections/catalogs/types.js';
 
 /** The release carries its connection catalogs as emitted L4 defs of this library (`dist/local/_102034_/l4/ontology/connections/<id>.defs.js`). */
 const LIBRARY_ID = '102034';

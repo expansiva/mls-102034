@@ -4,11 +4,11 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import cm from '/_102034_/l4/ontology/connections/cm.defs.js';
-import platform from '/_102034_/l4/ontology/connections/platform.defs.js';
-import type { ConnectionCatalog } from '/_102034_/l4/ontology/connections/types.defs.js';
+import cm from '/_102034_/l1/server/layer_1_external/connections/catalogs/cm.js';
+import platform from '/_102034_/l1/server/layer_1_external/connections/catalogs/platform.js';
+import type { ConnectionCatalog } from '/_102034_/l1/server/layer_1_external/connections/catalogs/types.js';
 
-const FOLDER = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../l4/ontology/connections');
+const FOLDER = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'catalogs');
 const textOf = (name: string): string => readFileSync(path.join(FOLDER, name), 'utf8');
 
 /** `conexoes.md` §5: operation, direction, kind, reply. */
@@ -57,7 +57,7 @@ function check(catalog: ConnectionCatalog, file: string): void {
 test('the cm catalog has the 15 operations of the contract, with direction, kind and reply', () => {
   assert.equal(cm.connectionId, 'cm');
   assert.deepEqual(cm.operations.map((operation) => [operation.operationId, operation.direction, operation.kind, operation.reply]), CM_TABLE);
-  check(cm, 'cm.defs.ts');
+  check(cm, 'cm.ts');
 });
 
 test('the cm marks what the contract marks: describe and record hidden, describe without row ceiling, createAgent answers later, runAiPrompt waits longer', () => {
@@ -76,14 +76,14 @@ test('the only operation answered by the platform is ensureAgentMember, hidden f
   assert.deepEqual(platformServed.map((operation) => operation.operationId), ['ensureAgentMember']);
   assert.equal(platformServed[0]?.direction, 'serve');
   assert.equal(platformServed[0]?.hiddenFromAgents, true);
-  const source = textOf('cm.defs.ts');
+  const source = textOf('cm.ts');
   assert.match(/export interface CmEnsureAgentMemberInput \{([^}]+)\}/.exec(source)?.[1] ?? '', /agentId: string;[\s\S]*name: string;[\s\S]*active: boolean;/);
   assert.match(/export interface CmEnsureAgentMemberOutput \{([^}]+)\}/.exec(source)?.[1] ?? '', /mdmId: string;/);
   assert.match(/export interface CmReadAgentOutput \{([^}]+)\}/.exec(source)?.[1] ?? '', /mdmId\?: string;/);
 });
 
 test('describe takes the authorities and the snapshot of the person, so the allowed actions can be computed', () => {
-  const source = textOf('cm.defs.ts');
+  const source = textOf('cm.ts');
   const body = /export interface CmDescribeInput \{([^}]+)\}/.exec(source)?.[1] ?? '';
   assert.match(body, /agentId: string;/);
   assert.match(body, /knownVersion\?: string;/);
@@ -92,7 +92,7 @@ test('describe takes the authorities and the snapshot of the person, so the allo
 });
 
 test('the decisions of the manager and of the cm are in the types', () => {
-  const source = textOf('cm.defs.ts');
+  const source = textOf('cm.ts');
   assert.match(source, /export interface CmTool \{[^}]*entry: AssistantCatalogItem;/s);
   assert.doesNotMatch(/export interface CmTool \{[^}]*\}/s.exec(source)?.[0] ?? '', /\binputs\??:/);
   for (const field of ['moduleTitle?: string;', 'subject: string;', 'subjectTitle?: string;', 'title?: string;']) {
@@ -104,7 +104,7 @@ test('the decisions of the manager and of the cm are in the types', () => {
   assert.match(source, /scope\?: 'company' \| 'personal';/);
   assert.match(source, /refusedReason\?: string;/);
   assert.match(source, /export interface CmAgentLimit \{[^}]*label: string;[^}]*kind: 'number' \| 'text' \| 'boolean';/s);
-  assert.match(textOf('types.defs.ts'), /actorMdmId\?: string;/);
+  assert.match(textOf('types.ts'), /actorMdmId\?: string;/);
 });
 
 test('expectsVersion is on exactly updateAgent, undoAgentChange and activateAgent, and on no other operation of any catalog', () => {
@@ -112,23 +112,23 @@ test('expectsVersion is on exactly updateAgent, undoAgentChange and activateAgen
   assert.deepEqual(marked(cm), ['updateAgent', 'undoAgentChange', 'activateAgent']);
   assert.ok(cm.operations.filter((operation) => operation.expectsVersion !== undefined).every((operation) => operation.expectsVersion === true && operation.direction === 'call' && operation.kind === 'command'));
   assert.deepEqual(marked(platform), []);
-  assert.match(textOf('types.defs.ts'), /expectsVersion\?: true;/);
+  assert.match(textOf('types.ts'), /expectsVersion\?: true;/);
 });
 
 test('the platform catalog has releaseCatalogChanged as a hidden serve command', () => {
   assert.equal(platform.connectionId, 'platform');
   assert.deepEqual(platform.operations.map((operation) => [operation.operationId, operation.direction, operation.kind, operation.hiddenFromAgents]), [['releaseCatalogChanged', 'serve', 'command', true]]);
-  check(platform, 'platform.defs.ts');
+  check(platform, 'platform.ts');
 });
 
 test('the seven error codes are exactly the ones of the contract', () => {
-  const source = textOf('types.defs.ts');
+  const source = textOf('types.ts');
   const declared = /export type ConnectionErrorCode =([^;]+);/.exec(source)?.[1].match(/'([a-z_]+)'/g)?.map((item) => item.slice(1, -1));
   assert.deepEqual(declared, ['not_found', 'disabled', 'unavailable', 'conflict', 'refused', 'forbidden', 'invalid']);
 });
 
 test('the catalog files carry no code to run: no import of a value, no call', () => {
-  for (const file of ['cm.defs.ts', 'platform.defs.ts', 'types.defs.ts']) {
+  for (const file of ['cm.ts', 'platform.ts', 'types.ts']) {
     const source = textOf(file);
     for (const line of source.split('\n').filter((item) => item.startsWith('import '))) assert.match(line, /^import type /);
   }

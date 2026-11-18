@@ -1,4 +1,4 @@
-/// <mls fileReference="_102034_/l4/ontology/connections/types.defs.ts" enhancement="_blank"/>
+/// <mls fileReference="_102034_/l1/server/layer_1_external/connections/catalogs/types.ts" enhancement="_blank"/>
 /**
  * The shape of a connection catalog: a closed list of typed operations between an app's backend and another system
  * (contract: the connections contract (conexoes.md) §1). Types only: a catalog file exports its own input and output

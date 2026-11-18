@@ -6,7 +6,7 @@
  *   import { exampleCatalog, createFakeCallConnection } from '/_102034_/testing/connections/connectionFixtures.js';
  */
 import type { CallConnection } from '/_102034_/l1/server/layer_1_external/connections/callConnection.js';
-import type { ConnectionCatalog, ConnectionErrorCode, ConnectionResult } from '/_102034_/l4/ontology/connections/types.defs.js';
+import type { ConnectionCatalog, ConnectionErrorCode, ConnectionResult } from '/_102034_/l1/server/layer_1_external/connections/catalogs/types.js';
 
 export interface ExampleLookupInput { key: string }
 export interface ExampleLookupOutput { value: string }

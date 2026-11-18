@@ -12,7 +12,7 @@ import { resetAlphaAuthoritiesCache } from '/_102034_/l1/server/layer_1_external
 import { resetModuleRouterCache } from '/_102034_/l1/server/layer_2_controllers/moduleRegistry.js';
 import { resetSharedBffExecutionSeriesStore } from '/_102034_/l1/monitor/layer_1_external/cache/BffExecutionSeriesStore.js';
 import { createConnectionServer } from '/_102034_/l1/workflow/connectionServe.js';
-import cmCatalog from '/_102034_/l4/ontology/connections/cm.defs.js';
+import cmCatalog from '/_102034_/l1/server/layer_1_external/connections/catalogs/cm.js';
 import type { BffRequest, RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 
 /**

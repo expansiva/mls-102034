@@ -1,4 +1,4 @@
-/// <mls fileReference="_102034_/l4/ontology/connections/cm.defs.ts" enhancement="_blank"/>
+/// <mls fileReference="_102034_/l1/server/layer_1_external/connections/catalogs/cm.ts" enhancement="_blank"/>
 /**
  * The connection to collab-messages (the cm): the 14 operations of the connections contract (conexoes.md) §5. The fields
  * come from the agents module spec §4.2, §4.3, §4.4, §16.2, §17.3 and §18; the fields that spec did not
@@ -8,7 +8,7 @@
  * `expectVersion` and `idempotencyKey` travel in the call options, never in `input`.
  */
 import type { AssistantCatalogItem } from '/_102034_/l1/workflow/assistantCatalog.js';
-import type { ConnectionCatalog } from '/_102034_/l4/ontology/connections/types.defs.js';
+import type { ConnectionCatalog } from '/_102034_/l1/server/layer_1_external/connections/catalogs/types.js';
 
 /**
  * A tool of an agent: module, subject, action, with the purpose, the kind and the contract (§4.2). The readable names of the

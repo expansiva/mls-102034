@@ -1,10 +1,10 @@
-/// <mls fileReference="_102034_/l4/ontology/connections/platform.defs.ts" enhancement="_blank"/>
+/// <mls fileReference="_102034_/l1/server/layer_1_external/connections/catalogs/platform.ts" enhancement="_blank"/>
 /**
  * The connection of the platform to the module that serves it (the connections contract (conexoes.md) §5, M5): the release
  * routine delivers the catalog of actions of every module of the release. The catalog has the shape that
  * `buildCatalogFromDefs` (`l1/workflow/assistantCatalogDefs.ts`) returns.
  */
-import type { ConnectionCatalog } from '/_102034_/l4/ontology/connections/types.defs.js';
+import type { ConnectionCatalog } from '/_102034_/l1/server/layer_1_external/connections/catalogs/types.js';
 
 /** One action of the catalog of a module, as `buildCatalogFromDefs` returns it. */
 export interface PlatformCatalogAction {

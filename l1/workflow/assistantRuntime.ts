@@ -35,7 +35,7 @@ import { findAgentMember } from '/_102034_/l1/mdm/layer_3_usecases/agentMember.j
 import { mdmPlatformServes } from '/_102034_/l1/mdm/layer_3_usecases/platformServes.js';
 import { buildServeIndex, createConnectionServer, type ConnectionServeInput, type ServeIndex } from '/_102034_/l1/workflow/connectionServe.js';
 import { distConnectionCatalogs } from '/_102034_/l1/server/layer_1_external/connections/connectionCatalogs.js';
-import type { ConnectionResult } from '/_102034_/l4/ontology/connections/types.defs.js';
+import type { ConnectionResult } from '/_102034_/l1/server/layer_1_external/connections/catalogs/types.js';
 
 export type AssistantActivitiesRunner = (input: AssistantActivitiesInput) => Promise<AssistantActivitiesResult>;
 
