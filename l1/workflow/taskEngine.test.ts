@@ -608,3 +608,82 @@ test('confirmed absence is not an open and a failed find is not treated as absen
   await assert.rejects(() => createWorkflowEngine(uncertain.port).open(requestCtx(), openInput(planA)), (error: unknown) => error === timeout);
   assert.equal(uncertain.opens.length, 0);
 });
+
+function routineOpen(patch: Partial<TaskWorkflowOpen> = {}): TaskWorkflowOpen {
+  return {
+    ...openInput(planA),
+    owner: null,
+    actorNow: null,
+    origin: { kind: 'event', config: 'platform.releaseCatalogChanged' },
+    executor: { kind: 'routine', name: 'ciclo.S' },
+    room: { mode: 'exclusive' },
+    ...patch,
+  };
+}
+
+test('owner null opens a routine occurrence: the port gets null and the result carries null', async () => {
+  const gate = routed({ found: null, openResult: (command) => ({ outcome: 'created', occurrence: snapshot(command.plan, { owner: null, actorNow: null, ref: command.ref }) }) });
+  const opened = await createWorkflowEngine(gate.port).open(requestCtx(), routineOpen());
+  assert.equal(opened.outcome, 'created');
+  assert.equal(opened.occurrence.owner, null);
+  assert.equal(gate.opens.length, 1);
+  assert.equal(gate.opens[0]?.owner, null);
+  for (const origin of ['schedule', 'event'] as const) {
+    await createWorkflowEngine(routed({ found: null }).port).open(requestCtx(), routineOpen({ origin: { kind: origin } }));
+  }
+  for (const mode of ['exclusive', 'group'] as const) {
+    await createWorkflowEngine(routed({ found: null }).port).open(requestCtx(), routineOpen({ room: { mode } }));
+  }
+});
+
+test('owner null breaks the rule by any one of its 4 conditions: the code of its own, the condition named, nothing sent to the cm', async () => {
+  const broken: Array<[string, Partial<TaskWorkflowOpen>]> = [
+    ['executor', { executor: { kind: 'person', mdmId: 'person-1' } }],
+    ['actorNow', { actorNow: 'person-1' }],
+    ['origin', { origin: { kind: 'screen', by: 'person-1' } }],
+    ['origin', { origin: { kind: 'channel' } }],
+    ['room', { room: { mode: 'person' } }],
+  ];
+  for (const [condition, patch] of broken) {
+    const gate = routed({ found: null });
+    await assert.rejects(
+      () => createWorkflowEngine(gate.port).open(requestCtx(), routineOpen(patch)),
+      (error: unknown) => {
+        assert.ok(error instanceof AppError);
+        assert.equal(error.code, 'WORKFLOW_ROUTINE_OWNER_INVALID');
+        assert.equal(error.statusCode, 400);
+        assert.match(error.message, new RegExp(condition));
+        return true;
+      },
+      condition,
+    );
+    assert.equal(gate.findCalls, 0, `${condition}: not even the find goes to the cm`);
+    assert.equal(gate.opens.length, 0);
+  }
+});
+
+test('a person as owner is not touched by the rule: the same open in a personal room goes through', async () => {
+  const gate = routed({ found: null });
+  await createWorkflowEngine(gate.port).open(requestCtx(), openInput(planA));
+  const personal = routed({ found: null });
+  await createWorkflowEngine(personal.port).open(requestCtx(), { ...openInput(planA), room: { mode: 'person' } });
+  assert.equal(gate.opens[0]?.owner, 'owner-1');
+  assert.equal(personal.opens[0]?.owner, 'owner-1');
+});
+
+test('a routine with no actor advances a routine occurrence that has owner null', async () => {
+  const stored = snapshot(prepareWorkflowPlan(planA), { owner: null, actorNow: null });
+  const gate = routed({ found: stored });
+  const result = await createWorkflowEngine(gate.port).advance(requestCtx(), key(), {
+    commandId: 'routine-1',
+    expectedRevision: 4,
+    from: 'S',
+    to: 'A',
+    actorNow: null,
+    executor: { kind: 'routine', name: 'ciclo.S' },
+  });
+  assert.equal(result.outcome, 'advanced');
+  assert.equal(result.occurrence.owner, null);
+  assert.equal(gate.advances.length, 1);
+  assert.equal(gate.advances[0]?.actorNow, null);
+});

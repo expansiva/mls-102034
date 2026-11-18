@@ -247,7 +247,7 @@ export async function encodeOpenModuleTask(
     plan,
     startStep: command.firstStep,
     origin,
-    owner: await toCm(ctx, identities, requiredText(command.owner)),
+    owner: command.owner === null ? null : await toCm(ctx, identities, requiredText(command.owner)),
     actorNow: command.actorNow === null ? null : await toCm(ctx, identities, requiredText(command.actorNow)),
     title: command.title,
     room,
@@ -411,7 +411,7 @@ export async function decodeTaskSnapshot(
   const firstKey = steps[0].stepId;
   const title = requiredText(task.title);
   const people = await groupedIdentities(ctx, identities, userIdsOf(task, moduleMeta, children));
-  const owner = await toMdm(ctx, people, requiredText(moduleMeta.owner));
+  const owner = moduleMeta.owner === null ? null : await toMdm(ctx, people, requiredText(moduleMeta.owner));
   const origin = await decodeOrigin(ctx, people, moduleMeta.origin);
   const room = await decodeRoom(ctx, people, moduleMeta.room);
   const history = await decodeHistory(ctx, people, moduleMeta.history);

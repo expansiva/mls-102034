@@ -653,3 +653,48 @@ test('a new port does not keep the previous response, and a dropped person trans
     assert.equal(JSON.stringify(loop.seen).includes(item.people.ownerMdm), false);
   });
 });
+
+test('a routine with no person: owner null goes on the wire, the cm answers module.owner null, and a personal room is refused before the wire', async () => {
+  await withRelease(async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rt244-transport-'));
+    tempDirs.push(dir);
+    process.env.CBE_PROJECT_FILES_DIR = dir;
+    const item = CASES[0];
+    writeCredential(item.project, item.org);
+    const loop = await bindLoopback();
+    const ctx = requestCtx();
+    const stored = taskOf(item, item.recordId, item.revision, 'sent');
+    stored.module!.owner = null;
+    const routine: TaskWorkflowOpen = {
+      ...openInput(item, item.recordId, planOf(item, 'stored')),
+      owner: null,
+      actorNow: null,
+      origin: { kind: 'event', config: 'platform.releaseCatalogChanged' },
+      executor: { kind: 'routine', name: `${item.processId}.${item.stepA}` },
+      room: { mode: 'exclusive' },
+    };
+
+    loop.push(absent());
+    loop.push(found(stored, { created: true }));
+    const created = await engineFor(item).open(ctx, routine);
+    assert.equal(created.outcome, 'created');
+    assert.equal(created.occurrence.owner, null);
+    const openBody = loop.seen[1].body;
+    assert.equal(openBody.action, 'openModuleTask');
+    assert.equal(openBody.owner, null);
+    assert.equal(openBody.actorNow, null);
+
+    loop.push(found(stored));
+    const again = await engineFor(item).open(ctx, routine);
+    assert.equal(again.outcome, 'existing');
+    assert.equal(again.occurrence.owner, null);
+    assert.equal(loop.seen.filter((hit) => hit.action === 'openModuleTask').length, 1);
+
+    const before = loop.seen.length;
+    await assert.rejects(
+      () => engineFor(item).open(ctx, { ...routine, room: { mode: 'person' } }),
+      (error: unknown) => error instanceof AppError && error.code === 'WORKFLOW_ROUTINE_OWNER_INVALID',
+    );
+    assert.equal(loop.seen.length, before, 'the cm received nothing');
+  });
+});

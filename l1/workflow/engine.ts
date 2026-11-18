@@ -70,7 +70,8 @@ export interface TaskWorkflowOpen {
   title: string;
   firstStep: string;
   actorNow: string | null;
-  owner: string;
+  /** MDM id of the owner. `null` is a routine occurrence with no person; only valid under `routineOwnerProblem`. */
+  owner: string | null;
   origin: WorkflowOrigin;
   executor: WorkflowExecutor;
   room: WorkflowRoomChoice;
@@ -209,6 +210,19 @@ function requireOccurrenceTitle(title: string): void {
   }
 }
 
+/**
+ * The one rule for a task with no person as owner (`owner: null`): a routine, with nobody acting now, started by an event
+ * or a schedule, in a room that is not the personal one (that room needs the e-mail of the owner). Returns the condition
+ * that failed, or `undefined` when the rule holds. The cm repeats it and answers `invalid`.
+ */
+export function routineOwnerProblem(input: Pick<TaskWorkflowOpen, 'executor' | 'actorNow' | 'origin' | 'room'>): string | undefined {
+  if (input.executor.kind !== 'routine') return 'the executor must be a routine';
+  if (input.actorNow !== null) return 'nobody can be acting now (actorNow must be null)';
+  if (input.origin.kind !== 'event' && input.origin.kind !== 'schedule') return 'the origin must be an event or a schedule';
+  if (input.room.mode === 'person') return 'the room cannot be the personal one';
+  return undefined;
+}
+
 function requireAdvanceIdentity(command: TaskWorkflowAdvance): void {
   if (typeof command.commandId !== 'string' || command.commandId === '') {
     throw new AppError('INVALID_COMMAND', 'commandId must be a non-empty string.', 400);
@@ -221,6 +235,12 @@ function requireAdvanceIdentity(command: TaskWorkflowAdvance): void {
 function createTaskWorkflowEngine(port: TaskOccurrencePort): TaskWorkflowEngine {
   return {
     async open(ctx, input) {
+      if (input.owner === null) {
+        const problem = routineOwnerProblem(input);
+        if (problem !== undefined) {
+          throw new AppError('WORKFLOW_ROUTINE_OWNER_INVALID', `owner null is only for a routine with no person: ${problem}.`, 400);
+        }
+      }
       const current = await port.find(ctx, input.key);
       if (current) {
         const moduleMessage = openingMessage(current);

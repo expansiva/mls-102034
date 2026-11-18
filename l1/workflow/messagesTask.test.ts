@@ -452,3 +452,53 @@ test('a removed person in the history is accepted, as before', async () => {
   assert.equal(view.history[0].by, 'mdm-old');
   assert.equal(calls.length, 2);
 });
+
+const ROUTINE_COMMAND = (): TaskOccurrenceOpenCommand => ({
+  ref: { ...KEY, workflowVersion: 'v3' },
+  plan: plan(),
+  title: 'Occurrence title',
+  firstStep: 'S',
+  actorNow: null,
+  owner: null,
+  origin: { kind: 'event', config: 'platform.releaseCatalogChanged' },
+  executor: { kind: 'routine', name: 'ciclo.S' },
+  room: { mode: 'exclusive' },
+});
+
+test('a routine with no person goes to the cm with owner null, and no person is translated for it', async () => {
+  const seen: string[] = [];
+  const wire = await encodeOpenModuleTask(ctx(), identities(seen), ROUTINE_COMMAND());
+  assert.equal(wire.owner, null);
+  assert.equal(wire.actorNow, null);
+  assert.deepEqual(seen, [], 'nobody to translate: the grouped list ignores null');
+});
+
+test('an owner that is a person is translated as before, and the grouped list still carries it', async () => {
+  const seen: string[] = [];
+  const wire = await encodeOpenModuleTask(ctx(), identities(seen), { ...ROUTINE_COMMAND(), owner: 'mdm-owner' });
+  assert.equal(wire.owner, 'cm-owner');
+  assert.deepEqual(seen, ['cm:mdm-owner']);
+});
+
+test('a task the cm returns with module.owner null decodes to owner null, with no translation of it', async () => {
+  const task = taskOf({ omitActor: true, current: 'S' });
+  task.module!.owner = null;
+  task.module!.history = [historyEntry({ commandId: 'c-open', step: 'S', done: false, executor: { kind: 'routine', name: 'ciclo.S' } })];
+  const seen: string[] = [];
+  const view = await decodeTaskSnapshot(ctx(), identities(seen), task, KEY, 'room-1');
+  assert.equal(view.owner, null);
+  assert.equal(view.actorNow, null);
+  assert.equal(seen.includes('mdm:cm-owner'), false);
+});
+
+test('an owner that is neither a text nor null is still a protocol error', async () => {
+  for (const bad of [undefined, 7, '', ' x ']) {
+    const task = taskOf({ omitActor: true, current: 'S' });
+    (task.module as unknown as Record<string, unknown>).owner = bad;
+    await assert.rejects(
+      () => decodeTaskSnapshot(ctx(), identities([]), task, KEY, 'room-1'),
+      (error: unknown) => error instanceof AppError && error.code === 'WORKFLOW_CM_PROTOCOL_ERROR',
+      `owner ${String(bad)}`,
+    );
+  }
+});

@@ -131,8 +131,8 @@ export interface TaskOccurrenceSnapshot extends OccurrenceSnapshot {
   taskId: string;
   revision: number;
   status: TaskData['status'];
-  /** MDM id of the owner. */
-  owner: string;
+  /** MDM id of the owner. `null` is a routine occurrence with no person: the owner inside the cm is the virtual user of the module. Only valid under the rule of `routineOwnerProblem` (engine.ts). */
+  owner: string | null;
   origin: WorkflowOrigin;
   room: WorkflowRoomChoice;
   roomId: string;
@@ -149,8 +149,8 @@ export interface TaskOccurrenceOpenCommand {
   firstStep: string;
   /** MDM id of the acting person, or null when the executor is a routine. */
   actorNow: string | null;
-  /** MDM id of the owner. */
-  owner: string;
+  /** MDM id of the owner. `null` is a routine occurrence with no person: the owner inside the cm is the virtual user of the module. Only valid under the rule of `routineOwnerProblem` (engine.ts). */
+  owner: string | null;
   origin: WorkflowOrigin;
   executor: WorkflowExecutor;
   room: WorkflowRoomChoice;
