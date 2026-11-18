@@ -53,8 +53,9 @@ function protocol(): never {
   throw new AppError('WORKFLOW_CM_PROTOCOL_ERROR', PROTOCOL, 502);
 }
 
-function rejected(statusCode: number): never {
-  throw new AppError('WORKFLOW_CM_REJECTED', REJECTED, statusCode);
+/** The cm's own `msg` rides in `details.cmMsg` (a short fixed text), so a refusal says why. Code, message and status stay the same. */
+function rejected(statusCode: number, cmMsg?: string): never {
+  throw new AppError('WORKFLOW_CM_REJECTED', REJECTED, statusCode, cmMsg === undefined ? undefined : { cmMsg });
 }
 
 function busy(): never {
@@ -95,7 +96,7 @@ type EnvelopeVerdict =
   | { kind: 'ok' }
   | { kind: 'busy' }
   | { kind: 'incomplete' }
-  | { kind: 'rejected'; statusCode: number }
+  | { kind: 'rejected'; statusCode: number; msg?: string }
   | { kind: 'stop'; msg: 'conflict' | 'paused' }
   | { kind: 'protocol' };
 
@@ -121,7 +122,7 @@ function classifyEnvelope(httpStatus: number, body: EnvelopeBody): EnvelopeVerdi
     return validTaskId(body.taskId) ? { kind: 'incomplete' } : { kind: 'protocol' };
   }
   if (httpOk && statusCode === 200) return { kind: 'ok' };
-  if (REMOTE_STATUS.has(statusCode)) return { kind: 'rejected', statusCode };
+  if (REMOTE_STATUS.has(statusCode)) return typeof body.msg === 'string' && body.msg !== '' ? { kind: 'rejected', statusCode, msg: body.msg.slice(0, 200) } : { kind: 'rejected', statusCode };
   return { kind: 'protocol' };
 }
 
@@ -133,7 +134,8 @@ function readRoomIssue(body: object): unknown {
 function raiseEnvelope(verdict: Exclude<EnvelopeVerdict, { kind: 'ok' }>): never {
   if (verdict.kind === 'busy') busy();
   if (verdict.kind === 'incomplete') incomplete();
-  if (verdict.kind === 'rejected' || verdict.kind === 'stop') rejected(verdict.kind === 'stop' ? 409 : verdict.statusCode);
+  if (verdict.kind === 'rejected') rejected(verdict.statusCode, verdict.msg);
+  if (verdict.kind === 'stop') rejected(409, verdict.msg);
   if (verdict.kind === 'absent') rejected(404);
   protocol();
 }

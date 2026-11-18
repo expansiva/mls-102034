@@ -698,3 +698,32 @@ test('a routine with no person: owner null goes on the wire, the cm answers modu
     assert.equal(loop.seen.length, before, 'the cm received nothing');
   });
 });
+
+test('a cm refusal reaches the caller with the cm msg in details; without a msg, details stays empty', async () => {
+  await withRelease(async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rt245-transport-'));
+    tempDirs.push(dir);
+    process.env.CBE_PROJECT_FILES_DIR = dir;
+    const item = CASES[0];
+    writeCredential(item.project, item.org);
+    const loop = await bindLoopback();
+    const ctx = requestCtx();
+    const key = { project: item.project, module: item.module, processId: item.processId, entity: item.entity, recordId: item.recordId };
+
+    loop.push({ httpStatus: 400, body: { statusCode: 400, msg: 'x-user-id must be app:<appId>' } });
+    await assert.rejects(
+      () => engineFor(item).find(ctx, key),
+      (error: unknown) => error instanceof AppError
+        && error.code === 'WORKFLOW_CM_REJECTED'
+        && error.statusCode === 400
+        && error.message === 'Module task was rejected.'
+        && JSON.stringify(error.details) === JSON.stringify({ cmMsg: 'x-user-id must be app:<appId>' }),
+    );
+
+    loop.push({ httpStatus: 400, body: { statusCode: 400 } });
+    await assert.rejects(
+      () => engineFor(item).find(ctx, key),
+      (error: unknown) => error instanceof AppError && error.code === 'WORKFLOW_CM_REJECTED' && error.statusCode === 400 && error.details === undefined,
+    );
+  });
+});

@@ -521,7 +521,9 @@ test('a coherent 422 is a definitive rejection and a mismatched 422 stays protoc
         assert.equal(error.message.includes(secret), false);
         assert.equal(error.message.includes(payload), false);
         assert.equal(error.message.includes('test_rejected'), false);
-        assert.equal(error.details, undefined);
+        assert.deepEqual(error.details, { cmMsg: item.body.msg });
+        assert.equal(JSON.stringify(error.details).includes(secret), false);
+        assert.equal(JSON.stringify(error.details).includes(payload), false);
         return true;
       });
       assert.deepEqual(routed.calls.map((call) => call.name), op === 'advance' ? ['get', 'advance'] : [op === 'open' ? 'open' : 'get']);
