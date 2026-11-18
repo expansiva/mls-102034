@@ -10,8 +10,8 @@ async function createPersonAs(meta: Record<string, unknown>, through: 'message' 
   process.env.APP_ENV = 'development';
   process.env.RUNTIME_MODE = 'memory';
   const ctx = createRequestContext(createMemoryDataRuntime());
-  const request = { routine: 'mdm.entity.create', params: { detail: { subtype: 'Person', name: `Author ${through}`, status: 'Active' } }, meta: meta as never };
-  const answer = through === 'message' ? await execMessage(request, ctx) : await execBff({ ...request, meta: { ...request.meta, source: 'http' } }, ctx);
+  const request = { routine: 'mdm.entity.create', params: { detail: { subtype: 'Person', name: `Author ${through}`, status: 'Active' } }, meta: meta as Record<string, never> };
+  const answer = through === 'message' ? await execMessage(request, ctx) : await execBff({ ...request, meta: { ...request.meta, source: 'http' as const } }, ctx);
   assert.equal(answer.response.ok, true);
   const rows = (await ctx.data.mdmMonitoringWrite.findMany()) as unknown as Array<{ actorType?: string }>;
   return rows.map((row) => row.actorType ?? '');

@@ -40,7 +40,7 @@ test('page sql filters before the cursor and limit, and quotes only known tables
   assert.match(page.sql, /LEFT JOIN "mdm_documents_test" doc/);
   assert.match(page.sql, /FROM "mdm_tag_test" tag/);
   assert.match(page.sql, /idx\."subtype" = 'Person'/);
-  assert.match(page.sql, /canon\."namespace" = 'login'/);
+  assert.match(page.sql, /canon\."namespace" IN \('login', 'agent'\)/);
   assert.match(page.sql, /canon\."module" = 'organization'/);
   assert.match(page.sql, /array_agg\(tag\."tag"\)/);
   assert.doesNotMatch(page.sql, /LIMIT 1/);
