@@ -14,6 +14,7 @@ type PgExecutor = Pool | PoolClient;
 const LOGIN_ENTITY_TYPE = 'MdmEntity';
 const LOGIN_NAMESPACE = 'login';
 const LOGIN_MODULE = 'organization';
+const AGENT_NAMESPACE = 'agent';
 const PERSON_SUBTYPE = 'Person';
 
 const FOLDED_NAME_SQL = `lower(regexp_replace(normalize(coalesce(idx."name", ''), NFD), U&'[\\0300-\\036f]', '', 'g'))`;
@@ -42,7 +43,7 @@ export function buildIdentityUsersPageSql(appEnv: AppEnv['appEnv'], query: MdmUs
     `EXISTS (
       SELECT 1 FROM ${tag} canon
       WHERE canon."entityType" = '${LOGIN_ENTITY_TYPE}'
-        AND canon."namespace" = '${LOGIN_NAMESPACE}'
+        AND canon."namespace" IN ('${LOGIN_NAMESPACE}', '${AGENT_NAMESPACE}')
         AND canon."module" = '${LOGIN_MODULE}'
         AND canon."entityId" = idx."mdmId"
     )`,
@@ -84,7 +85,15 @@ export function buildIdentityUsersPageSql(appEnv: AppEnv['appEnv'], query: MdmUs
       AND tag."namespace" = '${LOGIN_NAMESPACE}'
       AND tag."module" = '${LOGIN_MODULE}'
       AND tag."entityId" = idx."mdmId"
-  ), '{}'::text[]) AS "loginTags"
+  ), '{}'::text[]) AS "loginTags",
+  COALESCE((
+    SELECT array_agg(tag."tag")
+    FROM ${tag} tag
+    WHERE tag."entityType" = '${LOGIN_ENTITY_TYPE}'
+      AND tag."namespace" = '${AGENT_NAMESPACE}'
+      AND tag."module" = '${LOGIN_MODULE}'
+      AND tag."entityId" = idx."mdmId"
+  ), '{}'::text[]) AS "agentTags"
 FROM ${index} idx
 LEFT JOIN ${documents} doc ON doc."mdmId" = idx."mdmId"
 WHERE ${filters.join('\n  AND ')}
@@ -111,6 +120,7 @@ function mapRow(raw: Record<string, unknown>): MdmUserDirectoryRow {
     documentSubtype: raw.documentSubtype == null ? null : String(raw.documentSubtype),
     contacts: raw.contacts ?? null,
     loginTags: asStringArray(raw.loginTags),
+    agentTags: asStringArray(raw.agentTags),
   };
 }
 

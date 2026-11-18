@@ -62,13 +62,17 @@ function summaryOf(row: MdmUserDirectoryRow): MdmUserSummary {
   if (row.documentSubtype !== PERSON_SUBTYPE) incomplete(row.mdmId);
   if (typeof row.version !== 'number' || !Number.isInteger(row.version) || row.version < 0) incomplete(row.mdmId);
   if (typeof row.name !== 'string' || !USER_STATUSES.has(row.status)) incomplete(row.mdmId);
-  const loginEmail = storedLoginEmailFromTags(row.loginTags, row.mdmId);
-  if (loginEmail === null) incomplete(row.mdmId);
+  const login = storedLoginEmailFromTags(row.loginTags, row.mdmId);
+  // A row without e-mail is incomplete only when it is a person; the member-agent has no login by design.
+  const kind = login === null && row.agentTags.length > 0 ? 'agent' : 'person';
+  if (login === null && kind === 'person') incomplete(row.mdmId);
+  const loginEmail = login ?? '';
   return {
     mdmId: row.mdmId,
     version: row.version,
     name: row.name,
     loginEmail,
+    kind,
     status: row.status as MdmUserStatus,
     tags: readTags(row.tags, row.mdmId),
     contacts: readContacts(row.contacts, row.mdmId),

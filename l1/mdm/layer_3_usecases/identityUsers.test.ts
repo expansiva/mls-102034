@@ -9,7 +9,7 @@ import { listUsers } from '/_102034_/l1/mdm/layer_3_usecases/identityUsers.js';
 import { AppError, type RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import type { IDataRuntime } from '/_102034_/l1/server/layer_1_external/data/runtime.js';
 
-const SUMMARY_KEYS = ['mdmId', 'version', 'name', 'loginEmail', 'status', 'tags', 'contacts'];
+const SUMMARY_KEYS = ['mdmId', 'version', 'name', 'loginEmail', 'kind', 'status', 'tags', 'contacts'];
 
 function ctxFor(data: IDataRuntime, moduleId: string): RequestContext {
   return { data, moduleId } as RequestContext;

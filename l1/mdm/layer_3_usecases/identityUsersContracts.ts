@@ -21,7 +21,10 @@ export interface MdmUserSummary {
   mdmId: string;
   version: number;
   name: string;
+  /** Empty for an agent: a member with no login. */
   loginEmail: string;
+  /** `agent`: the virtual employee of the organization (a member linked to an agent, no login); `person`: everyone else. */
+  kind: 'person' | 'agent';
   status: MdmUserStatus;
   tags: string[];
   contacts: ContactSummaryValue[];
@@ -63,6 +66,8 @@ export interface MdmUserDirectoryRow {
   documentSubtype: string | null;
   contacts: unknown;
   loginTags: string[];
+  /** The links of the person to an agent (`namespace 'agent'`); a person without login and with one is a member-agent. */
+  agentTags: string[];
 }
 
 export interface MdmIdentityUserReader {

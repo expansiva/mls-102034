@@ -12,6 +12,7 @@ import type { IDataRuntime } from '/_102034_/l1/server/layer_1_external/data/run
 const LOGIN_ENTITY_TYPE = 'MdmEntity';
 const LOGIN_NAMESPACE = 'login';
 const LOGIN_MODULE = 'organization';
+const AGENT_NAMESPACE = 'agent';
 const PERSON_SUBTYPE = 'Person';
 const DOCUMENT_CHUNK = 100;
 
@@ -22,6 +23,12 @@ function compareMdmId(left: string, right: string): number {
 function isCanonicalLoginTag(tag: MdmTagRecord): boolean {
   return tag.entityType === LOGIN_ENTITY_TYPE
     && tag.namespace === LOGIN_NAMESPACE
+    && tag.module === LOGIN_MODULE;
+}
+
+function isAgentTag(tag: MdmTagRecord): boolean {
+  return tag.entityType === LOGIN_ENTITY_TYPE
+    && tag.namespace === AGENT_NAMESPACE
     && tag.module === LOGIN_MODULE;
 }
 
@@ -65,6 +72,7 @@ function rowOf(
   record: MdmEntityIndexRecord,
   document: MdmDocumentRecord | undefined,
   loginTags: readonly string[],
+  agentTags: readonly string[],
 ): MdmUserDirectoryRow {
   const details = document?.details;
   return {
@@ -77,6 +85,7 @@ function rowOf(
     documentSubtype: details && typeof details.subtype === 'string' ? details.subtype : null,
     contacts: details && 'contacts' in details ? details.contacts : null,
     loginTags: [...loginTags],
+    agentTags: [...agentTags],
   };
 }
 
@@ -86,22 +95,27 @@ export function createMemoryMdmIdentityUsersReader(runtime: IDataRuntime): MdmId
     async listPage(query: MdmUserDirectoryQuery): Promise<MdmUserDirectoryRow[]> {
       const tagRows = await runtime.mdmTag.findMany();
       const loginTagsByEntity = new Map<string, string[]>();
+      const agentTagsByEntity = new Map<string, string[]>();
+      const add = (into: Map<string, string[]>, entityId: string, value: string): void => {
+        const current = into.get(entityId);
+        if (current) {
+          current.push(value);
+        } else {
+          into.set(entityId, [value]);
+        }
+      };
       for (const tag of tagRows) {
-        if (!isCanonicalLoginTag(tag) || !tag.entityId) {
+        if (!tag.entityId) {
           continue;
         }
-        const current = loginTagsByEntity.get(tag.entityId);
-        if (current) {
-          current.push(tag.tag);
-        } else {
-          loginTagsByEntity.set(tag.entityId, [tag.tag]);
-        }
+        if (isCanonicalLoginTag(tag)) add(loginTagsByEntity, tag.entityId, tag.tag);
+        else if (isAgentTag(tag)) add(agentTagsByEntity, tag.entityId, tag.tag);
       }
 
       const people = await runtime.mdmEntityIndex.findMany({ where: { subtype: PERSON_SUBTYPE } });
       const byId = new Map<string, MdmEntityIndexRecord>();
       for (const person of people) {
-        if (!loginTagsByEntity.has(person.mdmId) || byId.has(person.mdmId)) {
+        if ((!loginTagsByEntity.has(person.mdmId) && !agentTagsByEntity.has(person.mdmId)) || byId.has(person.mdmId)) {
           continue;
         }
         if (!passesFilters(person, query)) {
@@ -113,7 +127,7 @@ export function createMemoryMdmIdentityUsersReader(runtime: IDataRuntime): MdmId
       const ordered = [...byId.values()].sort((left, right) => compareMdmId(left.mdmId, right.mdmId));
       const page = ordered.slice(0, query.limit);
       const documents = await documentsById(runtime, page.map((person) => person.mdmId));
-      return page.map((person) => rowOf(person, documents.get(person.mdmId), loginTagsByEntity.get(person.mdmId) ?? []));
+      return page.map((person) => rowOf(person, documents.get(person.mdmId), loginTagsByEntity.get(person.mdmId) ?? [], agentTagsByEntity.get(person.mdmId) ?? []));
     },
   };
 }
