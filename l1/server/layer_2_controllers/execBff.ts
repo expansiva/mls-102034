@@ -170,9 +170,13 @@ export function normalizeRequest(request: BffRequest): BffRequest {
       source: request.meta?.source ?? (readAppEnv().runtimeMode === 'memory' ? 'test' : 'http'),
       actorId: request.meta?.actorId,
       actorScope: request.meta?.actorScope,
+      // What a server-side caller says; whether it counts is decided below by the source (`trustedVia`, `trustedActorType`,
+      // `trustedAgentMember`, the connection), never here. A key left out of this list is lost on the way: see execBffMeta.test.ts.
+      via: request.meta?.via,
       actorType: request.meta?.actorType,
       agentMdmId: request.meta?.agentMdmId,
       agentName: request.meta?.agentName,
+      connection: request.meta?.connection,
       activeCompanyId: request.meta?.activeCompanyId,
       activeUnitId: request.meta?.activeUnitId,
       workspaceId: request.meta?.workspaceId,
