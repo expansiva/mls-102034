@@ -67,6 +67,13 @@ export async function buildServeIndex(reader: DefsReader, moduleIds: readonly st
   return { byOperation, issues };
 }
 
+/**
+ * An operation the PLATFORM answers (`servedBy: 'platform'` in the catalog): there is no route of a module behind it.
+ * Registered by whoever owns the data the operation touches, under `<connectionId>.<operationId>`; the engine knows no name.
+ */
+export type PlatformAnswer = (ctx: RequestContext, input: unknown, context: ConnectionContext) => Promise<ConnectionResult>;
+export type PlatformServeRegistry = ReadonlyMap<string, PlatformAnswer>;
+
 export interface ConnectionServeInput {
   connectionId: string;
   operationId: string;
@@ -82,6 +89,8 @@ export interface ConnectionServerDeps {
   newContext(): RequestContext;
   /** The mdm id of a person known by the id in the cm, read only. Throws when the person has no link. */
   toMdmId?(ctx: RequestContext, cmUserId: string): Promise<string>;
+  /** The answers of the operations marked `servedBy: 'platform'`. Without one for an operation, the call is `unavailable`. */
+  platform?: PlatformServeRegistry;
   /** One line per call. Default: `console.info`. */
   log?: (line: string) => void;
 }
@@ -125,10 +134,33 @@ export function createConnectionServer(deps: ConnectionServerDeps): (input: Conn
     if (operation.direction !== 'serve') return fail('invalid', `${name} is not a serve operation`, 'direction');
 
     let served: ServeRoute[];
+    let serveIssues: string[];
     try {
-      served = (await deps.index()).byOperation.get(name) ?? [];
+      const listed = await deps.index();
+      served = listed.byOperation.get(name) ?? [];
+      serveIssues = listed.issues;
     } catch (error) {
       return fail('unavailable', 'the routes that serve connections cannot be listed', `index-unreadable:${error instanceof Error ? error.name : 'error'}`);
+    }
+    if (operation.servedBy === 'platform') {
+      // The platform answers; a route of a module that carries the mark is a mistake of the module and is never run.
+      const say = (line: string): void => {
+        if (!serveIssues.includes(line)) serveIssues.push(line);
+      };
+      for (const entry of served) say(`SERVES_INVALID: ${entry.route}: ${name} is answered by the platform`);
+      const answer = deps.platform?.get(name);
+      if (!answer) {
+        say(`PLATFORM_ANSWER_MISSING: ${name}`);
+        return fail('unavailable', `${name} has no answer registered`, 'platform-answer-missing');
+      }
+      const platformCtx = deps.newContext();
+      const technicalId = `connection:${input.connectionId}`;
+      platformCtx.requestMeta = { requestId: input.idempotencyKey ?? randomUUID(), userId: technicalId, source: 'message', actorType: 'system', connection: { connectionId: input.connectionId, operationId: input.operationId, context: input.context } };
+      try {
+        return done(await answer(platformCtx, input.input, input.context));
+      } catch {
+        return fail('unavailable', `${name} could not be answered now`, 'platform-failed');
+      }
     }
     if (served.length === 0) return fail('not_found', `no route of this release serves ${name}`, 'no-route');
     if (served.length > 1) return fail('invalid', `more than one route serves ${name}`, 'duplicate-mark');

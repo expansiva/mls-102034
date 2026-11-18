@@ -6,6 +6,10 @@ import type { DefsReader } from '/_102034_/l1/workflow/assistantCatalogDefs.js';
 import { buildServeIndex, createConnectionServer, type ConnectionServerDeps, type ServeIndex } from '/_102034_/l1/workflow/connectionServe.js';
 import { exampleCatalog } from '/_102034_/testing/connections/connectionFixtures.js';
 import { createGeneratedRoute } from '/_102034_/testing/connections/generatedRoute.js';
+import { createRequestContext } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
+import { createMemoryDataRuntime } from '/_102034_/l1/mdm/layer_1_external/data/memory/MdmDataRuntimeMemory.js';
+import { findAgentMember } from '/_102034_/l1/mdm/layer_3_usecases/agentMember.js';
+import { mdmPlatformServes } from '/_102034_/l1/mdm/layer_3_usecases/platformServes.js';
 import cm from '/_102034_/l4/ontology/connections/cm.defs.js';
 import type { ConnectionCatalog, ConnectionContext } from '/_102034_/l4/ontology/connections/types.defs.js';
 
@@ -192,4 +196,67 @@ test('the technical actor goes in verifiedAuthorities too, where the route confi
   // the hole this closes: without verifiedAuthorities the same route lets any server call through
   const withoutIt = await unlisted({ routine: 'modA.agents.describe', params: {}, meta: { source: 'message', actorScope: ['modA:connection:cm'] } });
   assert.equal(withoutIt.statusCode, 200);
+});
+
+function platformHarness(over: { platform?: ConnectionServerDeps['platform']; served?: ServeIndex } = {}) {
+  const ctx = createRequestContext(createMemoryDataRuntime());
+  const served = over.served ?? index({});
+  const executed: BffRequest[] = [];
+  const serve = createConnectionServer({
+    catalogOf: async (id) => (id === 'cm' ? cm : undefined),
+    index: async () => served,
+    execMessage: async (request) => {
+      executed.push(request);
+      return { response: { ok: true, data: {} } as BffResponse, statusCode: 200 };
+    },
+    newContext: () => ctx,
+    ...(over.platform ? { platform: over.platform } : {}),
+    log: () => undefined,
+  });
+  return { serve, ctx, served, executed };
+}
+
+const ensure = (agentId: string, name = 'Ana', active = true) => ({ connectionId: 'cm', operationId: 'ensureAgentMember', input: { agentId, name, active }, context: CONTEXT });
+
+test('platform operation: the call creates the member and answers { mdmId }; repeating answers the same one', async () => {
+  const { serve, ctx, executed } = platformHarness({ platform: mdmPlatformServes });
+  const first = await serve(ensure('agent-serve-1'));
+  assert.equal(first.ok, true);
+  const mdmId = (first as { ok: true; output: { mdmId: string } }).output.mdmId;
+  assert.ok(mdmId);
+  assert.equal((await findAgentMember(ctx, 'agent-serve-1'))?.mdmId, mdmId);
+  assert.deepEqual(await serve(ensure('agent-serve-1')), { ok: true, output: { mdmId } });
+  const off = await serve(ensure('agent-serve-1', 'Ana', false));
+  assert.deepEqual(off, { ok: true, output: { mdmId } });
+  assert.equal((await findAgentMember(ctx, 'agent-serve-1'))?.active, false);
+  assert.deepEqual(executed, [], 'no route of a module ran');
+});
+
+test('platform operation: a body out of the shape is invalid', async () => {
+  const { serve } = platformHarness({ platform: mdmPlatformServes });
+  for (const input of [{}, { agentId: 'a', name: 'n' }, { agentId: 'a', name: 'n', active: 'yes' }, { agentId: ' ', name: 'n', active: true }]) {
+    const answer = await serve({ connectionId: 'cm', operationId: 'ensureAgentMember', input, context: CONTEXT });
+    assert.equal(answer.ok, false);
+    assert.equal((answer as { code: string }).code, 'invalid');
+  }
+});
+
+test('platform operation without an answer registered: unavailable, with a line in the issues', async () => {
+  const { serve, served, executed } = platformHarness();
+  const answer = await serve(ensure('agent-serve-2'));
+  assert.deepEqual(answer.ok ? null : answer.code, 'unavailable');
+  assert.ok(served.issues.includes('PLATFORM_ANSWER_MISSING: cm.ensureAgentMember'));
+  assert.deepEqual(executed, []);
+});
+
+test('platform operation: a route of a module that carries the mark is ignored and said in the issues', async () => {
+  const { serve, served, executed, ctx } = platformHarness({
+    platform: mdmPlatformServes,
+    served: index({ 'cm.ensureAgentMember': [{ moduleId: 'modA', route: 'modA.agents.ensureMember' }] }),
+  });
+  const answer = await serve(ensure('agent-serve-3'));
+  assert.equal(answer.ok, true);
+  assert.deepEqual(executed, [], 'the route of the module never ran');
+  assert.ok(served.issues.includes('SERVES_INVALID: modA.agents.ensureMember: cm.ensureAgentMember is answered by the platform'));
+  assert.ok(await findAgentMember(ctx, 'agent-serve-3'));
 });

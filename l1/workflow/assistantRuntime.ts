@@ -31,6 +31,7 @@ import { execAssistantAction, type AssistantAgentAccess, type AssistantExecInput
 import { deliverReleaseCatalog, type ReleaseCatalogDelivery } from '/_102034_/l1/workflow/releaseCatalogDelivery.js';
 import { readMessagesIntegration } from '/_102034_/l1/server/layer_1_external/config/messagesIntegration.js';
 import { getMdmKv } from '/_102034_/l1/mdm/layer_3_usecases/kvUsecases.js';
+import { mdmPlatformServes } from '/_102034_/l1/mdm/layer_3_usecases/platformServes.js';
 import { buildServeIndex, createConnectionServer, type ConnectionServeInput, type ServeIndex } from '/_102034_/l1/workflow/connectionServe.js';
 import { distConnectionCatalogs } from '/_102034_/l1/server/layer_1_external/connections/connectionCatalogs.js';
 import type { ConnectionResult } from '/_102034_/l4/ontology/connections/types.defs.js';
@@ -115,6 +116,7 @@ export function createAssistantRunners(projectId: string): AssistantRunners {
     execMessage: (request, ctx) => execMessage(request, ctx),
     newContext,
     toMdmId: (ctx, cmUserId) => identities.toMdmId(ctx, cmUserId),
+    platform: mdmPlatformServes,
   });
   // The tools that are ON for an agent: asked of the module that serves the description of the agent (the connection `cm.describe`),
   // from inside and with no roles: the answer is the authority of the agent.
