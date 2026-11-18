@@ -59,6 +59,8 @@ export interface AssistantExecDeps extends AssistantAccessDeps {
   /** Without it an agent cannot act: no module answers for it. */
   agent?: AssistantAgentAccess;
   catalogs: AssistantCatalogSource;
+  /** The member of an agent in the mdm (what the domain fields that say who did it carry), or `null` when it has none. */
+  agentMemberOf(ctx: RequestContext, agentId: string): Promise<{ mdmId: string; name: string; active: boolean } | null>;
   /** The login e-mail of the person, from the register. */
   loginEmailOf(ctx: RequestContext, personMdmId: string): Promise<string | null>;
   execMessage(request: BffRequest, ctx: RequestContext): Promise<{ response: BffResponse; statusCode: number }>;
@@ -178,6 +180,7 @@ export async function execAssistantAction(
 
   let held: string[];
   let email: string | null = null;
+  let member: { mdmId: string; name: string } | undefined;
   if (agent) {
     // The authority of an agent is the tool being ON for it, asked of the module that serves its description; the roles of whoever
     // called it never enter. With the tool on, the run carries only the actors of THIS action, for this call.
@@ -193,6 +196,21 @@ export async function execAssistantAction(
     if (!access.allowed.includes(input.actionId)) {
       return { outcome: 'forbidden', error: { code: 'ASSISTANT_AGENT_TOOL_OFF', message: `The tool ${input.actionId} is not on for this agent.` } };
     }
+    // The agent acts as a member of the organization: its mdm person goes in the session, so the fields that say who did it carry it.
+    // Looked up before the commandId is taken, so a missing member leaves the command free for the repeat the cm makes after creating it.
+    let found: { mdmId: string; name: string; active: boolean } | null;
+    try {
+      found = await deps.agentMemberOf(ctx, agent.agentId);
+    } catch {
+      return { outcome: 'unavailable', error: { code: 'ASSISTANT_AGENT_UNAVAILABLE', message: FIXED_UNAVAILABLE } };
+    }
+    if (found === null) {
+      return { outcome: 'no_person', error: { code: 'ASSISTANT_AGENT_NO_MEMBER', message: 'The agent is not a member of the organization in this app yet.' } };
+    }
+    if (!found.active) {
+      return { outcome: 'forbidden', error: { code: 'ASSISTANT_AGENT_INACTIVE', message: 'The member of the agent is inactive.' } };
+    }
+    member = { mdmId: found.mdmId, name: found.name };
     held = item.actors.map((actor) => `${moduleId}:${actor}`);
   } else {
     const entry = deps.modules.find((candidate) => candidate.moduleId === moduleId);
@@ -235,7 +253,7 @@ export async function execAssistantAction(
       params: params.value,
       meta: agent
         // No person in the session: the author is the agent, by its id and the `agent` type; the actors are those of this action only.
-        ? { requestId: input.commandId, userId: agent.agentId, actorId: agent.agentId, actorType: 'agent' as const, actorScope: held, verifiedAuthorities: held }
+        ? { requestId: input.commandId, userId: agent.agentId, actorId: agent.agentId, actorType: 'agent' as const, agentMdmId: (member as { mdmId: string }).mdmId, agentName: (member as { name: string }).name, actorScope: held, verifiedAuthorities: held }
         : {
           requestId: input.commandId,
           verifiedEmail: email as string,

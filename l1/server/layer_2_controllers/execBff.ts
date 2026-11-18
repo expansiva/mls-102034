@@ -11,6 +11,7 @@ import {
   fail,
   type BffRequest,
   type BffResponse,
+  type PlatformSessionPerson,
   type RequestContext,
   type RequestOrganizationContext,
   type RequestSessionContext,
@@ -134,11 +135,19 @@ export function trustedActorType(meta: BffRequest['meta']): 'agent' | undefined 
   return meta?.source === 'message' && meta.actorType === 'agent' ? 'agent' : undefined;
 }
 
+/** The member of an agent in the session: only a `message` request that says it is the agent's own can carry it. */
+export function trustedAgentMember(meta: BffRequest['meta']): PlatformSessionPerson | undefined {
+  if (trustedActorType(meta) !== 'agent') return undefined;
+  return typeof meta?.agentMdmId === 'string' && meta.agentMdmId !== '' && typeof meta.agentName === 'string'
+    ? { mdmId: meta.agentMdmId, email: '', name: meta.agentName }
+    : undefined;
+}
+
 export function trustedVia(meta: BffRequest['meta']): 'nora' | undefined {
   return meta?.source === 'message' && meta.via === 'nora' ? 'nora' : undefined;
 }
 
-function normalizeRequest(request: BffRequest): BffRequest {
+export function normalizeRequest(request: BffRequest): BffRequest {
   if (!request || typeof request !== 'object') {
     throw new AppError('INVALID_REQUEST', 'Request must be an object', 400);
   }
@@ -161,6 +170,9 @@ function normalizeRequest(request: BffRequest): BffRequest {
       source: request.meta?.source ?? (readAppEnv().runtimeMode === 'memory' ? 'test' : 'http'),
       actorId: request.meta?.actorId,
       actorScope: request.meta?.actorScope,
+      actorType: request.meta?.actorType,
+      agentMdmId: request.meta?.agentMdmId,
+      agentName: request.meta?.agentName,
       activeCompanyId: request.meta?.activeCompanyId,
       activeUnitId: request.meta?.activeUnitId,
       workspaceId: request.meta?.workspaceId,
@@ -311,6 +323,8 @@ export async function execBff(
         // Who acts "through the assistant" is the server-side caller's to say, never the browser's: only a
         // `message` request, only the value `nora`. A context that came in carrying it does not pass it on.
         via: trustedVia(normalizedRequest.meta),
+        // The member of an agent that acts in its own name; the session of a person has the person of the login instead.
+        ...(trustedAgentMember(normalizedRequest.meta) ? { person: trustedAgentMember(normalizedRequest.meta) } : {}),
       }),
       requestMeta: {
         requestId: normalizedRequest.meta?.requestId,

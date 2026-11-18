@@ -35,6 +35,7 @@ function setup(answer: (request: BffRequest) => { response: BffResponse; statusC
     identities: { toMdmId: async (_c, cmUserId) => { if (cmUserId === 'cm-1') return 'person-1'; if (cmUserId === 'cm-2') return 'person-2'; throw new AppError('WORKFLOW_IDENTITY_UNLINKED', 'u', 409); } },
     withAlpha: async (meta) => meta,
     catalogs: createAssistantCatalogSource({ projectId: '102047', releaseId: () => 'r1', importCatalog: async (moduleId) => (moduleId === 'modA' ? CATALOG : undefined) }),
+    agentMemberOf: async (_c, agentId) => ({ mdmId: `member-of-${agentId}`, name: `Agent ${agentId}`, active: true }),
     loginEmailOf: async (_c, id) => (id === 'person-1' ? 'ana@example.test' : id === 'person-2' ? 'bia@example.test' : null),
     execMessage: async (request) => { calls.requests.push(request); return answer(request); },
     kv: { reserve: reserveMdmKv, put: putMdmKv },
@@ -237,7 +238,7 @@ function agentAccess(allowed: readonly string[] | 'no_module' | 'unavailable', a
   };
 }
 
-test('an agent with the tool ON runs it as itself: its id and the agent type, no person in the session, and only the actors of THAT action', async () => {
+test('an agent with the tool ON runs it as itself: its id, the agent type and its member, no login person, and only the actors of THAT action', async () => {
   const asked: unknown[] = [];
   const { ctx, deps, calls } = setup(undefined, { agent: agentAccess(['modA.create'], asked) });
   const result = await execAssistantAction(ctx, deps, agentInput());
@@ -246,7 +247,7 @@ test('an agent with the tool ON runs it as itself: its id and the agent type, no
   assert.deepEqual(calls.requests[0], {
     routine: 'modA.page.modA.create',
     params: { details: { title: 'x' } },
-    meta: { requestId: 'agent-cmd-1', userId: 'agent-1', actorId: 'agent-1', actorType: 'agent', actorScope: ['modA:boss'], verifiedAuthorities: ['modA:boss'] },
+    meta: { requestId: 'agent-cmd-1', userId: 'agent-1', actorId: 'agent-1', actorType: 'agent', agentMdmId: 'member-of-agent-1', agentName: 'Agent agent-1', actorScope: ['modA:boss'], verifiedAuthorities: ['modA:boss'] },
   });
   assert.equal('verifiedEmail' in (calls.requests[0].meta ?? {}), false, 'no person is the caller');
   assert.equal('via' in (calls.requests[0].meta ?? {}), false);
@@ -341,4 +342,40 @@ test('a route that lists the actor lets the person and the agent through; one th
   const byAgent = await execAssistantAction(refusedAgent.ctx, refusedAgent.deps, agentInput());
   assert.equal(byAgent.outcome, 'forbidden');
   assert.equal(refusedAgent.calls.requests.length, 1);
+});
+
+test('an agent that is not a member yet is no_person with its own code, before the commandId is taken, so the repeat with a new commandId runs', async () => {
+  let member: { mdmId: string; name: string; active: boolean } | null = null;
+  const { ctx, deps, calls } = setup(undefined, { agent: agentAccess(['modA.create']), agentMemberOf: async () => member });
+  const first = await execAssistantAction(ctx, deps, agentInput());
+  assert.deepEqual(first, { outcome: 'no_person', error: { code: 'ASSISTANT_AGENT_NO_MEMBER', message: 'The agent is not a member of the organization in this app yet.' } });
+  assert.equal(calls.requests.length, 0);
+  assert.equal(await getMdmKv(ctx, { key: 'assistant:agent-cmd-1' }), null, 'the commandId was not taken');
+  member = { mdmId: 'member-1', name: 'Ana', active: true };
+  const again = await execAssistantAction(ctx, deps, agentInput());
+  assert.equal(again.outcome, 'done');
+  assert.equal(calls.requests[0].meta?.agentMdmId, 'member-1');
+  assert.equal(calls.requests[0].meta?.agentName, 'Ana');
+});
+
+test('an agent whose member is inactive is forbidden, and nothing runs', async () => {
+  const { ctx, deps, calls } = setup(undefined, { agent: agentAccess(['modA.create']), agentMemberOf: async () => ({ mdmId: 'member-1', name: 'Ana', active: false }) });
+  const result = await execAssistantAction(ctx, deps, agentInput());
+  assert.equal(result.outcome, 'forbidden');
+  assert.equal(result.error?.code, 'ASSISTANT_AGENT_INACTIVE');
+  assert.equal(calls.requests.length, 0);
+});
+
+test('a failure reading the member of the agent is unavailable, and nothing runs', async () => {
+  const { ctx, deps, calls } = setup(undefined, { agent: agentAccess(['modA.create']), agentMemberOf: async () => { throw new Error('down'); } });
+  const result = await execAssistantAction(ctx, deps, agentInput());
+  assert.equal(result.outcome, 'unavailable');
+  assert.equal(calls.requests.length, 0);
+});
+
+test('the person path (and the Nora) carries no member of an agent', async () => {
+  const { ctx, deps, calls } = setup();
+  await execAssistantAction(ctx, deps, input());
+  assert.equal('agentMdmId' in (calls.requests[0].meta ?? {}), false);
+  assert.equal('actorType' in (calls.requests[0].meta ?? {}), false);
 });

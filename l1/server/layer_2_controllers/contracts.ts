@@ -54,6 +54,12 @@ export interface BffRequest {
      * Read ONLY when `source` is `message`; over `http` it is discarded like every other identity claim.
      */
     actorType?: 'agent';
+    /**
+     * With `actorType: 'agent'`: the member of the agent in the mdm (its id and name), put in `sessionContext.person` so the domain fields
+     * that say who did it carry the member. Read ONLY when `source` is `message`; over `http` it is discarded.
+     */
+    agentMdmId?: string;
+    agentName?: string;
     /** A call that arrives through a connection (`/exec/connection`). Read ONLY when `source` is `message`. */
     connection?: BffConnectionMeta;
     actorId?: string;

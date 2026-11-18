@@ -1,7 +1,7 @@
 /// <mls fileReference="_102034_/l1/server/layer_2_controllers/execBff.test.ts" enhancement="_blank" />
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createSessionContext, trustedActorType,
+import { createSessionContext, normalizeRequest, trustedActorType, trustedAgentMember,
   trustedVia, withAlphaAuthorities, type AlphaAuthorityDeps } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
 import type { BffRequest } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 
@@ -79,4 +79,22 @@ test('the agent author is trusted only from a message request, never from http, 
   assert.equal(trustedActorType({ source: 'message' }), undefined);
   assert.equal(trustedActorType({ source: 'message', actorType: 'system' as never }), undefined);
   assert.equal(trustedActorType(undefined), undefined);
+});
+
+test('the member of an agent reaches the session only from a message that says it is the agent', () => {
+  const base = { source: 'message' as const, actorType: 'agent' as const, agentMdmId: 'member-1', agentName: 'Ana' };
+  assert.deepEqual(trustedAgentMember(base), { mdmId: 'member-1', email: '', name: 'Ana' });
+  assert.equal(trustedAgentMember({ ...base, source: 'http' }), undefined);
+  assert.equal(trustedAgentMember({ ...base, source: 'test' }), undefined);
+  assert.equal(trustedAgentMember({ ...base, actorType: undefined }), undefined);
+  assert.equal(trustedAgentMember({ ...base, agentMdmId: '' }), undefined);
+  assert.equal(trustedAgentMember({ source: 'message', agentMdmId: 'member-1', agentName: 'Ana' }), undefined);
+  assert.equal(trustedAgentMember(undefined), undefined);
+});
+
+test('normalizeRequest keeps what a server-side caller said about the agent, for execBff to trust or drop by the source', () => {
+  const meta = normalizeRequest({ routine: 'm.p.c', params: {}, meta: { source: 'message', actorType: 'agent', agentMdmId: 'member-1', agentName: 'Ana' } }).meta;
+  assert.equal(meta?.actorType, 'agent');
+  assert.equal(meta?.agentMdmId, 'member-1');
+  assert.equal(meta?.agentName, 'Ana');
 });

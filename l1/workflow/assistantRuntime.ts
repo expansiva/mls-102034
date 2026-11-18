@@ -31,6 +31,7 @@ import { execAssistantAction, type AssistantAgentAccess, type AssistantExecInput
 import { deliverReleaseCatalog, type ReleaseCatalogDelivery } from '/_102034_/l1/workflow/releaseCatalogDelivery.js';
 import { readMessagesIntegration } from '/_102034_/l1/server/layer_1_external/config/messagesIntegration.js';
 import { getMdmKv } from '/_102034_/l1/mdm/layer_3_usecases/kvUsecases.js';
+import { findAgentMember } from '/_102034_/l1/mdm/layer_3_usecases/agentMember.js';
 import { mdmPlatformServes } from '/_102034_/l1/mdm/layer_3_usecases/platformServes.js';
 import { buildServeIndex, createConnectionServer, type ConnectionServeInput, type ServeIndex } from '/_102034_/l1/workflow/connectionServe.js';
 import { distConnectionCatalogs } from '/_102034_/l1/server/layer_1_external/connections/connectionCatalogs.js';
@@ -195,6 +196,7 @@ export function createAssistantRunners(projectId: string): AssistantRunners {
       withAlpha,
       catalogs,
       loginEmailOf: (ctx, personMdmId) => lookupLoginEmail(ctx, personMdmId),
+      agentMemberOf: (ctx, agentId) => findAgentMember(ctx, agentId),
       execMessage: (request, ctx) => execMessage(request, ctx),
       kv: { reserve: (ctx, params) => reserveMdmKv(ctx, params), put: (ctx, params) => putMdmKv(ctx, params) },
     }, input),
