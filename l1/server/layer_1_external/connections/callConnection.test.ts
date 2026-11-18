@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { callConnection, createCmTransport, createConnectionCaller, createProductionConnectionCaller, type CallConnection } from '/_102034_/l1/server/layer_1_external/connections/callConnection.js';
-import { distConnectionCatalogs } from '/_102034_/l1/server/layer_1_external/connections/connectionCatalogs.js';
+import { connectionCatalogs } from '/_102034_/l1/server/layer_1_external/connections/connectionCatalogs.js';
 import { CONNECTION_CODES, exampleCatalog } from '/_102034_/testing/connections/connectionFixtures.js';
 import cm from '/_102034_/l1/server/layer_1_external/connections/catalogs/cm.js';
 import type { ConnectionCatalog, ConnectionContext } from '/_102034_/l1/server/layer_1_external/connections/catalogs/types.js';
@@ -252,27 +252,19 @@ describe('callConnection: the log', () => {
   });
 });
 
-describe('the catalog of the release', () => {
-  it('reads the connection catalogs the release carries, once, and refuses a file that is not a catalog', async () => {
-    let reads = 0;
-    const reader = {
-      list: () => [] as string[],
-      json: () => undefined,
-      text: () => undefined,
-      async read(file: string) {
-        reads += 1;
-        if (file.endsWith('/cm.defs.js')) return cm;
-        if (file.endsWith('/broken.defs.js')) return { schemaVersion: 'other' };
-        return undefined;
-      },
-    };
-    const catalogOf = distConnectionCatalogs(reader);
+describe('the catalogs of the platform', () => {
+  it('answers the cm and the platform, undefined for an unknown or invalid id, and refuses an entry that is not the catalog of its key', async () => {
+    const catalogOf = connectionCatalogs();
     assert.equal((await catalogOf('cm'))?.connectionId, 'cm');
-    await catalogOf('cm');
-    assert.equal(reads, 1);
+    assert.equal((await catalogOf('platform'))?.connectionId, 'platform');
     assert.equal(await catalogOf('missing'), undefined);
-    await assert.rejects(() => catalogOf('broken'), /not valid/);
+    assert.equal(await catalogOf('constructor'), undefined, 'a name of Object is not a connection');
     assert.equal(await catalogOf('../../etc/passwd'), undefined, 'the id is not a path');
+
+    const injected = connectionCatalogs({ cm, other: cm, broken: { schemaVersion: 'other' } as unknown as ConnectionCatalog });
+    assert.equal((await injected('cm'))?.connectionId, 'cm');
+    await assert.rejects(() => injected('other'), /not valid/);
+    await assert.rejects(() => injected('broken'), /not valid/);
   });
 });
 

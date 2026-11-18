@@ -2,7 +2,7 @@ import { resolveClientProjectId } from '/_102034_/l1/server/layer_1_external/cbe
 import { createServerMessagesClient } from '/_102034_/l1/server/layer_1_external/collabMessages/client.js';
 import { ensureEnvFileLoaded } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { readMessagesIntegration } from '/_102034_/l1/server/layer_1_external/config/messagesIntegration.js';
-import { distConnectionCatalogs } from '/_102034_/l1/server/layer_1_external/connections/connectionCatalogs.js';
+import { connectionCatalogs } from '/_102034_/l1/server/layer_1_external/connections/connectionCatalogs.js';
 import { createAssistantContext } from '/_102034_/l1/workflow/assistantRuntime.js';
 import { createMessagesWorkflowIdentities } from '/_102034_/l1/workflow/messagesIdentities.js';
 import { moduleHeaders, postEnvelope } from '/_102034_/l1/server/layer_1_external/collabMessages/transport.js';
@@ -219,7 +219,7 @@ export function createProductionConnectionCaller(options: ProductionConnectionCa
     ? undefined
     : createMessagesWorkflowIdentities({ projectId, client: createServerMessagesClient({ projectId }) });
   return createConnectionCaller({
-    catalogOf: options.catalogOf ?? distConnectionCatalogs(),
+    catalogOf: options.catalogOf ?? connectionCatalogs(),
     transports: { cm: createCmTransport({ projectId, env: options.env, fetchImpl: options.fetchImpl }) },
     toCmUserId: options.toCmUserId ?? ((mdmId) => (identities as NonNullable<typeof identities>).toCmUserId(createAssistantContext(projectId), mdmId)),
     organizationId: () => {

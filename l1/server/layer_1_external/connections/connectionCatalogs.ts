@@ -1,26 +1,18 @@
-import { distDefsReader, type DefsReader } from '/_102034_/l1/workflow/assistantCatalogDefs.js';
+import cm from '/_102034_/l1/server/layer_1_external/connections/catalogs/cm.js';
+import platform from '/_102034_/l1/server/layer_1_external/connections/catalogs/platform.js';
 import type { ConnectionCatalog } from '/_102034_/l1/server/layer_1_external/connections/catalogs/types.js';
 
-/** The release carries its connection catalogs as emitted L4 defs of this library (`dist/local/_102034_/l4/ontology/connections/<id>.defs.js`). */
-const LIBRARY_ID = '102034';
+/** The connections of the platform are a closed list (conexoes.md, decision 5): each one is here, under its own id. */
+const PLATFORM_CATALOGS: Readonly<Record<string, ConnectionCatalog>> = { cm, platform };
 
-/** The catalogs of the connections, read once from the release. A file that is missing is `undefined`; one that is not a catalog throws. */
-export function distConnectionCatalogs(reader: DefsReader = distDefsReader(LIBRARY_ID)): (connectionId: string) => Promise<ConnectionCatalog | undefined> {
-  const cache = new Map<string, Promise<ConnectionCatalog | undefined>>();
-  return (connectionId) => {
-    if (!/^[a-z][A-Za-z0-9]*$/.test(connectionId)) return Promise.resolve(undefined);
-    let pending = cache.get(connectionId);
-    if (!pending) {
-      pending = (async () => {
-        const catalog = (await reader.read(`l4/ontology/connections/${connectionId}.defs.js`, 'default')) as ConnectionCatalog | undefined;
-        if (catalog === undefined) return undefined;
-        if (catalog.schemaVersion !== 'connection-catalog-v1' || catalog.connectionId !== connectionId || !Array.isArray(catalog.operations)) {
-          throw new Error(`connection catalog ${connectionId} is not valid`);
-        }
-        return catalog;
-      })();
-      cache.set(connectionId, pending);
+/** The catalog of a connection. An id that is not an id, or not in the table, is `undefined`; an entry that is not the catalog of its key throws. */
+export function connectionCatalogs(table: Readonly<Record<string, ConnectionCatalog>> = PLATFORM_CATALOGS): (connectionId: string) => Promise<ConnectionCatalog | undefined> {
+  return async (connectionId) => {
+    if (!/^[a-z][A-Za-z0-9]*$/.test(connectionId) || !Object.hasOwn(table, connectionId)) return undefined;
+    const catalog = table[connectionId];
+    if (catalog.schemaVersion !== 'connection-catalog-v1' || catalog.connectionId !== connectionId || !Array.isArray(catalog.operations)) {
+      throw new Error(`connection catalog ${connectionId} is not valid`);
     }
-    return pending;
+    return catalog;
   };
 }
