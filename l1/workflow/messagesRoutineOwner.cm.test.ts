@@ -13,14 +13,15 @@ import {
 
 /**
  * Round trip of a routine occurrence with no person (`owner: null`) through the real cm. Off by default: it writes a task.
- *   RUN_CM_PROBE=true CM_PROBE_PROJECT=<project id of the app> CM_PROBE_MODULE=<module> CM_PROBE_AS_USER=<cm user id>
- * with the MSG_PROXY_* of the app in the environment, run from the app that talks to the cm under test.
+ *   RUN_CM_PROBE=true CM_PROBE_PROJECT=<project id of the app> CM_PROBE_MODULE=<module>
+ * with the MSG_PROXY_* of the app in the environment, run from the mls-base root. The caller is `app:<project>`, the same id the production port uses
+ * (messagesRuntime.ts), unless CM_PROBE_AS_USER overrides it.
  * No person is translated anywhere in it: the resolver below fails the test if it is ever called.
  */
 const ON = process.env.RUN_CM_PROBE === 'true';
 const PROJECT = process.env.CM_PROBE_PROJECT ?? '';
 const MODULE = process.env.CM_PROBE_MODULE ?? '';
-const AS_USER = process.env.CM_PROBE_AS_USER ?? '';
+const AS_USER = process.env.CM_PROBE_AS_USER || `app:${PROJECT}`;
 
 const noPerson: MessagesWorkflowIdentities = {
   async toCmUserId() { throw new Error('a person was translated'); },
@@ -30,7 +31,7 @@ const noPerson: MessagesWorkflowIdentities = {
 };
 
 test('rt244: a routine with no person opens, is found, advances and is reopened as existing through the real cm', { skip: !ON }, async () => {
-  assert.ok(PROJECT && MODULE && AS_USER, 'CM_PROBE_PROJECT, CM_PROBE_MODULE and CM_PROBE_AS_USER are required');
+  assert.ok(PROJECT && MODULE, 'CM_PROBE_PROJECT and CM_PROBE_MODULE are required');
   let calls = 0;
   const real = createServerMessagesClient({ projectId: PROJECT });
   const client = new Proxy(real, {
