@@ -142,7 +142,7 @@ describe('external call record', () => {
     const ref = { projectId: 'p', moduleId: 'module', systemId: 'example' };
     const ok = await sender.sendExternal(ref, 'lookup', { method: 'GET', path: '/lookup', query: { key: '{{setting:account}}' } }, { ...context, actorUserId: 'person-9' });
     assert.equal(ok.ok, true);
-    const denied = await sender.sendExternal(ref, 'lookup', { method: 'DELETE', path: '/lookup' }, { ...context, agentId: 'agent-3' });
+    const denied = await sender.sendExternal(ref, 'lookup', { method: 'DELETE', path: '/lookup' }, { ...context, agentId: 'agent-3' }, { requestId: 'req-7' });
     assert.equal(denied.ok, false);
     assert.equal(events.length, 2);
     const [done, refused] = events;
@@ -151,6 +151,8 @@ describe('external call record', () => {
     assert.equal(done?.denialReason, null);
     assert.ok((done?.bytes ?? 0) >= BODY.length);
     assert.ok((done?.durationMs ?? -1) >= 0);
+    assert.equal(refused?.requestId, 'req-7');
+    assert.equal(done?.requestId, null);
     assert.equal(refused?.actorKind, 'agent');
     assert.equal(refused?.actorId, 'agent-3');
     assert.match(refused?.denialReason ?? '', /method is not declared/);

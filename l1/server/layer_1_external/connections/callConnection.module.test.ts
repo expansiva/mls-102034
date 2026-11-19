@@ -139,6 +139,27 @@ describe('a module calls a system its sibling declared', () => {
     assert.equal(seen[0]?.systemId, 'siblingSystem');
   });
 
+  it('the requestId of the request reaches the send of the module, apart from the context', async () => {
+    const traces: Array<{ requestId?: string } | undefined> = [];
+    const contexts: unknown[] = [];
+    const call = createConnectionCaller({
+      projectId: PROJECT,
+      catalogOf: async () => undefined,
+      transports: {},
+      sender: {
+        async sendExternal(_ref, _operationId, _request, sentContext, trace) {
+          traces.push(trace);
+          contexts.push(sentContext);
+          return { ok: true, output: { status: 200, headers: {}, body: '{}' } };
+        },
+      },
+      log: () => undefined,
+    });
+    await call('siblingSystem', 'ping', {}, context, { requestId: 'req-42' });
+    assert.deepEqual(traces, [{ requestId: 'req-42' }]);
+    assert.equal(JSON.stringify(contexts).includes('req-42'), false);
+  });
+
   it('a serve operation through callConnection is forbidden and the adapter is not called', async () => {
     let sends = 0;
     const call = createConnectionCaller({

@@ -46,6 +46,11 @@ export interface CallConnectionOptions {
   idempotencyKey?: string;
   /** The version the caller read; a stale one comes back as `conflict`. */
   expectVersion?: string | number;
+  /**
+   * The `requestId` of the request the backend is serving (`RequestContext.requestMeta.requestId`, the same one the monitor
+   * execution log keeps). It only ties the call record to that request: it is never put in the body that goes to the cm.
+   */
+  requestId?: string;
 }
 
 /** The context of a call out of the app: the connector fills `organizationId` (the organization of the app), so the caller may leave it out. */
@@ -277,7 +282,7 @@ export function createConnectionCaller(deps: ConnectionCallerDeps): CallConnecti
       const sentContext: ConnectionContext = { ...context, organizationId };
       const ctx: ExternalAdapterContext = {
         connection: sentContext,
-        send: (id, request) => sender.sendExternal(ref, id, request, sentContext),
+        send: (id, request) => sender.sendExternal(ref, id, request, sentContext, { requestId: opts.requestId }),
         setting: () => undefined,
       };
       // The platform transport enforces the time itself; an adapter is module code, so the caller enforces it here.

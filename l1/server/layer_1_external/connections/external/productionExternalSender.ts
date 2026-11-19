@@ -106,7 +106,7 @@ export function externalCallRowFromEvent(event: ExternalRecordEvent): ExternalCa
     bytes: event.bytes,
     actorKind: event.actorKind,
     actorId: event.actorId,
-    requestId: null,
+    requestId: event.requestId,
   };
 }
 

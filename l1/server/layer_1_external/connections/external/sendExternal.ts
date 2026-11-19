@@ -53,6 +53,8 @@ export interface ExternalRecordEvent {
   /** The person (or the agent) behind the call, when the context has one. */
   actorKind: 'person' | 'agent' | null;
   actorId: string | null;
+  /** The request of the app the call was made for (the monitor execution log's `requestId`), when the caller gave it. */
+  requestId: string | null;
 }
 
 /** What the transport receives. `address` is the IP already checked; connect to that IP and keep the name on the URL. */
@@ -91,6 +93,8 @@ export interface ExternalSender {
     operationId: string,
     request: ExternalRequest,
     context: ConnectionContext,
+    /** Not part of `context`, which goes to the cm: only ties the record to the request being served. */
+    trace?: { requestId?: string },
   ): Promise<ConnectionResult<ExternalResponseOutput>>;
 }
 
@@ -290,7 +294,7 @@ export function createExternalSender(deps: ExternalSenderDeps): ExternalSender {
     result: ConnectionResult<ExternalResponseOutput>,
     status?: number,
     place?: { server: string; path: string },
-    extra: { durationMs: number; bytes: number; context: ConnectionContext } = { durationMs: 0, bytes: 0, context: { organizationId: '' } },
+    extra: { durationMs: number; bytes: number; context: ConnectionContext; requestId?: string } = { durationMs: 0, bytes: 0, context: { organizationId: '' } },
   ): Promise<ConnectionResult<ExternalResponseOutput>> {
     logLine(ref.systemId, operationId, outcome);
     const person = extra.context.actorUserId ?? extra.context.actorMdmId;
@@ -308,12 +312,13 @@ export function createExternalSender(deps: ExternalSenderDeps): ExternalSender {
       denialReason: result.ok ? null : result.message,
       actorKind: person ? 'person' : (extra.context.agentId ? 'agent' : null),
       actorId: person ?? extra.context.agentId ?? null,
+      requestId: extra.requestId ?? null,
     }));
     return result;
   }
 
   return {
-    async sendExternal(ref, operationId, request, context) {
+    async sendExternal(ref, operationId, request, context, trace) {
       const started = Date.now();
       let bytes = 0;
       const fin = (
@@ -321,7 +326,7 @@ export function createExternalSender(deps: ExternalSenderDeps): ExternalSender {
         result: ConnectionResult<ExternalResponseOutput>,
         status?: number,
         place?: { server: string; path: string },
-      ): Promise<ConnectionResult<ExternalResponseOutput>> => finish(ref, operationId, outcome, result, status, place, { durationMs: Date.now() - started, bytes, context });
+      ): Promise<ConnectionResult<ExternalResponseOutput>> => finish(ref, operationId, outcome, result, status, place, { durationMs: Date.now() - started, bytes, context, requestId: trace?.requestId });
       let declaration: ExternalSystemDeclaration | null;
       try {
         declaration = await read(deps.declarationOf(ref));

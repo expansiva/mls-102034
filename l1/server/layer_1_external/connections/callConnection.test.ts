@@ -85,6 +85,14 @@ describe('callConnection: the transport to the cm', () => {
     assert.deepEqual(seen[0].body, { action: 'connectionCall', connectionId: 'cm', operationId: 'listAgents', input: { includeDrafts: true }, context: CONTEXT });
   });
 
+  it('the requestId of the app request is not sent to the cm: no new field in the body or the headers', async () => {
+    const { seen, fetchImpl } = fakeCm(() => ({ body: { statusCode: 200, ok: true, output: { agents: [] } } }));
+    await callerOver(fetchImpl)('cm', 'listAgents', { includeDrafts: true }, CONTEXT, { requestId: 'req-from-the-bff' });
+    assert.equal(seen.length, 1);
+    assert.deepEqual(seen[0].body, { action: 'connectionCall', connectionId: 'cm', operationId: 'listAgents', input: { includeDrafts: true }, context: CONTEXT });
+    assert.equal(JSON.stringify(seen[0]).includes('req-from-the-bff'), false);
+  });
+
   it('passes idempotencyKey (only for a command) and expectVersion', async () => {
     const { seen, fetchImpl } = fakeCm(() => ({ body: { statusCode: 200, ok: true, output: {} } }));
     const call = callerOver(fetchImpl);
