@@ -1,8 +1,24 @@
+import { existsSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import { resolveClientProjectId } from '/_102034_/l1/server/layer_1_external/cbe/cbeDesenv.js';
 import { createServerMessagesClient } from '/_102034_/l1/server/layer_1_external/collabMessages/client.js';
 import { ensureEnvFileLoaded } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { readMessagesIntegration } from '/_102034_/l1/server/layer_1_external/config/messagesIntegration.js';
+import { resolveProjectDistPath } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import { connectionCatalogs } from '/_102034_/l1/server/layer_1_external/connections/connectionCatalogs.js';
+import { moduleSystemsIndex } from '/_102034_/l1/server/layer_1_external/connections/moduleSystemsIndex.js';
+import {
+  createProductionExternalSender,
+  releaseDeclarationOf,
+} from '/_102034_/l1/server/layer_1_external/connections/external/productionExternalSender.js';
+import type { ExternalRef, ExternalSender } from '/_102034_/l1/server/layer_1_external/connections/external/sendExternal.js';
+import {
+  externalSystemAdapterFile,
+  validateExternalSystemAdapter,
+  type ExternalAdapterContext,
+  type ExternalSystemAdapter,
+  type ExternalSystemDeclaration,
+} from '/_102034_/l1/server/layer_1_external/connections/external/types.js';
 import { createAssistantContext } from '/_102034_/l1/workflow/assistantRuntime.js';
 import { createMessagesWorkflowIdentities } from '/_102034_/l1/workflow/messagesIdentities.js';
 import { moduleHeaders, postEnvelope } from '/_102034_/l1/server/layer_1_external/collabMessages/transport.js';
@@ -71,6 +87,17 @@ export interface ConnectionCallerDeps {
   toCmUserId?: (mdmId: string) => Promise<string>;
   /** The organization of the app, to fill `context.organizationId` when the caller leaves it out. `undefined`: none is configured. */
   organizationId?: () => string | undefined;
+  /**
+   * The app this caller serves. When `catalogOf` has no catalog, a system declared by a module of this project is
+   * dispatched to that module's adapter. Absent: only the platform catalogs (tests of the cm).
+   */
+  projectId?: string;
+  /** Systems declared by modules of the active release. Default: `moduleSystemsIndex`. */
+  moduleSystemsOf?: (projectId: string) => Promise<ReadonlyMap<string, string>>;
+  /** The declaration shipped for one system. Default: the file in the active release. */
+  declarationOf?: (ref: ExternalRef) => Promise<ExternalSystemDeclaration | null>;
+  /** `sendExternal` bound by the caller to the module that declared the system. Default: the production door. */
+  sender?: ExternalSender;
 }
 
 const CODES: Record<ConnectionErrorCode, true> = {
@@ -85,6 +112,82 @@ const CODES: Record<ConnectionErrorCode, true> = {
 
 function isCode(value: unknown): value is ConnectionErrorCode {
   return typeof value === 'string' && Object.prototype.hasOwnProperty.call(CODES, value);
+}
+
+const PLAIN_ID = /^[a-z][A-Za-z0-9]*$/u;
+const adapters = new Map<string, Promise<ExternalSystemAdapter | null>>();
+
+function isConnectionResult(value: unknown): value is ConnectionResult {
+  if (typeof value !== 'object' || value === null) return false;
+  const body = value as { ok?: unknown; output?: unknown; code?: unknown; message?: unknown };
+  if (body.ok === true) return Object.prototype.hasOwnProperty.call(body, 'output');
+  return body.ok === false && isCode(body.code) && typeof body.message === 'string';
+}
+
+/** The catalog `callConnection` already checks: only the `call` operations, plus `serve` so a call of one is `forbidden`. */
+function catalogOfDeclaration(declaration: ExternalSystemDeclaration): ConnectionCatalog {
+  const operations: ConnectionOperation[] = [];
+  for (const operation of declaration.operations) {
+    operations.push({
+      operationId: operation.operationId,
+      direction: operation.direction,
+      kind: operation.kind,
+      description: operation.description,
+      inputType: operation.inputType,
+      outputType: operation.outputType,
+      reply: 'now',
+      ...(operation.timeoutMs !== undefined ? { timeoutMs: operation.timeoutMs } : {}),
+    });
+  }
+  return {
+    schemaVersion: 'connection-catalog-v1',
+    connectionId: declaration.systemId,
+    title: declaration.title,
+    description: declaration.description,
+    operations,
+  };
+}
+
+/** The adapter file of the active release, validated against the declaration. Cached for this process. */
+function releaseAdapterOf(projectId: string, moduleId: string, systemId: string, declaration: ExternalSystemDeclaration): Promise<ExternalSystemAdapter | null> {
+  if (declaration.systemId !== systemId) {
+    console.warn(`[external] adapter refused: declaration is ${declaration.systemId}, asked ${systemId}`);
+    return Promise.resolve(null);
+  }
+  if (!/^\d+$/u.test(projectId) || !PLAIN_ID.test(moduleId) || !PLAIN_ID.test(systemId)) {
+    console.warn(`[external] adapter refused: ref is not made of plain ids (${systemId.slice(0, 40)})`);
+    return Promise.resolve(null);
+  }
+  const key = `${projectId}\0${moduleId}\0${systemId}`;
+  const cached = adapters.get(key);
+  if (cached) return cached;
+  const loading = loadAdapter(projectId, moduleId, systemId, declaration);
+  adapters.set(key, loading);
+  return loading;
+}
+
+async function loadAdapter(projectId: string, moduleId: string, systemId: string, declaration: ExternalSystemDeclaration): Promise<ExternalSystemAdapter | null> {
+  const relative = externalSystemAdapterFile(moduleId, systemId).replace(/\.ts$/u, '.js');
+  const filePath = resolveProjectDistPath(`_${projectId}_/${relative}`);
+  if (!existsSync(filePath)) {
+    console.warn(`[external] adapter missing ${systemId}`);
+    return null;
+  }
+  let loaded: unknown;
+  try {
+    const imported = await import(pathToFileURL(filePath).href) as { default?: unknown };
+    loaded = imported.default;
+  } catch (error) {
+    const name = error instanceof Error ? error.name : 'error';
+    console.warn(`[external] adapter unreadable ${systemId}: ${name}`);
+    return null;
+  }
+  const problems = validateExternalSystemAdapter(declaration, loaded);
+  if (problems.length > 0) {
+    console.warn(`[external] adapter invalid ${systemId}: ${problems.map((item) => item.message).join('; ')}`);
+    return null;
+  }
+  return loaded as ExternalSystemAdapter;
 }
 
 /** The cm: one action, `connectionCall`, as the app (`x-app-id` and the project token), never as a person (the person is in `context`). */
@@ -119,6 +222,7 @@ export function createConnectionCaller(deps: ConnectionCallerDeps): CallConnecti
   const log = deps.log ?? ((line: string): void => console.info(line));
   const now = deps.now ?? Date.now;
   const defaultTimeoutMs = deps.defaultTimeoutMs ?? DEFAULT_CONNECTION_TIMEOUT_MS;
+  const sender = deps.sender ?? (deps.projectId ? createProductionExternalSender() : undefined);
 
   return async (connectionId, operationId, input, context, opts = {}) => {
     const started = now();
@@ -139,15 +243,60 @@ export function createConnectionCaller(deps: ConnectionCallerDeps): CallConnecti
     }
 
     let catalog: ConnectionCatalog | undefined;
+    let moduleId: string | undefined;
     try {
       catalog = await deps.catalogOf(connectionId);
+      if (!catalog && deps.projectId) {
+        const index = await (deps.moduleSystemsOf ?? moduleSystemsIndex)(deps.projectId);
+        moduleId = index.get(connectionId);
+        if (moduleId) {
+          const ref: ExternalRef = { projectId: deps.projectId, moduleId, systemId: connectionId };
+          const declaration = await (deps.declarationOf ?? releaseDeclarationOf)(ref);
+          if (!declaration) return fail('unavailable', `the declaration of ${connectionId} cannot be read`, 'declaration');
+          catalog = catalogOfDeclaration(declaration);
+        }
+      }
     } catch (error) {
       return fail('unavailable', `the catalog of the connection ${connectionId} cannot be read`, `catalog-unreadable:${error instanceof Error ? error.name : 'error'}`);
     }
     if (!catalog) return fail('invalid', `unknown connection ${connectionId}`, 'unknown-connection');
     const operation = catalog.operations.find((item) => item.operationId === operationId);
     if (!operation) return fail('invalid', `unknown operation ${connectionId}.${operationId}`, 'unknown-operation');
-    if (operation.direction !== 'call') return fail('invalid', `${connectionId}.${operationId} is not a call operation`, 'direction');
+    if (operation.direction !== 'call') {
+      const code: ConnectionErrorCode = moduleId ? 'forbidden' : 'invalid';
+      return fail(code, `${connectionId}.${operationId} is not a call operation`, 'direction');
+    }
+    if (moduleId && deps.projectId) {
+      const ref: ExternalRef = { projectId: deps.projectId, moduleId, systemId: connectionId };
+      const declaration = await (deps.declarationOf ?? releaseDeclarationOf)(ref);
+      if (!declaration) return fail('unavailable', `the declaration of ${connectionId} cannot be read`, 'declaration');
+      const adapter = await releaseAdapterOf(deps.projectId, moduleId, connectionId, declaration);
+      const call = adapter?.[operationId];
+      if (!call) return fail('unavailable', `no adapter for ${connectionId}.${operationId}`, 'no-adapter');
+      if (!sender) return fail('unavailable', `no adapter for ${connectionId}.${operationId}`, 'no-adapter');
+      const sentContext: ConnectionContext = { ...context, organizationId };
+      const ctx: ExternalAdapterContext = {
+        connection: sentContext,
+        send: (id, request) => sender.sendExternal(ref, id, request, sentContext),
+        setting: () => undefined,
+      };
+      // The platform transport enforces the time itself; an adapter is module code, so the caller enforces it here.
+      const limitMs = operation.timeoutMs ?? defaultTimeoutMs;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const ceiling = new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(Object.assign(new Error('timed out'), { name: 'TimeoutError' })), limitMs);
+        });
+        const answered = await Promise.race([call(input, ctx), ceiling]);
+        if (!isConnectionResult(answered)) return fail('invalid', `${connectionId}.${operationId} answered outside the envelope`, 'outside-envelope');
+        return done(answered);
+      } catch (error) {
+        const name = error instanceof Error ? error.name : 'error';
+        return fail('unavailable', `${connectionId}.${operationId} did not answer`, name);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
     const transport = deps.transports[connectionId];
     if (!transport) return fail('unavailable', `no transport for the connection ${connectionId}`, 'no-transport');
 
@@ -219,6 +368,7 @@ export function createProductionConnectionCaller(options: ProductionConnectionCa
     ? undefined
     : createMessagesWorkflowIdentities({ projectId, client: createServerMessagesClient({ projectId }) });
   return createConnectionCaller({
+    projectId,
     catalogOf: options.catalogOf ?? connectionCatalogs(),
     transports: { cm: createCmTransport({ projectId, env: options.env, fetchImpl: options.fetchImpl }) },
     toCmUserId: options.toCmUserId ?? ((mdmId) => (identities as NonNullable<typeof identities>).toCmUserId(createAssistantContext(projectId), mdmId)),
