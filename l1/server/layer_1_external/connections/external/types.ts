@@ -1,9 +1,13 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/connections/external/types.ts" enhancement="_blank"/>
 /**
  * Declaration of one outside system a generated module may reach.
- * The generated file is `l1/<module>/externalSystems/<systemId>.ts` (no dot in the name) and default-exports this value.
+ * The generated file is `l1/<module>/layer_1_external/connections/<systemId>.ts` (no dot in the name) and default-exports
+ * this value; `<systemId>Adapter.ts` beside it default-exports the `ExternalSystemAdapter`. The platform reads them by
+ * the L4 systemId, never by scanning the folder.
  * Secrets stay out of that file: settings are ids, and the sender fills them.
  */
+
+import type { ConnectionContext, ConnectionResult } from '/_102034_/l1/server/layer_1_external/connections/catalogs/types.js';
 
 export type { ConnectionContext, ConnectionErrorCode, ConnectionResult } from '/_102034_/l1/server/layer_1_external/connections/catalogs/types.js';
 
@@ -101,8 +105,41 @@ export interface ExternalDeclarationProblem {
 
 /** Where generated code puts one declaration. `<module>` and `<systemId>` have no dot. */
 export function externalSystemDeclarationFile(moduleName: string, systemId: string): string {
-  return `l1/${moduleName}/externalSystems/${systemId}.ts`;
+  return `l1/${moduleName}/layer_1_external/connections/${systemId}.ts`;
 }
+
+/** Where generated code puts the adapter of that system. */
+export function externalSystemAdapterFile(moduleName: string, systemId: string): string {
+  return `l1/${moduleName}/layer_1_external/connections/${systemId}Adapter.ts`;
+}
+
+/** What a generated adapter asks the platform to send. Header, query and body values may hold `{{secret:<id>}}` or `{{setting:<id>}}`. */
+export interface ExternalRequest {
+  method: string;
+  path: string;
+  query?: Record<string, string>;
+  headers?: Record<string, string>;
+  /** Text. */
+  body?: string;
+}
+
+/** What comes back from a 2xx. Never carries a secret. */
+export interface ExternalResponse {
+  status: number;
+  headers: Record<string, string>;
+  body: string;
+}
+
+export interface ExternalAdapterContext {
+  connection: ConnectionContext;
+  /** The only way out: sendExternal bound to this project, module and system. */
+  send(operationId: string, request: ExternalRequest): Promise<ConnectionResult<ExternalResponse>>;
+  /** A non-secret setting of this system; secrets are never readable here. */
+  setting(settingId: string): string | undefined;
+}
+
+/** One function per `call` operation of the declaration, by operationId. `serve` stays a route with `serves`. */
+export type ExternalSystemAdapter = Record<string, (input: unknown, ctx: ExternalAdapterContext) => Promise<ConnectionResult<unknown>>>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -260,5 +297,26 @@ export function validateExternalSystemDeclaration(value: unknown): ExternalDecla
       found.push(problem(`operations[${index}] direction is not call or serve`));
     }
   });
+  return found;
+}
+
+/**
+ * The adapter must have one function for each `call` of the declaration and no other key.
+ * Never throws; a declaration with problems of its own is judged by `validateExternalSystemDeclaration`.
+ */
+export function validateExternalSystemAdapter(declaration: ExternalSystemDeclaration, adapter: unknown): ExternalDeclarationProblem[] {
+  if (!isRecord(adapter)) return [problem('adapter is not an object')];
+  const found: ExternalDeclarationProblem[] = [];
+  const calls = new Set<string>();
+  for (const operation of Array.isArray(declaration?.operations) ? declaration.operations : []) {
+    if (operation?.direction === 'call') calls.add(operation.operationId);
+  }
+  for (const id of calls) {
+    if (typeof adapter[id] !== 'function') found.push(problem(`adapter has no function for call ${id}`));
+  }
+  for (const key of Object.keys(adapter)) {
+    if (!calls.has(key)) found.push(problem(`adapter has ${key}, which is not a call of ${declaration?.systemId ?? 'the declaration'}`));
+    else if (typeof adapter[key] !== 'function') found.push(problem(`adapter.${key} is not a function`));
+  }
   return found;
 }

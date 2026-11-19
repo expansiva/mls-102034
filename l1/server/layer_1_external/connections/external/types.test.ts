@@ -2,7 +2,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  externalSystemAdapterFile,
   externalSystemDeclarationFile,
+  validateExternalSystemAdapter,
   validateExternalSystemDeclaration,
   type ExternalSystemDeclaration,
 } from '/_102034_/l1/server/layer_1_external/connections/external/types.js';
@@ -42,7 +44,8 @@ function messages(value: unknown): string[] {
 describe('validateExternalSystemDeclaration', () => {
   it('accepts a declaration and names the generated file', () => {
     assert.deepEqual(validateExternalSystemDeclaration(declaration()), []);
-    assert.equal(externalSystemDeclarationFile('invoices', 'billingApi'), 'l1/invoices/externalSystems/billingApi.ts');
+    assert.equal(externalSystemDeclarationFile('invoices', 'billingApi'), 'l1/invoices/layer_1_external/connections/billingApi.ts');
+    assert.equal(externalSystemAdapterFile('invoices', 'billingApi'), 'l1/invoices/layer_1_external/connections/billingApiAdapter.ts');
   });
 
   it('rejects an id that is not lowerCamel', () => {
@@ -149,5 +152,26 @@ describe('validateExternalSystemDeclaration', () => {
   it('returns problems for a non-object and does not throw', () => {
     assert.equal(messages(null).length, 1);
     assert.equal(messages('nope').length, 1);
+  });
+});
+
+describe('validateExternalSystemAdapter', () => {
+  const ok = async () => ({ ok: true as const, output: {} });
+  it('wants one function for each call and none more', () => {
+    const value = declaration();
+    assert.deepEqual(validateExternalSystemAdapter(value, { readInvoice: ok }).map((item) => item.message), []);
+    assert.match(validateExternalSystemAdapter(value, {}).map((item) => item.message).join('\n'), /no function for call readInvoice/);
+    assert.match(validateExternalSystemAdapter(value, { readInvoice: ok, extra: ok }).map((item) => item.message).join('\n'), /adapter has extra, which is not a call of billingApi/);
+    assert.match(validateExternalSystemAdapter(value, { readInvoice: 1 }).map((item) => item.message).join('\n'), /no function for call readInvoice/);
+  });
+
+  it('does not take a serve operation as a call, and does not throw on a non-object', () => {
+    const value = declaration({
+      operations: [
+        { operationId: 'onEvent', direction: 'serve', kind: 'command', description: 'x', inputType: 'A', outputType: 'B' },
+      ],
+    });
+    assert.match(validateExternalSystemAdapter(value, { onEvent: ok }).map((item) => item.message).join('\n'), /onEvent, which is not a call/);
+    assert.equal(validateExternalSystemAdapter(value, null).length, 1);
   });
 });
