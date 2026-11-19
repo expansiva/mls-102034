@@ -213,3 +213,62 @@ export function createConnectionServer(deps: ConnectionServerDeps): (input: Conn
     return done(result);
   };
 }
+
+/**
+ * A route that RECEIVES a module event carries `consumes: '<module>.<eventId>'` in the same request def that
+ * carries `serves`. Delivery (a later step) runs as `module:<publisher>` with the route's own authorize:
+ * `actorScope` and `verifiedAuthorities` are `${consumerModule}:${moduleEventTechnicalId(publisher)}`.
+ */
+export interface ConsumesIndex {
+  /** `<module>.<eventId>` -> the routes that carry the mark. */
+  byMark: Map<string, ServeRoute[]>;
+  issues: string[];
+}
+
+export async function buildConsumesIndex(reader: DefsReader, moduleIds: readonly string[]): Promise<ConsumesIndex> {
+  const byMark = new Map<string, ServeRoute[]>();
+  const issues: string[] = [];
+  for (const moduleId of moduleIds) {
+    const folder = `l1/${moduleId}/layer_2_application/requests`;
+    for (const name of reader.list(folder)) {
+      let definition: unknown;
+      try {
+        definition = await reader.read(`${folder}/${name}`, 'definition');
+      } catch (error) {
+        issues.push(`DEF_UNREADABLE: ${folder}/${name}: ${error instanceof Error ? error.message : String(error)}`);
+        continue;
+      }
+      const requests = isRec(definition) && isRec(definition.data) && Array.isArray(definition.data.requests) ? definition.data.requests : [];
+      for (const request of requests) {
+        if (!isRec(request) || request.consumes === undefined) continue;
+        const route = typeof request.route === 'string' ? request.route : '';
+        const mark = typeof request.consumes === 'string' ? request.consumes : '';
+        if (!route || !MARK.test(mark)) {
+          issues.push(`CONSUMES_INVALID: ${route || `${folder}/${name}`}`);
+          continue;
+        }
+        byMark.set(mark, [...(byMark.get(mark) ?? []), { moduleId, route }]);
+      }
+    }
+  }
+  for (const [mark, routes] of byMark) {
+    const seen = new Map<string, number>();
+    for (const entry of routes) seen.set(entry.moduleId, (seen.get(entry.moduleId) ?? 0) + 1);
+    for (const [owner, count] of seen) {
+      if (count > 1) issues.push(`CONSUMES_DUPLICATE: ${mark}: ${owner}`);
+    }
+  }
+  return { byMark, issues };
+}
+
+/** The one route of `moduleId` that carries `mark`. None, or more than one, is undefined. */
+export function findConsumesRoute(index: ConsumesIndex, moduleId: string, mark: string): ServeRoute | undefined {
+  const routes = (index.byMark.get(mark) ?? []).filter((entry) => entry.moduleId === moduleId);
+  if (routes.length !== 1) return undefined;
+  return routes[0];
+}
+
+/** Technical actor of a delivery. Authorization of the route is not skipped. */
+export function moduleEventTechnicalId(publisherModule: string): string {
+  return `module:${publisherModule}`;
+}
