@@ -1,7 +1,7 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/cbe/cbeDraft.routes.test.ts" enhancement="_blank" />
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -380,6 +380,64 @@ test('two sessions saving without a mark land in two drafts; no session uses the
     else process.env.CBE_REBUILD_ON_SAVE = prev.rebuild;
     if (prev.login === undefined) delete process.env.CBE_REQUIRE_LOGIN;
     else process.env.CBE_REQUIRE_LOGIN = prev.login;
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('registerCbeRoutes arms one idle sweep and stops a draft left idle on disk', async () => {
+  const base = mkdtempSync(join(tmpdir(), 'cbe-draft-reaper-'));
+  const prev = process.env.CBE_PROJECTS_DIR;
+  process.env.CBE_PROJECTS_DIR = base;
+  const slug = 'team-102047';
+  const dir = join(base, 'drafts', slug);
+  mkdirSync(dir, { recursive: true });
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });
+  child.unref();
+  assert.ok(child.pid);
+  const pid = child.pid;
+  const idleMs = 31 * 60 * 1000;
+  writeFileSync(join(dir, 'dev.json'), `${JSON.stringify({
+    port: 4100,
+    pid,
+    startedAt: Date.now() - idleMs,
+    lastRequestAt: Date.now() - idleMs,
+  })}\n`);
+
+  const armed: Array<{ fn: () => void; ms: number | undefined; timer: ReturnType<typeof setInterval> }> = [];
+  const origInterval = globalThis.setInterval;
+  globalThis.setInterval = ((fn: () => void, ms?: number) => {
+    const timer = origInterval(fn, ms);
+    armed.push({ fn, ms, timer });
+    return timer;
+  }) as typeof setInterval;
+
+  const first = Fastify();
+  const second = Fastify();
+  try {
+    registerCbeRoutes(first);
+    registerCbeRoutes(second);
+    assert.equal(armed.length, 1);
+    assert.equal(armed[0].ms, 60_000);
+    armed[0].fn();
+    assert.equal(existsSync(join(dir, 'dev.json')), false);
+    const deadline = Date.now() + 2000;
+    let alive = true;
+    while (Date.now() < deadline) {
+      try {
+        process.kill(pid, 0);
+      } catch {
+        alive = false;
+        break;
+      }
+      await new Promise((done) => setTimeout(done, 20));
+    }
+    assert.equal(alive, false);
+  } finally {
+    globalThis.setInterval = origInterval;
+    for (const entry of armed) clearInterval(entry.timer);
+    try { process.kill(pid, 'SIGTERM'); } catch { /* already stopped */ }
+    if (prev === undefined) delete process.env.CBE_PROJECTS_DIR;
+    else process.env.CBE_PROJECTS_DIR = prev;
     rmSync(base, { recursive: true, force: true });
   }
 });

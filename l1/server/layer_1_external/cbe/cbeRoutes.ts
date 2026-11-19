@@ -1833,7 +1833,21 @@ async function handleStatic(request: FastifyRequest, reply: FastifyReply): Promi
     .send(rc.content);
 }
 
+/** Idle drafts are swept from boot, including ones left by the previous release. No base: skip, never throw. */
+function armDraftDevReaper(): void {
+  let base = '';
+  try {
+    base = getProjectsBaseDir();
+  } catch (err) {
+    console.error(`[cbe] draft reaper not armed: ${(err as Error).message}`);
+    return;
+  }
+  if (base.trim() === '') return;
+  draftDevHooks.ensureDevReaper(base);
+}
+
 export function registerCbeRoutes(app: FastifyInstance): void {
+  armDraftDevReaper();
   desenvIo.isAllowed = isSourceRequestAllowed;
   app.post('/exec', EXEC_ROUTE_OPTIONS, handleExec);
   app.get('/exec/logout', handleExecLogout);
