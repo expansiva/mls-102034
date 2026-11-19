@@ -175,3 +175,31 @@ describe('validateExternalSystemAdapter', () => {
     assert.equal(validateExternalSystemAdapter(value, null).length, 1);
   });
 });
+
+describe('rt262 s2: noticeId and the text of a setting', () => {
+  const serve = (patch: Record<string, unknown>) => declaration({
+    operations: [{ operationId: 'onEvent', direction: 'serve', kind: 'command', description: 'x', inputType: 'A', outputType: 'B', ...patch }],
+  });
+
+  it('accepts a header or a json pointer as the notice id, and no notice id', () => {
+    assert.deepEqual(messages(serve({ noticeId: { header: 'x-event-id' } })), []);
+    assert.deepEqual(messages(serve({ noticeId: { jsonPointer: '/data/id' } })), []);
+    assert.deepEqual(messages(serve({})), []);
+  });
+
+  it('refuses any other shape of notice id', () => {
+    const text = (noticeId: unknown) => messages(serve({ noticeId })).join('\n');
+    assert.match(text({ cookie: 'a' }), /must be \{ header \} or \{ jsonPointer \}/);
+    assert.match(text({ header: 'a', jsonPointer: '/b' }), /must be \{ header \} or \{ jsonPointer \}/);
+    assert.match(text({ header: '' }), /not a non-empty text/);
+    assert.match(text({ jsonPointer: 'data/id' }), /must start with \//);
+    assert.match(text('x-event-id'), /noticeId is not an object/);
+  });
+
+  it('accepts a title and a description on a setting, and refuses an empty or non-text one', () => {
+    const settings = (extra: Record<string, unknown>) => declaration({ settings: [{ id: 'baseUrl', secret: false, ...extra }, { id: 'apiKey', secret: true }] });
+    assert.deepEqual(messages(settings({ title: 'Base URL', description: 'Where the system lives.' })), []);
+    assert.match(messages(settings({ title: '' })).join('\n'), /title is present but not a non-empty text/);
+    assert.match(messages(settings({ description: 42 })).join('\n'), /description is present but not a non-empty text/);
+  });
+});

@@ -20,6 +20,9 @@ const IPV4 = /^(?:\d{1,3}\.){3}\d{1,3}$/;
 export interface ExternalSettingRef {
   id: string;
   secret: boolean;
+  /** Text for the configuration page. Optional; when present, not empty. */
+  title?: string;
+  description?: string;
 }
 
 export type ExternalHost = { host: string } | { fromSetting: string };
@@ -81,9 +84,14 @@ export interface ExternalCallOperation extends ExternalOperationBase {
   reply: 'now';
 }
 
+/** Where the identifier of a notice is read from, so the same notice is not delivered twice. */
+export type ExternalNoticeId = { header: string } | { jsonPointer: string };
+
 export interface ExternalServeOperation extends ExternalOperationBase {
   direction: 'serve';
   verify?: ExternalVerify;
+  /** Without it the platform cannot tell a repeated notice and does not deduplicate. */
+  noticeId?: ExternalNoticeId;
 }
 
 export type ExternalOperation = ExternalCallOperation | ExternalServeOperation;
@@ -223,6 +231,19 @@ function verifyProblems(verify: unknown, index: number, byId: Map<string, Extern
   return found;
 }
 
+function noticeIdProblems(noticeId: unknown, index: number): ExternalDeclarationProblem[] {
+  const where = `operations[${index}] noticeId`;
+  if (!isRecord(noticeId)) return [problem(`${where} is not an object`)];
+  const keys = Object.keys(noticeId);
+  if (keys.length !== 1 || (keys[0] !== 'header' && keys[0] !== 'jsonPointer')) {
+    return [problem(`${where} must be { header } or { jsonPointer }`)];
+  }
+  const value = noticeId[keys[0] as 'header' | 'jsonPointer'];
+  if (typeof value !== 'string' || value.length === 0) return [problem(`${where}.${keys[0]} is not a non-empty text`)];
+  if (keys[0] === 'jsonPointer' && !value.startsWith('/')) return [problem(`${where}.jsonPointer must start with /`)];
+  return [];
+}
+
 /**
  * Lists every problem in a declaration. Never throws.
  */
@@ -242,6 +263,12 @@ export function validateExternalSystemDeclaration(value: unknown): ExternalDecla
       if (!isRecord(item) || typeof item.id !== 'string' || !LOWER_CAMEL.test(item.id) || typeof item.secret !== 'boolean') {
         found.push(problem(`settings[${index}] is not { id, secret }`));
         return;
+      }
+      for (const field of ['title', 'description'] as const) {
+        const text = item[field];
+        if (text !== undefined && (typeof text !== 'string' || text.trim().length === 0)) {
+          found.push(problem(`settings[${index}].${field} is present but not a non-empty text`));
+        }
       }
       settings.push({ id: item.id, secret: item.secret });
     });
@@ -293,6 +320,7 @@ export function validateExternalSystemDeclaration(value: unknown): ExternalDecla
       if (item.reply !== 'now') found.push(problem(`operations[${index}] call reply is not now`));
     } else if (item.direction === 'serve') {
       if (item.verify !== undefined) found.push(...verifyProblems(item.verify, index, byId));
+      if (item.noticeId !== undefined) found.push(...noticeIdProblems(item.noticeId, index));
     } else {
       found.push(problem(`operations[${index}] direction is not call or serve`));
     }
