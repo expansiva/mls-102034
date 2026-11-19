@@ -94,7 +94,14 @@ export function compressAndEncodeBase64(data: object | string | Uint8Array): str
   return gzipSync(input).toString('base64');
 }
 
-function resolveCompiledZipPath(projectId: number): string {
+/**
+ * Zip of the release the process is running from (`<cwd>/obj/<id>/compiled.zip`),
+ * when that release stored the portrait. Otherwise the root zip. A draft worktree
+ * has no portrait, so it keeps reading the root.
+ */
+export function resolveCompiledZipPath(projectId: number): string {
+  const releaseZip = join(process.cwd(), 'obj', String(projectId), 'compiled.zip');
+  if (existsSync(releaseZip)) return releaseZip;
   return resolveProjectSourcePath(projectId, 'obj/compiled.zip');
 }
 

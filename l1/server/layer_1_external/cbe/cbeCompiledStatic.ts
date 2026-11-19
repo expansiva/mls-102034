@@ -5,7 +5,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import AdmZip from 'adm-zip';
-import { resolveProjectSourcePath } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
+import { resolveCompiledZipPath } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
 
 interface CompiledStaticEntry {
   content: Buffer;
@@ -27,7 +27,7 @@ const MODULE_PATH_RE = /^\/(_(\d+)_\/(?:l2|l4)\/[^?]+)$/u;
 const KNOWN_EXTENSIONS_RE = /\.(?:js|css|json|map)$/u;
 
 function loadZipEntries(projectId: number): CompiledStaticCache | null {
-  const zipPath = resolveProjectSourcePath(projectId, 'obj/compiled.zip');
+  const zipPath = resolveCompiledZipPath(projectId);
   if (!existsSync(zipPath)) return null;
 
   const zipMtimeMs = statSync(zipPath).mtimeMs;

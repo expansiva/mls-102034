@@ -10,6 +10,7 @@ import {
   loadCompiledProject,
   warmCompiledProjects,
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
+import { getCompiledStaticFile } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledStatic.js';
 
 let nextProjectId = 880001;
 
@@ -147,5 +148,53 @@ test('one broken zip logs once and the next project still loads', async () => {
     const loaded = getCompiledProject(ok);
     assert.ok(loaded);
     assert.equal(loaded.isEmpty, false);
+  });
+});
+
+test('rt258: the server serves the active release zip, and a release without a portrait uses the root', async () => {
+  await withProjectsDir(async (root) => {
+    const released = allocProjectId();
+    const legacy = allocProjectId();
+    const releaseDir = join(root, 'releases', '20261119000000');
+    const legacyDir = join(root, 'releases', '20260101000000');
+    const portrait = join(releaseDir, 'obj', String(released));
+    mkdirSync(portrait, { recursive: true });
+    mkdirSync(legacyDir, { recursive: true });
+    const zip = new AdmZip();
+    zip.addFile('fileinfos.json', Buffer.from(JSON.stringify({
+      files: [{ shortPath: 'l2/foo.ts' }],
+      lastModified: '2099-01-01T00:00:00.000Z',
+    })));
+    zip.addFile(`_${released}_/l2/foo.js`, Buffer.from('release-bytes'));
+    zip.writeZip(join(portrait, 'compiled.zip'));
+    writeZip(root, released, [{
+      name: 'fileinfos.json',
+      data: JSON.stringify({ files: [{ shortPath: 'l2/foo.ts' }], lastModified: '2099-02-01T00:00:00.000Z' }),
+    }, {
+      name: `_${released}_/l2/foo.js`,
+      data: 'root-bytes',
+    }]);
+    writeZip(root, legacy, [{
+      name: 'fileinfos.json',
+      data: JSON.stringify({ files: [{ shortPath: 'l2/old.ts' }], lastModified: '2099-03-01T00:00:00.000Z' }),
+    }, {
+      name: `_${legacy}_/l2/old.js`,
+      data: 'root-legacy',
+    }]);
+    const previous = process.cwd();
+    try {
+      process.chdir(releaseDir);
+      const fromRelease = getCompiledProject(released);
+      assert.equal(fromRelease?.lastModified, '2099-01-01T00:00:00.000Z');
+      const served = getCompiledStaticFile(`/_${released}_/l2/foo.js`);
+      assert.equal(served?.content.toString('utf8'), 'release-bytes');
+      process.chdir(legacyDir);
+      const fromRoot = getCompiledProject(legacy);
+      assert.equal(fromRoot?.filesInfo[0]?.shortPath, 'l2/old.ts');
+      const servedRoot = getCompiledStaticFile(`/_${legacy}_/l2/old.js`);
+      assert.equal(servedRoot?.content.toString('utf8'), 'root-legacy');
+    } finally {
+      process.chdir(previous);
+    }
   });
 });
