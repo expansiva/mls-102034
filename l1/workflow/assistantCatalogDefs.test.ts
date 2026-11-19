@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createAssistantCatalogSource, parseAssistantCatalog, type AssistantCatalogItem } from '/_102034_/l1/workflow/assistantCatalog.js';
 import { buildCatalogFromDefs, defsCatalogImporter, type DefsReader } from '/_102034_/l1/workflow/assistantCatalogDefs.js';
+import { projectCatalog } from '/_102034_/l1/workflow/releaseCatalogDelivery.js';
 
 const APP = '999001';
 
@@ -402,4 +403,20 @@ test('without module.defs the items carry the subject and no module title', asyn
   const items = itemsOf(await built(files, json));
   assert.ok(items.every((item) => typeof item.subject === 'string' && item.subject !== ''));
   assert.ok(items.every((item) => !('moduleTitle' in item)));
+});
+
+test('rt247: every action the builder makes is accepted by the projection onto the published contract (none is left out)', async () => {
+  const { files, json } = releaseA({
+    'l4/modA/ontology/thing.defs.js': {
+      entityId: 'Thing',
+      title: 'The thing',
+      record: { fields: { ownerId: { title: 'Owner', description: 'Who owns it', type: 'record', to: ['Owner'] }, mode: { title: 'Mode', type: 'enum', values: [{ value: 'fast', title: 'Fast one' }, { value: 'slow' }] } } },
+    },
+  });
+  const catalog = await built(files, json);
+  const projected = projectCatalog(catalog as never);
+  assert.ok(projected.commands.length + projected.queries.length > 0);
+  assert.equal(projected.commands.length + projected.queries.length, itemsOf(catalog).length);
+  assert.equal(projected.issues.some((issue) => issue.startsWith('ACTION_NOT_IN_CONTRACT')), false);
+  assert.equal('lookups' in projected || 'entities' in projected, false);
 });

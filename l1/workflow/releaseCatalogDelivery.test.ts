@@ -125,3 +125,65 @@ test('the boot does not wait for the delivery and a failure of it never reaches 
   assert.match(source, /void runners\.warmCatalogs\(\)\.then\(\(\) => runners\.deliverReleaseCatalog\(\)\)\.catch\(/);
   assert.doesNotMatch(source, /await runners\.deliverReleaseCatalog/);
 });
+
+function actionOf(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    route: 'modA.page.cmdOne', routes: ['modA.page.cmdOne'], module: 'modA', kind: 'cmd', actionId: 'modA.page.cmdOne', title: 'Do one',
+    subject: 'thing', actors: ['clerk'], assistant: 'included', risk: 'write',
+    inputs: [{ path: 'id', label: 'Id', description: '', wireType: 'string', valueType: 'string', enumValues: [], required: true, role: 'value', ref: '', extra: 1 }],
+    ...extra,
+  };
+}
+
+async function delivered(catalog: AssistantCatalog): Promise<Array<Record<string, unknown>>> {
+  const h = harness({ catalogs: { modA: { ok: true, catalog } } });
+  assert.equal(await deliverReleaseCatalog(h.deps), 'delivered');
+  return (h.served[0].input as { catalogs: Array<Record<string, unknown>> }).catalogs;
+}
+
+test('rt247: a catalog with lookups, entities and extra fields reaches the serve with the fields of the published contract only', async () => {
+  const sent = await delivered(catalogOf('modA', {
+    title: 'Module A', lookups: [], entities: [], future: true, issues: ['PAGE_UNRESOLVED: x'],
+    commands: [actionOf({ moreOnAction: 1, page: { address: '/a', recordParam: 'id', other: 2 } })],
+    queries: [actionOf({ kind: 'qry', actionId: 'modA.page.qryOne', route: 'modA.page.qryOne', risk: 'read' })],
+  }));
+  assert.deepEqual(Object.keys(sent[0]).sort(), ['commands', 'issues', 'module', 'queries', 'schemaVersion', 'title']);
+  const command = (sent[0].commands as Array<Record<string, unknown>>)[0];
+  assert.equal('moreOnAction' in command, false);
+  assert.deepEqual(command.page, { address: '/a', recordParam: 'id' });
+  const input = (command.inputs as Array<Record<string, unknown>>)[0];
+  assert.equal('extra' in input, false);
+  assert.deepEqual(Object.keys(input).sort(), ['description', 'enumValues', 'label', 'path', 'ref', 'required', 'role', 'valueType', 'wireType']);
+  assert.deepEqual(sent[0].issues, ['PAGE_UNRESOLVED: x']);
+});
+
+test('rt247: an optional field that is absent stays absent (never undefined or null)', async () => {
+  const sent = await delivered(catalogOf('modA', { commands: [actionOf()] }));
+  assert.equal('title' in sent[0], false);
+  assert.equal('description' in sent[0], false);
+  const command = (sent[0].commands as Array<Record<string, unknown>>)[0];
+  for (const field of ['purpose', 'subjectTitle', 'moduleTitle', 'page']) assert.equal(field in command, false, field);
+  assert.equal(JSON.stringify(sent).includes('null'), false);
+});
+
+test('rt247: an action without a required field of the contract is left out and named in issues', async () => {
+  const sent = await delivered(catalogOf('modA', { commands: [actionOf(), actionOf({ actionId: 'modA.page.noTitle', title: undefined })] }));
+  assert.deepEqual((sent[0].commands as Array<{ actionId: string }>).map((item) => item.actionId), ['modA.page.cmdOne']);
+  assert.deepEqual(sent[0].issues, ['ACTION_NOT_IN_CONTRACT: modA.page.noTitle']);
+});
+
+test('rt247: the hash is of the projected catalogs and does not depend on the order of the keys', async () => {
+  const a = harness({ catalogs: { modA: { ok: true, catalog: catalogOf('modA', { commands: [actionOf()] }) } } });
+  const b = harness({ catalogs: { modA: { ok: true, catalog: catalogOf('modA', { lookups: [], future: 1, commands: [{ ...actionOf(), title: 'Do one' }] }) } } });
+  await deliverReleaseCatalog(a.deps);
+  await deliverReleaseCatalog(b.deps);
+  assert.equal((a.served[0].input as { hash: string }).hash, (b.served[0].input as { hash: string }).hash);
+});
+
+test('rt247: a refusal of the module puts its message (up to 200 characters) in the log line', async () => {
+  const h = harness({ answer: { ok: false, code: 'invalid', message: `catalogs.lookups is not permitted.${'x'.repeat(300)}` } });
+  assert.equal(await deliverReleaseCatalog(h.deps), 'failed');
+  const line = h.logs.find((entry) => entry.startsWith('error [release-catalog] not delivered: invalid: catalogs.lookups is not permitted.'));
+  assert.ok(line);
+  assert.ok(line.length < 'error [release-catalog] not delivered: invalid: '.length + 201);
+});

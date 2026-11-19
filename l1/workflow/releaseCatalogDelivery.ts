@@ -3,6 +3,7 @@ import type { RequestContext } from '/_102034_/l1/server/layer_2_controllers/con
 import type { AssistantCatalog, AssistantCatalogSource } from '/_102034_/l1/workflow/assistantCatalog.js';
 import type { ConnectionServeInput } from '/_102034_/l1/workflow/connectionServe.js';
 import type { ConnectionResult } from '/_102034_/l1/server/layer_1_external/connections/catalogs/types.js';
+import type { PlatformCatalogAction, PlatformModuleCatalog } from '/_102034_/l1/server/layer_1_external/connections/catalogs/platform.js';
 
 /**
  * The catalog of actions of every module of the release, delivered ONCE per change to the module that serves
@@ -41,8 +42,102 @@ function stable(value: unknown): unknown {
   return value;
 }
 
+const ACTION_TEXT_FIELDS = ['route', 'module', 'actionId', 'title', 'subject'] as const;
+const OPTIONAL_TEXT_FIELDS = ['purpose', 'subjectTitle', 'moduleTitle'] as const;
+const INPUT_TEXT_FIELDS = ['path', 'label', 'description', 'wireType', 'valueType', 'ref'] as const;
+const INPUT_ROLES = new Set(['value', 'ref', 'version']);
+
+function isText(value: unknown): value is string {
+  return typeof value === 'string';
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function projectInput(value: unknown): PlatformCatalogAction['inputs'][number] | undefined {
+  if (!isRecord(value)) return undefined;
+  if (!INPUT_TEXT_FIELDS.every((field) => isText(value[field]))) return undefined;
+  if (typeof value.required !== 'boolean' || !isText(value.role) || !INPUT_ROLES.has(value.role)) return undefined;
+  if (!Array.isArray(value.enumValues) || !value.enumValues.every((entry) => isRecord(entry) && isText(entry.value) && isText(entry.label))) return undefined;
+  return {
+    path: value.path as string,
+    label: value.label as string,
+    description: value.description as string,
+    wireType: value.wireType as string,
+    valueType: value.valueType as string,
+    enumValues: (value.enumValues as Array<{ value: string; label: string }>).map((entry) => ({ value: entry.value, label: entry.label })),
+    required: value.required,
+    role: value.role as 'value' | 'ref' | 'version',
+    ref: value.ref as string,
+  };
+}
+
+/** One action as the published contract has it, field by field; `undefined` when a required field of the contract is missing. */
+function projectAction(value: unknown): PlatformCatalogAction | undefined {
+  if (!isRecord(value)) return undefined;
+  if (!ACTION_TEXT_FIELDS.every((field) => isText(value[field]) && (value[field] as string) !== '')) return undefined;
+  if (value.kind !== 'cmd' && value.kind !== 'qry') return undefined;
+  if (value.assistant !== 'included' && value.assistant !== 'excluded') return undefined;
+  if (!isText(value.risk)) return undefined;
+  if (!Array.isArray(value.routes) || !value.routes.every(isText)) return undefined;
+  if (!Array.isArray(value.actors) || !value.actors.every(isText)) return undefined;
+  if (!Array.isArray(value.inputs)) return undefined;
+  const inputs = value.inputs.map(projectInput);
+  if (inputs.some((input) => input === undefined)) return undefined;
+  const action: PlatformCatalogAction = {
+    route: value.route as string,
+    routes: [...(value.routes as string[])],
+    module: value.module as string,
+    kind: value.kind,
+    actionId: value.actionId as string,
+    title: value.title as string,
+    subject: value.subject as string,
+    actors: [...(value.actors as string[])],
+    assistant: value.assistant,
+    risk: value.risk,
+    inputs: inputs as PlatformCatalogAction['inputs'],
+  };
+  for (const field of OPTIONAL_TEXT_FIELDS) {
+    if (isText(value[field])) action[field] = value[field] as string;
+  }
+  const page = value.page;
+  if (isRecord(page) && isText(page.address)) {
+    action.page = { address: page.address, ...(isText(page.recordParam) ? { recordParam: page.recordParam } : {}) };
+  }
+  return action;
+}
+
+/**
+ * The catalog of a module in the shape the published contract has (`PlatformModuleCatalog`), field by field: what the
+ * builder carries beyond it (`lookups`, `entities`, any future field) never reaches the module that serves the
+ * connection, which refuses a field it does not know. An action that lacks a required field of the contract is left out
+ * and named in `issues`; nothing is invented.
+ */
+export function projectCatalog(catalog: AssistantCatalog): PlatformModuleCatalog {
+  const issues = Array.isArray(catalog.issues) ? (catalog.issues as unknown[]).filter(isText) : [];
+  const take = (items: unknown): PlatformCatalogAction[] => (Array.isArray(items) ? items : []).flatMap((item) => {
+    const action = projectAction(item);
+    if (action) return [action];
+    const id = isRecord(item) && isText(item.actionId) ? item.actionId : '?';
+    issues.push(`ACTION_NOT_IN_CONTRACT: ${id}`);
+    return [];
+  });
+  const commands = take(catalog.commands);
+  const queries = take(catalog.queries);
+  return {
+    schemaVersion: 'assistant-catalog-v1',
+    module: catalog.module,
+    ...(isText(catalog.title) ? { title: catalog.title } : {}),
+    ...(isText(catalog.description) ? { description: catalog.description } : {}),
+    commands,
+    queries,
+    issues,
+  };
+}
+
 /** The hash of the catalogs: the same catalogs give the same hash, whatever the order of the keys. */
-export function hashCatalogs(catalogs: readonly AssistantCatalog[]): string {
+export function hashCatalogs(catalogs: readonly { module: string }[]): string {
   return createHash('sha256').update(JSON.stringify(stable([...catalogs].sort((a, b) => (a.module < b.module ? -1 : a.module > b.module ? 1 : 0))))).digest('hex');
 }
 
@@ -64,7 +159,7 @@ export async function deliverReleaseCatalog(deps: ReleaseCatalogDeliveryDeps): P
         return { ok: false as const, code: 'ASSISTANT_CATALOG_UNAVAILABLE' };
       }
     }));
-    const catalogs = loaded.flatMap((entry) => (entry.ok ? [entry.catalog] : []));
+    const catalogs = loaded.flatMap((entry) => (entry.ok ? [projectCatalog(entry.catalog)] : []));
     if (catalogs.length === 0) {
       log.info('[release-catalog] nothing to deliver: no module has a catalog');
       return 'skipped';
@@ -92,7 +187,7 @@ export async function deliverReleaseCatalog(deps: ReleaseCatalogDeliveryDeps): P
         log.info(`[release-catalog] no module serves ${RELEASE_CATALOG_CONNECTION}.${RELEASE_CATALOG_OPERATION}: nothing delivered`);
         return 'no_module';
       }
-      log.error(`[release-catalog] not delivered: ${result.code}`);
+      log.error(`[release-catalog] not delivered: ${result.code}${result.message ? `: ${result.message.slice(0, 200)}` : ''}`);
       return 'failed';
     }
     // The hash is kept only after the module said ok: a failure is tried again at the next boot.
