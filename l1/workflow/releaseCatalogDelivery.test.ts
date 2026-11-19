@@ -87,7 +87,7 @@ test('the hash does not depend on the order of the modules or of the keys', () =
 });
 
 test('with no module that serves it nothing is delivered, the hash is not kept and one line says so', async () => {
-  const h = harness({ answer: { ok: false, code: 'not_found', message: 'no route' } });
+  const h = harness({ answer: { ok: false, code: 'not_found', message: 'no route of this release serves platform.releaseCatalogChanged' } });
   assert.equal(await deliverReleaseCatalog(h.deps), 'no_module');
   assert.equal(h.puts.length, 0);
   assert.ok(h.logs.some((line) => line.includes('no module serves platform.releaseCatalogChanged')));
@@ -186,4 +186,12 @@ test('rt247: a refusal of the module puts its message (up to 200 characters) in 
   const line = h.logs.find((entry) => entry.startsWith('error [release-catalog] not delivered: invalid: catalogs.lookups is not permitted.'));
   assert.ok(line);
   assert.ok(line.length < 'error [release-catalog] not delivered: invalid: '.length + 201);
+});
+
+test('rt247 s1b: a not_found that is not the absence of a route is a failure of the module: no hash kept, the log says why', async () => {
+  const h = harness({ answer: { ok: false, code: 'not_found', message: 'Tool was not found.' } });
+  assert.equal(await deliverReleaseCatalog(h.deps), 'failed');
+  assert.equal(h.puts.length, 0);
+  assert.ok(h.logs.includes('error [release-catalog] not delivered: not_found: Tool was not found.'));
+  assert.equal(h.logs.some((line) => line.includes('no module serves')), false);
 });

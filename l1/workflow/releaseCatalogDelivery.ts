@@ -13,6 +13,8 @@ import type { PlatformCatalogAction, PlatformModuleCatalog } from '/_102034_/l1/
 export const RELEASE_CATALOG_CONNECTION = 'platform';
 export const RELEASE_CATALOG_OPERATION = 'releaseCatalogChanged';
 const KEY_PREFIX = 'release-catalog:';
+/** The start of the message `connectionServe` gives when no route of the release carries the mark. */
+const NO_ROUTE_MESSAGE = 'no route of this release serves';
 
 export type ReleaseCatalogDelivery = 'delivered' | 'unchanged' | 'no_module' | 'failed' | 'skipped';
 
@@ -183,7 +185,9 @@ export async function deliverReleaseCatalog(deps: ReleaseCatalogDeliveryDeps): P
       idempotencyKey: `${releaseId}:${hash}`,
     });
     if (!result.ok) {
-      if (result.code === 'not_found') {
+      // Only the absence of a route is "no module serves it" (the message of connectionServe.ts); any other `not_found`
+      // is the module's own answer (a 404 of its route) and a failure, so it is tried again and says why.
+      if (result.code === 'not_found' && result.message.startsWith(NO_ROUTE_MESSAGE)) {
         log.info(`[release-catalog] no module serves ${RELEASE_CATALOG_CONNECTION}.${RELEASE_CATALOG_OPERATION}: nothing delivered`);
         return 'no_module';
       }
