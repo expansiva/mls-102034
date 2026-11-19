@@ -1,12 +1,21 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/connections/external/productionExternalSender.ts" enhancement="_blank"/>
 /**
  * The production door. The declaration is the one in the active release.
- * Settings and secrets stay empty until they have a store. A new release is a new process.
+ * Settings and secrets come from the platform table. A new release is a new process.
  */
 import { existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { resolveProjectDistPath } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
+import { getSharedPgPool } from '/_102034_/l1/server/layer_1_external/data/postgres/pg.js';
+import { moduleSystemsIndex } from '/_102034_/l1/server/layer_1_external/connections/moduleSystemsIndex.js';
 import { nodeExternalTransport, nodeResolveHost } from '/_102034_/l1/server/layer_1_external/connections/external/nodeExternalTransport.js';
+import {
+  createExternalSettingsStore,
+  memorySettingsDb,
+  readSecretsKey,
+  type ExternalSettingsStore,
+} from '/_102034_/l1/server/layer_1_external/connections/external/externalSettingsStore.js';
 import {
   createExternalSender,
   type ExternalRecordEvent,
@@ -21,7 +30,7 @@ import {
 
 const SAFE_NAME = /^[a-z][A-Za-z0-9]*$/u;
 const declarations = new Map<string, ExternalSystemDeclaration | null>();
-const configLogged = new Set<string>();
+let settingsStore: ExternalSettingsStore | undefined;
 
 function cacheKey(ref: ExternalRef): string {
   return `${ref.projectId}\0${ref.moduleId}\0${ref.systemId}`;
@@ -68,20 +77,32 @@ export async function releaseDeclarationOf(ref: ExternalRef): Promise<ExternalSy
   return declaration;
 }
 
-function notConfigured(ref: ExternalRef): null {
-  if (!configLogged.has(ref.systemId)) {
-    configLogged.add(ref.systemId);
-    console.warn(`[external] ${ref.systemId} configuração ainda não disponível (R3)`);
-  }
-  return null;
+function productionSettings(): ExternalSettingsStore {
+  if (settingsStore) return settingsStore;
+  const env = readAppEnv();
+  const db = env.runtimeMode === 'postgres'
+    ? { query: (sql: string, params?: readonly unknown[]) => getSharedPgPool(env).query(sql, params as never[]) }
+    : memorySettingsDb();
+  settingsStore = createExternalSettingsStore({
+    declarationOf: releaseDeclarationOf,
+    moduleOf: async (projectId, systemId) => (await moduleSystemsIndex(projectId)).get(systemId) ?? null,
+    db,
+    key: readSecretsKey(),
+  });
+  return settingsStore;
 }
 
 /** The only way the server obtains `sendExternal` in production. */
 export function createProductionExternalSender(): ExternalSender {
+  const settings = productionSettings();
   return createExternalSender({
     declarationOf: releaseDeclarationOf,
-    settingOf: notConfigured,
-    secretOf: notConfigured,
+    settingOf: async (ref, id) => (await settings.settingOf(ref, id)) ?? null,
+    secretOf: async (ref, id) => {
+      const read = await settings.secretOf(ref, id);
+      if (!read.ok) return null;
+      return read.value ?? null;
+    },
     record(event: ExternalRecordEvent): void {
       console.log(`[external] ${event.systemId}.${event.operationId} ${event.outcome}`);
     },

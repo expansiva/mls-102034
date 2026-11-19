@@ -9,6 +9,7 @@ import {
   externalNoticeSeenDefinition,
   purgeSeenNotices,
 } from '/_102034_/l1/server/layer_1_external/connections/external/externalCallStore.js';
+import { externalSettingsDefinition } from '/_102034_/l1/server/layer_1_external/connections/external/externalSettingsStore.js';
 import type { TableDefinition, ViewDefinition } from '/_102034_/l1/server/layer_1_external/persistence/contracts.js';
 
 export const tableDefinitions: TableDefinition[] = [
@@ -164,6 +165,7 @@ export const tableDefinitions: TableDefinition[] = [
   externalCallLogDefinition,
   externalCallAuditDefinition,
   externalNoticeSeenDefinition,
+  externalSettingsDefinition,
 ];
 
 export const viewDefinitions: ViewDefinition[] = externalCallViewDefinitions;

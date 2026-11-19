@@ -84,7 +84,7 @@ describe('releaseDeclarationOf', () => {
 });
 
 describe('createProductionExternalSender', () => {
-  it('logs once that configuration is not available and answers disabled', async () => {
+  it('answers disabled when the setting is not stored and does not log a secret', async () => {
     writeDeclaration('configuredLater', {
       ...exampleExternalSystem,
       systemId: 'configuredLater',
@@ -92,21 +92,26 @@ describe('createProductionExternalSender', () => {
     const sender = createProductionExternalSender();
     const lines: string[] = [];
     const warn = console.warn;
+    const log = console.log;
     console.warn = (...args: unknown[]) => {
+      lines.push(args.map(String).join(' '));
+    };
+    console.log = (...args: unknown[]) => {
       lines.push(args.map(String).join(' '));
     };
     try {
       const request = { method: 'GET', path: '/lookup', query: { key: '{{setting:account}}' } };
       const first = await sender.sendExternal(ref('configuredLater'), 'lookup', request, context);
-      const second = await sender.sendExternal(ref('configuredLater'), 'lookup', request, context);
       assert.equal(first.ok, false);
-      if (!first.ok) assert.equal(first.code, 'disabled');
-      assert.equal(second.ok, false);
+      if (!first.ok) {
+        assert.equal(first.code, 'disabled');
+        assert.match(first.message, /account/);
+      }
     } finally {
       console.warn = warn;
+      console.log = log;
     }
-    const notes = lines.filter((line) => line.includes('configuração ainda não disponível (R3)'));
-    assert.deepEqual(notes, ['[external] configuredLater configuração ainda não disponível (R3)']);
+    assert.equal(lines.some((line) => line.includes('sk_')), false);
   });
 });
 
