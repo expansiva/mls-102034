@@ -31,6 +31,7 @@ import { getLatestJson, initCbeLatestJson } from '/_102034_/l1/server/layer_1_ex
 import { getRunningRelease } from '/_102034_/l1/server/layer_1_external/cbe/cbeRelease.js';
 import { registerMsgProxy } from '/_102034_/l1/server/layer_1_external/transport/http/msgProxy.js';
 import { registerGitRoutes } from '/_102034_/l1/server/layer_1_external/transport/http/gitHttp.js';
+import { registerExternalHookRoutes } from '/_102034_/l1/server/layer_1_external/transport/http/externalHookHttp.js';
 import { registerSessionRegistrationRoutes } from '/_102034_/l1/server/layer_1_external/transport/http/sessionRegistration.js';
 import { registerLocalTestSessionRoutes } from '/_102034_/l1/server/layer_1_external/transport/http/localTestSessionHttp.js';
 import { sharedAssistantRunners } from '/_102034_/l1/workflow/assistantRuntime.js';
@@ -625,6 +626,7 @@ export function buildHttpServer() {
   // the catch-all GET /*, so a clone is never answered with the SPA shell. Additive: no existing route
   // changes behaviour, and `COLLAB_GIT_HTTP_ENABLED=false` removes it entirely.
   registerGitRoutes(app, verifyAccessToken);
+  registerExternalHookRoutes(app);
   app.get('/__qa/new-release', async (request, reply) => {
     const mode = readProjectMode(readAppEnv().projectId);
     if (!canServeNewReleaseQa({

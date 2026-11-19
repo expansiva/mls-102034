@@ -245,6 +245,15 @@ export async function recordNoticeSeen(db: ExternalCallDb, notice: ExternalNotic
   return result.rows.length === 1;
 }
 
+/** Undoes `recordNoticeSeen` when the delivery failed, so the sender's retry is delivered and not refused as a repeat. */
+export async function forgetNotice(db: ExternalCallDb, notice: Omit<ExternalNoticeKey, 'arrivedAt'>): Promise<void> {
+  await db.query(
+    `DELETE FROM ${quoteIdent(EXTERNAL_NOTICE_SEEN_TABLE)}
+     WHERE "projectId" = $1 AND "systemId" = $2 AND "operationId" = $3 AND "noticeId" = $4`,
+    [notice.projectId, notice.systemId, notice.operationId, notice.noticeId],
+  );
+}
+
 export async function purgeSeenNotices(db: ExternalCallDb, now: Date): Promise<void> {
   const cutoff = new Date(now.getTime() - EXTERNAL_NOTICE_SEEN_RETENTION_MS).toISOString();
   await db.query(

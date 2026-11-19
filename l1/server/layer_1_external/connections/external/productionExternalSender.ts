@@ -49,10 +49,8 @@ export async function releaseDeclarationOf(ref: ExternalRef): Promise<ExternalSy
 
   const relative = externalSystemDeclarationFile(ref.moduleId, ref.systemId).replace(/\.ts$/u, '.js');
   const filePath = resolveProjectDistPath(`_${ref.projectId}_/${relative}`);
-  if (!existsSync(filePath)) {
-    declarations.set(key, null);
-    return null;
-  }
+  // A missing file is not cached: on the public hook the ref is chosen by the caller, so caching it would let anyone grow the map.
+  if (!existsSync(filePath)) return null;
 
   let loaded: unknown;
   try {
@@ -90,6 +88,13 @@ function productionSettings(): ExternalSettingsStore {
     key: readSecretsKey(),
   });
   return settingsStore;
+}
+
+/** The secret named by a declaration, opened for the inbound hook. `null` when it cannot be read. */
+export async function productionSecretOf(ref: ExternalRef, settingId: string): Promise<string | null> {
+  const read = await productionSettings().secretOf(ref, settingId);
+  if (!read.ok) return null;
+  return read.value ?? null;
 }
 
 /** The only way the server obtains `sendExternal` in production. */
