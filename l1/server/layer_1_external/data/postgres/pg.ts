@@ -2,7 +2,7 @@
 import { Pool, types, type PoolClient } from 'pg';
 import type { AppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import {
-  databaseUrlEnvFor, hasDeclaredProjectMode, readProjectMode, resolveDatabaseUrl,
+  databaseUrlEnvFor, hasDeclaredProjectMode, isTestMode, readProjectMode, resolveDatabaseUrl,
 } from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
 
 // Platform row contract: DATE/TIMESTAMP/TIMESTAMPTZ columns arrive as ISO-8601 STRINGS, never Date
@@ -21,20 +21,20 @@ let sharedPool: Pool | null = null;
  * A project in `development`/`presentation` must talk to the TEST database, never to production: that is
  * the whole point of the modes. The connection string for it lives in `DATABASE_URL_TEST`.
  *
- * Two behaviours on purpose, so the order of operations stops mattering:
- * - the env EXISTS ⇒ the mode decides, and a test mode connects to the test database;
- * - the env does NOT exist ⇒ the legacy `PGHOST/PGDATABASE/...` path, exactly as before. A server that
- *   has not been given the variable yet keeps booting; when it is given one, the new behaviour turns
- *   itself on with no code change.
+ * A project that DECLARED a test mode always uses `resolveDatabaseUrl`. No `DATABASE_URL_TEST` is a
+ * legible error, even when no connection string exists at all: the legacy `PG*` settings are the
+ * production database on the VM, and they are not a fallback.
  *
- * The one thing that never happens is a test mode silently connecting to production: if the mode is a test
- * mode and `DATABASE_URL_TEST` is absent while `DATABASE_URL` is present, that is a legible failure, not a
- * fallback (`resolveDatabaseUrl`).
+ * Anything else keeps the previous rule. The env exists ⇒ the mode decides. It does not ⇒ the legacy
+ * `PGHOST/PGDATABASE/...` path. A project that never declared a mode keeps booting.
  */
 function poolConfigFor(env: AppEnv): { connectionString: string } | {
   host: string; port: number; database: string; user: string; password: string;
 } {
   const mode = readProjectMode(env.projectId);
+  if (hasDeclaredProjectMode(env.projectId) && isTestMode(mode)) {
+    return { connectionString: resolveDatabaseUrl(mode) };
+  }
   const name = databaseUrlEnvFor(mode);
   const url = process.env[name];
   // The legacy path stays in charge unless the deployment actually opted into connection strings: no URL
