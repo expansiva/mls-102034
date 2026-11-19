@@ -41,6 +41,7 @@ export const moduleFrontendDefinition: MasterFrontendModuleFrontendDefinition = 
     { id: 'trace', label: 'Trace', href: '/monitor/trace', description: 'Correlate requests by requestId or traceId' },
     { id: 'tests', label: 'Tests', href: '/monitor/tests', description: 'Generated BFF test cases — view runs and execute (dev only)' },
     { id: 'releases', label: 'Releases', href: '/monitor/releases', description: 'Deploy/rollback releases and view pm2 logs (admin)' },
+    { id: 'external-systems', label: 'External systems', href: '/monitor/external-systems', description: 'Allowed hosts, serve hooks and settings of outside systems (admin)' },
     { id: 'config', label: 'Config', href: '/monitor/config', description: 'Composed workspace config.json (read-only inspect)' },
   ],
   headerRenderer: {
@@ -133,6 +134,12 @@ export const moduleFrontendDefinition: MasterFrontendModuleFrontendDefinition = 
       entrypoint: '/_102034_/l2/monitor/web/routes/releases.js',
       tag: 'monitor-web-desktop-releases-page',
       title: 'Releases',
+    },
+    {
+      path: '/monitor/external-systems',
+      entrypoint: '/_102034_/l2/monitor/web/routes/externalSystems.js',
+      tag: 'monitor-web-desktop-external-systems-page',
+      title: 'External systems',
     },
     {
       path: '/monitor/config',

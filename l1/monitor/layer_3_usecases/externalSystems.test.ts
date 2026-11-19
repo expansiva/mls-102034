@@ -1,5 +1,5 @@
 /// <mls fileReference="_102034_/l1/monitor/layer_3_usecases/externalSystems.test.ts" enhancement="_blank" />
-import { isAppAdmin } from '/_102034_/l1/monitor/layer_3_usecases/externalSystems.js';
+import { isAppAdmin, modulesWithSystems } from '/_102034_/l1/monitor/layer_3_usecases/externalSystems.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { AppError } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
@@ -155,6 +155,13 @@ test('a caller who is not an app admin gets 403', async () => {
       ctx: {} as never,
     }),
     (error: unknown) => error instanceof AppError && error.statusCode === 403,
+  );
+});
+
+test('modules with outside systems are the owners in the index, once each', () => {
+  assert.deepEqual(
+    modulesWithSystems(new Map([['billing', 'shop'], ['mail', 'shop'], ['pay', 'billing']])),
+    ['billing', 'shop'],
   );
 });
 

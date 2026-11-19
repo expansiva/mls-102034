@@ -106,6 +106,11 @@ async function hostView(
   return { fromSetting: host.fromSetting, value };
 }
 
+/** Module ids that declare at least one outside system. */
+export function modulesWithSystems(index: ReadonlyMap<string, string>): string[] {
+  return [...new Set(index.values())].sort();
+}
+
 export async function externalSystemsOf(
   deps: ExternalSystemsDeps,
   projectId: string,

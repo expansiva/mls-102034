@@ -15,6 +15,7 @@ import { AppError, type BffHandler } from '/_102034_/l1/server/layer_2_controlle
 import {
   externalSystemsOf,
   isAppAdmin,
+  modulesWithSystems,
   setExternalSetting,
   type ExternalSystemsDeps,
 } from '/_102034_/l1/monitor/layer_3_usecases/externalSystems.js';
@@ -62,8 +63,12 @@ export const monitorExternalSystemsListHandler: BffHandler = async ({ request })
   const params = (request.params ?? {}) as Record<string, unknown>;
   const projectId = projectIdOf();
   const moduleId = text(params.moduleId);
-  if (projectId === '' || moduleId === '') {
+  if (projectId === '') {
     throw new AppError('INVALID_REQUEST', 'projectId and moduleId are required.', 400);
+  }
+  if (moduleId === '') {
+    const index = await monitorDeps().systemsOf(projectId);
+    return { ok: true, data: { modules: modulesWithSystems(index) }, error: null };
   }
   return {
     ok: true,
