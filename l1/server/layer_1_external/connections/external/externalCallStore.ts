@@ -240,6 +240,23 @@ function toCallRow(value: unknown): ExternalCallRow {
   };
 }
 
+/** The newest rows of the short log for one system. The limit stays at 50. */
+export async function readRecentExternalCalls(
+  db: ExternalCallDb,
+  projectId: string,
+  moduleId: string,
+  systemId: string,
+  limit = 50,
+): Promise<ExternalCallRow[]> {
+  const capped = Math.min(50, Math.max(1, Math.floor(limit)));
+  const columns = CALL_COLUMNS.map(quoteIdent).join(', ');
+  const result = await db.query(
+    `SELECT ${columns} FROM ${quoteIdent(EXTERNAL_CALL_LOG_TABLE)} WHERE "projectId" = $1 AND "moduleId" = $2 AND "systemId" = $3 ORDER BY "occurredAt" DESC LIMIT ${capped}`,
+    [projectId, moduleId, systemId],
+  );
+  return result.rows.map(toCallRow);
+}
+
 export async function readExternalCalls(db: ExternalCallDb, tableName: string, requestId: string): Promise<ExternalCallRow[]> {
   if (!CALL_TABLES.has(tableName)) {
     throw new Error(`external call table is not registered: ${tableName}`);

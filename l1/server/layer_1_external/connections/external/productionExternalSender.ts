@@ -110,6 +110,11 @@ export function externalCallRowFromEvent(event: ExternalRecordEvent): ExternalCa
   };
 }
 
+/** The store the monitor writes through. One instance, shared with the sender. */
+export function productionExternalSettings(): ExternalSettingsStore {
+  return productionSettings();
+}
+
 function productionSettings(): ExternalSettingsStore {
   if (settingsStore) return settingsStore;
   const env = readAppEnv();
