@@ -40,6 +40,19 @@ export interface ExternalRecordEvent {
   operationId: string;
   outcome: 'ok' | 'not_found' | 'disabled' | 'unavailable' | 'conflict' | 'refused' | 'forbidden' | 'invalid';
   status?: number;
+  /** Host name, without a scheme or a port. Empty when the call never chose a host. */
+  server: string;
+  /** Path without a query. Empty when the call never had a path. */
+  path: string;
+  /** Milliseconds from the start of the call to its answer. */
+  durationMs: number;
+  /** Bytes sent plus bytes received (bodies only). 0 when nothing left. */
+  bytes: number;
+  /** Why the call was refused or failed: the short text of the answer (never a body or a secret). */
+  denialReason: string | null;
+  /** The person (or the agent) behind the call, when the context has one. */
+  actorKind: 'person' | 'agent' | null;
+  actorId: string | null;
 }
 
 /** What the transport receives. `address` is the IP already checked; connect to that IP and keep the name on the URL. */
@@ -276,8 +289,11 @@ export function createExternalSender(deps: ExternalSenderDeps): ExternalSender {
     outcome: ExternalRecordEvent['outcome'],
     result: ConnectionResult<ExternalResponseOutput>,
     status?: number,
+    place?: { server: string; path: string },
+    extra: { durationMs: number; bytes: number; context: ConnectionContext } = { durationMs: 0, bytes: 0, context: { organizationId: '' } },
   ): Promise<ConnectionResult<ExternalResponseOutput>> {
     logLine(ref.systemId, operationId, outcome);
+    const person = extra.context.actorUserId ?? extra.context.actorMdmId;
     await read(deps.record({
       projectId: ref.projectId,
       moduleId: ref.moduleId,
@@ -285,49 +301,65 @@ export function createExternalSender(deps: ExternalSenderDeps): ExternalSender {
       operationId,
       outcome,
       status,
+      server: place?.server ?? '',
+      path: place?.path ?? '',
+      durationMs: extra.durationMs,
+      bytes: extra.bytes,
+      denialReason: result.ok ? null : result.message,
+      actorKind: person ? 'person' : (extra.context.agentId ? 'agent' : null),
+      actorId: person ?? extra.context.agentId ?? null,
     }));
     return result;
   }
 
   return {
-    async sendExternal(ref, operationId, request, _context) {
+    async sendExternal(ref, operationId, request, context) {
+      const started = Date.now();
+      let bytes = 0;
+      const fin = (
+        outcome: ExternalRecordEvent['outcome'],
+        result: ConnectionResult<ExternalResponseOutput>,
+        status?: number,
+        place?: { server: string; path: string },
+      ): Promise<ConnectionResult<ExternalResponseOutput>> => finish(ref, operationId, outcome, result, status, place, { durationMs: Date.now() - started, bytes, context });
       let declaration: ExternalSystemDeclaration | null;
       try {
         declaration = await read(deps.declarationOf(ref));
       } catch (error) {
         console.error('[external] declaration', error instanceof Error ? error.name : 'error');
-        return finish(ref, operationId, 'unavailable', denied('unavailable', 'declaration unavailable'));
+        return fin('unavailable', denied('unavailable', 'declaration unavailable'));
       }
       if (!declaration || declaration.systemId !== ref.systemId || validateExternalSystemDeclaration(declaration).length > 0) {
-        return finish(ref, operationId, 'forbidden', denied('forbidden', 'system is not declared'));
+        return fin('forbidden', denied('forbidden', 'system is not declared'));
       }
       const operation = callOperation(declaration, operationId);
       if (operation === 'missing' || operation === 'serve') {
-        return finish(ref, operationId, 'forbidden', denied('forbidden', operation === 'serve' ? 'serve is not a call' : 'operation is not declared'));
+        return fin('forbidden', denied('forbidden', operation === 'serve' ? 'serve is not a call' : 'operation is not declared'));
       }
       if (typeof request.method !== 'string' || request.method.length === 0) {
-        return finish(ref, operationId, 'forbidden', denied('forbidden', 'method is not declared'));
+        return fin('forbidden', denied('forbidden', 'method is not declared'));
       }
       const method = request.method.toUpperCase();
       if (!operation.methods.map((item) => item.toUpperCase()).includes(method)) {
-        return finish(ref, operationId, 'forbidden', denied('forbidden', 'method is not declared'));
+        return fin('forbidden', denied('forbidden', 'method is not declared'));
       }
       if (typeof request.path !== 'string' || !request.path.startsWith('/') || request.path.startsWith('//') || request.path.includes('?') || request.path.includes('\\') || /[\u0000-\u0020\u007f#]/.test(request.path)) {
-        return finish(ref, operationId, 'forbidden', denied('forbidden', 'path is not a path'));
+        return fin('forbidden', denied('forbidden', 'path is not a path'));
       }
 
       const cites = cited(request);
-      if (cites.broken) return finish(ref, operationId, 'forbidden', denied('forbidden', 'reference is not declared'));
+      if (cites.broken) return fin('forbidden', denied('forbidden', 'reference is not declared'));
       const undeclared = [
         ...cites.secrets.filter((id) => !operation.uses.secrets.includes(id)),
         ...cites.settings.filter((id) => !operation.uses.settings.includes(id)),
       ];
-      if (undeclared.length > 0) return finish(ref, operationId, 'forbidden', denied('forbidden', 'reference is not declared'));
+      if (undeclared.length > 0) return fin('forbidden', denied('forbidden', 'reference is not declared'));
 
       const hosts = await allowedHosts(ref, declaration, deps);
-      if (hosts === 'empty') return finish(ref, operationId, 'forbidden', denied('forbidden', 'host is not declared'));
+      if (hosts === 'empty') return fin('forbidden', denied('forbidden', 'host is not declared'));
       const host = chooseHost(hosts, request);
-      if (!host) return finish(ref, operationId, 'forbidden', denied('forbidden', 'host is not declared'));
+      if (!host) return fin('forbidden', denied('forbidden', 'host is not declared'));
+      const place = { server: host, path: request.path };
 
       const secretValues = new Map<string, string>();
       const settingValues = new Map<string, string>();
@@ -344,7 +376,7 @@ export function createExternalSender(deps: ExternalSenderDeps): ExternalSender {
       }
       if (missing.length > 0) {
         const ids = [...missing].sort().join(', ');
-        return finish(ref, operationId, 'disabled', denied('disabled', `configuração incompleta: ${ids}`));
+        return fin('disabled', denied('disabled', `configuração incompleta: ${ids}`), undefined, place);
       }
 
       const headers: Record<string, string> = {};
@@ -355,8 +387,9 @@ export function createExternalSender(deps: ExternalSenderDeps): ExternalSender {
       const query = new URLSearchParams();
       for (const [name, value] of Object.entries(request.query ?? {})) query.set(name, fill(value, secretValues, settingValues));
       const body = request.body === undefined ? undefined : fill(request.body, secretValues, settingValues);
+      bytes = body === undefined ? 0 : byteLength(body);
       if (body !== undefined && byteLength(body) > EXTERNAL_MAX_REQUEST_BYTES) {
-        return finish(ref, operationId, 'invalid', denied('invalid', 'request is above the size ceiling'));
+        return fin('invalid', denied('invalid', 'request is above the size ceiling'), undefined, place);
       }
 
       let addresses: string[];
@@ -364,11 +397,11 @@ export function createExternalSender(deps: ExternalSenderDeps): ExternalSender {
         addresses = await deps.resolveHost(host);
       } catch (error) {
         console.error('[external] resolve', error instanceof Error ? error.name : 'error');
-        return finish(ref, operationId, 'unavailable', denied('unavailable', 'host did not resolve'));
+        return fin('unavailable', denied('unavailable', 'host did not resolve'), undefined, place);
       }
       const address = addresses[0];
       if (!address || addresses.some((item) => isBlockedAddress(item))) {
-        return finish(ref, operationId, 'forbidden', denied('forbidden', 'host address is blocked'));
+        return fin('forbidden', denied('forbidden', 'host address is blocked'), undefined, place);
       }
 
       const timeoutMs = clamp(operation.timeoutMs, EXTERNAL_DEFAULT_TIMEOUT_MS, EXTERNAL_MAX_TIMEOUT_MS);
@@ -402,24 +435,25 @@ export function createExternalSender(deps: ExternalSenderDeps): ExternalSender {
       } catch (error) {
         console.error('[external] transport', error instanceof Error ? error.name : 'error');
         const message = timeoutError(error) ? 'timed out' : 'network';
-        return finish(ref, operationId, 'unavailable', denied('unavailable', message));
+        return fin('unavailable', denied('unavailable', message), undefined, place);
       }
 
+      bytes += byteLength(response.body);
       if (response.truncated || byteLength(response.body) > maxResponseBytes) {
-        return finish(ref, operationId, 'unavailable', denied('unavailable', 'response is above the size ceiling'), response.status);
+        return fin('unavailable', denied('unavailable', 'response is above the size ceiling'), response.status, place);
       }
       const status = response.status;
       const mapped = httpCode(status);
       if (mapped && !mapped.ok) {
         const message = redact(mapped.message, knownSecrets);
-        return finish(ref, operationId, mapped.code, denied(mapped.code, message), status);
+        return fin(mapped.code, denied(mapped.code, message), status, place);
       }
       const output: ExternalResponseOutput = {
         status,
         headers: Object.fromEntries(Object.entries(response.headers).map(([name, value]) => [name, redact(value, knownSecrets)])),
         body: redact(response.body, knownSecrets),
       };
-      return finish(ref, operationId, 'ok', { ok: true, output }, status);
+      return fin('ok', { ok: true, output }, status, place);
     },
   };
 }

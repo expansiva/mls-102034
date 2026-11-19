@@ -156,6 +156,13 @@ export const externalCallViewDefinitions: ViewDefinition[] = [
 
 const CALL_TABLES = new Set<string>([EXTERNAL_CALL_LOG_TABLE, EXTERNAL_CALL_AUDIT_TABLE]);
 
+let externalCallWriteFailures = 0;
+
+/** How many times a call row failed to land. The monitor reads this; a failure never stops the call. */
+export function externalCallWriteFailureCount(): number {
+  return externalCallWriteFailures;
+}
+
 function quoteIdent(name: string): string {
   return `"${name}"`;
 }
@@ -174,6 +181,19 @@ export async function writeExternalCall(db: ExternalCallDb, tableName: string, r
     `INSERT INTO ${quoteIdent(tableName)} (${columns}) VALUES (${slots})`,
     callValues(row),
   );
+}
+
+/** Writes the short log and the audit. A failed write is logged and counted; it does not throw. */
+export async function writeExternalCallPair(db: ExternalCallDb, row: ExternalCallRow): Promise<void> {
+  for (const tableName of [EXTERNAL_CALL_LOG_TABLE, EXTERNAL_CALL_AUDIT_TABLE]) {
+    try {
+      await writeExternalCall(db, tableName, row);
+    } catch (error) {
+      externalCallWriteFailures += 1;
+      const text = error instanceof Error ? error.message : 'record failed';
+      console.error(`[external] call record failed ${row.systemId}.${row.operationId} ${tableName} (failures=${externalCallWriteFailures}): ${text}`);
+    }
+  }
 }
 
 function text(value: unknown): string {

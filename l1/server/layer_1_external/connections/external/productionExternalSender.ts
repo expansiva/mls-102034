@@ -3,6 +3,7 @@
  * The production door. The declaration is the one in the active release.
  * Settings and secrets come from the platform table. A new release is a new process.
  */
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
@@ -10,6 +11,11 @@ import { resolveProjectDistPath } from '/_102034_/l1/server/layer_1_external/con
 import { getSharedPgPool } from '/_102034_/l1/server/layer_1_external/data/postgres/pg.js';
 import { moduleSystemsIndex } from '/_102034_/l1/server/layer_1_external/connections/moduleSystemsIndex.js';
 import { nodeExternalTransport, nodeResolveHost } from '/_102034_/l1/server/layer_1_external/connections/external/nodeExternalTransport.js';
+import {
+  writeExternalCallPair,
+  type ExternalCallDb,
+  type ExternalCallRow,
+} from '/_102034_/l1/server/layer_1_external/connections/external/externalCallStore.js';
 import {
   createExternalSettingsStore,
   memorySettingsDb,
@@ -75,6 +81,35 @@ export async function releaseDeclarationOf(ref: ExternalRef): Promise<ExternalSy
   return declaration;
 }
 
+function callDb(): ExternalCallDb | null {
+  const env = readAppEnv();
+  if (env.runtimeMode !== 'postgres') return null;
+  return { query: (sql, params) => getSharedPgPool(env).query(sql, params as never[]) };
+}
+
+/** The row that is stored. Only the fields of the event; never a body, a header or a setting value. */
+export function externalCallRowFromEvent(event: ExternalRecordEvent): ExternalCallRow {
+  return {
+    id: randomUUID(),
+    occurredAt: new Date().toISOString(),
+    direction: 'out',
+    projectId: event.projectId,
+    moduleId: event.moduleId,
+    systemId: event.systemId,
+    operationId: event.operationId,
+    server: event.server,
+    path: event.path,
+    outcome: event.outcome,
+    denialReason: event.denialReason,
+    httpStatus: event.status ?? null,
+    durationMs: event.durationMs,
+    bytes: event.bytes,
+    actorKind: event.actorKind,
+    actorId: event.actorId,
+    requestId: null,
+  };
+}
+
 function productionSettings(): ExternalSettingsStore {
   if (settingsStore) return settingsStore;
   const env = readAppEnv();
@@ -98,7 +133,7 @@ export async function productionSecretOf(ref: ExternalRef, settingId: string): P
 }
 
 /** The only way the server obtains `sendExternal` in production. */
-export function createProductionExternalSender(): ExternalSender {
+export function createProductionExternalSender(db: ExternalCallDb | null = callDb()): ExternalSender {
   const settings = productionSettings();
   return createExternalSender({
     declarationOf: releaseDeclarationOf,
@@ -108,8 +143,9 @@ export function createProductionExternalSender(): ExternalSender {
       if (!read.ok) return null;
       return read.value ?? null;
     },
-    record(event: ExternalRecordEvent): void {
-      console.log(`[external] ${event.systemId}.${event.operationId} ${event.outcome}`);
+    async record(event: ExternalRecordEvent): Promise<void> {
+      if (!db) return;
+      await writeExternalCallPair(db, externalCallRowFromEvent(event));
     },
     transport: nodeExternalTransport,
     resolveHost: nodeResolveHost,

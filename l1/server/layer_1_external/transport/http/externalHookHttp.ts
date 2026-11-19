@@ -7,11 +7,9 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { getSharedPgPool } from '/_102034_/l1/server/layer_1_external/data/postgres/pg.js';
 import {
-  EXTERNAL_CALL_AUDIT_TABLE,
-  EXTERNAL_CALL_LOG_TABLE,
   forgetNotice,
   recordNoticeSeen,
-  writeExternalCall,
+  writeExternalCallPair,
   type ExternalCallDb,
 } from '/_102034_/l1/server/layer_1_external/connections/external/externalCallStore.js';
 import {
@@ -73,8 +71,7 @@ function productionDeps(): ExternalHookDeps {
     },
     record: async (row) => {
       if (!db) return;
-      await writeExternalCall(db, EXTERNAL_CALL_LOG_TABLE, row);
-      await writeExternalCall(db, EXTERNAL_CALL_AUDIT_TABLE, row);
+      await writeExternalCallPair(db, row);
     },
     deliver: (input) => sharedAssistantRunners(input.context.organizationId).connection(input),
     now: () => new Date(),
