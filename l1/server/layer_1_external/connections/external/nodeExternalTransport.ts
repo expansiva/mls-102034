@@ -2,6 +2,7 @@
 import { lookup as dnsLookup } from 'node:dns/promises';
 import https from 'node:https';
 import type { LookupOptions } from 'node:dns';
+import type { IncomingHttpHeaders } from 'node:http';
 import type { ExternalTransportCall, ExternalTransportResponse } from '/_102034_/l1/server/layer_1_external/connections/external/sendExternal.js';
 
 type LookupCallback = (
@@ -29,7 +30,7 @@ function shortFailure(error: NodeJS.ErrnoException): Error {
   return new Error(tls ? 'tls' : 'network');
 }
 
-function headerMap(incoming: https.IncomingHttpHeaders): Record<string, string> {
+function headerMap(incoming: IncomingHttpHeaders): Record<string, string> {
   const headers: Record<string, string> = {};
   for (const [name, value] of Object.entries(incoming)) {
     if (typeof value === 'string') headers[name] = value;
