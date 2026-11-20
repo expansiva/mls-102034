@@ -1,7 +1,10 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/events/deliverModuleEvents.test.ts" enhancement="_blank" />
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
+import { createMemoryDataRuntime } from '/_102034_/l1/mdm/layer_1_external/data/memory/MdmDataRuntimeMemory.js';
+import type { RequestSessionContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
+import { createRequestContext } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
+import { bindModuleDataContext } from '/_102034_/l1/server/layer_1_external/events/persistence.js';
 import type { IModuleDataRuntime, ITableRepository } from '/_102034_/l1/server/layer_1_external/data/moduleDataRuntime.js';
 import {
   MODULE_EVENT_DELIVERY_TABLE,
@@ -201,6 +204,14 @@ function envelope(eventId: string): ModuleEventEnvelope {
   };
 }
 
+/** The context the platform tick receives: the server's own factory, never a hand-made object. */
+function tickContext() {
+  return createRequestContext(createMemoryDataRuntime(), {
+    moduleId: 'platformModuleEvents',
+    sessionContext: { project: { projectId: '900281' } } as RequestSessionContext,
+  });
+}
+
 function harness(
   store: ReturnType<typeof world>,
   call: DeliverModuleEventsDeps['callRoute'],
@@ -212,7 +223,7 @@ function harness(
     db: store.db,
     moduleData: store.moduleData,
     now,
-    bindContext: (moduleData) => ({ data: { moduleData } } as RequestContext),
+    bindContext: bindModuleDataContext(tickContext()),
     findRoute: async (_project, consumer) => {
       const route = routes[consumer];
       return route ? { moduleId: consumer, route } : undefined;
@@ -231,6 +242,9 @@ describe('module event delivery', () => {
     const seen: string[] = [];
     const { run } = harness(store, async (route, body, ctx) => {
       assert.equal(ctx.data.moduleData, store.moduleData);
+      // the delivery keeps the project and the module of the tick context (the route's own module comes from execBff)
+      assert.equal(ctx.sessionContext.project?.projectId, '900281');
+      assert.equal(ctx.moduleId, 'platformModuleEvents');
       assert.equal(body.eventId, 'evt-1');
       seen.push(route.moduleId);
       return 200;

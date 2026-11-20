@@ -6,6 +6,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import type { ConnectionResult } from '/_102034_/l1/server/layer_1_external/connections/catalogs/types.js';
+import type { RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import type { IModuleDataRuntime } from '/_102034_/l1/server/layer_1_external/data/moduleDataRuntime.js';
 import {
   MODULE_EVENT_DELIVERY_TABLE,
@@ -20,17 +21,15 @@ import {
   type ModuleEventsIndex,
 } from '/_102034_/l1/server/layer_1_external/events/types.js';
 
-export interface ModuleEventCallContext {
-  moduleId?: string;
-  project?: { projectId?: string };
-  sessionContext?: { actorId?: string };
-  requestMeta?: { actorType?: 'user' | 'agent' | 'system'; requestId?: string };
-}
+/**
+ * What the publisher reads from the request context, and only paths the real `RequestContext` has: the project is in
+ * `sessionContext.project` (not at the top), the caller module in `moduleId`, the actor in `sessionContext.actorId` and
+ * `requestMeta`. Typed as a `Pick` so a hand-made context with another shape does not compile.
+ */
+export type ModuleEventCallContext = Pick<RequestContext, 'sessionContext' | 'moduleId' | 'requestMeta'>;
 
 /** The use-case context. `data.moduleData` is the runtime the use case is already using. */
-export interface ModuleEventPublishContext extends ModuleEventCallContext {
-  data: { moduleData: IModuleDataRuntime };
-}
+export type ModuleEventPublishContext = ModuleEventCallContext & Pick<RequestContext, 'data'>;
 
 export interface ModuleEventPublishOpts {
   requestId?: string;
@@ -97,7 +96,7 @@ export function createModuleEventPublisher(deps: ModuleEventPublisherDeps): Modu
     if (typeof ref?.module !== 'string' || ref.module === '' || typeof ref?.eventId !== 'string' || ref.eventId === '') {
       return fail('invalid', 'module and eventId are required');
     }
-    const projectId = context?.project?.projectId;
+    const projectId = context?.sessionContext?.project?.projectId;
     if (typeof projectId !== 'string' || projectId === '') {
       return fail('invalid', 'projectId is required');
     }
@@ -230,7 +229,7 @@ export function createPublishModuleEvent(
     const publish = createModuleEventPublisher({
       index,
       enqueue: (envelope, consumers) => {
-        const projectId = ctx.project?.projectId ?? '';
+        const projectId = ctx.sessionContext?.project?.projectId ?? '';
         return enqueueOnModuleData(ctx.data.moduleData, projectId, envelope, consumers);
       },
     });

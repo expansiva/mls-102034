@@ -21,6 +21,11 @@ export const tableDefinitions: TableDefinition[] = [
   moduleEventDeliveryDefinition,
 ];
 
+/** The context of a delivery: the tick context (its project and module are kept) with `moduleData` swapped for the transaction client. */
+export function bindModuleDataContext(ctx: RequestContext): (moduleData: RequestContext['data']['moduleData']) => RequestContext {
+  return (moduleData) => ({ ...ctx, data: { ...ctx.data, moduleData } });
+}
+
 const findConsumes = createReleaseConsumesLookup();
 const deliveryRunner = createDeliveryRunner();
 
@@ -46,7 +51,7 @@ export async function onTick(ctx: RequestContext, now: Date): Promise<void> {
     db,
     moduleData: ctx.data.moduleData,
     now,
-    bindContext: (moduleData) => ({ ...ctx, data: { ...ctx.data, moduleData } }),
+    bindContext: bindModuleDataContext(ctx),
     findRoute: findConsumes,
     callRoute: callConsumesRoute,
   }), now.getTime());

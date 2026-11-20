@@ -1,6 +1,9 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/events/publishModuleEvent.test.ts" enhancement="_blank"/>
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { createMemoryDataRuntime } from '/_102034_/l1/mdm/layer_1_external/data/memory/MdmDataRuntimeMemory.js';
+import { createRequestContext } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
+import type { RequestContext, RequestSessionContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import type { DefsReader } from '/_102034_/l1/workflow/assistantCatalogDefs.js';
 import { buildConsumesIndex, findConsumesRoute } from '/_102034_/l1/workflow/connectionServe.js';
 import type { IModuleDataRuntime, ITableRepository } from '/_102034_/l1/server/layer_1_external/data/moduleDataRuntime.js';
@@ -22,12 +25,20 @@ import {
 } from '/_102034_/testing/events/eventFixtures.js';
 
 const REF = { module: 'sourceModule', eventId: 'happened' };
-const CONTEXT = {
-  moduleId: 'sourceModule',
-  project: { projectId: '900281' },
-  sessionContext: { actorId: 'person-1' },
-  requestMeta: { actorType: 'user' as const, requestId: 'req-1' },
-};
+/**
+ * The context is built by the server's own factory, the way a request of a module gets it: the project in
+ * `sessionContext.project`, the caller module in `moduleId`, the actor in `sessionContext.actorId` and `requestMeta`.
+ * Never a hand-made object (a test of 19/11 used `project` at the top, which the real context does not have).
+ */
+function realContext(options: { moduleId?: string; actorType?: 'user' | 'agent' | 'system'; actorId?: string } = {}): RequestContext {
+  const ctx = createRequestContext(createMemoryDataRuntime(), {
+    moduleId: options.moduleId ?? 'sourceModule',
+    sessionContext: { project: { projectId: '900281' }, actorId: options.actorId ?? 'person-1' } as RequestSessionContext,
+  });
+  ctx.requestMeta = { actorType: options.actorType ?? 'user', requestId: 'req-1' };
+  return ctx;
+}
+const CONTEXT = realContext();
 
 function publisher(index: ModuleEventsIndex) {
   const queued: Array<{ envelope: ModuleEventEnvelope; consumers: readonly string[] }> = [];
@@ -164,11 +175,10 @@ function createRollingRuntime(failDelivery: boolean): { runtime: IModuleDataRunt
   return { runtime, tables };
 }
 
-function publishContext(runtime: IModuleDataRuntime) {
-  return {
-    ...CONTEXT,
-    data: { moduleData: runtime },
-  };
+function publishContext(runtime: IModuleDataRuntime): RequestContext {
+  const ctx = realContext();
+  ctx.data = { ...ctx.data, moduleData: runtime };
+  return ctx;
 }
 
 // The index is injected into the publisher, not carried by the context.
