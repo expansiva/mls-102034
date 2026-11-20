@@ -1,11 +1,11 @@
 /// <mls fileReference="_102034_/l1/monitor/layer_3_usecases/externalSystems.test.ts" enhancement="_blank" />
-import { isAppAdmin, modulesWithSystems } from '/_102034_/l1/monitor/layer_3_usecases/externalSystems.js';
+import { externalSystemsScope, isAppAdmin, modulesWithSystems } from '/_102034_/l1/monitor/layer_3_usecases/externalSystems.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { AppError } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import type { ExternalCallRow } from '/_102034_/l1/server/layer_1_external/connections/external/externalCallStore.js';
 import type { ExternalSystemDeclaration } from '/_102034_/l1/server/layer_1_external/connections/external/types.js';
-import { monitorExternalSystemsListHandler } from '/_102034_/l1/monitor/layer_2_controllers/externalSystemsHandlers.js';
+import { monitorExternalSettingSetHandler, monitorExternalSystemsListHandler } from '/_102034_/l1/monitor/layer_2_controllers/externalSystemsHandlers.js';
 import {
   externalSystemsOf,
   setExternalSetting,
@@ -171,4 +171,36 @@ test('only monitor:admin or sites:admin is an app admin; the admin of another mo
   assert.equal(isAppAdmin(['shop:admin']), false);
   assert.equal(isAppAdmin(['petShop:admin', 'shop:clerk']), false);
   assert.equal(isAppAdmin(undefined), false);
+});
+
+test('the admin of a module opens its own module only, never the list, and an agent does not write', () => {
+  const person = { write: false, agent: false };
+  assert.equal(externalSystemsScope(['shop:admin'], 'shop', person), 'module');
+  assert.equal(externalSystemsScope(['shop:admin'], 'billing', person), 'denied');
+  assert.equal(externalSystemsScope(['shop:admin'], '', person), 'denied');
+  assert.equal(externalSystemsScope(['shop:clerk'], 'shop', person), 'denied');
+  assert.equal(externalSystemsScope(['monitor:admin'], '', person), 'all');
+  assert.equal(externalSystemsScope(['sites:admin'], 'billing', { write: true, agent: false }), 'all');
+  // module admin, writing: a person yes, an agent no; reading: an agent may
+  assert.equal(externalSystemsScope(['shop:admin'], 'shop', { write: true, agent: false }), 'module');
+  assert.equal(externalSystemsScope(['shop:admin'], 'shop', { write: true, agent: true }), 'denied');
+  assert.equal(externalSystemsScope(['shop:admin'], 'shop', { write: false, agent: true }), 'module');
+});
+
+test('the handlers: shop:admin reads shop and is refused for billing and without module; an agent cannot set', async () => {
+  const call = (handler: typeof monitorExternalSystemsListHandler, params: Record<string, unknown>, authorities: string[], agent = false) => handler({
+    request: {
+      routine: 'monitor.externalSystems.list',
+      params,
+      meta: { verifiedUserId: 'u1', verifiedAuthorities: authorities, ...(agent ? { actorType: 'agent' as const } : {}) },
+    },
+    ctx: {} as never,
+  });
+  const forbidden = (error: unknown) => error instanceof AppError && error.statusCode === 403;
+  await assert.rejects(() => call(monitorExternalSystemsListHandler, { moduleId: 'billing' }, ['shop:admin']), forbidden);
+  await assert.rejects(() => call(monitorExternalSystemsListHandler, {}, ['shop:admin']), forbidden);
+  await assert.rejects(
+    () => call(monitorExternalSettingSetHandler, { moduleId: 'shop', systemId: 's', settingId: 'k', value: 'v' }, ['shop:admin'], true),
+    forbidden,
+  );
 });

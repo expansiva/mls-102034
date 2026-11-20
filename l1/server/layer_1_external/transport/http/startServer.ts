@@ -13,7 +13,7 @@ import { applyVerifiedEmailToSession, createDefaultRequestContext, execBff } fro
 import { initializeOrganizationForProcess } from '/_102034_/l1/mdm/layer_3_usecases/organizationBootstrap.js';
 import { AppError } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import {
-  claimAuthorities, isActorEnforcementOn, isBffAuthEnforced, moduleAuthorities, resolveBffSession, verifyAccessToken,
+  claimAuthorities, isActorEnforcementOn, isBffAuthEnforced, moduleAuthorities, resolveBffSession, routineAuthorities, verifyAccessToken,
   type BffAuthOutcome,
 } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
 import { isAlphaAllAuthorities } from '/_102034_/l1/server/layer_1_external/config/alphaAuthorities.js';
@@ -967,10 +967,11 @@ export async function handleHttpRequest(
 
   // The module a routine belongs to: `<module>.<page>.<command>`. Read here, before dispatch, because the
   // authorities are filtered by it.
-  const routineModuleId = (payload: unknown): string => {
+  const routineName = (payload: unknown): string => {
     const routine = (payload as { routine?: unknown } | null | undefined)?.routine;
-    return typeof routine === 'string' ? routine.split('.')[0] ?? '' : '';
+    return typeof routine === 'string' ? routine : '';
   };
+  const routineModuleId = (payload: unknown): string => routineName(payload).split('.')[0] ?? '';
 
   // AUTHENTICATION of the single door. Resolved here (not in execBff) because the token lives in a
   // TRANSPORT artifact — a cookie — and execBff is transport-agnostic: the message transport and the
@@ -1011,7 +1012,7 @@ export async function handleHttpRequest(
           verifiedEmail: session.claims.email,
           // The module's authorities, filtered from the claims by the transport that verified them. They
           // become `sessionContext.actorScope`, which is what every generated controller gates on.
-          verifiedAuthorities: moduleAuthorities(session.claims, routineModuleId(body)),
+          verifiedAuthorities: routineAuthorities(session.claims, routineModuleId(body), routineName(body)),
         } : {}),
       },
     }, ctx);

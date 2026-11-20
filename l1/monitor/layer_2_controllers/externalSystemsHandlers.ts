@@ -14,7 +14,7 @@ import {
 import { AppError, type BffHandler } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import {
   externalSystemsOf,
-  isAppAdmin,
+  externalSystemsScope,
   modulesWithSystems,
   setExternalSetting,
   type ExternalSystemsDeps,
@@ -24,10 +24,19 @@ function text(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
-function requireAdmin(authorities: readonly string[] | undefined): void {
-  if (!isAppAdmin(authorities)) {
-    throw new AppError('FORBIDDEN', 'App admin is required.', 403);
+function requireScope(
+  authorities: readonly string[] | undefined,
+  moduleId: string,
+  options: { write: boolean; agent: boolean },
+): void {
+  if (externalSystemsScope(authorities, moduleId, options) === 'denied') {
+    throw new AppError('FORBIDDEN', 'App admin, or admin of this module, is required.', 403);
   }
+}
+
+/** The request comes from an agent (the assistant), not from a person at the screen. */
+function isAgentRequest(input: { request: { meta?: { actorType?: string } }; ctx?: { requestMeta?: { actorType?: string } } }): boolean {
+  return input.request.meta?.actorType === 'agent' || input.ctx?.requestMeta?.actorType === 'agent';
 }
 
 function callDb(): ExternalCallDb | null {
@@ -58,11 +67,12 @@ function projectIdOf(): string {
   return readAppEnv().projectId ?? '';
 }
 
-export const monitorExternalSystemsListHandler: BffHandler = async ({ request }) => {
-  requireAdmin(request.meta?.verifiedAuthorities);
+export const monitorExternalSystemsListHandler: BffHandler = async (input) => {
+  const { request } = input;
   const params = (request.params ?? {}) as Record<string, unknown>;
   const projectId = projectIdOf();
   const moduleId = text(params.moduleId);
+  requireScope(request.meta?.verifiedAuthorities, moduleId, { write: false, agent: isAgentRequest(input) });
   if (projectId === '') {
     throw new AppError('INVALID_REQUEST', 'projectId and moduleId are required.', 400);
   }
@@ -77,11 +87,12 @@ export const monitorExternalSystemsListHandler: BffHandler = async ({ request })
   };
 };
 
-export const monitorExternalSettingSetHandler: BffHandler = async ({ request }) => {
-  requireAdmin(request.meta?.verifiedAuthorities);
+export const monitorExternalSettingSetHandler: BffHandler = async (input) => {
+  const { request } = input;
   const params = (request.params ?? {}) as Record<string, unknown>;
   const projectId = projectIdOf();
   const moduleId = text(params.moduleId);
+  requireScope(request.meta?.verifiedAuthorities, moduleId, { write: true, agent: isAgentRequest(input) });
   const systemId = text(params.systemId);
   const settingId = text(params.settingId);
   const value = text(params.value);

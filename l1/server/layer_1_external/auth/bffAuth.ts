@@ -65,6 +65,24 @@ export function moduleAuthorities(claims: CollabAuthClaims | undefined, moduleId
 }
 
 /**
+ * The routines of the monitor that a MODULE admin may reach for its own module (the external-systems screen). For every other
+ * routine, `monitor.*` keeps only `monitor:` authorities, as before. The routine itself decides what the extra authorities
+ * allow: it must still check that the module asked for is the one the authority names.
+ */
+export const MODULE_ADMIN_ROUTINES: ReadonlySet<string> = new Set([
+  'monitor.externalSystems.list',
+  'monitor.externalSettings.set',
+]);
+
+/** `moduleAuthorities`, plus every `<module>:admin` of the user for the routines in `MODULE_ADMIN_ROUTINES` only. */
+export function routineAuthorities(claims: CollabAuthClaims | undefined, moduleId: string, routine: string): string[] {
+  const own = moduleAuthorities(claims, moduleId);
+  if (!MODULE_ADMIN_ROUTINES.has(routine)) return own;
+  const admins = claimAuthorities(claims).filter(value => value.endsWith(':admin') && !own.includes(value));
+  return [...own, ...admins];
+}
+
+/**
  * Is an EMPTY authority list a refusal?
  *
  * Today it is not: `enforceActors` treats an empty scope as permissive, which is why the actor gate is

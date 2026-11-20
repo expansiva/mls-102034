@@ -1,7 +1,7 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/auth/bffAuth.test.ts" enhancement="_blank" />
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { resolveBffSession, type CollabAuthClaims } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
+import { moduleAuthorities, resolveBffSession, routineAuthorities, type CollabAuthClaims } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
 
 const SECRET = 'a'.repeat(64);
 const CLAIMS: CollabAuthClaims = { sub: 'persona-1', email: 'persona@example.test', authorities: ['comandaRestaurante:garcom'] };
@@ -114,4 +114,17 @@ test('draft rejection keeps the same outcome for the caller (invalid-token) what
       assert.deepEqual(await resolveBffSession(headers), { reject: true, reason: 'invalid-token' });
     });
   }
+});
+
+test('routineAuthorities opens the module admins only for the two external-systems routines of the monitor', () => {
+  const claims = { sub: 'u1', email: 'u1@example.com', authorities: ['monitor:viewer', 'shop:admin', 'billing:clerk', 'sites:admin'] } as CollabAuthClaims;
+  // every other monitor routine keeps only `monitor:`
+  assert.deepEqual(routineAuthorities(claims, 'monitor', 'monitor.releases.list'), ['monitor:viewer']);
+  assert.deepEqual(routineAuthorities(claims, 'monitor', 'monitor.releases.list'), moduleAuthorities(claims, 'monitor'));
+  // the two external-systems routines also receive the `:admin` ones, and only those
+  for (const routine of ['monitor.externalSystems.list', 'monitor.externalSettings.set']) {
+    assert.deepEqual(routineAuthorities(claims, 'monitor', routine).sort(), ['monitor:viewer', 'shop:admin', 'sites:admin']);
+  }
+  // another module's routine is not touched
+  assert.deepEqual(routineAuthorities(claims, 'shop', 'shop.orders.list'), ['shop:admin']);
 });

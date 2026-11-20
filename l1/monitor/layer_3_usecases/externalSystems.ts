@@ -74,6 +74,24 @@ export function isAppAdmin(authorities: readonly string[] | undefined): boolean 
   return (authorities ?? []).some((item) => item === 'monitor:admin' || item === 'sites:admin');
 }
 
+export type ExternalSystemsScope = 'all' | 'module' | 'denied';
+
+/**
+ * Who may do what. `all`: the monitor/platform admin, any module, with or without `module`. `module`: the admin of THAT
+ * module only (`<module>:admin` and the module asked for is the same), never without `module`, and a module admin that is an
+ * agent only reads: it never writes (`write`). Everything else is `denied`.
+ */
+export function externalSystemsScope(
+  authorities: readonly string[] | undefined,
+  moduleId: string,
+  options: { write: boolean; agent: boolean },
+): ExternalSystemsScope {
+  if (isAppAdmin(authorities)) return 'all';
+  if (moduleId === '' || !(authorities ?? []).includes(`${moduleId}:admin`)) return 'denied';
+  if (options.write && options.agent) return 'denied';
+  return 'module';
+}
+
 function hookAddress(origin: string, ref: ExternalRef, operationId: string): string {
   const path = `/hook/${ref.projectId}/${ref.moduleId}/${ref.systemId}/${operationId}`;
   const base = origin.replace(/\/+$/u, '');
