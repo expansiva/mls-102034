@@ -14,6 +14,7 @@ import {
   AncestorDenoConfigError,
   DenoMissingError,
   DraftDatabaseError,
+  DraftNoMemoryError,
   DraftPortBusyError,
   DraftWorktreeMissingError,
   buildDenoArgs,
@@ -40,7 +41,7 @@ import {
   type DevSpawnOptions,
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
 
-const IDLE_MS = 30 * 60 * 1000;
+const IDLE_MS = 15 * 60 * 1000;
 const SLUG = 'team-102047';
 const PARENT_TEST_URL = 'postgres://collab:secret@127.0.0.1:5432/collab_app_test';
 const DRAFT_DATABASE = 'collab_app_draft_team_102047';
@@ -617,6 +618,167 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
       rmSync(base, { recursive: true, force: true });
     }
   });
+});
+
+const NO_MEMORY_EN = 'The server is out of memory for another draft. Try again in a few minutes.';
+const FIVE_MIN_MS = 5 * 60 * 1000;
+const ABOVE_RESERVE = 2 * 1024 * 1024 * 1024;
+
+test('memory reserve before a new draft child', async (t) => {
+  const pids: number[] = [];
+  const prevRange = process.env.COLLAB_DEV_PORT_RANGE;
+  const prevTestDatabase = process.env.DATABASE_URL_TEST;
+  process.env.COLLAB_DEV_PORT_RANGE = '4100-4199';
+  process.env.DATABASE_URL_TEST = PARENT_TEST_URL;
+  t.after(() => {
+    killPids(pids);
+    if (prevRange === undefined) delete process.env.COLLAB_DEV_PORT_RANGE;
+    else process.env.COLLAB_DEV_PORT_RANGE = prevRange;
+    if (prevTestDatabase === undefined) delete process.env.DATABASE_URL_TEST;
+    else process.env.DATABASE_URL_TEST = prevTestDatabase;
+  });
+
+  const nowMs = 1_700_000_000_000;
+
+  function setup(): string {
+    const base = mkdtempSync(join(tmpdir(), 'cbe-dev-mem-'));
+    writeOwnReleaseConfig(base);
+    mkdirSync(join(base, 'drafts', SLUG, 'mls-102047'), { recursive: true });
+    return base;
+  }
+
+  await t.test('above the reserve spawns and stops nobody', () => {
+    const base = setup();
+    try {
+      const idlePid = dummyPid(pids);
+      writeDev(base, 'team-idle', { port: 4101, pid: idlePid, startedAt: 1, lastRequestAt: nowMs - FIVE_MIN_MS });
+      let spawned = 0;
+      ensureDevProcess({
+        base,
+        slug: SLUG,
+        clientProjectId: 102047,
+        now: () => nowMs,
+        writeConfig: () => {},
+        memAvailableBytes: () => ABOVE_RESERVE,
+        spawn: () => {
+          spawned += 1;
+          return { pid: dummyPid(pids) };
+        },
+      });
+      assert.equal(spawned, 1);
+      assert.equal(isDevPidAlive(idlePid), true);
+      assert.equal(existsDev(base, 'team-idle'), true);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  await t.test('below the reserve stops the sibling idle for 5 min and then spawns', async () => {
+    const base = setup();
+    try {
+      const idlePid = dummyPid(pids);
+      const recentPid = dummyPid(pids);
+      writeDev(base, 'team-idle', { port: 4101, pid: idlePid, startedAt: 1, lastRequestAt: nowMs - FIVE_MIN_MS });
+      writeDev(base, 'team-middle', { port: 4102, pid: recentPid, startedAt: 1, lastRequestAt: nowMs - 60_000 });
+      let spawned = 0;
+      let reads = 0;
+      ensureDevProcess({
+        base,
+        slug: SLUG,
+        clientProjectId: 102047,
+        now: () => nowMs,
+        writeConfig: () => {},
+        memAvailableBytes: () => {
+          reads += 1;
+          return reads === 1 ? 0 : ABOVE_RESERVE;
+        },
+        spawn: () => {
+          spawned += 1;
+          return { pid: dummyPid(pids) };
+        },
+      });
+      await waitDead(idlePid);
+      assert.equal(spawned, 1);
+      assert.equal(isDevPidAlive(idlePid), false);
+      assert.equal(existsDev(base, 'team-idle'), false);
+      assert.equal(isDevPidAlive(recentPid), true);
+      assert.equal(existsDev(base, 'team-middle'), true);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  await t.test('below the reserve with only a sibling active for 1 min throws and does not spawn', () => {
+    const base = setup();
+    try {
+      const recentPid = dummyPid(pids);
+      writeDev(base, 'team-middle', { port: 4102, pid: recentPid, startedAt: 1, lastRequestAt: nowMs - 60_000 });
+      let spawned = 0;
+      assert.throws(() => ensureDevProcess({
+        base,
+        slug: SLUG,
+        clientProjectId: 102047,
+        now: () => nowMs,
+        writeConfig: () => {},
+        memAvailableBytes: () => 0,
+        spawn: () => {
+          spawned += 1;
+          return { pid: dummyPid(pids) };
+        },
+      }), (err: unknown) => err instanceof DraftNoMemoryError && err.message === NO_MEMORY_EN);
+      assert.equal(spawned, 0);
+      assert.equal(isDevPidAlive(recentPid), true);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  await t.test('undefined MemAvailable spawns without stopping anyone', () => {
+    const base = setup();
+    try {
+      const idlePid = dummyPid(pids);
+      writeDev(base, 'team-idle', { port: 4101, pid: idlePid, startedAt: 1, lastRequestAt: nowMs - FIVE_MIN_MS });
+      let spawned = 0;
+      ensureDevProcess({
+        base,
+        slug: SLUG,
+        clientProjectId: 102047,
+        now: () => nowMs,
+        writeConfig: () => {},
+        memAvailableBytes: () => undefined,
+        spawn: () => {
+          spawned += 1;
+          return { pid: dummyPid(pids) };
+        },
+      });
+      assert.equal(spawned, 1);
+      assert.equal(isDevPidAlive(idlePid), true);
+      assert.equal(existsDev(base, 'team-idle'), true);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+});
+
+test('reapIdle stops a draft idle for 15 min and keeps one idle for 14 min', async () => {
+  const pids: number[] = [];
+  const base = mkdtempSync(join(tmpdir(), 'cbe-dev-reap15-'));
+  try {
+    const now = 1_700_000_000_000;
+    const idlePid = dummyPid(pids);
+    const keepPid = dummyPid(pids);
+    writeDev(base, 'team-idle', { port: 4100, pid: idlePid, startedAt: now - IDLE_MS, lastRequestAt: now - IDLE_MS });
+    writeDev(base, 'team-middle', { port: 4101, pid: keepPid, startedAt: now - IDLE_MS + 60_000, lastRequestAt: now - IDLE_MS + 60_000 });
+    reapIdle({ base, now });
+    await waitDead(idlePid);
+    assert.equal(isDevPidAlive(idlePid), false);
+    assert.equal(existsDev(base, 'team-idle'), false);
+    assert.equal(isDevPidAlive(keepPid), true);
+    assert.equal(existsDev(base, 'team-middle'), true);
+  } finally {
+    killPids(pids);
+    rmSync(base, { recursive: true, force: true });
+  }
 });
 
 test('touchDevProcess updates only lastRequestAt; ensureDevReaper arms one timer per base', () => {

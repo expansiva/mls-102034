@@ -26,7 +26,10 @@ import {
   type ProjectMode,
 } from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
 
-const IDLE_MS = 30 * 60 * 1000;
+const IDLE_MS = 15 * 60 * 1000;
+/** tsc (~1.0 GB) plus the child's startup peak (VmHWM 275 MB, measured). */
+const DRAFT_MEMORY_RESERVE_BYTES = Math.round(1.3 * 1024 * 1024 * 1024);
+const DRAFT_MEMORY_IDLE_MS = 5 * 60 * 1000;
 const RESTART_DEBOUNCE_MS = 1000;
 const DEFAULT_MAX = 8;
 const LOCK_RETRIES = 40;
@@ -142,20 +145,25 @@ export class AncestorDenoConfigError extends Error {}
 
 export class DraftDatabaseError extends Error {}
 
+export class DraftNoMemoryError extends Error {}
+
 export type DraftSharedLang = 'en' | 'pt' | 'es';
 
-const DRAFT_SHARED_TEXT: Record<DraftSharedLang, { notConfigured: string; notStarted: string }> = {
+const DRAFT_SHARED_TEXT: Record<DraftSharedLang, { notConfigured: string; notStarted: string; noMemory: string }> = {
   en: {
     notConfigured: 'The read-only app database is not configured on this server',
     notStarted: 'The draft did not start',
+    noMemory: 'The server is out of memory for another draft. Try again in a few minutes.',
   },
   pt: {
     notConfigured: 'O banco somente leitura do aplicativo não está configurado neste servidor',
     notStarted: 'O rascunho não iniciou',
+    noMemory: 'Servidor sem memória para mais um rascunho. Tente em alguns minutos.',
   },
   es: {
     notConfigured: 'La base de solo lectura de la aplicación no está configurada en este servidor',
     notStarted: 'El borrador no se inició',
+    noMemory: 'El servidor no tiene memoria para otro borrador. Inténtelo en unos minutos.',
   },
 };
 
@@ -314,6 +322,8 @@ export interface EnsureDevProcessOpts {
   writeConfig?: (input: { base: string; slug: string; clientProjectId: number }) => void;
   /** Tests: is this port free on the machine? Default: a real bind attempt (`isPortFreeOnMachine`). */
   portFree?: (port: number) => boolean;
+  /** Tests: bytes from `MemAvailable`. Default: `/proc/meminfo` (`undefined` when that file is missing). */
+  memAvailableBytes?: () => number | undefined;
 }
 
 interface PendingRestart {
@@ -715,6 +725,98 @@ function acquireLock(path: string): void {
   throw new Error(`dev lock busy: ${path}`);
 }
 
+let memAvailableSkipLogged = false;
+
+function noteMemAvailableSkipped(): void {
+  if (memAvailableSkipLogged) return;
+  memAvailableSkipLogged = true;
+  console.error('[cbe] MemAvailable is unavailable; the draft memory reserve is skipped');
+}
+
+/** `MemAvailable` in bytes. `undefined` when `/proc/meminfo` does not exist (macOS). */
+function readMemAvailableBytes(): number | undefined {
+  const path = '/proc/meminfo';
+  if (!existsSync(path)) return undefined;
+  let text: string;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch (err) {
+    console.error(`[cbe] could not read ${path}: ${(err as Error).message}`);
+    return undefined;
+  }
+  const match = /^MemAvailable:\s+(\d+)\s+kB$/mu.exec(text);
+  if (!match) {
+    console.error(`[cbe] MemAvailable is missing in ${path}`);
+    return undefined;
+  }
+  return Number(match[1]) * 1024;
+}
+
+/** Grab the draft lock or return false. Does not wait: two ensures must not block on each other. */
+function tryAcquireLock(path: string): boolean {
+  mkdirSync(dirname(path), { recursive: true });
+  const grab = (): boolean => {
+    try {
+      const fd = openSync(path, 'wx');
+      writeSync(fd, `${process.pid}\n${Date.now()}`);
+      closeSync(fd);
+      return true;
+    } catch (err) {
+      if (errnoCode(err) !== 'EEXIST') {
+        console.error(`[cbe] dev lock failed at ${path}: ${(err as Error).message}`);
+        throw err;
+      }
+      return false;
+    }
+  };
+  if (grab()) return true;
+  if (!lockIsStale(path)) return false;
+  rmSync(path, { force: true });
+  return grab();
+}
+
+function reserveMemoryForNewDraft(opts: EnsureDevProcessOpts, now: () => number): void {
+  const readMem = opts.memAvailableBytes ?? readMemAvailableBytes;
+  let available = readMem();
+  if (available === undefined) {
+    noteMemAvailableSkipped();
+    return;
+  }
+  while (available < DRAFT_MEMORY_RESERVE_BYTES) {
+    const nowMs = now();
+    const candidates = listDevRecords(opts.base)
+      .filter((entry) => entry.slug !== opts.slug
+        && isDevPidAlive(entry.record.pid)
+        && nowMs - entry.record.lastRequestAt >= DRAFT_MEMORY_IDLE_MS)
+      .sort(byIdleness);
+    let stopped = false;
+    for (const candidate of candidates) {
+      const lock = lockPathOf(opts.base, candidate.slug);
+      if (!tryAcquireLock(lock)) continue;
+      const pid = candidate.record.pid;
+      try {
+        stopDevUnlocked(opts.base, candidate.slug);
+        for (let waited = 0; waited < DEV_EXIT_WAIT_MS && isDevPidAlive(pid); waited += LOCK_RETRY_MS) {
+          sleepMs(LOCK_RETRY_MS);
+        }
+      } finally {
+        releaseLock(lock);
+      }
+      stopped = true;
+      break;
+    }
+    if (!stopped) {
+      console.error(`[cbe] dev ${opts.slug}: MemAvailable ${available} is below the reserve ${DRAFT_MEMORY_RESERVE_BYTES}`);
+      throw new DraftNoMemoryError(draftSharedText('noMemory'));
+    }
+    available = readMem();
+    if (available === undefined) {
+      noteMemAvailableSkipped();
+      return;
+    }
+  }
+}
+
 function releaseLock(path: string): void {
   try {
     if (!existsSync(path)) return;
@@ -849,6 +951,7 @@ function ensureUnlocked(opts: EnsureDevProcessOpts): DevProcessInfo {
     console.error(`[cbe] dev ${slug}: ${message}`);
     throw new DenoMissingError(message);
   }
+  reserveMemoryForNewDraft(opts, now);
   const spawned = spawn('deno', buildDenoArgs(base, slug, port, childUrls.databaseUrlTest), {
     cwd: draftDir,
     env: childEnv(port, slug, clientProjectId, childUrls.databaseUrlTest, identitySecret, childUrls.mdmDatabaseUrl ?? '', base, dataSource),
