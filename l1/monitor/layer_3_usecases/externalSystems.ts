@@ -77,18 +77,18 @@ export function isAppAdmin(authorities: readonly string[] | undefined): boolean 
 export type ExternalSystemsScope = 'all' | 'module' | 'denied';
 
 /**
- * Who may do what. `all`: the monitor/platform admin, any module, with or without `module`. `module`: the admin of THAT
- * module only (`<module>:admin` and the module asked for is the same), never without `module`, and a module admin that is an
- * agent only reads: it never writes (`write`). Everything else is `denied`.
+ * Who may do what. An agent never writes, whatever the authority. `all`: the monitor/platform admin, any module, with or
+ * without `module`. `module`: the admin of THAT module only (`<module>:admin` and the module asked for is the same), never
+ * without `module`. Everything else is `denied`.
  */
 export function externalSystemsScope(
   authorities: readonly string[] | undefined,
   moduleId: string,
   options: { write: boolean; agent: boolean },
 ): ExternalSystemsScope {
+  if (options.write && options.agent) return 'denied';
   if (isAppAdmin(authorities)) return 'all';
   if (moduleId === '' || !(authorities ?? []).includes(`${moduleId}:admin`)) return 'denied';
-  if (options.write && options.agent) return 'denied';
   return 'module';
 }
 

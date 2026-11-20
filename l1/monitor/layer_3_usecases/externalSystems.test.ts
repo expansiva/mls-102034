@@ -185,6 +185,9 @@ test('the admin of a module opens its own module only, never the list, and an ag
   assert.equal(externalSystemsScope(['shop:admin'], 'shop', { write: true, agent: false }), 'module');
   assert.equal(externalSystemsScope(['shop:admin'], 'shop', { write: true, agent: true }), 'denied');
   assert.equal(externalSystemsScope(['shop:admin'], 'shop', { write: false, agent: true }), 'module');
+  // an agent never writes, even with the platform admin or only a derived module admin
+  assert.equal(externalSystemsScope(['sites:admin'], 'shop', { write: true, agent: true }), 'denied');
+  assert.equal(externalSystemsScope(['sites:admin'], 'shop', { write: false, agent: true }), 'all');
 });
 
 test('the handlers: shop:admin reads shop and is refused for billing and without module; an agent cannot set', async () => {

@@ -13,7 +13,7 @@ import { applyVerifiedEmailToSession, createDefaultRequestContext, execBff } fro
 import { initializeOrganizationForProcess } from '/_102034_/l1/mdm/layer_3_usecases/organizationBootstrap.js';
 import { AppError } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import {
-  claimAuthorities, isActorEnforcementOn, isBffAuthEnforced, moduleAuthorities, resolveBffSession, routineAuthorities, verifyAccessToken,
+  claimAuthorities, derivedModuleAdmins, isActorEnforcementOn, isBffAuthEnforced, moduleAuthorities, resolveBffSession, routineAuthorities, verifyAccessToken,
   type BffAuthOutcome,
 } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
 import { isAlphaAllAuthorities } from '/_102034_/l1/server/layer_1_external/config/alphaAuthorities.js';
@@ -429,9 +429,27 @@ export function withQuery(location: string, url: string): string {
   return location.includes('?') ? `${location}&${query}` : `${location}?${query}`;
 }
 
+/** Module ids of this process's project. A read failure is `[]`: login must not throw. */
+export function projectModuleIds(): string[] {
+  try {
+    const projectId = readAppEnv().projectId;
+    if (!projectId) return [];
+    const modules = readProjectsConfig().projects[projectId]?.modules ?? [];
+    const ids: string[] = [];
+    for (const entry of modules) {
+      if (entry.moduleId.length > 0 && !ids.includes(entry.moduleId)) ids.push(entry.moduleId);
+    }
+    return ids;
+  } catch (error) {
+    console.error(`project modules unreadable: ${error instanceof Error ? error.message : String(error)}`);
+    return [];
+  }
+}
+
 /**
  * Body of `GET /session/info`. Authorities come from `claimAuthorities` (top-level ∪
  * `active_org.teams[].roles`); the unused `authorities` field is not emitted.
+ * `allAuthorities` also carries the derived module admins of `projectModules`.
  */
 export function sessionInfoBody(
   session: BffAuthOutcome,
@@ -439,6 +457,7 @@ export function sessionInfoBody(
   override: AuthorityOverride | null,
   person: SessionInfoPerson | null = null,
   gate?: { company?: SessionInfoCompany | null; onboarding?: SessionInfoOnboarding },
+  projectModules: readonly string[] = [],
 ) {
   const real = claimAuthorities(session.claims);
   const effective = effectiveAuthorities(real, override);
@@ -451,7 +470,7 @@ export function sessionInfoBody(
     picture: (session.claims as { picture?: unknown } | undefined)?.picture ?? null,
     userId: session.claims?.sub ?? null,
     person,
-    allAuthorities: effective.authorities,
+    allAuthorities: derivedModuleAdmins(effective.authorities, projectModules),
     realAuthorities: effective.real,
     overridden: effective.overridden,
     canOverride: !refuseOverride(mode),
@@ -538,10 +557,11 @@ export async function resolveSessionInfoBody(
     }
   }
   const live = gate === undefined ? await loadLiveOnboarding() : gate;
-  if (!session.claims) return sessionInfoBody(session, mode, override, person);
+  const modules = projectModuleIds();
+  if (!session.claims) return sessionInfoBody(session, mode, override, person, undefined, modules);
   if (!live) {
-    if (!companyId) return sessionInfoBody(session, mode, override, person);
-    return sessionInfoBody(session, mode, override, person, { company: { mdmId: companyId } });
+    if (!companyId) return sessionInfoBody(session, mode, override, person, undefined, modules);
+    return sessionInfoBody(session, mode, override, person, { company: { mdmId: companyId } }, modules);
   }
 
   let status: SessionOnboardingStatus;
@@ -592,7 +612,7 @@ export async function resolveSessionInfoBody(
   return sessionInfoBody(session, mode, override, person, {
     company: companyId ? { mdmId: companyId } : null,
     onboarding,
-  });
+  }, modules);
 }
 
 /**
@@ -1012,7 +1032,7 @@ export async function handleHttpRequest(
           verifiedEmail: session.claims.email,
           // The module's authorities, filtered from the claims by the transport that verified them. They
           // become `sessionContext.actorScope`, which is what every generated controller gates on.
-          verifiedAuthorities: routineAuthorities(session.claims, routineModuleId(body), routineName(body)),
+          verifiedAuthorities: routineAuthorities(session.claims, routineModuleId(body), routineName(body), projectModuleIds()),
         } : {}),
       },
     }, ctx);

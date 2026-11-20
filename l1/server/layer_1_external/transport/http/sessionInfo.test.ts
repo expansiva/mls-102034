@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resetProjectsConfigCache } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import { resetResolvedTableDefinitionsCache } from '/_102034_/l1/server/layer_1_external/persistence/registry.js';
-import { claimAuthorities } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
+import { claimAuthorities, PROJECT_ADMIN_SOURCE } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
 import { OnboardingConfigError } from '/_102034_/l1/server/layer_1_external/config/onboardingConfig.js';
 import { openOrRecoverAccessRequest } from '/_102034_/l1/mdm/layer_3_usecases/selfRegistration.js';
 import { normalizeRegistrationEmail } from '/_102034_/l1/mdm/layer_3_usecases/registrationCandidates.js';
@@ -93,6 +93,33 @@ test('/session/info without a session is anonymous with empty lists', () => {
   assert.equal(body.email, null);
   assert.equal(body.userId, null);
   assert.equal('authorities' in body, false);
+});
+
+test('/session/info with the project admin source adds each module admin only to allAuthorities', () => {
+  const body = sessionInfoBody(
+    { claims: { sub: 'u1', email: 'a@b.c', authorities: [PROJECT_ADMIN_SOURCE] } as CollabAuthClaims, reject: false, reason: 'ok' },
+    'development',
+    null,
+    null,
+    undefined,
+    ['shop', 'billing'],
+  );
+  sameMembers(body.allAuthorities, [PROJECT_ADMIN_SOURCE, 'shop:admin', 'billing:admin']);
+  sameMembers(body.realAuthorities, [PROJECT_ADMIN_SOURCE]);
+  assert.equal(body.overridden, false);
+});
+
+test('/session/info without the project admin source derives nothing', () => {
+  const body = sessionInfoBody(
+    { claims: { sub: 'u1', email: 'a@b.c', authorities: ['shop:clerk'] } as CollabAuthClaims, reject: false, reason: 'ok' },
+    'development',
+    null,
+    null,
+    undefined,
+    ['shop', 'billing'],
+  );
+  sameMembers(body.allAuthorities, ['shop:clerk']);
+  sameMembers(body.realAuthorities, ['shop:clerk']);
 });
 
 test('presentation override replaces allAuthorities and keeps realAuthorities from active_org', () => {

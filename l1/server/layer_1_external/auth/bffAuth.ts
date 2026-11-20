@@ -74,11 +74,34 @@ export const MODULE_ADMIN_ROUTINES: ReadonlySet<string> = new Set([
   'monitor.externalSettings.set',
 ]);
 
+/** alpha; o papel do beta volta com a segurança, decisão do gerente de 19/11 */
+export const PROJECT_ADMIN_SOURCE = 'sites:admin';
+
+/**
+ * Token authorities plus `<module>:admin` for every project module, when the list holds `PROJECT_ADMIN_SOURCE`.
+ * Without that source the copy is unchanged. Existing entries are not repeated.
+ */
+export function derivedModuleAdmins(authorities: readonly string[], projectModules: readonly string[]): string[] {
+  const copy = [...authorities];
+  if (!copy.includes(PROJECT_ADMIN_SOURCE)) return copy;
+  for (const moduleId of projectModules) {
+    const admin = `${moduleId}:admin`;
+    if (!copy.includes(admin)) copy.push(admin);
+  }
+  return copy;
+}
+
 /** `moduleAuthorities`, plus every `<module>:admin` of the user for the routines in `MODULE_ADMIN_ROUTINES` only. */
-export function routineAuthorities(claims: CollabAuthClaims | undefined, moduleId: string, routine: string): string[] {
+export function routineAuthorities(
+  claims: CollabAuthClaims | undefined,
+  moduleId: string,
+  routine: string,
+  projectModules: readonly string[] = [],
+): string[] {
   const own = moduleAuthorities(claims, moduleId);
   if (!MODULE_ADMIN_ROUTINES.has(routine)) return own;
-  const admins = claimAuthorities(claims).filter(value => value.endsWith(':admin') && !own.includes(value));
+  const admins = derivedModuleAdmins(claimAuthorities(claims), projectModules)
+    .filter(value => value.endsWith(':admin') && !own.includes(value));
   return [...own, ...admins];
 }
 

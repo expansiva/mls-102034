@@ -1,7 +1,7 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/auth/bffAuth.test.ts" enhancement="_blank" />
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { moduleAuthorities, resolveBffSession, routineAuthorities, type CollabAuthClaims } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
+import { derivedModuleAdmins, moduleAuthorities, PROJECT_ADMIN_SOURCE, resolveBffSession, routineAuthorities, type CollabAuthClaims } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
 
 const SECRET = 'a'.repeat(64);
 const CLAIMS: CollabAuthClaims = { sub: 'persona-1', email: 'persona@example.test', authorities: ['comandaRestaurante:garcom'] };
@@ -127,4 +127,22 @@ test('routineAuthorities opens the module admins only for the two external-syste
   }
   // another module's routine is not touched
   assert.deepEqual(routineAuthorities(claims, 'shop', 'shop.orders.list'), ['shop:admin']);
+});
+
+test('derived module admins follow PROJECT_ADMIN_SOURCE and stay out of other routines', () => {
+  const modules = ['shop', 'billing'];
+  const withSource = [PROJECT_ADMIN_SOURCE];
+  assert.deepEqual(derivedModuleAdmins(withSource, modules), [PROJECT_ADMIN_SOURCE, 'shop:admin', 'billing:admin']);
+  assert.deepEqual(derivedModuleAdmins(['shop:clerk'], modules), ['shop:clerk']);
+  assert.deepEqual(
+    derivedModuleAdmins([PROJECT_ADMIN_SOURCE, 'shop:admin'], modules),
+    [PROJECT_ADMIN_SOURCE, 'shop:admin', 'billing:admin'],
+  );
+  const claims = { sub: 'u1', email: 'u1@example.com', authorities: [PROJECT_ADMIN_SOURCE] } as CollabAuthClaims;
+  assert.deepEqual(
+    routineAuthorities(claims, 'monitor', 'monitor.externalSystems.list', modules).sort(),
+    [PROJECT_ADMIN_SOURCE, 'billing:admin', 'shop:admin'].sort(),
+  );
+  assert.deepEqual(routineAuthorities(claims, 'monitor', 'monitor.releases.list', modules), []);
+  assert.deepEqual(routineAuthorities(claims, 'monitor', 'monitor.moduleEvents.list', modules), []);
 });
