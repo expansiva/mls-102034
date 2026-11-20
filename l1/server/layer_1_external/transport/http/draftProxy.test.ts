@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { CollabAuthClaims } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
+import { DraftNoMemoryError, draftSharedText } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
 import { DraftLoginCopyError, copyDraftLogin, draftLoginCopyText, forgetDraftLoginCopy } from '/_102034_/l1/server/layer_1_external/cbe/draftLoginCopy.js';
 import {
   applyDraftExecBff,
@@ -735,6 +736,37 @@ test('a failed login copy is a visible error and does not call the child', async
   const sent = reply.sent as unknown as { error: { code: string; message: string } };
   assert.equal(sent.error.code, 'DRAFT_LOGIN_COPY');
   assert.equal(sent.error.message, draftLoginCopyText('failed', 'pt'));
+});
+
+test('no memory for another draft answers 503 DRAFT_NO_MEMORY in the request language', async () => {
+  delete process.env.COLLAB_DRAFT;
+  const reply = fakeReply();
+  let fetched = 0;
+  const result = await applyDraftExecBff({
+    request: fakeRequest({ routine: 'x.y.z' }, { cookie: `collab-draft=${SLUG}`, 'accept-language': 'pt' }),
+    reply,
+    base: BASE,
+    clientProjectId: '102047',
+    resolveSession: async () => ({ reject: false }),
+    refreshedAuthCookie: (token) => token,
+    resolveRequestDraftImpl: async () => readyDraft(),
+    ensureDevProcessImpl: () => {
+      throw new DraftNoMemoryError(draftSharedText('noMemory'));
+    },
+    touchDevProcessImpl: () => {},
+    fetchImpl: async () => {
+      fetched += 1;
+      return new Response('{}', { status: 200 });
+    },
+  });
+  assert.equal(result.handled, true);
+  assert.equal(fetched, 0);
+  assert.equal(reply.statusCode, 503);
+  const sent = reply.sent as unknown as { ok: false; data: null; error: { code: string; message: string } };
+  assert.equal(sent.ok, false);
+  assert.equal(sent.data, null);
+  assert.equal(sent.error.code, 'DRAFT_NO_MEMORY');
+  assert.equal(sent.error.message, draftSharedText('noMemory', 'pt'));
 });
 
 test('a login missing at the origin is proxied with 200 and one warning; a sql failure stays 503', async () => {

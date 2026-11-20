@@ -7,6 +7,8 @@ import type { CollabAuthClaims } from '/_102034_/l1/server/layer_1_external/auth
 import { canUseDraft, type DraftAccessReason } from '/_102034_/l1/server/layer_1_external/transport/http/draftAccess.js';
 import { parseDraftSlug, requestDraftValue, resolveRequestDraft, type DraftRequestHeaders } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
 import {
+  DraftNoMemoryError,
+  draftSharedText,
   ensureDevProcess,
   touchDevProcess,
   waitForDevReady,
@@ -233,6 +235,11 @@ export async function proxyExecBff(args: {
     info = ensure({ base: args.base, slug: args.slug, clientProjectId: args.clientProjectId });
   } catch (err) {
     console.error(`[draftProxy] ensure dev ${args.slug} failed: ${(err as Error).message}`);
+    if (err instanceof DraftNoMemoryError) {
+      const lang = draftDataLang(acceptLanguage(args.request.headers));
+      args.reply.code(503).send({ ok: false, data: null, error: { code: 'DRAFT_NO_MEMORY', message: draftSharedText('noMemory', lang) } });
+      return;
+    }
     args.reply.code(503).send(draftDownBody());
     return;
   }

@@ -17,7 +17,7 @@ import {
   warmPersonDraftOnLogin,
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeDesenv.js';
 import { getProjectsBaseDir } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
-import { AncestorDenoConfigError, DraftDatabaseError } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
+import { AncestorDenoConfigError, DraftDatabaseError, DraftNoMemoryError, draftSharedText } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
 
 const SLUG = 'team-102047';
 const PROJECT_ID = 102047;
@@ -226,6 +226,56 @@ test('GET /desenv answers 503 without a cookie when an ancestor deno config bloc
     assert.deepEqual(blocked.json(), {
       statusCode: 503,
       msg: 'draft unavailable: ancestor deno config: /data/mls-base/deno.json',
+    });
+    assert.equal(waited, false);
+  } finally {
+    desenvIo.ensureDraftWorktree = origWorktree;
+    desenvIo.fastForwardDraft = origFastForward;
+    desenvIo.ensureDevProcess = origDev;
+    desenvIo.waitForDevReady = origReady;
+    desenvIo.resolveClientProjectId = origProject;
+    if (prevLogin === undefined) delete process.env.CBE_REQUIRE_LOGIN;
+    else process.env.CBE_REQUIRE_LOGIN = prevLogin;
+    await app.close();
+  }
+});
+
+test('GET /desenv answers 503 without a cookie when the VM has no memory for another draft', async () => {
+  const prevLogin = process.env.CBE_REQUIRE_LOGIN;
+  delete process.env.CBE_REQUIRE_LOGIN;
+
+  const origWorktree = desenvIo.ensureDraftWorktree;
+  const origFastForward = desenvIo.fastForwardDraft;
+  const origDev = desenvIo.ensureDevProcess;
+  const origReady = desenvIo.waitForDevReady;
+  const origProject = desenvIo.resolveClientProjectId;
+  desenvIo.resolveClientProjectId = () => String(PROJECT_ID);
+  desenvIo.fastForwardDraft = async () => ({ status: 'up_to_date' });
+  desenvIo.ensureDraftWorktree = async () => '/tmp/draft';
+  const message = draftSharedText('noMemory');
+  desenvIo.ensureDevProcess = () => {
+    throw new DraftNoMemoryError(message);
+  };
+  let waited = false;
+  desenvIo.waitForDevReady = async () => {
+    waited = true;
+    return true;
+  };
+
+  const app = Fastify();
+  registerCbeRoutes(app);
+  try {
+    const blocked = await app.inject({
+      method: 'GET',
+      url: `/desenv?draft=${SLUG}`,
+      headers: { host: 'localhost' },
+    });
+    assert.equal(blocked.statusCode, 503);
+    assert.equal(headerValue(blocked.headers['set-cookie']), '');
+    assert.equal(headerValue(blocked.headers.location), '');
+    assert.deepEqual(blocked.json(), {
+      statusCode: 503,
+      msg: 'draft unavailable: ' + message,
     });
     assert.equal(waited, false);
   } finally {
