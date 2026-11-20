@@ -6,7 +6,7 @@ import { moduleEventRefText } from '/_102034_/l1/server/layer_1_external/events/
 /**
  * One row per published event. Not a hypertable: retention depends on delivery state
  * (every delivery delivered → 7 days; any failed and none still pending or delivering → 90 days),
- * and a Timescale policy drops by time only. `onTick` in `l1/server/persistence.ts` applies it.
+ * and a Timescale policy drops by time only. `onTick` of the platformModuleEvents persistence applies it.
  *
  * Delivery is at least once. `claimDue` sets `delivering` and a lease, then returns. A second
  * process may claim the same row after the lease ends, and the first process may still mark it.
@@ -53,7 +53,7 @@ const eventColumns = [
 ] as const;
 
 export const moduleEventDefinition: TableDefinition = {
-  moduleId: 'platform',
+  moduleId: 'platformModuleEvents',
   repositoryName: MODULE_EVENT_TABLE,
   tableName: MODULE_EVENT_TABLE,
   purpose: 'controle',
@@ -70,7 +70,7 @@ export const moduleEventDefinition: TableDefinition = {
 };
 
 export const moduleEventDeliveryDefinition: TableDefinition = {
-  moduleId: 'platform',
+  moduleId: 'platformModuleEvents',
   repositoryName: MODULE_EVENT_DELIVERY_TABLE,
   tableName: MODULE_EVENT_DELIVERY_TABLE,
   purpose: 'controle',

@@ -12,8 +12,7 @@ export const EXTERNAL_CALL_AUDIT_RETENTION = '90 days';
 /**
  * Already-received notice. Not a hypertable: a Timescale unique index must include the time
  * column, and the same noticeId at another instant would insert again.
- * Rows older than 90 days are deleted by `onTick` in `l1/server/persistence.ts` (the clock that
- * already wakes module persistence).
+ * Rows older than 90 days are deleted by `onTick` of the platformExternalLog persistence.
  */
 export const EXTERNAL_NOTICE_SEEN_TABLE = 'platform_external_notice_seen';
 export const EXTERNAL_NOTICE_SEEN_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
@@ -74,7 +73,7 @@ export interface ExternalCallDb {
 
 function callTable(tableName: string, retention: string): TableDefinition {
   return {
-    moduleId: 'platform',
+    moduleId: 'platformExternalLog',
     repositoryName: tableName,
     tableName,
     purpose: 'controle',
@@ -124,7 +123,7 @@ export const externalCallLogDefinition = callTable(EXTERNAL_CALL_LOG_TABLE, EXTE
 export const externalCallAuditDefinition = callTable(EXTERNAL_CALL_AUDIT_TABLE, EXTERNAL_CALL_AUDIT_RETENTION);
 
 export const externalNoticeSeenDefinition: TableDefinition = {
-  moduleId: 'platform',
+  moduleId: 'platformExternalLog',
   repositoryName: EXTERNAL_NOTICE_SEEN_TABLE,
   tableName: EXTERNAL_NOTICE_SEEN_TABLE,
   purpose: 'controle',
@@ -145,7 +144,7 @@ export const externalNoticeSeenDefinition: TableDefinition = {
 
 export const externalCallViewDefinitions: ViewDefinition[] = [
   {
-    moduleId: 'platform',
+    moduleId: 'platformExternalLog',
     viewName: 'platform_external_call_retention',
     statements: [
       externalCallRetentionStatement(EXTERNAL_CALL_LOG_TABLE, EXTERNAL_CALL_LOG_RETENTION),

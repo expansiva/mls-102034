@@ -18,7 +18,7 @@ const TAG_BYTES = 16;
 const KEY_BYTES = 32;
 
 export const externalSettingsDefinition: TableDefinition = {
-  moduleId: 'platform',
+  moduleId: 'platformExternalSettings',
   repositoryName: EXTERNAL_SETTINGS_TABLE,
   tableName: EXTERNAL_SETTINGS_TABLE,
   purpose: 'controle',

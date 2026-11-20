@@ -291,3 +291,52 @@ test('migration report matches the published block line by line', () => {
     ].join('\n'),
   );
 });
+
+const SETTINGS = 'platformExternalSettings';
+const EVENTS = 'platformModuleEvents';
+const PLATFORM = 'platform';
+
+test('settings hash stays when a table is added to events or to platform', async () => {
+  const settings = table({ projectId: MASTER, moduleId: SETTINGS, tableName: 'platform_external_settings' });
+  const events = table({ projectId: MASTER, moduleId: EVENTS, tableName: 'platform_module_events' });
+  const platform = table({ projectId: MASTER, moduleId: PLATFORM, tableName: '_schema_migrations' });
+  const base = await moduleHashes([settings, events, platform]);
+  const withEvent = await moduleHashes([
+    settings,
+    events,
+    platform,
+    table({ projectId: MASTER, moduleId: EVENTS, tableName: 'platform_module_event_extra' }),
+  ]);
+  const withPlatform = await moduleHashes([
+    settings,
+    events,
+    platform,
+    table({ projectId: MASTER, moduleId: PLATFORM, tableName: 'platform_workflow_extra' }),
+  ]);
+  const key = stateKey(MASTER, SETTINGS);
+  assert.equal(withEvent.get(key), base.get(key));
+  assert.equal(withPlatform.get(key), base.get(key));
+  assert.notEqual(withEvent.get(stateKey(MASTER, EVENTS)), base.get(stateKey(MASTER, EVENTS)));
+  assert.notEqual(withPlatform.get(stateKey(MASTER, PLATFORM)), base.get(stateKey(MASTER, PLATFORM)));
+});
+
+test('plan rebuilds only platformModuleEvents when that hash changed', () => {
+  const current = new Map([
+    [stateKey(CLIENT, 'agendaClinica'), 'same'],
+    [stateKey(MASTER, SETTINGS), 'settings'],
+    [stateKey(MASTER, 'platformExternalLog'), 'log'],
+    [stateKey(MASTER, EVENTS), 'events-new'],
+    [stateKey(MASTER, PLATFORM), 'platform'],
+  ]);
+  const applied = new Map(current);
+  applied.set(stateKey(MASTER, EVENTS), 'events-old');
+  const plan = planModuleRebuild({
+    current,
+    applied,
+    lastSnapshotId: 'registry:old',
+    currentSnapshotId: 'registry:new',
+    ownProjects,
+  });
+  assert.deepEqual(plan.rebuild, [EVENTS]);
+  assert.equal(plan.mode, 'modules');
+});

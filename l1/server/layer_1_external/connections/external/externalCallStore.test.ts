@@ -18,7 +18,7 @@ import {
   recordNoticeSeen,
   writeExternalCall,
 } from '/_102034_/l1/server/layer_1_external/connections/external/externalCallStore.js';
-import { viewDefinitions } from '/_102034_/l1/server/persistence.js';
+import { viewDefinitions } from '/_102034_/l1/server/layer_1_external/connections/external/log/persistence.js';
 
 const row: ExternalCallRow = {
   id: 'call-1',

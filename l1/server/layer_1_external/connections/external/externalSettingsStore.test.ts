@@ -8,7 +8,7 @@ import path from 'node:path';
 import { exampleExternalSystem } from '/_102034_/testing/connections/externalFixtures.js';
 import type { ExternalRef } from '/_102034_/l1/server/layer_1_external/connections/external/sendExternal.js';
 import type { ExternalSystemDeclaration } from '/_102034_/l1/server/layer_1_external/connections/external/types.js';
-import { tableDefinitions } from '/_102034_/l1/server/persistence.js';
+import { tableDefinitions } from '/_102034_/l1/server/layer_1_external/connections/external/settings/persistence.js';
 import {
   EXTERNAL_SETTINGS_TABLE,
   createExternalSettingsStore,
@@ -65,7 +65,7 @@ describe('external settings vault', () => {
   it('keeps the table on the platform registry with the project, system and setting as the key', () => {
     const found = tableDefinitions.find((item) => item.tableName === EXTERNAL_SETTINGS_TABLE);
     assert.ok(found);
-    assert.equal(found.moduleId, 'platform');
+    assert.equal(found.moduleId, 'platformExternalSettings');
     assert.deepEqual(found.primaryKey, ['projectId', 'systemId', 'settingId']);
   });
 
