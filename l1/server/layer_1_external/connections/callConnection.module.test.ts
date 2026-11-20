@@ -39,14 +39,14 @@ function writeJs(projectId: string, relative: string, body: unknown): void {
   writeText(projectId, relative, `export default ${JSON.stringify(body)};\n`);
 }
 
-function declaration(systemId: string, operations: unknown[]): unknown {
+function declaration(systemId: string, operations: unknown[], settings: unknown[] = []): unknown {
   return {
     schemaVersion: 'external-system-v1',
     systemId,
     title: 'Sibling',
     description: 'Declared by the owner module.',
     hosts: [{ host: 'sibling.test' }],
-    settings: [],
+    settings,
     operations,
   };
 }
@@ -59,6 +59,14 @@ const receive = {
   operationId: 'receive', direction: 'serve', kind: 'command', description: 'Inbound.',
   inputType: 'In', outputType: 'Out',
 };
+/** A `settingOf` that has a value for the non-secret `account` and, to prove it is never asked, also for the secret `signingKey`. */
+function settingsOf(values: Record<string, string>, asked: string[] = []) {
+  return async (_ref: ExternalRef, id: string): Promise<string | undefined> => {
+    asked.push(id);
+    return values[id];
+  };
+}
+
 const boom = {
   operationId: 'boom', direction: 'call', kind: 'query', description: 'Throws.',
   inputType: 'In', outputType: 'Out', methods: ['GET'], uses: { settings: [], secrets: [] }, reply: 'now',
@@ -82,7 +90,7 @@ before(() => {
       { id: 'hangSystem', title: 'Hang', description: 'Adapter never answers.', settings: [], operations: [] },
     ],
   });
-  writeJs(PROJECT, `l1/${OWNER}/layer_1_external/connections/siblingSystem.js`, declaration('siblingSystem', [ping, receive]));
+  writeJs(PROJECT, `l1/${OWNER}/layer_1_external/connections/siblingSystem.js`, declaration('siblingSystem', [ping, receive], [{ id: 'account', secret: false }, { id: 'signingKey', secret: true }]));
   writeJs(PROJECT, `l1/${OWNER}/layer_1_external/connections/throwSystem.js`, declaration('throwSystem', [boom]));
   writeText(PROJECT, `l1/${OWNER}/layer_1_external/connections/siblingSystemAdapter.js`, `
     export default {
@@ -111,10 +119,12 @@ after(() => {
 describe('a module calls a system its sibling declared', () => {
   it('calls the sibling adapter with the sibling send and the context as it arrived', async () => {
     const seen: ExternalRef[] = [];
+    const asked: string[] = [];
     const call = createConnectionCaller({
       projectId: PROJECT,
       catalogOf: connectionCatalogs(),
       transports: {},
+      settingOf: settingsOf({ account: 'acme', signingKey: 'LEAK' }, asked),
       sender: {
         async sendExternal(ref) {
           seen.push(ref);
@@ -129,10 +139,11 @@ describe('a module calls a system its sibling declared', () => {
       const output = result.output as { setting: unknown; secret: unknown; organizationId: string; actorUserId: string; sent: { ok: boolean } };
       assert.equal(output.organizationId, 'org');
       assert.equal(output.actorUserId, 'person');
-      assert.equal(output.setting, undefined);
+      assert.equal(output.setting, 'acme');
       assert.equal(output.secret, undefined);
       assert.equal(output.sent.ok, true);
     }
+    assert.deepEqual(asked, ['account']);
     assert.equal(seen.length, 1);
     assert.equal(seen[0]?.projectId, PROJECT);
     assert.equal(seen[0]?.moduleId, OWNER);
@@ -146,6 +157,7 @@ describe('a module calls a system its sibling declared', () => {
       projectId: PROJECT,
       catalogOf: async () => undefined,
       transports: {},
+      settingOf: settingsOf({}),
       sender: {
         async sendExternal(_ref, _operationId, _request, sentContext, trace) {
           traces.push(trace);
@@ -158,6 +170,42 @@ describe('a module calls a system its sibling declared', () => {
     await call('siblingSystem', 'ping', {}, context, { requestId: 'req-42' });
     assert.deepEqual(traces, [{ requestId: 'req-42' }]);
     assert.equal(JSON.stringify(contexts).includes('req-42'), false);
+  });
+
+  it('a setting that is absent or empty reaches the adapter as undefined', async () => {
+    for (const values of [{}, { account: '' }] as Array<Record<string, string>>) {
+      const call = createConnectionCaller({
+        projectId: PROJECT,
+        catalogOf: async () => undefined,
+        transports: {},
+        settingOf: settingsOf(values),
+        sender: { async sendExternal() { return { ok: true, output: { status: 200, headers: {}, body: '{}' } }; } },
+        log: () => undefined,
+      });
+      const result = await call('siblingSystem', 'ping', {}, context);
+      assert.equal(result.ok, true);
+      if (result.ok) assert.equal((result.output as { setting: unknown }).setting, undefined);
+    }
+  });
+
+  it('a settingOf that throws is unavailable, the adapter is not called and the log names no value', async () => {
+    const lines: string[] = [];
+    let sends = 0;
+    const call = createConnectionCaller({
+      projectId: PROJECT,
+      catalogOf: async () => undefined,
+      transports: {},
+      settingOf: async () => { throw new Error('db down with SECRET-VALUE'); },
+      sender: { async sendExternal() { sends += 1; return { ok: true, output: { status: 200, headers: {}, body: '{}' } }; } },
+      log: (line) => { lines.push(line); },
+    });
+    const result = await call('siblingSystem', 'ping', {}, context);
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.code, 'unavailable');
+    assert.equal(sends, 0);
+    const text = lines.join('\n');
+    assert.match(text, /siblingSystem\.ping ok=false code=unavailable reason=settings/);
+    assert.equal(text.includes('SECRET-VALUE'), false);
   });
 
   it('a serve operation through callConnection is forbidden and the adapter is not called', async () => {

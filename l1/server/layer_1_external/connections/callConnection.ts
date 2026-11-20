@@ -9,6 +9,7 @@ import { connectionCatalogs } from '/_102034_/l1/server/layer_1_external/connect
 import { moduleSystemsIndex } from '/_102034_/l1/server/layer_1_external/connections/moduleSystemsIndex.js';
 import {
   createProductionExternalSender,
+  productionExternalSettings,
   releaseDeclarationOf,
 } from '/_102034_/l1/server/layer_1_external/connections/external/productionExternalSender.js';
 import type { ExternalRef, ExternalSender } from '/_102034_/l1/server/layer_1_external/connections/external/sendExternal.js';
@@ -103,6 +104,11 @@ export interface ConnectionCallerDeps {
   declarationOf?: (ref: ExternalRef) => Promise<ExternalSystemDeclaration | null>;
   /** `sendExternal` bound by the caller to the module that declared the system. Default: the production door. */
   sender?: ExternalSender;
+  /**
+   * The stored value of a non-secret setting of a system (`ctx.setting` of its adapter). Default: the store the monitor
+   * writes and the sender reads in production. It never returns a secret.
+   */
+  settingOf?: (ref: ExternalRef, settingId: string) => Promise<string | undefined>;
 }
 
 const CODES: Record<ConnectionErrorCode, true> = {
@@ -279,11 +285,23 @@ export function createConnectionCaller(deps: ConnectionCallerDeps): CallConnecti
       const call = adapter?.[operationId];
       if (!call) return fail('unavailable', `no adapter for ${connectionId}.${operationId}`, 'no-adapter');
       if (!sender) return fail('unavailable', `no adapter for ${connectionId}.${operationId}`, 'no-adapter');
+      // The non-secret settings the declaration names, read before the adapter runs. An empty value counts as missing.
+      const settingValues = new Map<string, string>();
+      try {
+        const settingOf = deps.settingOf ?? ((settingRef, id) => productionExternalSettings().settingOf(settingRef, id));
+        for (const item of declaration.settings) {
+          if (item.secret) continue;
+          const value = await settingOf(ref, item.id);
+          if (typeof value === 'string' && value !== '') settingValues.set(item.id, value);
+        }
+      } catch {
+        return fail('unavailable', `the settings of ${connectionId} cannot be read`, 'settings');
+      }
       const sentContext: ConnectionContext = { ...context, organizationId };
       const ctx: ExternalAdapterContext = {
         connection: sentContext,
         send: (id, request) => sender.sendExternal(ref, id, request, sentContext, { requestId: opts.requestId }),
-        setting: () => undefined,
+        setting: (id) => settingValues.get(id),
       };
       // The platform transport enforces the time itself; an adapter is module code, so the caller enforces it here.
       const limitMs = operation.timeoutMs ?? defaultTimeoutMs;
