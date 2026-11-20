@@ -9,6 +9,11 @@ import {
   externalNoticeSeenDefinition,
   purgeSeenNotices,
 } from '/_102034_/l1/server/layer_1_external/connections/external/externalCallStore.js';
+import {
+  moduleEventDefinition,
+  moduleEventDeliveryDefinition,
+  purgeModuleEvents,
+} from '/_102034_/l1/server/layer_1_external/events/moduleEventQueue.js';
 import { externalSettingsDefinition } from '/_102034_/l1/server/layer_1_external/connections/external/externalSettingsStore.js';
 import type { TableDefinition, ViewDefinition } from '/_102034_/l1/server/layer_1_external/persistence/contracts.js';
 
@@ -166,13 +171,22 @@ export const tableDefinitions: TableDefinition[] = [
   externalCallAuditDefinition,
   externalNoticeSeenDefinition,
   externalSettingsDefinition,
+  moduleEventDefinition,
+  moduleEventDeliveryDefinition,
 ];
 
 export const viewDefinitions: ViewDefinition[] = externalCallViewDefinitions;
 
-/** Drops notices older than 90 days. The two call hypertables use add_retention_policy instead. */
+/**
+ * Drops notices older than 90 days, and module events by delivery state (7 or 90 days).
+ * The two call hypertables use add_retention_policy instead: that policy is time only,
+ * and an event stays 90 days when a delivery failed and none is still pending or delivering,
+ * and 7 days when every delivery succeeded.
+ */
 export async function onTick(_ctx: RequestContext, now: Date): Promise<void> {
   const env = readAppEnv();
   if (env.runtimeMode !== 'postgres') return;
-  await purgeSeenNotices(getSharedPgPool(env), now);
+  const pool = getSharedPgPool(env);
+  await purgeSeenNotices(pool, now);
+  await purgeModuleEvents(pool, now);
 }
