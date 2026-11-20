@@ -224,3 +224,37 @@ export async function deliverDueModuleEvents(deps: DeliverModuleEventsDeps): Pro
     log(`[module-event] ${mark} ${row.consumerModule} ${result} ms=${Date.now() - started}`);
   }
 }
+
+/**
+ * Runs delivery rounds apart from the common tick. The tick of every module is one round with one "running" flag, so a
+ * route that never ends must not be awaited there. `start` fires the round and returns at once; while a round is in flight
+ * no other starts in this process (the SKIP LOCKED of the queue covers the other process). A round that throws is logged,
+ * never a loose promise. A round still running is logged at most once every `busyLogEveryMs`, so a stuck route shows up.
+ */
+export function createDeliveryRunner(options: { log?: (line: string) => void; busyLogEveryMs?: number } = {}) {
+  const log = options.log ?? ((line: string): void => console.warn(line));
+  const busyLogEveryMs = options.busyLogEveryMs ?? 10 * 60_000;
+  let inFlight = false;
+  let lastBusyLogAt = Number.NEGATIVE_INFINITY;
+  return {
+    inFlight: (): boolean => inFlight,
+    start(round: () => Promise<void>, nowMs: number): boolean {
+      if (inFlight) {
+        if (nowMs - lastBusyLogAt >= busyLogEveryMs) {
+          lastBusyLogAt = nowMs;
+          log('[module-event] the previous delivery round is still running; this one is skipped');
+        }
+        return false;
+      }
+      inFlight = true;
+      void round()
+        .catch((error: unknown) => {
+          log(`[module-event] delivery round failed: ${error instanceof Error ? error.name : 'error'}`);
+        })
+        .finally(() => {
+          inFlight = false;
+        });
+      return true;
+    },
+  };
+}

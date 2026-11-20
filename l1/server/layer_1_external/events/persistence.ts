@@ -10,6 +10,7 @@ import {
 } from '/_102034_/l1/server/layer_1_external/events/moduleEventQueue.js';
 import {
   callConsumesRoute,
+  createDeliveryRunner,
   createReleaseConsumesLookup,
   deliverDueModuleEvents,
 } from '/_102034_/l1/server/layer_1_external/events/deliverModuleEvents.js';
@@ -21,6 +22,7 @@ export const tableDefinitions: TableDefinition[] = [
 ];
 
 const findConsumes = createReleaseConsumesLookup();
+const deliveryRunner = createDeliveryRunner();
 
 /** Retention follows delivery state, so it is not an add_retention_policy. Then due deliveries run. */
 export async function onTick(ctx: RequestContext, now: Date): Promise<void> {
@@ -38,12 +40,14 @@ export async function onTick(ctx: RequestContext, now: Date): Promise<void> {
     }),
   };
   await purgeModuleEvents(db, now);
-  await deliverDueModuleEvents({
+  // The tick of every module is one round. Delivery waits for the route to end (the transaction cannot be released under it),
+  // so it runs apart: this tick waits only for the cleanup above.
+  deliveryRunner.start(() => deliverDueModuleEvents({
     db,
     moduleData: ctx.data.moduleData,
     now,
     bindContext: (moduleData) => ({ ...ctx, data: { ...ctx.data, moduleData } }),
     findRoute: findConsumes,
     callRoute: callConsumesRoute,
-  });
+  }), now.getTime());
 }

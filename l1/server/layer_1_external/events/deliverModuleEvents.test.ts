@@ -11,6 +11,7 @@ import {
 } from '/_102034_/l1/server/layer_1_external/events/moduleEventQueue.js';
 import {
   MODULE_EVENT_MAX_ATTEMPTS,
+  createDeliveryRunner,
   deliverDueModuleEvents,
   type DeliverModuleEventsDeps,
 } from '/_102034_/l1/server/layer_1_external/events/deliverModuleEvents.js';
@@ -348,5 +349,41 @@ describe('module event delivery', () => {
     assert.equal(lines.length, 1);
     assert.equal(lines[0]?.includes(SECRET), false);
     assert.match(lines[0] ?? '', /orders\.placed billing delivered ms=\d+/);
+  });
+});
+
+describe('delivery runner apart from the common tick', () => {
+  it('start returns at once with a route that never ends, and no second round starts meanwhile', async () => {
+    const lines: string[] = [];
+    const runner = createDeliveryRunner({ log: (line) => lines.push(line), busyLogEveryMs: 1000 });
+    let release: () => void = () => undefined;
+    const stuck = new Promise<void>((resolve) => { release = resolve; });
+    let rounds = 0;
+    const round = () => { rounds += 1; return stuck; };
+    assert.equal(runner.start(round, 0), true);
+    assert.equal(runner.inFlight(), true);
+    // the common tick came back at once and the next tick finds the round still running
+    assert.equal(runner.start(round, 60_000), false);
+    assert.equal(runner.start(round, 120_000), false);
+    assert.equal(rounds, 1);
+    // the stuck route shows up, but not at every tick
+    assert.equal(lines.length, 2);
+    assert.equal(runner.start(round, 120_500), false);
+    assert.equal(lines.length, 2);
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(runner.inFlight(), false);
+    assert.equal(runner.start(async () => undefined, 180_000), true);
+  });
+
+  it('a round that fails is logged, not a loose promise, and the next one can start', async () => {
+    const lines: string[] = [];
+    const runner = createDeliveryRunner({ log: (line) => lines.push(line) });
+    assert.equal(runner.start(async () => { throw new TypeError('boom'); }, 0), true);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.match(lines.join('\n'), /delivery round failed: TypeError/);
+    assert.equal(lines.join('\n').includes('boom'), false);
+    assert.equal(runner.inFlight(), false);
+    assert.equal(runner.start(async () => undefined, 60_000), true);
   });
 });
