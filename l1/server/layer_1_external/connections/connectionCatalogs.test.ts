@@ -8,7 +8,7 @@ import cm from '/_102034_/l1/server/layer_1_external/connections/catalogs/cm.js'
 import platform from '/_102034_/l1/server/layer_1_external/connections/catalogs/platform.js';
 import type { ConnectionCatalog } from '/_102034_/l1/server/layer_1_external/connections/catalogs/types.js';
 
-const FOLDER = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'catalogs');
+const FOLDER = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../l2/shared/contracts/connections');
 const textOf = (name: string): string => readFileSync(path.join(FOLDER, name), 'utf8');
 
 /** `conexoes.md` §5: operation, direction, kind, reply. */
