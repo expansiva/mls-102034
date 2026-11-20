@@ -380,8 +380,8 @@ export function createExternalSender(deps: ExternalSenderDeps): ExternalSender {
         else settingValues.set(id, value);
       }
       if (missing.length > 0) {
-        const ids = [...missing].sort().join(', ');
-        return fin('disabled', denied('disabled', `configuração incompleta: ${ids}`), undefined, place);
+        const ids = [...missing].sort();
+        return fin('disabled', { ok: false, code: 'disabled', message: `configuration incomplete: ${ids.join(', ')}`, missing: ids }, undefined, place);
       }
 
       const headers: Record<string, string> = {};

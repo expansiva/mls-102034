@@ -88,6 +88,7 @@ before(() => {
       { id: 'siblingSystem', title: 'Sibling', description: 'Owned next door.', settings: [], operations: [] },
       { id: 'throwSystem', title: 'Throw', description: 'Adapter throws.', settings: [], operations: [] },
       { id: 'hangSystem', title: 'Hang', description: 'Adapter never answers.', settings: [], operations: [] },
+      { id: 'lackSystem', title: 'Lack', description: 'Adapter hands back what the send answered.', settings: [], operations: [] },
     ],
   });
   writeJs(PROJECT, `l1/${OWNER}/layer_1_external/connections/siblingSystem.js`, declaration('siblingSystem', [ping, receive], [{ id: 'account', secret: false }, { id: 'signingKey', secret: true }]));
@@ -98,6 +99,16 @@ before(() => {
         const sent = await ctx.send('ping', { method: 'GET', path: '/ping' });
         return { ok: true, output: { input, setting: ctx.setting('account'), secret: ctx.setting('signingKey'), organizationId: ctx.connection.organizationId, actorUserId: ctx.connection.actorUserId, sent } };
       },
+    };
+  `);
+  writeJs(PROJECT, `l1/${OWNER}/layer_1_external/connections/lackSystem.js`, declaration('lackSystem', [
+    { ...boom, operationId: 'lack' },
+    { ...boom, operationId: 'garbled' },
+  ]));
+  writeText(PROJECT, `l1/${OWNER}/layer_1_external/connections/lackSystemAdapter.js`, `
+    export default {
+      async lack(_input, ctx) { return ctx.send('lack', { method: 'GET', path: '/lack' }); },
+      async garbled() { return { ok: false, code: 'disabled', message: 'configuration incomplete: x', missing: 'x' }; },
     };
   `);
   writeJs(PROJECT, `l1/${OWNER}/layer_1_external/connections/hangSystem.js`, declaration('hangSystem', [{ ...boom, operationId: 'hang', timeoutMs: 30 }]));
@@ -221,6 +232,35 @@ describe('a module calls a system its sibling declared', () => {
     assert.equal(result.ok, false);
     if (!result.ok) assert.equal(result.code, 'forbidden');
     assert.equal(sends, 0);
+  });
+
+  it('the disabled of the send reaches the caller with its missing ids intact', async () => {
+    const call = createConnectionCaller({
+      projectId: PROJECT,
+      catalogOf: async () => undefined,
+      transports: {},
+      sender: {
+        async sendExternal() {
+          return { ok: false, code: 'disabled', message: 'configuration incomplete: a, b', missing: ['a', 'b'] };
+        },
+      },
+      log: () => undefined,
+    });
+    const result = await call('lackSystem', 'lack', {}, context);
+    assert.deepEqual(result, { ok: false, code: 'disabled', message: 'configuration incomplete: a, b', missing: ['a', 'b'] });
+  });
+
+  it('an adapter that answers missing as a text is invalid: outside the envelope', async () => {
+    const call = createConnectionCaller({
+      projectId: PROJECT,
+      catalogOf: async () => undefined,
+      transports: {},
+      sender: { async sendExternal() { return { ok: true, output: { status: 200, headers: {}, body: '' } }; } },
+      log: () => undefined,
+    });
+    const result = await call('lackSystem', 'garbled', {}, context);
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.code, 'invalid');
   });
 
   it('an adapter that throws is unavailable and the log names the operation, not the body', async () => {

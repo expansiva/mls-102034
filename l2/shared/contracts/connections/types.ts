@@ -10,7 +10,13 @@ export type ConnectionErrorCode = 'not_found' | 'disabled' | 'unavailable' | 'co
 
 export type ConnectionResult<Output = unknown> =
   | { ok: true; output: Output }
-  | { ok: false; code: ConnectionErrorCode; message: string };
+  | {
+    ok: false;
+    code: ConnectionErrorCode;
+    message: string;
+    /** Ids of the settings or secrets that are not configured; only with `disabled`. */
+    missing?: string[];
+  };
 
 /** Who the call is about, in every operation and in both directions. Outside `input`. */
 export interface ConnectionContext {

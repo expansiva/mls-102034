@@ -192,7 +192,7 @@ describe('sendExternal', () => {
 
     const incomplete = harness({ secretOf: () => null });
     const incompleteResult = await send(incomplete, okRequest);
-    assert.deepEqual(incompleteResult, { ok: false, code: 'disabled', message: 'configuração incompleta: apiKey' });
+    assert.deepEqual(incompleteResult, { ok: false, code: 'disabled', message: 'configuration incomplete: apiKey', missing: ['apiKey'] });
     assert.equal(leaked(incompleteResult), false);
   });
 

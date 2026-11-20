@@ -130,8 +130,9 @@ const adapters = new Map<string, Promise<ExternalSystemAdapter | null>>();
 
 function isConnectionResult(value: unknown): value is ConnectionResult {
   if (typeof value !== 'object' || value === null) return false;
-  const body = value as { ok?: unknown; output?: unknown; code?: unknown; message?: unknown };
+  const body = value as { ok?: unknown; output?: unknown; code?: unknown; message?: unknown; missing?: unknown };
   if (body.ok === true) return Object.prototype.hasOwnProperty.call(body, 'output');
+  if (body.missing !== undefined && !(Array.isArray(body.missing) && body.missing.every((id) => typeof id === 'string'))) return false;
   return body.ok === false && isCode(body.code) && typeof body.message === 'string';
 }
 

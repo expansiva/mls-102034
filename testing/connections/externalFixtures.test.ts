@@ -114,7 +114,8 @@ describe('external fixtures', () => {
     assert.equal(result.ok, false);
     if (!result.ok) {
       assert.equal(result.code, 'disabled');
-      assert.match(result.message, /configuração incompleta: signingKey/);
+      assert.match(result.message, /configuration incomplete: signingKey/);
+      assert.deepEqual(result.missing, ['signingKey']);
     }
   });
 
