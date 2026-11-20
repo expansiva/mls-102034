@@ -68,3 +68,20 @@ export interface ConnectionCatalog {
   description: string;
   operations: ConnectionOperation[];
 }
+
+/** One action of a module catalog, as the assistant catalog names it. Types only: the server that checks a catalog stays in the backend. */
+export interface AssistantCatalogItem {
+  route: string;
+  routes?: string[];
+  module?: string;
+  kind: 'cmd' | 'qry';
+  actionId: string;
+  title?: string;
+  /** Local actor ids (L4 `actorId`) that may use the action. */
+  actors: string[];
+  assistant: 'included' | 'excluded';
+  risk?: string;
+  /** Inputs of the operation; the one with `role: 'version'` is where `expectVersion` goes. */
+  inputs?: Array<{ path?: string; role?: string; [field: string]: unknown }>;
+  [field: string]: unknown;
+}

@@ -7,7 +7,7 @@
  * Who the call is about (organization, the person, the customer, the agent) travels in `ConnectionContext`, never in `input`.
  * `expectVersion` and `idempotencyKey` travel in the call options, never in `input`.
  */
-import type { AssistantCatalogItem } from '/_102034_/l1/workflow/assistantCatalog.js';
+import type { AssistantCatalogItem } from '/_102034_/l1/server/layer_1_external/connections/catalogs/types.js';
 import type { ConnectionCatalog } from '/_102034_/l1/server/layer_1_external/connections/catalogs/types.js';
 
 /**
