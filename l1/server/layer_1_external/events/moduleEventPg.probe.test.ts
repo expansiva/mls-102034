@@ -163,6 +163,8 @@ describe('module event queue on a real PostgreSQL', { skip: !ENABLED }, () => {
     const middle = new Date(Date.now() - 3 * 86_400_000).toISOString();
     await enqueue(db, PROJECT, envelope('probe-view-new', recent), ['billing', 'mail']);
     await enqueue(db, PROJECT, envelope('probe-view-mid', middle), ['billing']);
+    // `markFailed` only fails a delivery that is `delivering` (the lease owner): claim first, as the deliverer does.
+    await claimDue(db, 100, new Date(), LEASE_MS);
     await markFailed(db, 'probe-view-mid', 'billing', 'no-route');
     const view = await moduleEventsOf({ db: pool }, PROJECT);
     const row = view.events.find((item) => item.event === 'orders.placed');
