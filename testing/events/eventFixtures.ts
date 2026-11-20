@@ -8,6 +8,7 @@ import type {
   ModuleEventCallContext,
   ModuleEventPublishOpts,
   ModuleEventPublisher,
+  PublishModuleEvent,
   PublishedModuleEvent,
 } from '/_102034_/l1/server/layer_1_external/events/publishModuleEvent.js';
 import type { ModuleEventRef, ModuleEventsIndex } from '/_102034_/l1/server/layer_1_external/events/types.js';
@@ -36,6 +37,18 @@ export interface RecordedModuleEvent {
 export interface FakeModuleEventPublisher {
   publish: ModuleEventPublisher;
   readonly published: RecordedModuleEvent[];
+}
+
+const recordedReady: RecordedModuleEvent[] = [];
+
+/** Same signature as the real `publishModuleEvent`. Records the call and answers `ok`. */
+export const publishModuleEvent: PublishModuleEvent = async (ref, payload, context, opts) => {
+  recordedReady.push({ ref, payload, context, opts });
+  return { ok: true, output: { eventId: 'recorded' } };
+};
+
+export function recordedModuleEvents(): readonly RecordedModuleEvent[] {
+  return recordedReady;
 }
 
 /** Records each publication and answers `ok`. It does not read an index. */

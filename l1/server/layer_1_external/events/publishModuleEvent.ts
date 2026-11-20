@@ -6,6 +6,12 @@
  */
 import { randomUUID } from 'node:crypto';
 import type { ConnectionResult } from '/_102034_/l1/server/layer_1_external/connections/catalogs/types.js';
+import type { IModuleDataRuntime } from '/_102034_/l1/server/layer_1_external/data/moduleDataRuntime.js';
+import {
+  MODULE_EVENT_DELIVERY_TABLE,
+  MODULE_EVENT_TABLE,
+} from '/_102034_/l1/server/layer_1_external/events/moduleEventQueue.js';
+import { moduleEventsIndex } from '/_102034_/l1/server/layer_1_external/events/moduleEventsIndex.js';
 import {
   moduleEventRefText,
   type ModuleEventActor,
@@ -21,6 +27,11 @@ export interface ModuleEventCallContext {
   requestMeta?: { actorType?: 'user' | 'agent' | 'system'; requestId?: string };
 }
 
+/** The use-case context. `data.moduleData` is the runtime the use case is already using. */
+export interface ModuleEventPublishContext extends ModuleEventCallContext {
+  data: { moduleData: IModuleDataRuntime };
+}
+
 export interface ModuleEventPublishOpts {
   requestId?: string;
 }
@@ -33,6 +44,13 @@ export type ModuleEventPublisher = (
   ref: ModuleEventRef,
   payload: unknown,
   context: ModuleEventCallContext,
+  opts?: ModuleEventPublishOpts,
+) => Promise<ConnectionResult<PublishedModuleEvent>>;
+
+export type PublishModuleEvent = (
+  ref: ModuleEventRef,
+  payload: unknown,
+  ctx: ModuleEventPublishContext,
   opts?: ModuleEventPublishOpts,
 ) => Promise<ConnectionResult<PublishedModuleEvent>>;
 
@@ -131,3 +149,97 @@ export function createModuleEventPublisher(deps: ModuleEventPublisherDeps): Modu
     return { ok: true, output: { eventId: envelope.eventId } };
   };
 }
+
+interface ModuleEventRow {
+  eventId: string;
+  projectId: string;
+  moduleId: string;
+  event: string;
+  payload: unknown;
+  actorKind: 'person' | 'agent' | null;
+  actorId: string | null;
+  requestId: string | null;
+  publishedAt: string;
+}
+
+interface ModuleEventDeliveryRow {
+  eventId: string;
+  consumerModule: string;
+  attempts: number;
+  nextAttemptAt: string;
+  leaseUntil: string | null;
+  result: 'pending';
+  reason: string | null;
+  deliveredAt: string | null;
+}
+
+/**
+ * Event and delivery rows go through the repositories of the queue tables, on `runtime`.
+ * Inside a use-case `runInTransaction`, that runtime is already bound to the transaction client
+ * (`moduleDataRuntime.ts`), and a nested `runInTransaction` keeps the same client, so both inserts
+ * commit or roll back with the use case. Outside a transaction, this opens its own
+ * `runInTransaction` for these two inserts only.
+ */
+async function enqueueOnModuleData(
+  runtime: IModuleDataRuntime,
+  projectId: string,
+  envelope: ModuleEventEnvelope,
+  consumers: readonly string[],
+): Promise<void> {
+  await runtime.runInTransaction(async (tx) => {
+    const events = await tx.getTable<ModuleEventRow>(MODULE_EVENT_TABLE);
+    await events.insert({
+      record: {
+        eventId: envelope.eventId,
+        projectId,
+        moduleId: envelope.ref.module,
+        event: moduleEventRefText(envelope.ref),
+        payload: envelope.payload ?? null,
+        actorKind: envelope.actor?.kind ?? null,
+        actorId: envelope.actor?.id ?? null,
+        requestId: envelope.requestId ?? null,
+        publishedAt: envelope.publishedAt,
+      },
+    });
+    const deliveries = await tx.getTable<ModuleEventDeliveryRow>(MODULE_EVENT_DELIVERY_TABLE);
+    for (const consumerModule of consumers) {
+      await deliveries.insert({
+        record: {
+          eventId: envelope.eventId,
+          consumerModule,
+          attempts: 0,
+          nextAttemptAt: envelope.publishedAt,
+          leaseUntil: null,
+          result: 'pending',
+          reason: null,
+          deliveredAt: null,
+        },
+      });
+    }
+  });
+}
+
+/**
+ * The publisher bound to an index. The release index is the default; a test passes its own here, never through the
+ * context, because the context is what generated code hands in and must not be able to replace the index.
+ */
+export function createPublishModuleEvent(
+  index: (projectId: string) => Promise<ModuleEventsIndex> = moduleEventsIndex,
+): PublishModuleEvent {
+  return (ref, payload, ctx, opts) => {
+    const publish = createModuleEventPublisher({
+      index,
+      enqueue: (envelope, consumers) => {
+        const projectId = ctx.project?.projectId ?? '';
+        return enqueueOnModuleData(ctx.data.moduleData, projectId, envelope, consumers);
+      },
+    });
+    return publish(ref, payload, ctx, opts);
+  };
+}
+
+/**
+ * `publishModuleEvent(ref, payload, ctx, opts?)`: the name a generated use case imports.
+ * The index is the release index. The queue is the module data the use case is using.
+ */
+export const publishModuleEvent: PublishModuleEvent = createPublishModuleEvent();

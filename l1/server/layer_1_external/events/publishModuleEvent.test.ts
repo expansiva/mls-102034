@@ -3,9 +3,23 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { DefsReader } from '/_102034_/l1/workflow/assistantCatalogDefs.js';
 import { buildConsumesIndex, findConsumesRoute } from '/_102034_/l1/workflow/connectionServe.js';
-import { createModuleEventPublisher } from '/_102034_/l1/server/layer_1_external/events/publishModuleEvent.js';
+import type { IModuleDataRuntime, ITableRepository } from '/_102034_/l1/server/layer_1_external/data/moduleDataRuntime.js';
+import {
+  MODULE_EVENT_DELIVERY_TABLE,
+  MODULE_EVENT_TABLE,
+} from '/_102034_/l1/server/layer_1_external/events/moduleEventQueue.js';
+import {
+  createModuleEventPublisher,
+  createPublishModuleEvent,
+  publishModuleEvent,
+  type PublishModuleEvent,
+} from '/_102034_/l1/server/layer_1_external/events/publishModuleEvent.js';
 import type { ModuleEventEnvelope, ModuleEventsIndex } from '/_102034_/l1/server/layer_1_external/events/types.js';
-import { createFakeConsumesRoute, exampleEventIndex } from '/_102034_/testing/events/eventFixtures.js';
+import {
+  createFakeConsumesRoute,
+  exampleEventIndex,
+  publishModuleEvent as fakePublishModuleEvent,
+} from '/_102034_/testing/events/eventFixtures.js';
 
 const REF = { module: 'sourceModule', eventId: 'happened' };
 const CONTEXT = {
@@ -93,5 +107,112 @@ describe('publishModuleEvent', () => {
       route: 'readerModule.inbox.take',
     });
     assert.equal(findConsumesRoute(index, 'otherModule', fake.request.consumes), undefined);
+  });
+});
+
+interface StoredRow {
+  eventId?: string;
+  consumerModule?: string;
+}
+
+function copyTables(source: Map<string, StoredRow[]>): Map<string, StoredRow[]> {
+  return new Map([...source].map(([name, rows]) => [name, rows.map((row) => ({ ...row }))]));
+}
+
+/** Joins a nested `runInTransaction` and restores the snapshot when the outer one throws. */
+function createRollingRuntime(failDelivery: boolean): { runtime: IModuleDataRuntime; tables: Map<string, StoredRow[]> } {
+  const tables = new Map<string, StoredRow[]>();
+  let depth = 0;
+  let snapshot: Map<string, StoredRow[]> | undefined;
+
+  const runtime: IModuleDataRuntime = {
+    async getTable<TRecord extends object>(name: string): Promise<ITableRepository<TRecord>> {
+      const rows = tables.get(name) ?? [];
+      tables.set(name, rows);
+      const repository = {
+        async insert(input: { record: TRecord }): Promise<void> {
+          const row = input.record as StoredRow;
+          if (failDelivery && name === MODULE_EVENT_DELIVERY_TABLE) throw new Error('delivery insert failed');
+          rows.push({ ...row });
+        },
+      };
+      return repository as ITableRepository<TRecord>;
+    },
+    async listTables() {
+      return [];
+    },
+    async runInTransaction<TValue>(callback: (tx: IModuleDataRuntime) => Promise<TValue>): Promise<TValue> {
+      const outer = depth === 0;
+      if (outer) snapshot = copyTables(tables);
+      depth += 1;
+      try {
+        const value = await callback(runtime);
+        depth -= 1;
+        if (outer) snapshot = undefined;
+        return value;
+      } catch (error) {
+        depth -= 1;
+        if (outer && snapshot) {
+          tables.clear();
+          for (const [name, rows] of snapshot) tables.set(name, rows);
+          snapshot = undefined;
+        }
+        throw error;
+      }
+    },
+  };
+  return { runtime, tables };
+}
+
+function publishContext(runtime: IModuleDataRuntime) {
+  return {
+    ...CONTEXT,
+    data: { moduleData: runtime },
+  };
+}
+
+// The index is injected into the publisher, not carried by the context.
+const publishWithExampleIndex = createPublishModuleEvent(async (): Promise<ModuleEventsIndex> => exampleEventIndex());
+
+describe('publishModuleEvent on the use-case transaction', () => {
+  it('leaves no event and no delivery when the use-case transaction fails', async () => {
+    const { runtime, tables } = createRollingRuntime(false);
+    await assert.rejects(
+      () => runtime.runInTransaction(async () => {
+        const result = await publishWithExampleIndex(REF, { n: 1 }, publishContext(runtime));
+        assert.equal(result.ok, true);
+        throw new Error('use case failed');
+      }),
+      /use case failed/,
+    );
+    assert.equal(tables.get(MODULE_EVENT_TABLE)?.length ?? 0, 0);
+    assert.equal(tables.get(MODULE_EVENT_DELIVERY_TABLE)?.length ?? 0, 0);
+  });
+
+  it('keeps the event and the delivery when the use-case transaction commits', async () => {
+    const { runtime, tables } = createRollingRuntime(false);
+    await runtime.runInTransaction(async () => {
+      const result = await publishWithExampleIndex(REF, { n: 1 }, publishContext(runtime));
+      assert.equal(result.ok, true);
+    });
+    assert.equal(tables.get(MODULE_EVENT_TABLE)?.length, 1);
+    assert.equal(tables.get(MODULE_EVENT_DELIVERY_TABLE)?.length, 1);
+    assert.equal(tables.get(MODULE_EVENT_DELIVERY_TABLE)?.[0]?.consumerModule, 'readerModule');
+  });
+
+  it('rolls back both inserts when it opens its own transaction and the second insert fails', async () => {
+    const { runtime, tables } = createRollingRuntime(true);
+    const result = await publishWithExampleIndex(REF, { n: 1 }, publishContext(runtime));
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.code, 'unavailable');
+    assert.equal(tables.get(MODULE_EVENT_TABLE)?.length ?? 0, 0);
+    assert.equal(tables.get(MODULE_EVENT_DELIVERY_TABLE)?.length ?? 0, 0);
+  });
+
+  it('has the same signature on the fake', () => {
+    const same: PublishModuleEvent = fakePublishModuleEvent;
+    assert.equal(typeof same, 'function');
+    const real: PublishModuleEvent = publishModuleEvent;
+    assert.equal(typeof real, 'function');
   });
 });
