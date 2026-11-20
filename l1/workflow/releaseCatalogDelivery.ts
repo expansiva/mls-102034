@@ -2,8 +2,8 @@ import { createHash } from 'node:crypto';
 import type { RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import type { AssistantCatalog, AssistantCatalogSource } from '/_102034_/l1/workflow/assistantCatalog.js';
 import type { ConnectionServeInput } from '/_102034_/l1/workflow/connectionServe.js';
-import type { ConnectionResult } from '/_102034_/l1/server/layer_1_external/connections/catalogs/types.js';
-import type { PlatformCatalogAction, PlatformModuleCatalog } from '/_102034_/l1/server/layer_1_external/connections/catalogs/platform.js';
+import type { ConnectionResult } from '/_102034_/l2/shared/contracts/connections/types.js';
+import type { PlatformCatalogAction, PlatformModuleCatalog } from '/_102034_/l2/shared/contracts/connections/platform.js';
 
 /**
  * The catalog of actions of every module of the release, delivered ONCE per change to the module that serves

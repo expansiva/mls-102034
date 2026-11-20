@@ -5,7 +5,7 @@
  * The durable queue is a port (`enqueue`); this file only checks the index and builds the envelope.
  */
 import { randomUUID } from 'node:crypto';
-import type { ConnectionResult } from '/_102034_/l1/server/layer_1_external/connections/catalogs/types.js';
+import type { ConnectionResult } from '/_102034_/l2/shared/contracts/connections/types.js';
 import type { RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import type { IModuleDataRuntime } from '/_102034_/l1/server/layer_1_external/data/moduleDataRuntime.js';
 import {

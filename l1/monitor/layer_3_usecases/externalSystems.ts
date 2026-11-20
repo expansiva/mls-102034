@@ -9,7 +9,7 @@ import type { ExternalRef } from '/_102034_/l1/server/layer_1_external/connectio
 import type {
   ExternalHost,
   ExternalSystemDeclaration,
-} from '/_102034_/l1/server/layer_1_external/connections/external/types.js';
+} from '/_102034_/l2/shared/contracts/connections/externalSystem.js';
 
 export interface ExternalSystemsDeps {
   systemsOf(projectId: string): Promise<Map<string, string>>;

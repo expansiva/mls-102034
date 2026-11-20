@@ -4,7 +4,7 @@
  *
  *   import { exampleExternalSystem, exampleExternalAdapter, createFakeAdapterContext, createFakeExternalSender } from '/_102034_/testing/connections/externalFixtures.js';
  */
-import type { ConnectionContext } from '/_102034_/l1/server/layer_1_external/connections/catalogs/types.js';
+import type { ConnectionContext } from '/_102034_/l2/shared/contracts/connections/types.js';
 import {
   createExternalSender,
   type ExternalRecordEvent,
@@ -17,7 +17,7 @@ import type {
   ExternalAdapterContext,
   ExternalSystemAdapter,
   ExternalSystemDeclaration,
-} from '/_102034_/l1/server/layer_1_external/connections/external/types.js';
+} from '/_102034_/l2/shared/contracts/connections/externalSystem.js';
 
 export interface ExampleLookupInput { key: string }
 export interface ExampleLookupOutput { value: string }

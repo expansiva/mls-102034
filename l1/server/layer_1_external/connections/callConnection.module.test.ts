@@ -8,7 +8,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
-import type { ConnectionContext } from '/_102034_/l1/server/layer_1_external/connections/catalogs/types.js';
+import type { ConnectionContext } from '/_102034_/l2/shared/contracts/connections/types.js';
 import { connectionCatalogs } from '/_102034_/l1/server/layer_1_external/connections/connectionCatalogs.js';
 import { createConnectionCaller } from '/_102034_/l1/server/layer_1_external/connections/callConnection.js';
 import { nodeExternalTransport } from '/_102034_/l1/server/layer_1_external/connections/external/nodeExternalTransport.js';

@@ -4,11 +4,11 @@
  * The body stays in memory for the check and the delivery. It is never written.
  */
 import { randomUUID } from 'node:crypto';
-import type { ConnectionResult } from '/_102034_/l1/server/layer_1_external/connections/catalogs/types.js';
+import type { ConnectionResult } from '/_102034_/l2/shared/contracts/connections/types.js';
 import type { ConnectionServeInput } from '/_102034_/l1/workflow/connectionServe.js';
 import type { ExternalCallRow, ExternalNoticeKey } from '/_102034_/l1/server/layer_1_external/connections/external/externalCallStore.js';
 import type { ExternalRef } from '/_102034_/l1/server/layer_1_external/connections/external/sendExternal.js';
-import type { ExternalNoticeId, ExternalServeOperation, ExternalSystemDeclaration } from '/_102034_/l1/server/layer_1_external/connections/external/types.js';
+import type { ExternalNoticeId, ExternalServeOperation, ExternalSystemDeclaration } from '/_102034_/l2/shared/contracts/connections/externalSystem.js';
 import { verifyExternalNotice } from '/_102034_/l1/server/layer_1_external/connections/external/verifyNotice.js';
 
 /** Exact public path. No login. */

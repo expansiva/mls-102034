@@ -5,7 +5,7 @@
  */
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import type { ExternalSignedPart, ExternalVerify, ExternalVerifyHmac } from '/_102034_/l1/server/layer_1_external/connections/external/types.js';
+import type { ExternalSignedPart, ExternalVerify, ExternalVerifyHmac } from '/_102034_/l2/shared/contracts/connections/externalSystem.js';
 
 export interface ExternalNotice {
   rawBody: Buffer;

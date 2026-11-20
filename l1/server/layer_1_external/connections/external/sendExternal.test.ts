@@ -1,8 +1,8 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/connections/external/sendExternal.test.ts" enhancement="_blank"/>
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { ConnectionContext } from '/_102034_/l1/server/layer_1_external/connections/catalogs/types.js';
-import type { ExternalSystemDeclaration } from '/_102034_/l1/server/layer_1_external/connections/external/types.js';
+import type { ConnectionContext } from '/_102034_/l2/shared/contracts/connections/types.js';
+import type { ExternalSystemDeclaration } from '/_102034_/l2/shared/contracts/connections/externalSystem.js';
 import {
   createExternalSender,
   EXTERNAL_DEFAULT_TIMEOUT_MS,

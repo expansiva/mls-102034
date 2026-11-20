@@ -8,7 +8,7 @@ import type { RequestContext } from '/_102034_/l1/server/layer_2_controllers/con
 import type { AssistantCatalog, AssistantCatalogSource, CatalogLoad } from '/_102034_/l1/workflow/assistantCatalog.js';
 import type { ConnectionServeInput } from '/_102034_/l1/workflow/connectionServe.js';
 import { deliverReleaseCatalog, hashCatalogs, type ReleaseCatalogDeliveryDeps } from '/_102034_/l1/workflow/releaseCatalogDelivery.js';
-import type { ConnectionResult } from '/_102034_/l1/server/layer_1_external/connections/catalogs/types.js';
+import type { ConnectionResult } from '/_102034_/l2/shared/contracts/connections/types.js';
 
 const CTX = {} as RequestContext;
 

@@ -1,6 +1,6 @@
-import cm from '/_102034_/l1/server/layer_1_external/connections/catalogs/cm.js';
-import platform from '/_102034_/l1/server/layer_1_external/connections/catalogs/platform.js';
-import type { ConnectionCatalog } from '/_102034_/l1/server/layer_1_external/connections/catalogs/types.js';
+import cm from '/_102034_/l2/shared/contracts/connections/cm.js';
+import platform from '/_102034_/l2/shared/contracts/connections/platform.js';
+import type { ConnectionCatalog } from '/_102034_/l2/shared/contracts/connections/types.js';
 
 /** The connections of the platform are a closed list (conexoes.md, decision 5): each one is here, under its own id. */
 const PLATFORM_CATALOGS: Readonly<Record<string, ConnectionCatalog>> = { cm, platform };

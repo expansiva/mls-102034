@@ -20,7 +20,7 @@ import type { AssistantActivitiesInput, AssistantOnBehalfOf } from '/_102034_/l1
 import type { AssistantCatalogInput } from '/_102034_/l1/workflow/assistantCatalog.js';
 import type { AssistantAgentBehalfOf, AssistantExecInput } from '/_102034_/l1/workflow/assistantExec.js';
 import type { ConnectionServeInput } from '/_102034_/l1/workflow/connectionServe.js';
-import type { ConnectionContext, ConnectionErrorCode, ConnectionResult } from '/_102034_/l1/server/layer_1_external/connections/catalogs/types.js';
+import type { ConnectionContext, ConnectionErrorCode, ConnectionResult } from '/_102034_/l2/shared/contracts/connections/types.js';
 import { createPostgresWorkflowWakeInbox } from '/_102034_/l1/workflow/wakeInboxPostgres.js';
 import { resolveWorkflowWakeHandler } from '/_102034_/l1/workflow/wakeRegistry.js';
 import type { WorkflowWakeHandler } from '/_102034_/l1/workflow/wakeContracts.js';

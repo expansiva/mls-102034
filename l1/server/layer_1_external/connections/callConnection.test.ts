@@ -7,8 +7,8 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 import { callConnection, createCmTransport, createConnectionCaller, createProductionConnectionCaller, type CallConnection } from '/_102034_/l1/server/layer_1_external/connections/callConnection.js';
 import { connectionCatalogs } from '/_102034_/l1/server/layer_1_external/connections/connectionCatalogs.js';
 import { CONNECTION_CODES, exampleCatalog } from '/_102034_/testing/connections/connectionFixtures.js';
-import cm from '/_102034_/l1/server/layer_1_external/connections/catalogs/cm.js';
-import type { ConnectionCatalog, ConnectionContext } from '/_102034_/l1/server/layer_1_external/connections/catalogs/types.js';
+import cm from '/_102034_/l2/shared/contracts/connections/cm.js';
+import type { ConnectionCatalog, ConnectionContext } from '/_102034_/l2/shared/contracts/connections/types.js';
 
 const APP = '102077';
 const TOKEN = 'sentinel-rt234-token';

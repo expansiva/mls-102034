@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { describe, it } from 'node:test';
-import type { ExternalVerify, ExternalVerifyHmac } from '/_102034_/l1/server/layer_1_external/connections/external/types.js';
+import type { ExternalVerify, ExternalVerifyHmac } from '/_102034_/l2/shared/contracts/connections/externalSystem.js';
 import { verifyExternalNotice, type ExternalNotice } from '/_102034_/l1/server/layer_1_external/connections/external/verifyNotice.js';
 
 const SECRET = 'notice-secret';

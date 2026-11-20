@@ -10,8 +10,8 @@ import { createRequestContext } from '/_102034_/l1/server/layer_2_controllers/ex
 import { createMemoryDataRuntime } from '/_102034_/l1/mdm/layer_1_external/data/memory/MdmDataRuntimeMemory.js';
 import { findAgentMember } from '/_102034_/l1/mdm/layer_3_usecases/agentMember.js';
 import { mdmPlatformServes } from '/_102034_/l1/mdm/layer_3_usecases/platformServes.js';
-import cm from '/_102034_/l1/server/layer_1_external/connections/catalogs/cm.js';
-import type { ConnectionCatalog, ConnectionContext } from '/_102034_/l1/server/layer_1_external/connections/catalogs/types.js';
+import cm from '/_102034_/l2/shared/contracts/connections/cm.js';
+import type { ConnectionCatalog, ConnectionContext } from '/_102034_/l2/shared/contracts/connections/types.js';
 
 const CTX = {} as RequestContext;
 const CONTEXT: ConnectionContext = { organizationId: 'org-1', actorUserId: 'cm-1' };

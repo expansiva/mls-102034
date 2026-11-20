@@ -8,7 +8,7 @@ import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type { TableDefinition } from '/_102034_/l1/server/layer_1_external/persistence/contracts.js';
 import type { ExternalRef } from '/_102034_/l1/server/layer_1_external/connections/external/sendExternal.js';
-import type { ExternalSystemDeclaration } from '/_102034_/l1/server/layer_1_external/connections/external/types.js';
+import type { ExternalSystemDeclaration } from '/_102034_/l2/shared/contracts/connections/externalSystem.js';
 
 export const EXTERNAL_SETTINGS_TABLE = 'platform_external_settings';
 

@@ -7,7 +7,7 @@ import { existsSync, readdirSync } from 'node:fs';
 import { distDefsReader } from '/_102034_/l1/workflow/assistantCatalogDefs.js';
 import { resolveProjectsPath } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import { connectionCatalogs } from '/_102034_/l1/server/layer_1_external/connections/connectionCatalogs.js';
-import { externalSystemDeclarationFile } from '/_102034_/l1/server/layer_1_external/connections/external/types.js';
+import { externalSystemDeclarationFile } from '/_102034_/l2/shared/contracts/connections/externalSystem.js';
 
 const SAFE_NAME = /^[a-z][A-Za-z0-9]*$/u;
 const cache = new Map<string, Promise<Map<string, string>>>();

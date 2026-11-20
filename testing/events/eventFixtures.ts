@@ -3,7 +3,7 @@
  *
  *   import { exampleEventIndex, createFakeModuleEventPublisher, createFakeConsumesRoute } from '/_102034_/testing/events/eventFixtures.js';
  */
-import type { ConnectionResult } from '/_102034_/l1/server/layer_1_external/connections/catalogs/types.js';
+import type { ConnectionResult } from '/_102034_/l2/shared/contracts/connections/types.js';
 import type {
   ModuleEventCallContext,
   ModuleEventPublishOpts,

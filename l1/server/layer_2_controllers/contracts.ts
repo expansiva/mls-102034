@@ -2,7 +2,7 @@
 import type { IDataRuntime } from '/_102034_/l1/server/layer_1_external/data/runtime.js';
 import type { ICacheRuntime } from '/_102034_/l1/server/layer_1_external/cache/CacheRuntimeMemory.js';
 import type { MdmFacade } from '/_102034_/l1/mdm/layer_3_usecases/mdmFacade.js';
-import type { ConnectionContext } from '/_102034_/l1/server/layer_1_external/connections/catalogs/types.js';
+import type { ConnectionContext } from '/_102034_/l2/shared/contracts/connections/types.js';
 
 /**
  * What a route that serves an operation of a connection receives, next to the input: which operation, who the call is about

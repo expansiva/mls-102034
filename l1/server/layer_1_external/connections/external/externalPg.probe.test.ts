@@ -27,7 +27,7 @@ import {
   EXTERNAL_SETTINGS_TABLE,
   createExternalSettingsStore,
 } from '/_102034_/l1/server/layer_1_external/connections/external/externalSettingsStore.js';
-import type { ExternalSystemDeclaration } from '/_102034_/l1/server/layer_1_external/connections/external/types.js';
+import type { ExternalSystemDeclaration } from '/_102034_/l2/shared/contracts/connections/externalSystem.js';
 
 const URL = process.env.EXTERNAL_PROBE_DATABASE_URL ?? '';
 const ENABLED = process.env.RUN_EXTERNAL_PG_PROBE === 'true' && URL !== '';

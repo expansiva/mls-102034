@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { exampleExternalSystem } from '/_102034_/testing/connections/externalFixtures.js';
 import type { ExternalRef } from '/_102034_/l1/server/layer_1_external/connections/external/sendExternal.js';
-import type { ExternalSystemDeclaration } from '/_102034_/l1/server/layer_1_external/connections/external/types.js';
+import type { ExternalSystemDeclaration } from '/_102034_/l2/shared/contracts/connections/externalSystem.js';
 import { tableDefinitions } from '/_102034_/l1/server/layer_1_external/connections/external/settings/persistence.js';
 import {
   EXTERNAL_SETTINGS_TABLE,

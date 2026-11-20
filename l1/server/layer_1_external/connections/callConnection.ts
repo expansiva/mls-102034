@@ -18,7 +18,7 @@ import {
   type ExternalAdapterContext,
   type ExternalSystemAdapter,
   type ExternalSystemDeclaration,
-} from '/_102034_/l1/server/layer_1_external/connections/external/types.js';
+} from '/_102034_/l2/shared/contracts/connections/externalSystem.js';
 import { createAssistantContext } from '/_102034_/l1/workflow/assistantRuntime.js';
 import { createMessagesWorkflowIdentities } from '/_102034_/l1/workflow/messagesIdentities.js';
 import { moduleHeaders, postEnvelope } from '/_102034_/l1/server/layer_1_external/collabMessages/transport.js';
@@ -29,7 +29,7 @@ import type {
   ConnectionErrorCode,
   ConnectionOperation,
   ConnectionResult,
-} from '/_102034_/l1/server/layer_1_external/connections/catalogs/types.js';
+} from '/_102034_/l2/shared/contracts/connections/types.js';
 
 /**
  * `callConnection(connectionId, operationId, input, context, opts?)`: the one way a backend calls another system

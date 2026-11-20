@@ -4,11 +4,11 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import type { ConnectionContext } from '/_102034_/l1/server/layer_1_external/connections/catalogs/types.js';
+import type { ConnectionContext } from '/_102034_/l2/shared/contracts/connections/types.js';
 import {
   validateExternalSystemAdapter,
   validateExternalSystemDeclaration,
-} from '/_102034_/l1/server/layer_1_external/connections/external/types.js';
+} from '/_102034_/l2/shared/contracts/connections/externalSystem.js';
 import {
   createFakeAdapterContext,
   createFakeExternalSender,

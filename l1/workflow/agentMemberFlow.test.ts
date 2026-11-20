@@ -10,7 +10,7 @@ import { getMdmKv, putMdmKv, reserveMdmKv } from '/_102034_/l1/mdm/layer_3_useca
 import { createAssistantCatalogSource, ASSISTANT_CATALOG_SCHEMA } from '/_102034_/l1/workflow/assistantCatalog.js';
 import { execAssistantAction } from '/_102034_/l1/workflow/assistantExec.js';
 import { createConnectionServer } from '/_102034_/l1/workflow/connectionServe.js';
-import cmCatalog from '/_102034_/l1/server/layer_1_external/connections/catalogs/cm.js';
+import cmCatalog from '/_102034_/l2/shared/contracts/connections/cm.js';
 
 /**
  * The whole way, no LLM, with the mdm in memory: the cm makes the agent a member through the connection (the function `/exec/connection`

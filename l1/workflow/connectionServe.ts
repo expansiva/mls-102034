@@ -7,7 +7,7 @@ import type {
   ConnectionContext,
   ConnectionErrorCode,
   ConnectionResult,
-} from '/_102034_/l1/server/layer_1_external/connections/catalogs/types.js';
+} from '/_102034_/l2/shared/contracts/connections/types.js';
 
 /**
  * The operations of a connection that the module SERVES (the connections contract (conexoes.md) §2): the outside system calls

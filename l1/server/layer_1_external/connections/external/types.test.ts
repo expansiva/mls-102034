@@ -7,7 +7,7 @@ import {
   validateExternalSystemAdapter,
   validateExternalSystemDeclaration,
   type ExternalSystemDeclaration,
-} from '/_102034_/l1/server/layer_1_external/connections/external/types.js';
+} from '/_102034_/l2/shared/contracts/connections/externalSystem.js';
 
 function declaration(patch: Record<string, unknown> = {}): ExternalSystemDeclaration {
   return {

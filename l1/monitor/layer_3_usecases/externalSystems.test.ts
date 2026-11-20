@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { AppError } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import type { ExternalCallRow } from '/_102034_/l1/server/layer_1_external/connections/external/externalCallStore.js';
-import type { ExternalSystemDeclaration } from '/_102034_/l1/server/layer_1_external/connections/external/types.js';
+import type { ExternalSystemDeclaration } from '/_102034_/l2/shared/contracts/connections/externalSystem.js';
 import { monitorExternalSettingSetHandler, monitorExternalSystemsListHandler } from '/_102034_/l1/monitor/layer_2_controllers/externalSystemsHandlers.js';
 import {
   externalSystemsOf,
