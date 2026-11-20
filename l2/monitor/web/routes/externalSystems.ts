@@ -1,7 +1,7 @@
 /// <mls fileReference="_102034_/l2/monitor/web/routes/externalSystems.ts" enhancement="_blank" />
-import { LitElement, html } from 'lit';
+import { html } from 'lit';
 import { execBff } from '/_102029_/l2/bffClient.js';
-import { getMessageKey } from '/_102029_/l2/collabLitElement.js';
+import { CollabLitElement, getMessageKey } from '/_102029_/l2/collabLitElement.js';
 import {
   externalSystemsCatalog,
   externalSystemsCount,
@@ -66,7 +66,7 @@ function hostLabel(host: HostView): string {
   return host.fromSetting ?? '';
 }
 
-export class MonitorWebDesktopExternalSystemsPage extends LitElement {
+export class MonitorWebDesktopExternalSystemsPage extends CollabLitElement {
   static properties = {
     status: { state: true },
     busy: { state: true },

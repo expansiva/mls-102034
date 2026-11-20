@@ -1,5 +1,6 @@
 /// <mls fileReference="_102034_/l2/monitor/web/routes/monitorPagesText.test.ts" enhancement="_blank" />
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import {
   externalSystemsCatalog,
@@ -41,3 +42,11 @@ test('FORBIDDEN sai em pt pelo código, não pelo texto do servidor', () => {
   assert.equal(moduleEventsErrorText('FORBIDDEN', events, events.loadFailed), events.forbidden);
   assert.equal(externalSystemsErrorText(undefined, text, text.loadFailed), text.loadFailed);
 });
+
+// O .less só entra na página por `loadStyle` (injetado depois do super() pelo processCSS); LitElement puro não tem esse método e o CSS some calado.
+for (const page of ['externalSystems', 'moduleEvents']) {
+  test(`${page}: a página que tem .less estende a classe que tem loadStyle`, () => {
+    const source = readFileSync(new URL(`./${page}.ts`, import.meta.url), 'utf8');
+    assert.match(source, /extends CollabLitElement\b/);
+  });
+}
