@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import path from 'node:path';
 import type { RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import type { AssistantCatalog, AssistantCatalogSource } from '/_102034_/l1/workflow/assistantCatalog.js';
 import type { ConnectionServeInput } from '/_102034_/l1/workflow/connectionServe.js';
@@ -32,6 +34,11 @@ export interface ReleaseCatalogDeliveryDeps {
     get(ctx: RequestContext, params: { key: string }): Promise<{ value?: unknown } | null>;
     put(ctx: RequestContext, params: { key: string; value: Record<string, unknown> }): Promise<unknown>;
   };
+  /**
+   * Sha256 of the compiled `.js` of the module that serves `platform.releaseCatalogChanged`.
+   * `null` when no route of the release serves that operation.
+   */
+  consumerFingerprint: () => Promise<string | null>;
   newContext: () => RequestContext;
   log?: { info: (message: string) => void; error: (message: string) => void };
 }
@@ -143,6 +150,53 @@ export function hashCatalogs(catalogs: readonly { module: string }[]): string {
   return createHash('sha256').update(JSON.stringify(stable([...catalogs].sort((a, b) => (a.module < b.module ? -1 : a.module > b.module ? 1 : 0))))).digest('hex');
 }
 
+export interface CompiledJsRoot {
+  /** Stable id of the compiled module (the folder name under `l1/`). */
+  id: string;
+  /** Absolute path of `dist/local/_<projectId>_/l1/<moduleId>/`. */
+  dir: string;
+}
+
+/**
+ * Sha256 of the `.js` bytes of the compiled modules. Each file enters as `<id>/<relative path>` plus its bytes,
+ * sorted, so the order the directories are read does not change the result. A missing directory is listed in
+ * `missing` and left out; it is never an error.
+ */
+export function fingerprintCompiledJs(roots: readonly CompiledJsRoot[]): { fingerprint: string; missing: string[] } {
+  const missing: string[] = [];
+  const files: Array<{ key: string; bytes: Buffer }> = [];
+  const ordered = [...roots].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  for (const root of ordered) {
+    if (!existsSync(root.dir)) {
+      missing.push(root.id);
+      continue;
+    }
+    collectJs(root.dir, root.id, files);
+  }
+  files.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  const hash = createHash('sha256');
+  for (const file of files) {
+    hash.update(file.key);
+    hash.update('\0');
+    hash.update(file.bytes);
+    hash.update('\0');
+  }
+  return { fingerprint: hash.digest('hex'), missing };
+}
+
+function collectJs(dir: string, prefix: string, out: Array<{ key: string; bytes: Buffer }>): void {
+  const entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  for (const entry of entries) {
+    const abs = path.join(dir, entry.name);
+    const key = `${prefix}/${entry.name}`;
+    if (entry.isDirectory()) {
+      collectJs(abs, key, out);
+      continue;
+    }
+    if (entry.isFile() && entry.name.endsWith('.js')) out.push({ key, bytes: readFileSync(abs) });
+  }
+}
+
 export async function deliverReleaseCatalog(deps: ReleaseCatalogDeliveryDeps): Promise<ReleaseCatalogDelivery> {
   const log = deps.log ?? console;
   try {
@@ -167,12 +221,17 @@ export async function deliverReleaseCatalog(deps: ReleaseCatalogDeliveryDeps): P
       return 'skipped';
     }
     const hash = hashCatalogs(catalogs);
+    const fingerprint = await deps.consumerFingerprint();
+    if (fingerprint === null) {
+      log.info(`[release-catalog] no module serves ${RELEASE_CATALOG_CONNECTION}.${RELEASE_CATALOG_OPERATION}: nothing delivered`);
+      return 'no_module';
+    }
 
     const ctx = deps.newContext();
     const key = `${KEY_PREFIX}${deps.projectId}`;
     const last = await deps.kv.get(ctx, { key });
-    const delivered = last?.value !== null && typeof last?.value === 'object' ? (last.value as { hash?: unknown }).hash : undefined;
-    if (delivered === hash) {
+    const stored = last?.value !== null && typeof last?.value === 'object' ? (last.value as { hash?: unknown; consumer?: unknown }) : undefined;
+    if (stored?.hash === hash && stored.consumer === fingerprint) {
       log.info(`[release-catalog] unchanged (release ${releaseId}): not delivered again`);
       return 'unchanged';
     }
@@ -182,7 +241,7 @@ export async function deliverReleaseCatalog(deps: ReleaseCatalogDeliveryDeps): P
       operationId: RELEASE_CATALOG_OPERATION,
       input: { releaseId, hash, catalogs },
       context: { organizationId },
-      idempotencyKey: `${releaseId}:${hash}`,
+      idempotencyKey: `${releaseId}:${hash}:${fingerprint}`,
     });
     if (!result.ok) {
       // Only the absence of a route is "no module serves it" (the message of connectionServe.ts); any other `not_found`
@@ -195,7 +254,7 @@ export async function deliverReleaseCatalog(deps: ReleaseCatalogDeliveryDeps): P
       return 'failed';
     }
     // The hash is kept only after the module said ok: a failure is tried again at the next boot.
-    await deps.kv.put(ctx, { key, value: { hash, releaseId, at: new Date().toISOString() } });
+    await deps.kv.put(ctx, { key, value: { hash, releaseId, consumer: fingerprint, at: new Date().toISOString() } });
     log.info(`[release-catalog] delivered: release ${releaseId}, ${catalogs.length} module(s)`);
     return 'delivered';
   } catch (error) {

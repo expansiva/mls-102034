@@ -1,13 +1,14 @@
 /// <mls fileReference="_102034_/l1/workflow/releaseCatalogDelivery.test.ts" enhancement="_blank"/>
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import type { RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import type { AssistantCatalog, AssistantCatalogSource, CatalogLoad } from '/_102034_/l1/workflow/assistantCatalog.js';
 import type { ConnectionServeInput } from '/_102034_/l1/workflow/connectionServe.js';
-import { deliverReleaseCatalog, hashCatalogs, type ReleaseCatalogDeliveryDeps } from '/_102034_/l1/workflow/releaseCatalogDelivery.js';
+import { deliverReleaseCatalog, fingerprintCompiledJs, hashCatalogs, type ReleaseCatalogDeliveryDeps } from '/_102034_/l1/workflow/releaseCatalogDelivery.js';
 import type { ConnectionResult } from '/_102034_/l2/shared/contracts/connections/types.js';
 
 const CTX = {} as RequestContext;
@@ -16,7 +17,7 @@ function catalogOf(module: string, extra: Record<string, unknown> = {}): Assista
   return { schemaVersion: 'assistant-catalog-v1', module, commands: [], queries: [], ...extra } as AssistantCatalog;
 }
 
-function harness(over: { releaseId?: string | null; catalogs?: Record<string, CatalogLoad>; answer?: ConnectionResult | Error; stored?: Record<string, unknown> | null; organizationId?: string | undefined; kvPutFails?: boolean } = {}) {
+function harness(over: { releaseId?: string | null; catalogs?: Record<string, CatalogLoad>; answer?: ConnectionResult | Error; stored?: Record<string, unknown> | null; organizationId?: string | undefined; kvPutFails?: boolean; fingerprint?: string | null } = {}) {
   const served: ConnectionServeInput[] = [];
   const puts: Array<{ key: string; value: Record<string, unknown> }> = [];
   const logs: string[] = [];
@@ -46,6 +47,7 @@ function harness(over: { releaseId?: string | null; catalogs?: Record<string, Ca
     },
     newContext: () => CTX,
     log: { info: (line) => logs.push(`info ${line}`), error: (line) => logs.push(`error ${line}`) },
+    consumerFingerprint: async () => (over.fingerprint === undefined ? 'fp-1' : over.fingerprint),
   };
   return { deps, served, puts, logs };
 }
@@ -62,7 +64,8 @@ test('a new hash is delivered to platform.releaseCatalogChanged with the key <re
   assert.equal(input.releaseId, 'rel-1');
   assert.deepEqual(input.catalogs.map((catalog) => catalog.module), ['modA', 'modB']);
   assert.equal(input.hash, hashCatalogs(input.catalogs));
-  assert.equal(call.idempotencyKey, `rel-1:${input.hash}`);
+  assert.equal(call.idempotencyKey, `rel-1:${input.hash}:fp-1`);
+  assert.equal(h.puts[0].value.consumer, 'fp-1');
   assert.equal(h.puts.length, 1);
   assert.equal(h.puts[0].key, 'release-catalog:999001');
   assert.equal(h.puts[0].value.hash, input.hash);
@@ -186,6 +189,72 @@ test('rt247: a refusal of the module puts its message (up to 200 characters) in 
   const line = h.logs.find((entry) => entry.startsWith('error [release-catalog] not delivered: invalid: catalogs.lookups is not permitted.'));
   assert.ok(line);
   assert.ok(line.length < 'error [release-catalog] not delivered: invalid: '.length + 201);
+});
+
+test('rt283: the same catalogs and the same fingerprint are unchanged', async () => {
+  const first = harness();
+  await deliverReleaseCatalog(first.deps);
+  const again = harness({ stored: first.puts[0].value });
+  assert.equal(await deliverReleaseCatalog(again.deps), 'unchanged');
+  assert.equal(again.served.length, 0);
+});
+
+test('rt283: the same catalogs with a different fingerprint are delivered and the kv keeps the new consumer', async () => {
+  const first = harness();
+  await deliverReleaseCatalog(first.deps);
+  const changed = harness({ stored: first.puts[0].value, fingerprint: 'fp-2' });
+  assert.equal(await deliverReleaseCatalog(changed.deps), 'delivered');
+  assert.equal(changed.puts[0].value.consumer, 'fp-2');
+  assert.equal(changed.served[0].idempotencyKey?.endsWith(':fp-2'), true);
+});
+
+test('rt283: a stored record without consumer is delivered again', async () => {
+  const first = harness();
+  await deliverReleaseCatalog(first.deps);
+  const hash = first.puts[0].value.hash;
+  const legacy = harness({ stored: { hash, releaseId: 'rel-1' } });
+  assert.equal(await deliverReleaseCatalog(legacy.deps), 'delivered');
+  assert.equal(legacy.puts[0].value.consumer, 'fp-1');
+});
+
+test('rt283: a null fingerprint is no_module and writes nothing', async () => {
+  const h = harness({ fingerprint: null });
+  assert.equal(await deliverReleaseCatalog(h.deps), 'no_module');
+  assert.equal(h.puts.length, 0);
+  assert.equal(h.served.length, 0);
+});
+
+test('rt283: two folders with the same .js bytes hash the same whatever the read order, and a changed byte does not', () => {
+  const left = mkdtempSync(path.join(tmpdir(), 'rt283a-'));
+  const right = mkdtempSync(path.join(tmpdir(), 'rt283b-'));
+  try {
+    writeFileSync(path.join(left, 'b.js'), 'one');
+    writeFileSync(path.join(left, 'a.js'), 'two');
+    writeFileSync(path.join(right, 'a.js'), 'two');
+    writeFileSync(path.join(right, 'b.js'), 'one');
+    writeFileSync(path.join(left, 'note.json'), 'ignore');
+    const a = fingerprintCompiledJs([{ id: 'mod', dir: left }]);
+    const b = fingerprintCompiledJs([{ id: 'mod', dir: right }]);
+    assert.equal(a.fingerprint, b.fingerprint);
+    assert.equal(a.missing.length, 0);
+    const swapped = fingerprintCompiledJs([{ id: 'z', dir: right }, { id: 'mod', dir: left }]);
+    const swappedBack = fingerprintCompiledJs([{ id: 'mod', dir: left }, { id: 'z', dir: right }]);
+    assert.equal(swapped.fingerprint, swappedBack.fingerprint);
+    writeFileSync(path.join(right, 'a.js'), 'two!');
+    assert.notEqual(fingerprintCompiledJs([{ id: 'mod', dir: right }]).fingerprint, a.fingerprint);
+    const gone = path.join(left, 'missing-mod');
+    const partial = fingerprintCompiledJs([{ id: 'mod', dir: left }, { id: 'gone', dir: gone }]);
+    assert.deepEqual(partial.missing, ['gone']);
+  } finally {
+    rmSync(left, { recursive: true, force: true });
+    rmSync(right, { recursive: true, force: true });
+  }
+});
+
+test('rt283: the delivery motor names no module', () => {
+  const source = readFileSync(fileURLToPath(new URL('./releaseCatalogDelivery.ts', import.meta.url)), 'utf8');
+  assert.equal(source.includes('agents'), false);
+  assert.equal(source.includes('102047'), false);
 });
 
 test('rt247 s1b: a not_found that is not the absence of a route is a failure of the module: no hash kept, the log says why', async () => {

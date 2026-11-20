@@ -1,7 +1,7 @@
 /// <mls fileReference="_102034_/l1/workflow/assistantRuntime.ts" enhancement="_blank"/>
 import { getSharedIdentityCache } from '/_102034_/l1/server/layer_1_external/cache/identityCache.js';
 import { createServerMessagesClient } from '/_102034_/l1/server/layer_1_external/collabMessages/client.js';
-import { readProjectsConfig } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
+import { readProjectsConfig, resolveProjectsPath } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import { getSharedDataRuntime } from '/_102034_/l1/mdm/layer_1_external/data/runtimeFactory.js';
 import { getResolvedOrganizationCompanyId } from '/_102034_/l1/mdm/layer_3_usecases/organizationBootstrap.js';
 import { createRequestContext, withAlphaAuthorities } from '/_102034_/l1/server/layer_2_controllers/execBff.js';
@@ -28,7 +28,7 @@ import {
 } from '/_102034_/l1/workflow/assistantCatalog.js';
 import { defsCatalogImporter, distDefsReader } from '/_102034_/l1/workflow/assistantCatalogDefs.js';
 import { execAssistantAction, type AssistantAgentAccess, type AssistantExecInput, type AssistantExecResult } from '/_102034_/l1/workflow/assistantExec.js';
-import { deliverReleaseCatalog, type ReleaseCatalogDelivery } from '/_102034_/l1/workflow/releaseCatalogDelivery.js';
+import { deliverReleaseCatalog, fingerprintCompiledJs, RELEASE_CATALOG_CONNECTION, RELEASE_CATALOG_OPERATION, type ReleaseCatalogDelivery } from '/_102034_/l1/workflow/releaseCatalogDelivery.js';
 import { readMessagesIntegration } from '/_102034_/l1/server/layer_1_external/config/messagesIntegration.js';
 import { getMdmKv } from '/_102034_/l1/mdm/layer_3_usecases/kvUsecases.js';
 import { findAgentMember } from '/_102034_/l1/mdm/layer_3_usecases/agentMember.js';
@@ -164,6 +164,18 @@ export function createAssistantRunners(projectId: string): AssistantRunners {
       },
       kv: { get: (ctx, params) => getMdmKv(ctx, params), put: (ctx, params) => putMdmKv(ctx, params) },
       newContext,
+      consumerFingerprint: async () => {
+        const index = await serveIndex();
+        const routes = index.byOperation.get(`${RELEASE_CATALOG_CONNECTION}.${RELEASE_CATALOG_OPERATION}`) ?? [];
+        if (routes.length === 0) return null;
+        const ids = [...new Set(routes.map((route) => route.moduleId))];
+        const { fingerprint, missing } = fingerprintCompiledJs(ids.map((id) => ({
+          id,
+          dir: resolveProjectsPath(`dist/local/_${projectId}_/l1/${id}`),
+        })));
+        for (const id of missing) console.info(`[release-catalog] compiled module missing: ${id}`);
+        return fingerprint;
+      },
     }),
     warmCatalogs: () => warmAssistantCatalogs(catalogs, assistantExecModules(projectId).map((entry) => entry.moduleId)),
     activities: (input) => listAssistantActivities(newContext(), {
