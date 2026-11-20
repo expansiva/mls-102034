@@ -235,15 +235,21 @@ export interface CmDescribeInput {
   /** When the cm took those roles (ISO 8601), as the `onBehalfOf` of today's `catalog` carries it. */
   snapshotAt: string;
 }
-export interface CmDescribeOutput {
+/** Same version as `knownVersion`: only what depends on the actor. Valid only when `knownVersion` equals the current version. */
+export interface CmDescribeSameVersion {
   version: string;
-  /** Left out when `knownVersion` is the current one: only what depends on the actor is answered. */
-  toolsMode?: 'all' | 'tree';
-  /** Light `describe`: only the tools that are ON for the agent. */
-  tools?: CmTool[];
-  /** Only the ids of the actions the actor of the context can use now. */
+  allowed: string[];
+  toolsMode?: never;
+  tools?: never;
+}
+/** Full answer: always when the version is not the one the cm knows. `version` is never empty and changes whenever the linked tools change. */
+export interface CmDescribeFull {
+  version: string;
+  toolsMode: 'all' | 'tree';
+  tools: CmTool[];
   allowed: string[];
 }
+export type CmDescribeOutput = CmDescribeSameVersion | CmDescribeFull;
 
 export type CmRecordOutcome = 'done' | 'refused_rule' | 'forbidden' | 'no_person' | 'not_found' | 'stale_version' | 'invalid_input' | 'unavailable';
 export interface CmRecordInput {
@@ -292,7 +298,7 @@ export const cm: ConnectionCatalog = {
     { "operationId": "listCmTools", "direction": "call", "kind": "query", "description": "List the tools of the cm itself, so they enter the tool catalog of the module.", "inputType": "CmListCmToolsInput", "outputType": "CmListCmToolsOutput", "reply": "now" },
     { "operationId": "runAiPrompt", "direction": "call", "kind": "command", "description": "Run one standalone AI prompt with a wanted answer format, outside any process task (choosing the new tools of a release).", "inputType": "CmRunAiPromptInput", "outputType": "CmRunAiPromptOutput", "reply": "now", "timeoutMs": 120000 },
     { "operationId": "agentDraftReady", "direction": "serve", "kind": "command", "description": "The cm tells the module that the preparation of a draft agent ended: ready, with suggested tools, or refused, with the reason.", "inputType": "CmAgentDraftReadyInput", "outputType": "CmAgentDraftReadyOutput", "reply": "now" },
-    { "operationId": "describe", "direction": "serve", "kind": "query", "description": "The cm asks which tools an agent has for the person of the context: the version, the way to choose among them, the tools and the ones allowed now.", "inputType": "CmDescribeInput", "outputType": "CmDescribeOutput", "reply": "now", "hiddenFromAgents": true, "noRowLimit": true },
+    { "operationId": "describe", "direction": "serve", "kind": "query", "description": "The cm asks which tools an agent has for the person of the context. version is never empty and changes whenever the list of linked tools changes. An agent with no linked tool answers the full form { version: \"empty\", toolsMode: \"all\", tools: [], allowed: [] }. The same-version form, version and allowed only, is valid only when knownVersion equals the current version. An agent this app does not know answers the error not_found, and the cm skips the app.", "inputType": "CmDescribeInput", "outputType": "CmDescribeOutput", "reply": "now", "hiddenFromAgents": true, "noRowLimit": true },
     { "operationId": "ensureAgentMember", "direction": "serve", "kind": "command", "description": "Make the agent a member of the organization (an mdm person, no login): create it, or set its name and whether it is active. Never deleted. Same agentId, same member.", "inputType": "CmEnsureAgentMemberInput", "outputType": "CmEnsureAgentMemberOutput", "reply": "now", "hiddenFromAgents": true, "servedBy": "platform" },
     { "operationId": "record", "direction": "serve", "kind": "command", "description": "The cm tells the module what an agent did in one execution; repeating the same execution does not record twice.", "inputType": "CmRecordInput", "outputType": "CmRecordOutput", "reply": "now", "hiddenFromAgents": true }
   ]
