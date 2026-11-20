@@ -45,8 +45,10 @@ test('FORBIDDEN sai em pt pelo código, não pelo texto do servidor', () => {
 
 // O .less só entra na página por `loadStyle` (injetado depois do super() pelo processCSS); LitElement puro não tem esse método e o CSS some calado.
 for (const page of ['externalSystems', 'moduleEvents']) {
-  test(`${page}: a página que tem .less estende a classe que tem loadStyle`, () => {
+  test(`${page}: a página que tem .less estende a classe com loadStyle e o cabeçalho deixa o processCSS injetar o .less`, () => {
     const source = readFileSync(new URL(`./${page}.ts`, import.meta.url), 'utf8');
     assert.match(source, /extends CollabLitElement\b/);
+    // processCSS pula o arquivo cujo cabeçalho diz enhancement="_blank" (mls-ci/processCSS.js, addCssWithOutShadowRoot).
+    assert.doesNotMatch(source.split('\n')[0], /enhancement="_blank"/);
   });
 }
