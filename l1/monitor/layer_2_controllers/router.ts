@@ -33,6 +33,7 @@ import {
   monitorExternalSettingSetHandler,
   monitorExternalSystemsListHandler,
 } from '/_102034_/l1/monitor/layer_2_controllers/externalSystemsHandlers.js';
+import { monitorModuleEventsListHandler } from '/_102034_/l1/monitor/layer_2_controllers/moduleEventsHandlers.js';
 
 export function createMonitorRouter(): Map<string, BffHandler> {
   return new Map<string, BffHandler>([
@@ -66,5 +67,6 @@ export function createMonitorRouter(): Map<string, BffHandler> {
     ['monitor.tests.results', monitorTestsResultsHandler],
     ['monitor.externalSystems.list', monitorExternalSystemsListHandler],
     ['monitor.externalSettings.set', monitorExternalSettingSetHandler],
+    ['monitor.moduleEvents.list', monitorModuleEventsListHandler],
   ]);
 }

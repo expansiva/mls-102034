@@ -42,6 +42,7 @@ export const moduleFrontendDefinition: MasterFrontendModuleFrontendDefinition = 
     { id: 'tests', label: 'Tests', href: '/monitor/tests', description: 'Generated BFF test cases — view runs and execute (dev only)' },
     { id: 'releases', label: 'Releases', href: '/monitor/releases', description: 'Deploy/rollback releases and view pm2 logs (admin)' },
     { id: 'external-systems', label: 'External systems', href: '/monitor/external-systems', description: 'Allowed hosts, serve hooks and settings of outside systems (admin)' },
+    { id: 'module-events', label: 'Module events', href: '/monitor/module-events', description: 'Published, delivered and failed events between modules (admin)' },
     { id: 'config', label: 'Config', href: '/monitor/config', description: 'Composed workspace config.json (read-only inspect)' },
   ],
   headerRenderer: {
@@ -140,6 +141,12 @@ export const moduleFrontendDefinition: MasterFrontendModuleFrontendDefinition = 
       entrypoint: '/_102034_/l2/monitor/web/routes/externalSystems.js',
       tag: 'monitor-web-desktop-external-systems-page',
       title: 'External systems',
+    },
+    {
+      path: '/monitor/module-events',
+      entrypoint: '/_102034_/l2/monitor/web/routes/moduleEvents.js',
+      tag: 'monitor-web-desktop-module-events-page',
+      title: 'Module events',
     },
     {
       path: '/monitor/config',

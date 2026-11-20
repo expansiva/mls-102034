@@ -21,6 +21,7 @@ import {
   purgeModuleEvents,
   type ModuleEventDb,
 } from '/_102034_/l1/server/layer_1_external/events/moduleEventQueue.js';
+import { moduleEventsOf } from '/_102034_/l1/monitor/layer_3_usecases/moduleEvents.js';
 import type { ModuleEventEnvelope } from '/_102034_/l1/server/layer_1_external/events/types.js';
 
 const URL = process.env.DATABASE_URL_TEST ?? '';
@@ -155,5 +156,24 @@ describe('module event queue on a real PostgreSQL', { skip: !ENABLED }, () => {
     );
     assert.deepEqual(afterNinety.rows.map((row) => row.eventId), ['probe-held', 'probe-wait']);
     console.log('MODULE-EVENT-PG retention 7/90 ok');
+  });
+  it('the monitor view counts by window in the database and never returns the body (rt272 s1)', async () => {
+    const db = poolDb(pool);
+    const recent = new Date(Date.now() - 3600_000).toISOString();
+    const middle = new Date(Date.now() - 3 * 86_400_000).toISOString();
+    await enqueue(db, PROJECT, envelope('probe-view-new', recent), ['billing', 'mail']);
+    await enqueue(db, PROJECT, envelope('probe-view-mid', middle), ['billing']);
+    await markFailed(db, 'probe-view-mid', 'billing', 'no-route');
+    const view = await moduleEventsOf({ db: pool }, PROJECT);
+    const row = view.events.find((item) => item.event === 'orders.placed');
+    assert.ok(row, 'the event appears with the module in front');
+    assert.ok(row.published24h >= 1 && row.published7d >= row.published24h + 1);
+    assert.ok(row.subscribers.includes('billing') && row.subscribers.includes('mail'));
+    assert.ok(row.failed >= 1 && row.pending >= 2);
+    const failure = view.failures.find((item) => item.consumerModule === 'billing' && item.reason === 'no-route');
+    assert.ok(failure && failure.publishedAt.length > 0, 'a failure carries when it was published, as text');
+    assert.equal(JSON.stringify(view).includes('module-data'), false);
+    assert.equal((await moduleEventsOf({ db: pool }, PROJECT, 'nobody')).events.length, 0);
+    console.log('MODULE-EVENT-PG monitor view ok');
   });
 });
