@@ -1,5 +1,8 @@
+// Mesmo caminho do shell: html.dark e html[data-theme="dark"].
+// As outras páginas do monitor ficam no tema claro (classes text-slate-*).
 monitor-web-desktop-module-events-page {
   display: block;
+  color: #0f172a;
 
   .module-events {
     display: flex;
@@ -17,12 +20,24 @@ monitor-web-desktop-module-events-page {
   h1 {
     font-size: 1.125rem;
     font-weight: 600;
+    color: #0f172a;
   }
 
   h2 {
     margin-bottom: 0.5rem;
     font-size: 0.875rem;
     font-weight: 500;
+    color: #334155;
+  }
+
+  p { color: #64748b; }
+
+  button {
+    border-radius: 9999px;
+    background: #f1f5f9;
+    color: #0f172a;
+    padding: 0.5rem 1rem;
+    font-size: 0.875rem;
   }
 
   table {
@@ -35,7 +50,25 @@ monitor-web-desktop-module-events-page {
     padding: 0.5rem 0.75rem 0.5rem 0;
   }
 
+  th { color: #475569; }
+
   tbody tr {
     border-top: 1px solid #e2e8f0;
+  }
+
+  html[data-theme="dark"] &,
+  html.dark & {
+    color: #e2e8f0;
+
+    h1 { color: #f8fafc; }
+    h2 { color: #cbd5e1; }
+    p, th { color: #94a3b8; }
+
+    button {
+      background: #1e293b;
+      color: #e2e8f0;
+    }
+
+    tbody tr { border-top-color: #334155; }
   }
 }

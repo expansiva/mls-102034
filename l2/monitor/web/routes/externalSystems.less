@@ -1,3 +1,67 @@
+// O monitor inteiro usa classes fixas do tema claro (text-slate-*, bg-white).
+// O shell marca o tema em html.dark e html[data-theme="dark"] (bootstrap.applyThemePreference).
 monitor-web-desktop-external-systems-page {
   display: block;
+  color: #0f172a;
+
+  h1, h2 {
+    color: #0f172a;
+  }
+
+  .muted { color: #64748b; }
+  .heading { color: #334155; }
+  .body { color: #1e293b; }
+  .code { color: #475569; }
+  .link { color: #0369a1; }
+  .ok { color: #047857; }
+  .warn { color: #b45309; }
+
+  .card {
+    background: #fff;
+    border: 1px solid #e2e8f0;
+  }
+
+  .row {
+    border-top: 1px solid #f1f5f9;
+  }
+
+  .chip {
+    background: #f1f5f9;
+    color: #0f172a;
+  }
+
+  .primary {
+    background: #0f172a;
+    color: #fff;
+  }
+
+  input {
+    border: 1px solid #e2e8f0;
+    background: #fff;
+    color: inherit;
+  }
+
+  html[data-theme="dark"] &,
+  html.dark & {
+    color: #e2e8f0;
+
+    h1, h2 { color: #f8fafc; }
+    .muted { color: #94a3b8; }
+    .heading { color: #cbd5e1; }
+    .body { color: #e2e8f0; }
+    .code { color: #cbd5e1; }
+    .link { color: #7dd3fc; }
+    .ok { color: #6ee7b7; }
+    .warn { color: #fcd34d; }
+    .card { background: #0f172a; border-color: #334155; }
+    .row { border-color: #1e293b; }
+    .chip { background: #1e293b; color: #e2e8f0; }
+    .primary { background: #e2e8f0; color: #0f172a; }
+
+    input {
+      background: #0f172a;
+      border-color: #334155;
+      color: #f8fafc;
+    }
+  }
 }

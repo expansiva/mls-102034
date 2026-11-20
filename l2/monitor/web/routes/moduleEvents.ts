@@ -1,6 +1,17 @@
 /// <mls fileReference="_102034_/l2/monitor/web/routes/moduleEvents.ts" enhancement="_blank" />
 import { LitElement, html } from 'lit';
 import { execBff } from '/_102029_/l2/bffClient.js';
+import { getMessageKey } from '/_102029_/l2/collabLitElement.js';
+import {
+  moduleEventsCatalog,
+  moduleEventsCount,
+  moduleEventsErrorText,
+  moduleEventsPageText,
+} from '/_102034_/l2/monitor/web/routes/moduleEventsText.js';
+
+function pageText() {
+  return moduleEventsPageText(getMessageKey(moduleEventsCatalog()));
+}
 
 interface EventSummary {
   event: string;
@@ -25,29 +36,6 @@ interface EventsPayload {
   failures?: EventFailure[];
 }
 
-const text = {
-  title: 'Module events',
-  refresh: 'Refresh',
-  loading: 'Loading module events...',
-  loadFailed: 'Could not load module events.',
-  empty: 'No module events.',
-  events: 'Events',
-  event: 'Event',
-  subscribers: 'Subscribers',
-  published24h: 'Published (24h)',
-  published7d: 'Published (7 days)',
-  delivered: 'Delivered',
-  pending: 'Pending',
-  failed: 'Failed',
-  failures: 'Failures',
-  consumer: 'Subscriber',
-  attempts: 'Attempts',
-  reason: 'Reason',
-  when: 'When',
-  noFailures: 'No failures.',
-  filtered: 'Filtered by module',
-} as const;
-
 function moduleFromLocation(): string {
   return new URLSearchParams(window.location.search).get('module')?.trim() ?? '';
 }
@@ -61,7 +49,7 @@ export class MonitorWebDesktopModuleEventsPage extends LitElement {
     failures: { state: true },
   };
 
-  status: string = text.loading;
+  status = '';
   busy = false;
   moduleId = '';
   declare events: EventSummary[];
@@ -69,6 +57,7 @@ export class MonitorWebDesktopModuleEventsPage extends LitElement {
 
   constructor() {
     super();
+    this.status = pageText().loading;
     this.events = [];
     this.failures = [];
   }
@@ -84,6 +73,7 @@ export class MonitorWebDesktopModuleEventsPage extends LitElement {
   }
 
   private async load() {
+    const text = pageText();
     this.busy = true;
     const res = await execBff<EventsPayload>(
       'monitor.moduleEvents.list',
@@ -92,7 +82,7 @@ export class MonitorWebDesktopModuleEventsPage extends LitElement {
     );
     this.busy = false;
     if (!res.ok || !res.data) {
-      this.status = res.error?.message ?? text.loadFailed;
+      this.status = moduleEventsErrorText(res.error?.code, text, text.loadFailed);
       this.events = [];
       this.failures = [];
       return;
@@ -100,10 +90,11 @@ export class MonitorWebDesktopModuleEventsPage extends LitElement {
     this.events = res.data.events ?? [];
     this.failures = res.data.failures ?? [];
     const scope = this.moduleId === '' ? '' : ` ${text.filtered} ${this.moduleId}.`;
-    this.status = this.events.length === 0 ? text.empty : `${this.events.length} event(s).${scope}`;
+    this.status = this.events.length === 0 ? text.empty : `${moduleEventsCount(text, this.events.length)}${scope}`;
   }
 
   private renderEvents() {
+    const text = pageText();
     return html`
       <section>
         <h2>${text.events}</h2>
@@ -138,6 +129,7 @@ export class MonitorWebDesktopModuleEventsPage extends LitElement {
   }
 
   private renderFailures() {
+    const text = pageText();
     return html`
       <section>
         <h2>${text.failures}</h2>
@@ -171,6 +163,7 @@ export class MonitorWebDesktopModuleEventsPage extends LitElement {
   }
 
   render() {
+    const text = pageText();
     return html`
       <section class="module-events">
         <header>
