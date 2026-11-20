@@ -219,12 +219,16 @@ export async function markRetry(
   eventId: string,
   consumerModule: string,
   next: Date,
+  attempts?: number,
 ): Promise<void> {
+  const owned = typeof attempts === 'number' ? ' AND "attempts" = $4' : '';
   await db.query(
     `UPDATE "platform_module_event_deliveries"
      SET "result" = 'pending', "nextAttemptAt" = $3::timestamptz, "leaseUntil" = NULL, "reason" = NULL
-     WHERE "eventId" = $1 AND "consumerModule" = $2 AND "result" = 'delivering'`,
-    [eventId, consumerModule, next.toISOString()],
+     WHERE "eventId" = $1 AND "consumerModule" = $2 AND "result" = 'delivering'${owned}`,
+    typeof attempts === 'number'
+      ? [eventId, consumerModule, next.toISOString(), attempts]
+      : [eventId, consumerModule, next.toISOString()],
   );
 }
 
@@ -233,13 +237,17 @@ export async function markFailed(
   eventId: string,
   consumerModule: string,
   reason: string,
+  attempts?: number,
 ): Promise<void> {
   const short = reason.slice(0, REASON_MAX);
+  const owned = typeof attempts === 'number' ? ' AND "attempts" = $4' : '';
   await db.query(
     `UPDATE "platform_module_event_deliveries"
      SET "result" = 'failed', "reason" = $3, "leaseUntil" = NULL
-     WHERE "eventId" = $1 AND "consumerModule" = $2 AND "result" = 'delivering'`,
-    [eventId, consumerModule, short],
+     WHERE "eventId" = $1 AND "consumerModule" = $2 AND "result" = 'delivering'${owned}`,
+    typeof attempts === 'number'
+      ? [eventId, consumerModule, short, attempts]
+      : [eventId, consumerModule, short],
   );
 }
 
