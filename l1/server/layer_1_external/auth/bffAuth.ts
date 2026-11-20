@@ -23,7 +23,7 @@ export interface CollabAuthClaims extends JWTPayload {
   name?: string;
   /**
    * Module authorities of the user, as `<moduleId>:<actorId>` (`petShop:admin`) — the platform's own role
-   * shape (`sites:admin`, `collab-llm:operator`) and exactly what the generated controllers already gate
+   * shape (`collab-sites:admin`, `collab-llm:operator`) and exactly what the generated controllers already gate
    * on. The issuer writes them on `active_org.teams[].roles`; these top-level fields are read if present.
    */
   authorities?: string[];
@@ -74,8 +74,15 @@ export const MODULE_ADMIN_ROUTINES: ReadonlySet<string> = new Set([
   'monitor.externalSettings.set',
 ]);
 
+/**
+ * The platform admin role as the issuer writes it on the token (`active_org.teams[].roles`): `collab-sites:admin`, the role
+ * collab-sites requires to publish (`collab-workspace/collab-sites/src/layer_1_external/middleware/auth.ts:20`). One place:
+ * a name no issuer emits (`sites:admin`) was checked here until 20/11 and denied the real admin (rt278).
+ */
+export const PLATFORM_ADMIN_AUTHORITY = 'collab-sites:admin';
+
 /** alpha; o papel do beta volta com a segurança, decisão do gerente de 19/11 */
-export const PROJECT_ADMIN_SOURCE = 'sites:admin';
+export const PROJECT_ADMIN_SOURCE = PLATFORM_ADMIN_AUTHORITY;
 
 /**
  * Token authorities plus `<module>:admin` for every project module, when the list holds `PROJECT_ADMIN_SOURCE`.

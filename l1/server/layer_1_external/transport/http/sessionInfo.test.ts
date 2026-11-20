@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resetProjectsConfigCache } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import { resetResolvedTableDefinitionsCache } from '/_102034_/l1/server/layer_1_external/persistence/registry.js';
-import { claimAuthorities, PROJECT_ADMIN_SOURCE } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
+import { claimAuthorities, PLATFORM_ADMIN_AUTHORITY, PROJECT_ADMIN_SOURCE } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
 import { OnboardingConfigError } from '/_102034_/l1/server/layer_1_external/config/onboardingConfig.js';
 import { openOrRecoverAccessRequest } from '/_102034_/l1/mdm/layer_3_usecases/selfRegistration.js';
 import { normalizeRegistrationEmail } from '/_102034_/l1/mdm/layer_3_usecases/registrationCandidates.js';
@@ -28,7 +28,7 @@ const activeOrgOnly: CollabAuthClaims = {
   sub: 'u1',
   email: 'aluno@academia.test',
   active_org: {
-    teams: [{ roles: ['mensalidadesAcademia:aluno', 'sites:admin'] }],
+    teams: [{ roles: ['mensalidadesAcademia:aluno', PLATFORM_ADMIN_AUTHORITY] }],
   },
 };
 
@@ -39,7 +39,7 @@ function sameMembers(actual: readonly string[], expected: readonly string[]): vo
 }
 
 test('claimAuthorities unions top-level and active_org.teams[].roles without duplicates', () => {
-  sameMembers(claimAuthorities(activeOrgOnly), ['mensalidadesAcademia:aluno', 'sites:admin']);
+  sameMembers(claimAuthorities(activeOrgOnly), ['mensalidadesAcademia:aluno', PLATFORM_ADMIN_AUTHORITY]);
 
   const union: CollabAuthClaims = {
     sub: 'u1',
@@ -61,8 +61,8 @@ test('claimAuthorities unions top-level and active_org.teams[].roles without dup
 test('/session/info with only active_org roles fills allAuthorities and realAuthorities', () => {
   const body = sessionInfoBody({ claims: activeOrgOnly, reject: false, reason: 'ok' }, 'development', null);
   assert.equal(body.authenticated, true);
-  sameMembers(body.allAuthorities, ['mensalidadesAcademia:aluno', 'sites:admin']);
-  sameMembers(body.realAuthorities, ['mensalidadesAcademia:aluno', 'sites:admin']);
+  sameMembers(body.allAuthorities, ['mensalidadesAcademia:aluno', PLATFORM_ADMIN_AUTHORITY]);
+  sameMembers(body.realAuthorities, ['mensalidadesAcademia:aluno', PLATFORM_ADMIN_AUTHORITY]);
   assert.equal(body.overridden, false);
   assert.equal('authorities' in body, false, 'the unused authorities field must not come back');
 });
@@ -71,15 +71,15 @@ test('/session/info with top-level and active_org is the union without duplicate
   const claims: CollabAuthClaims = {
     sub: 'u1',
     email: 'a@b.c',
-    authorities: ['mensalidadesAcademia:aluno', 'sites:admin'],
+    authorities: ['mensalidadesAcademia:aluno', PLATFORM_ADMIN_AUTHORITY],
     roles: ['mensalidadesAcademia:aluno'],
-    active_org: { teams: [{ roles: ['sites:admin', 'mensalidadesAcademia:responsavel'] }] },
+    active_org: { teams: [{ roles: [PLATFORM_ADMIN_AUTHORITY, 'mensalidadesAcademia:responsavel'] }] },
   };
   const body = sessionInfoBody({ claims, reject: false, reason: 'ok' }, 'development', null);
   sameMembers(body.allAuthorities, [
     'mensalidadesAcademia:aluno',
     'mensalidadesAcademia:responsavel',
-    'sites:admin',
+    PLATFORM_ADMIN_AUTHORITY,
   ]);
   sameMembers(body.realAuthorities, body.allAuthorities);
   assert.equal('authorities' in body, false);
@@ -129,7 +129,7 @@ test('presentation override replaces allAuthorities and keeps realAuthorities fr
     { userId: 'u1', authorities: ['petShop:admin'], setAt: 'now' },
   );
   assert.deepEqual(body.allAuthorities, ['petShop:admin']);
-  sameMembers(body.realAuthorities, ['mensalidadesAcademia:aluno', 'sites:admin']);
+  sameMembers(body.realAuthorities, ['mensalidadesAcademia:aluno', PLATFORM_ADMIN_AUTHORITY]);
   assert.equal(body.overridden, true);
   assert.equal('authorities' in body, false);
 });
@@ -536,4 +536,18 @@ test('a failed registration read is unavailable and is not unregistered', async 
   assert.equal(body.onboarding?.status, 'unavailable');
   assert.equal(body.onboarding?.requestId, undefined);
   assert.equal(body.userId, 'sub-erro');
+});
+
+test('/session/info of a token whose active_org.teams[].roles hold the role the issuer writes derives the module admins', () => {
+  const claims = {
+    sub: 'u1',
+    email: 'a@b.c',
+    active_org: { teams: [{ roles: ['collab-sites:admin'] }] },
+  } as CollabAuthClaims;
+  const body = sessionInfoBody({ claims, reject: false, reason: 'ok' }, 'development', null, null, undefined, ['repoHost']);
+  sameMembers(body.allAuthorities, [PLATFORM_ADMIN_AUTHORITY, 'repoHost:admin']);
+  sameMembers(body.realAuthorities, [PLATFORM_ADMIN_AUTHORITY]);
+  const legacy = { ...claims, active_org: { teams: [{ roles: ['sites:admin'] }] } } as CollabAuthClaims;
+  const none = sessionInfoBody({ claims: legacy, reject: false, reason: 'ok' }, 'development', null, null, undefined, ['repoHost']);
+  sameMembers(none.allAuthorities, ['sites:admin']);
 });

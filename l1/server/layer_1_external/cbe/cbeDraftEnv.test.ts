@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
+import { PLATFORM_ADMIN_AUTHORITY } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
 import { buildDenoArgs } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
 
 const SLUG = 'rt130-env';
@@ -221,7 +222,7 @@ const JWT_CLAIMS = {
   email: 'ana@example.com',
   name: 'Ana',
   iss: 'https://auth.collab.codes',
-  authorities: ['sites:admin'],
+  authorities: [PLATFORM_ADMIN_AUTHORITY],
   active_org: {
     id: 'org-1',
     teams: [{ id: 'team-1', name: 'ops', roles: ['comandaRestaurante:garcom'] }],

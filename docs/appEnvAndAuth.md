@@ -120,7 +120,7 @@ telemetry only: nothing authorizes by it.
 ## 3. Authority — the roles
 
 - Format `<moduleId>:<actorId>` (`petShop:admin`, `buildFlowFsm:projectManager`) — the extension of the
-  platform's own pattern (`sites:admin`, `collab-llm:operator`) and the shape the generated code already
+  platform's own pattern (`collab-sites:admin`, `collab-llm:operator`) and the shape the generated code already
   expects (`enforceActors`, and the `` `${module}:${actor}` `` fallback of the backend generator; E3 emits
   `<module>:<authority>`).
 - Authorities come from `active_org.teams[].roles` (also what `/session/info` returns to the shell menu and the monitor card).

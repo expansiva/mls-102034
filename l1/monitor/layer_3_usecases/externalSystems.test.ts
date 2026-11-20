@@ -1,5 +1,6 @@
 /// <mls fileReference="_102034_/l1/monitor/layer_3_usecases/externalSystems.test.ts" enhancement="_blank" />
 import { externalSystemsScope, isAppAdmin, modulesWithSystems } from '/_102034_/l1/monitor/layer_3_usecases/externalSystems.js';
+import { PLATFORM_ADMIN_AUTHORITY } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { AppError } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
@@ -165,9 +166,9 @@ test('modules with outside systems are the owners in the index, once each', () =
   );
 });
 
-test('only monitor:admin or sites:admin is an app admin; the admin of another module is not', () => {
+test('only monitor:admin or collab-sites:admin is an app admin; the admin of another module is not', () => {
   assert.equal(isAppAdmin(['monitor:admin']), true);
-  assert.equal(isAppAdmin(['sites:admin']), true);
+  assert.equal(isAppAdmin([PLATFORM_ADMIN_AUTHORITY]), true);
   assert.equal(isAppAdmin(['shop:admin']), false);
   assert.equal(isAppAdmin(['petShop:admin', 'shop:clerk']), false);
   assert.equal(isAppAdmin(undefined), false);
@@ -180,14 +181,14 @@ test('the admin of a module opens its own module only, never the list, and an ag
   assert.equal(externalSystemsScope(['shop:admin'], '', person), 'denied');
   assert.equal(externalSystemsScope(['shop:clerk'], 'shop', person), 'denied');
   assert.equal(externalSystemsScope(['monitor:admin'], '', person), 'all');
-  assert.equal(externalSystemsScope(['sites:admin'], 'billing', { write: true, agent: false }), 'all');
+  assert.equal(externalSystemsScope([PLATFORM_ADMIN_AUTHORITY], 'billing', { write: true, agent: false }), 'all');
   // module admin, writing: a person yes, an agent no; reading: an agent may
   assert.equal(externalSystemsScope(['shop:admin'], 'shop', { write: true, agent: false }), 'module');
   assert.equal(externalSystemsScope(['shop:admin'], 'shop', { write: true, agent: true }), 'denied');
   assert.equal(externalSystemsScope(['shop:admin'], 'shop', { write: false, agent: true }), 'module');
   // an agent never writes, even with the platform admin or only a derived module admin
-  assert.equal(externalSystemsScope(['sites:admin'], 'shop', { write: true, agent: true }), 'denied');
-  assert.equal(externalSystemsScope(['sites:admin'], 'shop', { write: false, agent: true }), 'all');
+  assert.equal(externalSystemsScope([PLATFORM_ADMIN_AUTHORITY], 'shop', { write: true, agent: true }), 'denied');
+  assert.equal(externalSystemsScope([PLATFORM_ADMIN_AUTHORITY], 'shop', { write: false, agent: true }), 'all');
 });
 
 test('the handlers: shop:admin reads shop and is refused for billing and without module; an agent cannot set', async () => {

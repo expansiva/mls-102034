@@ -3,6 +3,7 @@
  * What the monitor shows for the outside systems of one module.
  * A secret setting is only filled or missing. Its value never leaves this module.
  */
+import { PLATFORM_ADMIN_AUTHORITY } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
 import type { ExternalCallRow } from '/_102034_/l1/server/layer_1_external/connections/external/externalCallStore.js';
 import type { ExternalSettingsStore } from '/_102034_/l1/server/layer_1_external/connections/external/externalSettingsStore.js';
 import type { ExternalRef } from '/_102034_/l1/server/layer_1_external/connections/external/sendExternal.js';
@@ -66,12 +67,12 @@ export interface ExternalSystemsOfResult {
 
 /**
  * App admin: `monitor:admin` (the authority the monitor's own routines carry: the server keeps only the authorities of the
- * module a routine belongs to) or `sites:admin` (the platform's role, for the paths that do not filter). Not any
+ * module a routine belongs to) or `collab-sites:admin` (the platform's role, for the paths that do not filter). Not any
  * `<module>:admin`: the admin of a generated module, or an agent that holds one, must not read or write the secrets of
  * another system. The monitor's release pages do not check anything yet; this door does.
  */
 export function isAppAdmin(authorities: readonly string[] | undefined): boolean {
-  return (authorities ?? []).some((item) => item === 'monitor:admin' || item === 'sites:admin');
+  return (authorities ?? []).some((item) => item === 'monitor:admin' || item === PLATFORM_ADMIN_AUTHORITY);
 }
 
 export type ExternalSystemsScope = 'all' | 'module' | 'denied';

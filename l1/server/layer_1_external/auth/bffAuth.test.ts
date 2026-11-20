@@ -1,7 +1,7 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/auth/bffAuth.test.ts" enhancement="_blank" />
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { derivedModuleAdmins, moduleAuthorities, PROJECT_ADMIN_SOURCE, resolveBffSession, routineAuthorities, type CollabAuthClaims } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
+import { derivedModuleAdmins, moduleAuthorities, PLATFORM_ADMIN_AUTHORITY, PROJECT_ADMIN_SOURCE, resolveBffSession, routineAuthorities, type CollabAuthClaims } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
 
 const SECRET = 'a'.repeat(64);
 const CLAIMS: CollabAuthClaims = { sub: 'persona-1', email: 'persona@example.test', authorities: ['comandaRestaurante:garcom'] };
@@ -117,13 +117,13 @@ test('draft rejection keeps the same outcome for the caller (invalid-token) what
 });
 
 test('routineAuthorities opens the module admins only for the two external-systems routines of the monitor', () => {
-  const claims = { sub: 'u1', email: 'u1@example.com', authorities: ['monitor:viewer', 'shop:admin', 'billing:clerk', 'sites:admin'] } as CollabAuthClaims;
+  const claims = { sub: 'u1', email: 'u1@example.com', authorities: ['monitor:viewer', 'shop:admin', 'billing:clerk', PLATFORM_ADMIN_AUTHORITY] } as CollabAuthClaims;
   // every other monitor routine keeps only `monitor:`
   assert.deepEqual(routineAuthorities(claims, 'monitor', 'monitor.releases.list'), ['monitor:viewer']);
   assert.deepEqual(routineAuthorities(claims, 'monitor', 'monitor.releases.list'), moduleAuthorities(claims, 'monitor'));
   // the two external-systems routines also receive the `:admin` ones, and only those
   for (const routine of ['monitor.externalSystems.list', 'monitor.externalSettings.set']) {
-    assert.deepEqual(routineAuthorities(claims, 'monitor', routine).sort(), ['monitor:viewer', 'shop:admin', 'sites:admin']);
+    assert.deepEqual(routineAuthorities(claims, 'monitor', routine).sort(), [PLATFORM_ADMIN_AUTHORITY, 'monitor:viewer', 'shop:admin']);
   }
   // another module's routine is not touched
   assert.deepEqual(routineAuthorities(claims, 'shop', 'shop.orders.list'), ['shop:admin']);
@@ -145,4 +145,11 @@ test('derived module admins follow PROJECT_ADMIN_SOURCE and stay out of other ro
   );
   assert.deepEqual(routineAuthorities(claims, 'monitor', 'monitor.releases.list', modules), []);
   assert.deepEqual(routineAuthorities(claims, 'monitor', 'monitor.moduleEvents.list', modules), []);
+});
+
+test('the platform admin role is the name the issuer writes, and a name nobody emits derives nothing', () => {
+  assert.equal(PLATFORM_ADMIN_AUTHORITY, 'collab-sites:admin');
+  assert.equal(PROJECT_ADMIN_SOURCE, PLATFORM_ADMIN_AUTHORITY);
+  assert.deepEqual(derivedModuleAdmins(['sites:admin'], ['shop']), ['sites:admin']);
+  assert.deepEqual(derivedModuleAdmins([PLATFORM_ADMIN_AUTHORITY], ['repoHost']), [PLATFORM_ADMIN_AUTHORITY, 'repoHost:admin']);
 });
