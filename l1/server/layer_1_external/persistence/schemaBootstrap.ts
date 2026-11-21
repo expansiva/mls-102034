@@ -647,32 +647,12 @@ async function readAppliedModuleHashes(pool: Pool, ownProjects: string[]): Promi
   }
 }
 
-/**
- * Records the applied hashes. With `onlyModules` (forceModules) only those modules' rows are replaced:
- * the others are not touched, not even rewritten with the same value.
- */
-export async function writeModuleState(
-  pool: Pick<Pool, 'query'>,
-  hashes: Map<string, string>,
-  ownProjects: string[],
-  onlyModules?: readonly string[],
-): Promise<void> {
+async function writeModuleState(pool: Pool, hashes: Map<string, string>, ownProjects: string[]): Promise<void> {
   const table = quoteIdentifier(SCHEMA_MODULE_STATE_TABLE);
-  const scoped = onlyModules !== undefined;
-  if (scoped) {
-    await pool.query(
-      `DELETE FROM ${table} WHERE project_id = ANY($1::text[]) AND module_id = ANY($2::text[])`,
-      [ownProjects, [...onlyModules]],
-    );
-  } else {
-    await pool.query(`DELETE FROM ${table} WHERE project_id = ANY($1::text[])`, [ownProjects]);
-  }
+  await pool.query(`DELETE FROM ${table} WHERE project_id = ANY($1::text[])`, [ownProjects]);
   for (const [key, hash] of hashes) {
     const parsed = parseStateKey(key);
     if (!parsed || !ownProjects.includes(parsed.projectId)) {
-      continue;
-    }
-    if (scoped && !onlyModules.includes(parsed.moduleId)) {
       continue;
     }
     await pool.query(
@@ -680,15 +660,6 @@ export async function writeModuleState(
       [parsed.projectId, parsed.moduleId, hash],
     );
   }
-}
-
-/** forceModules writes seeds only for the module it rebuilt; every other module is left as it is. */
-export function seedDefinitionsFor<T extends { moduleId: string }>(
-  definitions: T[],
-  forceModules: readonly string[] | undefined,
-): T[] {
-  if (!forceModules || forceModules.length === 0) return definitions;
-  return definitions.filter((definition) => forceModules.includes(definition.moduleId));
 }
 
 export function rebuiltSummary(
@@ -843,10 +814,10 @@ export async function bootstrapSchema(
     if (plan.rebuild.length > 0 || plan.removed.length > 0) {
       await applyViewDefinitions(pool, { timescaleAvailable: rebuilt.timescaleAvailable });
     }
-    await writeModuleState(pool, currentHashes, ownProjects, forceModules);
+    await writeModuleState(pool, currentHashes, ownProjects);
   }
 
-  const seedCounts = await applySeedRows(pool, seedDefinitionsFor(definitions, forceModules), {
+  const seedCounts = await applySeedRows(pool, definitions, {
     projectMode: readProjectMode,
     serverMode: readProjectMode(env.projectId),
     rebuiltTableNames: new Set(createdTables.map((definition) => definition.tableName)),

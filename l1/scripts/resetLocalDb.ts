@@ -191,11 +191,8 @@ export async function resetLocalDb(options: ResetLocalDbOptions = {}): Promise<S
   } finally {
     console.info = previousInfo;
   }
-  // The organization bootstrap writes outside the module; --module leaves it alone.
-  if (options.module === undefined) {
-    const initializeOrganization = options.initializeOrganization ?? initializeOrganizationForProcess;
-    await initializeOrganization();
-  }
+  const initializeOrganization = options.initializeOrganization ?? initializeOrganizationForProcess;
+  await initializeOrganization();
   console.info(`[resetLocalDb] projeto ${env.projectId}, banco ${target.database}, mode=${result.report.mode}${options.module === undefined ? '' : `, módulo=${options.module}`}`);
   console.info(formatMigrationReport(result.report));
   console.info(resetLocalDbSummary(result.report, target.database, captured.tables, options.module === undefined ? 'all' : 'module'));

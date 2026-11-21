@@ -184,7 +184,7 @@ test('--module passes forceModules to the bootstrap and writes the module summar
         return { ...report('modules') };
       },
     });
-    assert.equal(org, 0, 'the organization bootstrap writes outside the module and is not run');
+    assert.equal(org, 1);
   } finally {
     capture.restore();
   }
