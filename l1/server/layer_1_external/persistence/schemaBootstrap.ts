@@ -187,8 +187,9 @@ export interface ForeignKeyEdge {
   references: string;
 }
 
-/** A view (or materialized view) in `public` that reads `dependsOn` (a table or another view). */
+/** A view (or materialized view), in any schema, that reads `dependsOn` (a table or view in `public`). */
 export interface ViewDependencyEdge {
+  viewSchema: string;
   view: string;
   dependsOn: string;
 }
@@ -198,8 +199,9 @@ export interface ViewDependencyEdge {
  * 1. the module is not in the registry of this project;
  * 2. one of its definitions is a platform table (unprefixed name);
  * 3. something outside the scope that `DROP … CASCADE` would drop silently depends on it: a table with a
- *    foreign key into the scope, or a view outside the registry that reads a scope table or a registry view
- *    (the reset drops the registry views and recreates them; any other view is not recreated);
+ *    foreign key into the scope, or a view outside the registry (in any schema; a registry view is in
+ *    `public` with a registry name) that reads a scope table or a registry view (the reset drops the
+ *    registry views and recreates them; any other view is not recreated);
  * 4. the incremental plan is not `none`/`recordOnly`: another module has a pending migration, and
  *    `writeModuleState` would mark it as applied without having applied it.
  */
@@ -237,8 +239,9 @@ export function moduleResetBlockReason(input: {
   const registryViews = new Set(input.registryViews);
   const strayViews = [...new Set(
     input.viewDependencies
-      .filter((edge) => !registryViews.has(edge.view) && (isOwned(edge.dependsOn) || registryViews.has(edge.dependsOn)))
-      .map((edge) => edge.view),
+      .filter((edge) => !(edge.viewSchema === 'public' && registryViews.has(edge.view))
+        && (isOwned(edge.dependsOn) || registryViews.has(edge.dependsOn)))
+      .map((edge) => (edge.viewSchema === 'public' ? edge.view : `${edge.viewSchema}.${edge.view}`)),
   )].sort((left, right) => left.localeCompare(right));
   if (strayViews.length > 0) {
     return refused(`views outside the registry depend on module '${moduleId}' and would be dropped without being recreated (${strayViews.join(', ')})`);
@@ -261,21 +264,24 @@ async function readForeignKeyEdges(pool: Pool): Promise<ForeignKeyEdge[]> {
   return result.rows.map((row) => ({ table: row.table_name, references: row.referenced_table }));
 }
 
-async function readViewDependencies(pool: Pool): Promise<ViewDependencyEdge[]> {
-  const result = await pool.query<{ view_name: string; depends_on: string }>(
-    `SELECT DISTINCT view_class.relname AS view_name, target.relname AS depends_on
+export async function readViewDependencies(pool: Pool): Promise<ViewDependencyEdge[]> {
+  const result = await pool.query<{ view_schema: string; view_name: string; depends_on: string }>(
+    `SELECT DISTINCT view_schema.nspname AS view_schema, view_class.relname AS view_name, target.relname AS depends_on
        FROM pg_depend dependency
        JOIN pg_rewrite rewrite ON rewrite.oid = dependency.objid
        JOIN pg_class view_class ON view_class.oid = rewrite.ev_class
        JOIN pg_namespace view_schema ON view_schema.oid = view_class.relnamespace
        JOIN pg_class target ON target.oid = dependency.refobjid
+       JOIN pg_namespace target_schema ON target_schema.oid = target.relnamespace
       WHERE dependency.classid = 'pg_rewrite'::regclass
         AND dependency.refclassid = 'pg_class'::regclass
         AND view_class.relkind IN ('v', 'm')
-        AND view_schema.nspname = 'public'
+        AND view_schema.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+        AND view_schema.nspname NOT LIKE '\\_timescaledb%'
+        AND target_schema.nspname = 'public'
         AND target.oid <> view_class.oid`,
   );
-  return result.rows.map((row) => ({ view: row.view_name, dependsOn: row.depends_on }));
+  return result.rows.map((row) => ({ viewSchema: row.view_schema, view: row.view_name, dependsOn: row.depends_on }));
 }
 
 /**

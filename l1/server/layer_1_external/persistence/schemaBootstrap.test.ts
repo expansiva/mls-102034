@@ -12,6 +12,7 @@ import {
   orphanNames,
   ownedNamesFor,
   rebuiltSummary,
+  readViewDependencies,
   selectModuleRebuildPlan,
   tablesToCreate,
   sanitizeDefinitionIndexes,
@@ -487,7 +488,7 @@ const resetBase = {
   ],
   definitions: allDefs,
   foreignKeys: [] as Array<{ table: string; references: string }>,
-  viewDependencies: [] as Array<{ view: string; dependsOn: string }>,
+  viewDependencies: [] as Array<{ viewSchema: string; view: string; dependsOn: string }>,
   registryViews: ['monitor_summary'] as string[],
   incrementalMode: 'none' as const,
 };
@@ -531,9 +532,9 @@ test('moduleResetBlockReason refuses a view outside the registry that reads a ta
   const reason = moduleResetBlockReason({
     ...resetBase,
     viewDependencies: [
-      { view: 'v_manual_b', dependsOn: 'mls102047_controleestoque_item' },
-      { view: 'v_manual_a', dependsOn: 'mls102047_controleestoque_movimento' },
-      { view: 'v_manual_a', dependsOn: 'mls102047_controleestoque_item' },
+      { viewSchema: 'public', view: 'v_manual_b', dependsOn: 'mls102047_controleestoque_item' },
+      { viewSchema: 'public', view: 'v_manual_a', dependsOn: 'mls102047_controleestoque_movimento' },
+      { viewSchema: 'public', view: 'v_manual_a', dependsOn: 'mls102047_controleestoque_item' },
     ],
   }) ?? '';
   assert.match(reason, /forceModules refused before schema write: views outside the registry depend on module 'controleEstoque' and would be dropped without being recreated \(v_manual_a, v_manual_b\)/u);
@@ -545,11 +546,11 @@ test('moduleResetBlockReason lets through views that the reset does not break', 
     registryViews: ['monitor_summary', 'monitor_by_module'],
     viewDependencies: [
       // outside view over another module's table
-      { view: 'v_manual', dependsOn: 'mls102047_comandarestaurante_pedido' },
+      { viewSchema: 'public', view: 'v_manual', dependsOn: 'mls102047_comandarestaurante_pedido' },
       // registry view over the module's table: the reset recreates it
-      { view: 'monitor_summary', dependsOn: 'mls102047_controleestoque_item' },
+      { viewSchema: 'public', view: 'monitor_summary', dependsOn: 'mls102047_controleestoque_item' },
       // registry view over another registry view
-      { view: 'monitor_by_module', dependsOn: 'monitor_summary' },
+      { viewSchema: 'public', view: 'monitor_by_module', dependsOn: 'monitor_summary' },
     ],
   }), null);
 });
@@ -557,9 +558,34 @@ test('moduleResetBlockReason lets through views that the reset does not break', 
 test('moduleResetBlockReason refuses a view outside the registry that reads a registry view', () => {
   const reason = moduleResetBlockReason({
     ...resetBase,
-    viewDependencies: [{ view: 'v_manual', dependsOn: 'monitor_summary' }],
+    viewDependencies: [{ viewSchema: 'public', view: 'v_manual', dependsOn: 'monitor_summary' }],
   }) ?? '';
   assert.match(reason, /views outside the registry depend on module 'controleEstoque'.*\(v_manual\)/u);
+});
+
+test('moduleResetBlockReason sees a view in another schema, named with its schema', () => {
+  const block = (viewDependencies: Array<{ viewSchema: string; view: string; dependsOn: string }>) =>
+    moduleResetBlockReason({ ...resetBase, viewDependencies }) ?? '';
+  assert.match(block([{ viewSchema: 'other', view: 'v_x', dependsOn: 'mls102047_controleestoque_item' }]), /\(other\.v_x\)/u);
+  assert.match(block([{ viewSchema: 'other', view: 'v_x', dependsOn: 'monitor_summary' }]), /\(other\.v_x\)/u);
+  // same name as a registry view, but not in public: it is not the registry view
+  assert.match(block([{ viewSchema: 'other', view: 'monitor_summary', dependsOn: 'mls102047_controleestoque_item' }]), /\(other\.monitor_summary\)/u);
+  // a public stray view is still named bare, and sorted with the qualified ones
+  assert.match(block([
+    { viewSchema: 'other', view: 'v_x', dependsOn: 'mls102047_controleestoque_item' },
+    { viewSchema: 'public', view: 'v_manual', dependsOn: 'mls102047_controleestoque_item' },
+  ]), /\(other\.v_x, v_manual\)/u);
+});
+
+test('readViewDependencies looks at views of any schema but the system and Timescale internals, and at public targets', async () => {
+  let sql = '';
+  const pool = { query: async (text: string) => { sql = text; return { rows: [{ view_schema: 'other', view_name: 'v_x', depends_on: 't' }] }; } };
+  const edges = await readViewDependencies(pool as never);
+  assert.deepEqual(edges, [{ viewSchema: 'other', view: 'v_x', dependsOn: 't' }]);
+  assert.doesNotMatch(sql, /view_schema\.nspname\s*=/u);
+  assert.match(sql, /view_schema\.nspname NOT IN \('pg_catalog', 'information_schema', 'pg_toast'\)/u);
+  assert.match(sql, /NOT LIKE '\\_timescaledb%'/u);
+  assert.match(sql, /target_schema\.nspname = 'public'/u);
 });
 
 test('moduleResetBlockReason refuses when another module has a pending migration', () => {
