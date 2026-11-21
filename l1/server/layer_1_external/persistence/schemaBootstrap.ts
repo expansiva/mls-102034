@@ -141,7 +141,8 @@ export function orphanNames(
 }
 
 export interface SchemaBootstrapReport {
-  rebuilt: Array<{ moduleId: string; tables: number; seedRows: number }>;
+  /** `tableNames`: the physical names rebuilt, sorted. */
+  rebuilt: Array<{ moduleId: string; tables: number; tableNames: string[]; seedRows: number }>;
   untouched: string[];
   removed: string[];
   mode: ModuleRebuildMode;
@@ -679,7 +680,12 @@ export function rebuiltSummary(
         serverMode,
       }).length;
     }
-    return { moduleId, tables: tables.length, seedRows };
+    return {
+      moduleId,
+      tables: tables.length,
+      tableNames: tables.map((definition) => definition.tableName).sort((left, right) => left.localeCompare(right)),
+      seedRows,
+    };
   });
 }
 

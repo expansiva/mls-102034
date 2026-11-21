@@ -4,7 +4,7 @@ import test from 'node:test';
 import type { AppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import type { ProjectMode } from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
 import type { SchemaBootstrapResult } from '/_102034_/l1/server/layer_1_external/persistence/schemaBootstrap.js';
-import { RESET_LOCAL_DB_MARK, resetLocalDb } from '/_102034_/l1/scripts/resetLocalDb.js';
+import { RESET_LOCAL_DB_MARK, parseResetLocalDbArgs, resetLocalDb } from '/_102034_/l1/scripts/resetLocalDb.js';
 
 const LOCAL_TEST = 'postgresql://tester@127.0.0.1:5432/collab_app_test';
 const OTHER_DB = 'postgresql://tester@127.0.0.1:5432/collab_prod';
@@ -24,7 +24,7 @@ function report(mode: SchemaBootstrapResult['report']['mode']): SchemaBootstrapR
     dynamoTableCount: 0,
     report: {
       mode,
-      rebuilt: [{ moduleId: 'tarefas', tables: 1, seedRows: 0 }],
+      rebuilt: [{ moduleId: 'tarefas', tables: 1, tableNames: ['mls102047_tarefas_tarefa'], seedRows: 0 }],
       untouched: [],
       removed: [],
       orphans: [],
@@ -40,7 +40,8 @@ async function run(input: {
   projectIdEnv?: string;
   mode?: ProjectMode;
   declared?: boolean;
-  bootstrap?: (env: AppEnv, options?: { forceRebuild?: boolean }) => Promise<SchemaBootstrapResult>;
+  module?: string;
+  bootstrap?: (env: AppEnv, options?: { forceRebuild?: boolean; forceModules?: string[] }) => Promise<SchemaBootstrapResult>;
   initializeOrganization?: () => Promise<void>;
 }) {
   const calls: Array<{ forceRebuild?: boolean }> = [];
@@ -55,6 +56,7 @@ async function run(input: {
     databaseUrl: input.databaseUrl,
     collabProjectId: input.collabProjectId ?? '102047',
     projectIdEnv: input.projectIdEnv,
+    module: input.module,
     readMode: () => input.mode ?? 'development',
     hasDeclared: () => input.declared ?? true,
     bootstrap: async (appEnv, options) => bootstrap(appEnv, options),
@@ -158,4 +160,99 @@ test('a partial bootstrap or organization error propagates and is not rebuilt tw
     /org stopped/u,
   );
   assert.equal(boots, 1);
+});
+
+function captureInfo(): { lines: string[]; restore: () => void } {
+  const lines: string[] = [];
+  const previous = console.info;
+  console.info = (...args: unknown[]) => {
+    lines.push(args.map((part) => String(part)).join(' '));
+  };
+  return { lines, restore: () => { console.info = previous; } };
+}
+
+test('--module passes forceModules to the bootstrap and writes the module summary', async () => {
+  const seen: Array<{ forceRebuild?: boolean; forceModules?: string[] }> = [];
+  const capture = captureInfo();
+  try {
+    const { org } = await run({
+      databaseUrlTest: LOCAL_TEST,
+      databaseUrl: OTHER_DB,
+      module: 'tarefas',
+      bootstrap: async (_env, options) => {
+        seen.push({ forceRebuild: options?.forceRebuild, forceModules: options?.forceModules });
+        return { ...report('modules') };
+      },
+    });
+    assert.equal(org, 1);
+  } finally {
+    capture.restore();
+  }
+  assert.deepEqual(seen, [{ forceRebuild: undefined, forceModules: ['tarefas'] }]);
+  const marked = capture.lines.filter((line) => line.startsWith(RESET_LOCAL_DB_MARK));
+  assert.equal(marked.length, 1);
+  assert.deepEqual(JSON.parse(marked[0]!.slice(RESET_LOCAL_DB_MARK.length)), {
+    scope: 'module',
+    modules: [{ moduleId: 'tarefas', tables: 1, tableNames: ['mls102047_tarefas_tarefa'], seedRows: 0 }],
+    viewsRecreated: true,
+    seededTables: [],
+    database: 'collab_app_test',
+  });
+});
+
+test('--module keeps the same target guards: a production app is refused before the bootstrap', async () => {
+  let called = false;
+  await assert.rejects(
+    () => run({
+      databaseUrlTest: LOCAL_TEST,
+      mode: 'production',
+      module: 'tarefas',
+      bootstrap: async () => { called = true; return report('modules'); },
+    }),
+    /not a declared test mode/u,
+  );
+  assert.equal(called, false);
+});
+
+test('--module without id, repeated or misspelled is refused before the bootstrap', async () => {
+  assert.deepEqual(parseResetLocalDbArgs([]), {});
+  assert.deepEqual(parseResetLocalDbArgs(['--module', 'tarefas']), { module: 'tarefas' });
+  for (const argv of [['--module'], ['--module', ''], ['--module', '--other'], ['--module', 'a', '--module', 'b'], ['--module=a']]) {
+    assert.throws(() => parseResetLocalDbArgs(argv), /\[resetLocalDb\] refused before schema write/u, argv.join(' '));
+  }
+  let called = false;
+  await assert.rejects(
+    () => run({
+      databaseUrlTest: LOCAL_TEST,
+      module: ' ',
+      bootstrap: async () => { called = true; return report('full'); },
+    }),
+    /--module needs a module id/u,
+  );
+  assert.equal(called, false);
+});
+
+test('without --module the call and the line are the ones of today, with scope all', async () => {
+  const seen: Array<{ forceRebuild?: boolean; forceModules?: string[] }> = [];
+  const capture = captureInfo();
+  try {
+    await run({
+      databaseUrlTest: LOCAL_TEST,
+      databaseUrl: OTHER_DB,
+      bootstrap: async (_env, options) => {
+        seen.push({ forceRebuild: options?.forceRebuild, forceModules: options?.forceModules });
+        return report('full');
+      },
+    });
+  } finally {
+    capture.restore();
+  }
+  assert.deepEqual(seen, [{ forceRebuild: true, forceModules: undefined }]);
+  const marked = capture.lines.filter((line) => line.startsWith(RESET_LOCAL_DB_MARK));
+  assert.deepEqual(JSON.parse(marked[0]!.slice(RESET_LOCAL_DB_MARK.length)), {
+    scope: 'all',
+    modules: [{ moduleId: 'tarefas', tables: 1, seedRows: 0 }],
+    seededTables: [],
+    database: 'collab_app_test',
+  });
 });

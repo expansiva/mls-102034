@@ -376,8 +376,8 @@ test('force rebuilds the registry scope and the report counts seeds', () => {
     plan.rebuild,
   );
   assert.deepEqual(report, [
-    { moduleId: 'controleEstoque', tables: 1, seedRows: 2 },
-    { moduleId: 'mdm', tables: 1, seedRows: 1 },
+    { moduleId: 'controleEstoque', tables: 1, tableNames: ['mls_item'], seedRows: 2 },
+    { moduleId: 'mdm', tables: 1, tableNames: ['mdm_documents'], seedRows: 1 },
   ]);
 });
 
@@ -409,7 +409,7 @@ test('rebuiltSummary counts initial in every mode and test only in a test mode',
       { projectId: serverProjectId } as AppEnv,
       [client(projectId), platform(projectId)],
       ['onboarding', 'mdm'],
-    );
+    ).map(({ tableNames: _tableNames, ...rest }) => rest);
 
     assert.deepEqual(count('910118', '910118'), [
       { moduleId: 'mdm', tables: 1, seedRows: 1 },

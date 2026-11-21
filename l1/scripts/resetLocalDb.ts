@@ -18,6 +18,8 @@ export interface ResetLocalDbOptions {
   databaseUrl?: string;
   collabProjectId?: string;
   projectIdEnv?: string;
+  /** Rebuild only this module (one id). Absent: the whole app, as before. */
+  module?: string;
   bootstrap?: typeof bootstrapSchema;
   initializeOrganization?: () => Promise<void>;
   readMode?: typeof readProjectMode;
@@ -95,17 +97,51 @@ export function resetLocalDbSummary(
   report: SchemaBootstrapResult['report'],
   database: string,
   seededTables: string[],
+  scope: 'module' | 'all' = 'all',
 ): string {
-  const body = {
-    modules: report.rebuilt.map((module) => ({
-      moduleId: module.moduleId,
-      tables: module.tables,
-      seedRows: module.seedRows,
-    })),
-    seededTables,
-    database,
-  };
+  const body = scope === 'module'
+    ? {
+        scope,
+        modules: report.rebuilt.map((module) => ({
+          moduleId: module.moduleId,
+          tables: module.tables,
+          tableNames: module.tableNames,
+          seedRows: module.seedRows,
+        })),
+        // views of the runtime are dropped and created again, as in the migration of one module
+        viewsRecreated: true,
+        seededTables,
+        database,
+      }
+    : {
+        scope,
+        modules: report.rebuilt.map((module) => ({
+          moduleId: module.moduleId,
+          tables: module.tables,
+          seedRows: module.seedRows,
+        })),
+        seededTables,
+        database,
+      };
   return `${RESET_LOCAL_DB_MARK}${JSON.stringify(body)}`;
+}
+
+/** `--module <id>`, one only. Anything that looks like `--module` but is not exactly that stops here: never a silent full reset. */
+export function parseResetLocalDbArgs(argv: readonly string[]): { module?: string } {
+  let module: string | undefined;
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index] as string;
+    if (arg !== '--module') {
+      if (arg.startsWith('--module')) refuse(`'${arg}' is not understood; use --module <id>`);
+      continue;
+    }
+    if (module !== undefined) refuse('--module is given more than once');
+    const value = argv[index + 1];
+    if (value === undefined || value.trim() === '' || value.startsWith('-')) refuse('--module needs a module id');
+    module = value;
+    index += 1;
+  }
+  return module === undefined ? {} : { module };
 }
 
 function collectSeededTables(write: (...args: unknown[]) => void): { write: (...args: unknown[]) => void; tables: string[] } {
@@ -122,6 +158,9 @@ function collectSeededTables(write: (...args: unknown[]) => void): { write: (...
 }
 
 export async function resetLocalDb(options: ResetLocalDbOptions = {}): Promise<SchemaBootstrapResult> {
+  if (options.module !== undefined && options.module.trim() === '') {
+    refuse('--module needs a module id');
+  }
   const env = options.env ?? readAppEnv();
   const databaseUrlTest = options.env ? options.databaseUrlTest : (options.databaseUrlTest ?? process.env.DATABASE_URL_TEST);
   const databaseUrl = options.env ? options.databaseUrl : (options.databaseUrl ?? process.env.DATABASE_URL);
@@ -147,23 +186,24 @@ export async function resetLocalDb(options: ResetLocalDbOptions = {}): Promise<S
     result = await bootstrap(env, {
       ensureDynamo: false,
       recordSnapshotLog: false,
-      forceRebuild: true,
+      ...(options.module === undefined ? { forceRebuild: true } : { forceModules: [options.module] }),
     });
   } finally {
     console.info = previousInfo;
   }
   const initializeOrganization = options.initializeOrganization ?? initializeOrganizationForProcess;
   await initializeOrganization();
-  console.info(`[resetLocalDb] projeto ${env.projectId}, banco ${target.database}, mode=${result.report.mode}`);
+  console.info(`[resetLocalDb] projeto ${env.projectId}, banco ${target.database}, mode=${result.report.mode}${options.module === undefined ? '' : `, módulo=${options.module}`}`);
   console.info(formatMigrationReport(result.report));
-  console.info(resetLocalDbSummary(result.report, target.database, captured.tables));
+  console.info(resetLocalDbSummary(result.report, target.database, captured.tables, options.module === undefined ? 'all' : 'module'));
   return result;
 }
 
 const isMainModule = process.argv[1]?.endsWith('/resetLocalDb.js');
 
 if (isMainModule) {
-  resetLocalDb()
+  Promise.resolve()
+    .then(() => resetLocalDb(parseResetLocalDbArgs(process.argv.slice(2))))
     .then(() => {
       process.exit(0);
     })
