@@ -169,7 +169,82 @@ export function forceRebuildBlockReason(mode: ProjectMode, declared: boolean): s
   return null;
 }
 
-/** Equal snapshot keeps the incremental plan. Force selects a full rebuild of the registry modules. */
+/** `forceModules` is exactly one module id and never combines with `forceRebuild`. */
+export function forceModulesShapeReason(forceModules: readonly string[], forceRebuild: boolean): string | null {
+  if (forceRebuild) {
+    return '[bootstrapSchema] forceModules refused before schema write: it does not combine with forceRebuild';
+  }
+  if (forceModules.length !== 1 || forceModules[0] === undefined || forceModules[0].trim() === '') {
+    return `[bootstrapSchema] forceModules refused before schema write: exactly one module id is required (got ${forceModules.length})`;
+  }
+  return null;
+}
+
+/** A foreign key: `table` holds the column that points to `references`. */
+export interface ForeignKeyEdge {
+  table: string;
+  references: string;
+}
+
+/**
+ * Why a single-module reset must stop before any DDL, or `null`.
+ * 1. the module is not in the registry of this project;
+ * 2. one of its definitions is a platform table (unprefixed name);
+ * 3. a table outside the scope has a foreign key into the scope (`DROP … CASCADE` would drop it silently);
+ * 4. the incremental plan is not `none`/`recordOnly`: another module has a pending migration, and
+ *    `writeModuleState` would mark it as applied without having applied it.
+ */
+export function moduleResetBlockReason(input: {
+  moduleId: string;
+  projectId: string | undefined;
+  registry: Array<{ projectId: string; moduleId: string }>;
+  definitions: OwnedNameDefinition[];
+  foreignKeys: ForeignKeyEdge[];
+  incrementalMode: ModuleRebuildMode;
+}): string | null {
+  const refused = (why: string): string => `[bootstrapSchema] forceModules refused before schema write: ${why}`;
+  const { moduleId } = input;
+  if (!input.registry.some((entry) => entry.moduleId === moduleId && entry.projectId === input.projectId)) {
+    return refused(`module '${moduleId}' is not in the registry of project '${input.projectId}'`);
+  }
+  const platformTables = input.definitions
+    .filter((definition) => definition.moduleId === moduleId && isPlatformOwnedTable(definition))
+    .map((definition) => definition.tableName)
+    .sort((left, right) => left.localeCompare(right));
+  if (platformTables.length > 0) {
+    return refused(`module '${moduleId}' declares platform tables (${platformTables.join(', ')})`);
+  }
+  const { isOwned } = ownedNamesFor(input.definitions, [moduleId], []);
+  const outside = [...new Set(
+    input.foreignKeys
+      .filter((edge) => isOwned(edge.references) && !isOwned(edge.table))
+      .map((edge) => edge.table),
+  )].sort((left, right) => left.localeCompare(right));
+  if (outside.length > 0) {
+    return refused(`tables outside module '${moduleId}' have a foreign key into it (${outside.join(', ')})`);
+  }
+  if (input.incrementalMode !== 'none' && input.incrementalMode !== 'recordOnly') {
+    return refused(`another module has a pending migration (plan ${input.incrementalMode}); migrate first`);
+  }
+  return null;
+}
+
+async function readForeignKeyEdges(pool: Pool): Promise<ForeignKeyEdge[]> {
+  const result = await pool.query<{ table_name: string; referenced_table: string }>(
+    `SELECT source.relname AS table_name, target.relname AS referenced_table
+       FROM pg_constraint constraint_row
+       JOIN pg_class source ON source.oid = constraint_row.conrelid
+       JOIN pg_namespace source_schema ON source_schema.oid = source.relnamespace
+       JOIN pg_class target ON target.oid = constraint_row.confrelid
+      WHERE constraint_row.contype = 'f' AND source_schema.nspname = 'public'`,
+  );
+  return result.rows.map((row) => ({ table: row.table_name, references: row.referenced_table }));
+}
+
+/**
+ * Equal snapshot keeps the incremental plan. `forceRebuild` selects a full rebuild of the registry modules.
+ * `forceModules` selects a `modules` rebuild of only the listed ones.
+ */
 export function selectModuleRebuildPlan<T extends {
   mode: ModuleRebuildMode;
   rebuild: string[];
@@ -177,9 +252,22 @@ export function selectModuleRebuildPlan<T extends {
   removed: string[];
 }>(input: {
   forceRebuild: boolean;
+  forceModules?: string[];
   incremental: T;
   registryModuleIds: string[];
 }): T {
+  if (input.forceModules && input.forceModules.length > 0) {
+    const forced = new Set(input.forceModules);
+    return {
+      ...input.incremental,
+      mode: 'modules',
+      rebuild: [...forced],
+      untouched: [...new Set(input.registryModuleIds)]
+        .filter((moduleId) => !forced.has(moduleId))
+        .sort((left, right) => left.localeCompare(right)),
+      removed: [],
+    };
+  }
   if (!input.forceRebuild) {
     return input.incremental;
   }
@@ -625,6 +713,8 @@ export async function bootstrapSchema(
     ensureDynamo?: boolean;
     recordSnapshotLog?: boolean;
     forceRebuild?: boolean;
+    /** Rebuild only this module (exactly one id). Test modes only; see `moduleResetBlockReason`. */
+    forceModules?: string[];
   },
 ): Promise<SchemaBootstrapResult> {
   if (env.runtimeMode === 'memory') {
@@ -633,7 +723,14 @@ export async function bootstrapSchema(
   }
 
   const forceRebuild = input?.forceRebuild === true;
-  if (forceRebuild) {
+  const forceModules = input?.forceModules;
+  if (forceModules) {
+    const shape = forceModulesShapeReason(forceModules, forceRebuild);
+    if (shape) {
+      throw new Error(shape);
+    }
+  }
+  if (forceRebuild || forceModules) {
     const block = forceRebuildBlockReason(readProjectMode(env.projectId), hasDeclaredProjectMode(env.projectId));
     if (block) {
       throw new Error(block);
@@ -656,8 +753,22 @@ export async function bootstrapSchema(
     currentSnapshotId: snapshot.id,
     ownProjects,
   });
+  if (forceModules) {
+    const block = moduleResetBlockReason({
+      moduleId: forceModules[0] as string,
+      projectId: env.projectId,
+      registry: definedModules,
+      definitions: definitions.filter((definition) => usesPostgres(definition)),
+      foreignKeys: await readForeignKeyEdges(pool),
+      incrementalMode: incremental.mode,
+    });
+    if (block) {
+      throw new Error(block);
+    }
+  }
   const plan = selectModuleRebuildPlan({
     forceRebuild,
+    forceModules,
     incremental,
     registryModuleIds: definedModules.map((module) => module.moduleId),
   });
@@ -678,6 +789,8 @@ export async function bootstrapSchema(
       } else if (!lastSnapshotId) {
         console.info(`[bootstrapSchema] no applied snapshot; rebuilding (${snapshot.id})`);
       }
+    } else if (forceModules) {
+      console.info(`[bootstrapSchema] forceModules: rebuilding only ${plan.rebuild.join(', ')}`);
     } else {
       const removed = plan.removed.length > 0 ? plan.removed.join(', ') : '—';
       console.info(

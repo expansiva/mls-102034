@@ -5,8 +5,10 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import {
   bootstrapSchema,
+  forceModulesShapeReason,
   forceRebuildBlockReason,
   isPlatformOwnedTable,
+  moduleResetBlockReason,
   orphanNames,
   ownedNamesFor,
   rebuiltSummary,
@@ -451,4 +453,98 @@ test('forceRebuild on an undeclared app refuses before any schema write', async 
     ),
     /forceRebuild refused before schema write: appEnv is not declared/u,
   );
+});
+
+test('forceModules plans a modules rebuild of one module and leaves the others untouched', () => {
+  const plan = selectModuleRebuildPlan({
+    forceRebuild: false,
+    forceModules: ['controleEstoque'],
+    incremental: { mode: 'none' as const, rebuild: [], untouched: ['controleEstoque', 'mdm'], removed: [] },
+    registryModuleIds: ['mdm', 'controleEstoque', 'comandaRestaurante', 'comandaRestaurante'],
+  });
+  assert.equal(plan.mode, 'modules');
+  assert.deepEqual(plan.rebuild, ['controleEstoque']);
+  assert.deepEqual(plan.untouched, ['comandaRestaurante', 'mdm']);
+  assert.deepEqual(plan.removed, []);
+});
+
+test('forceModules rebuilds only that module: the drop scope and the created tables', () => {
+  const { isOwned } = ownedNamesFor(allDefs, ['controleEstoque'], []);
+  assert.equal(isOwned('mls102047_comandarestaurante_pedido'), false);
+  assert.deepEqual(
+    tablesToCreate(allDefs, 'modules', ['controleEstoque']).map((definition) => definition.tableName),
+    ['mls102047_controleestoque_item', 'mls102047_controleestoque_movimento'],
+  );
+});
+
+const resetBase = {
+  moduleId: 'controleEstoque',
+  projectId: '102047',
+  registry: [
+    { projectId: '102047', moduleId: 'controleEstoque' },
+    { projectId: '102047', moduleId: 'comandaRestaurante' },
+    { projectId: '102047', moduleId: 'mdm' },
+  ],
+  definitions: allDefs,
+  foreignKeys: [] as Array<{ table: string; references: string }>,
+  incrementalMode: 'none' as const,
+};
+
+test('moduleResetBlockReason lets a clean module through, with the plan none or recordOnly', () => {
+  assert.equal(moduleResetBlockReason(resetBase), null);
+  assert.equal(moduleResetBlockReason({ ...resetBase, incrementalMode: 'recordOnly' }), null);
+  // an FK inside the module, or from another module's table to a third one, is not a risk
+  assert.equal(moduleResetBlockReason({
+    ...resetBase,
+    foreignKeys: [
+      { table: 'mls102047_controleestoque_movimento', references: 'mls102047_controleestoque_item' },
+      { table: 'mls102047_comandarestaurante_pedido', references: 'mdm_documents' },
+    ],
+  }), null);
+});
+
+test('moduleResetBlockReason refuses a module outside the registry of the project', () => {
+  assert.match(moduleResetBlockReason({ ...resetBase, moduleId: 'naoExiste' }) ?? '', /module 'naoExiste' is not in the registry of project '102047'/u);
+  assert.match(moduleResetBlockReason({ ...resetBase, projectId: 'outro' }) ?? '', /not in the registry of project 'outro'/u);
+  assert.match(moduleResetBlockReason({ ...resetBase, projectId: undefined }) ?? '', /not in the registry/u);
+});
+
+test('moduleResetBlockReason refuses a module that declares a platform table', () => {
+  const reason = moduleResetBlockReason({ ...resetBase, moduleId: 'mdm' }) ?? '';
+  assert.match(reason, /declares platform tables \(_schema_migrations, mdm_documents\)/u);
+});
+
+test('moduleResetBlockReason refuses a foreign key from outside, listing the tables', () => {
+  const reason = moduleResetBlockReason({
+    ...resetBase,
+    foreignKeys: [
+      { table: 'mls102047_comandarestaurante_pedido', references: 'mls102047_controleestoque_item' },
+      { table: 'mls102047_comandarestaurante_pedido', references: 'mls102047_controleestoque_movimento' },
+    ],
+  }) ?? '';
+  assert.match(reason, /outside module 'controleEstoque' have a foreign key into it \(mls102047_comandarestaurante_pedido\)/u);
+});
+
+test('moduleResetBlockReason refuses when another module has a pending migration', () => {
+  for (const incrementalMode of ['modules', 'full'] as const) {
+    assert.match(
+      moduleResetBlockReason({ ...resetBase, incrementalMode }) ?? '',
+      new RegExp(`pending migration \\(plan ${incrementalMode}\\); migrate first`, 'u'),
+    );
+  }
+});
+
+test('forceModules is exactly one id and does not combine with forceRebuild', () => {
+  assert.equal(forceModulesShapeReason(['controleEstoque'], false), null);
+  assert.match(forceModulesShapeReason(['controleEstoque'], true) ?? '', /does not combine with forceRebuild/u);
+  assert.match(forceModulesShapeReason([], false) ?? '', /exactly one module id is required \(got 0\)/u);
+  assert.match(forceModulesShapeReason(['a', 'b'], false) ?? '', /exactly one module id is required \(got 2\)/u);
+  assert.match(forceModulesShapeReason([' '], false) ?? '', /exactly one module id is required/u);
+});
+
+test('forceModules refuses before any schema write: shape, forceRebuild and undeclared mode', async () => {
+  const env = { runtimeMode: 'postgres', projectId: 'rt287-undeclared' } as AppEnv;
+  await assert.rejects(() => bootstrapSchema(env, { forceModules: ['a', 'b'] }), /forceModules refused before schema write: exactly one/u);
+  await assert.rejects(() => bootstrapSchema(env, { forceModules: ['a'], forceRebuild: true }), /does not combine with forceRebuild/u);
+  await assert.rejects(() => bootstrapSchema(env, { forceModules: ['a'] }), /refused before schema write: appEnv is not declared/u);
 });
