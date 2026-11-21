@@ -487,6 +487,8 @@ const resetBase = {
   ],
   definitions: allDefs,
   foreignKeys: [] as Array<{ table: string; references: string }>,
+  viewDependencies: [] as Array<{ view: string; dependsOn: string }>,
+  registryViews: ['monitor_summary'] as string[],
   incrementalMode: 'none' as const,
 };
 
@@ -523,6 +525,41 @@ test('moduleResetBlockReason refuses a foreign key from outside, listing the tab
     ],
   }) ?? '';
   assert.match(reason, /outside module 'controleEstoque' have a foreign key into it \(mls102047_comandarestaurante_pedido\)/u);
+});
+
+test('moduleResetBlockReason refuses a view outside the registry that reads a table of the module', () => {
+  const reason = moduleResetBlockReason({
+    ...resetBase,
+    viewDependencies: [
+      { view: 'v_manual_b', dependsOn: 'mls102047_controleestoque_item' },
+      { view: 'v_manual_a', dependsOn: 'mls102047_controleestoque_movimento' },
+      { view: 'v_manual_a', dependsOn: 'mls102047_controleestoque_item' },
+    ],
+  }) ?? '';
+  assert.match(reason, /forceModules refused before schema write: views outside the registry depend on module 'controleEstoque' and would be dropped without being recreated \(v_manual_a, v_manual_b\)/u);
+});
+
+test('moduleResetBlockReason lets through views that the reset does not break', () => {
+  assert.equal(moduleResetBlockReason({
+    ...resetBase,
+    registryViews: ['monitor_summary', 'monitor_by_module'],
+    viewDependencies: [
+      // outside view over another module's table
+      { view: 'v_manual', dependsOn: 'mls102047_comandarestaurante_pedido' },
+      // registry view over the module's table: the reset recreates it
+      { view: 'monitor_summary', dependsOn: 'mls102047_controleestoque_item' },
+      // registry view over another registry view
+      { view: 'monitor_by_module', dependsOn: 'monitor_summary' },
+    ],
+  }), null);
+});
+
+test('moduleResetBlockReason refuses a view outside the registry that reads a registry view', () => {
+  const reason = moduleResetBlockReason({
+    ...resetBase,
+    viewDependencies: [{ view: 'v_manual', dependsOn: 'monitor_summary' }],
+  }) ?? '';
+  assert.match(reason, /views outside the registry depend on module 'controleEstoque'.*\(v_manual\)/u);
 });
 
 test('moduleResetBlockReason refuses when another module has a pending migration', () => {

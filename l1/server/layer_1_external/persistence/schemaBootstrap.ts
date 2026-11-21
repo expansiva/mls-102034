@@ -187,11 +187,19 @@ export interface ForeignKeyEdge {
   references: string;
 }
 
+/** A view (or materialized view) in `public` that reads `dependsOn` (a table or another view). */
+export interface ViewDependencyEdge {
+  view: string;
+  dependsOn: string;
+}
+
 /**
  * Why a single-module reset must stop before any DDL, or `null`.
  * 1. the module is not in the registry of this project;
  * 2. one of its definitions is a platform table (unprefixed name);
- * 3. a table outside the scope has a foreign key into the scope (`DROP … CASCADE` would drop it silently);
+ * 3. something outside the scope that `DROP … CASCADE` would drop silently depends on it: a table with a
+ *    foreign key into the scope, or a view outside the registry that reads a scope table or a registry view
+ *    (the reset drops the registry views and recreates them; any other view is not recreated);
  * 4. the incremental plan is not `none`/`recordOnly`: another module has a pending migration, and
  *    `writeModuleState` would mark it as applied without having applied it.
  */
@@ -201,6 +209,8 @@ export function moduleResetBlockReason(input: {
   registry: Array<{ projectId: string; moduleId: string }>;
   definitions: OwnedNameDefinition[];
   foreignKeys: ForeignKeyEdge[];
+  viewDependencies: ViewDependencyEdge[];
+  registryViews: readonly string[];
   incrementalMode: ModuleRebuildMode;
 }): string | null {
   const refused = (why: string): string => `[bootstrapSchema] forceModules refused before schema write: ${why}`;
@@ -224,6 +234,15 @@ export function moduleResetBlockReason(input: {
   if (outside.length > 0) {
     return refused(`tables outside module '${moduleId}' have a foreign key into it (${outside.join(', ')})`);
   }
+  const registryViews = new Set(input.registryViews);
+  const strayViews = [...new Set(
+    input.viewDependencies
+      .filter((edge) => !registryViews.has(edge.view) && (isOwned(edge.dependsOn) || registryViews.has(edge.dependsOn)))
+      .map((edge) => edge.view),
+  )].sort((left, right) => left.localeCompare(right));
+  if (strayViews.length > 0) {
+    return refused(`views outside the registry depend on module '${moduleId}' and would be dropped without being recreated (${strayViews.join(', ')})`);
+  }
   if (input.incrementalMode !== 'none' && input.incrementalMode !== 'recordOnly') {
     return refused(`another module has a pending migration (plan ${input.incrementalMode}); migrate first`);
   }
@@ -240,6 +259,23 @@ async function readForeignKeyEdges(pool: Pool): Promise<ForeignKeyEdge[]> {
       WHERE constraint_row.contype = 'f' AND source_schema.nspname = 'public'`,
   );
   return result.rows.map((row) => ({ table: row.table_name, references: row.referenced_table }));
+}
+
+async function readViewDependencies(pool: Pool): Promise<ViewDependencyEdge[]> {
+  const result = await pool.query<{ view_name: string; depends_on: string }>(
+    `SELECT DISTINCT view_class.relname AS view_name, target.relname AS depends_on
+       FROM pg_depend dependency
+       JOIN pg_rewrite rewrite ON rewrite.oid = dependency.objid
+       JOIN pg_class view_class ON view_class.oid = rewrite.ev_class
+       JOIN pg_namespace view_schema ON view_schema.oid = view_class.relnamespace
+       JOIN pg_class target ON target.oid = dependency.refobjid
+      WHERE dependency.classid = 'pg_rewrite'::regclass
+        AND dependency.refclassid = 'pg_class'::regclass
+        AND view_class.relkind IN ('v', 'm')
+        AND view_schema.nspname = 'public'
+        AND target.oid <> view_class.oid`,
+  );
+  return result.rows.map((row) => ({ view: row.view_name, dependsOn: row.depends_on }));
 }
 
 /**
@@ -766,6 +802,8 @@ export async function bootstrapSchema(
       registry: definedModules,
       definitions: definitions.filter((definition) => usesPostgres(definition)),
       foreignKeys: await readForeignKeyEdges(pool),
+      viewDependencies: await readViewDependencies(pool),
+      registryViews: (await loadViewDefinitions()).map((view) => view.viewName),
       incrementalMode: incremental.mode,
     });
     if (block) {
