@@ -12,6 +12,8 @@ import {
   orphanNames,
   ownedNamesFor,
   rebuiltSummary,
+  seedDefinitionsFor,
+  writeModuleState,
   selectModuleRebuildPlan,
   tablesToCreate,
   sanitizeDefinitionIndexes,
@@ -547,4 +549,29 @@ test('forceModules refuses before any schema write: shape, forceRebuild and unde
   await assert.rejects(() => bootstrapSchema(env, { forceModules: ['a', 'b'] }), /forceModules refused before schema write: exactly one/u);
   await assert.rejects(() => bootstrapSchema(env, { forceModules: ['a'], forceRebuild: true }), /does not combine with forceRebuild/u);
   await assert.rejects(() => bootstrapSchema(env, { forceModules: ['a'] }), /refused before schema write: appEnv is not declared/u);
+});
+
+test('forceModules seeds only the rebuilt module: a missing initial seed of another stays absent', () => {
+  const seeded = seedDefinitionsFor(allDefs, ['controleEstoque']);
+  assert.ok(seeded.length > 0);
+  assert.ok(seeded.every((definition) => definition.moduleId === 'controleEstoque'));
+  assert.ok(allDefs.some((definition) => definition.moduleId !== 'controleEstoque'));
+  assert.equal(seedDefinitionsFor(allDefs, undefined), allDefs);
+});
+
+test('writeModuleState with onlyModules touches the rows of that module and no other', async () => {
+  const queries: Array<{ sql: string; values?: unknown[] }> = [];
+  const pool = { query: async (sql: string, values?: unknown[]) => { queries.push({ sql, values }); return { rows: [], rowCount: 0 }; } };
+  const hashes = new Map([
+    ['102047:controleEstoque', 'h1'],
+    ['102047:comandaRestaurante', 'h2'],
+  ]);
+  await writeModuleState(pool as never, hashes, ['102047'], ['controleEstoque']);
+  assert.equal(queries.length, 2);
+  assert.match(queries[0]!.sql, /DELETE .* module_id = ANY\(\$2::text\[\]\)/u);
+  assert.deepEqual(queries[0]!.values, [['102047'], ['controleEstoque']]);
+  assert.deepEqual(queries[1]!.values, ['102047', 'controleEstoque', 'h1']);
+  queries.length = 0;
+  await writeModuleState(pool as never, hashes, ['102047']);
+  assert.equal(queries.length, 3, 'without onlyModules every row is rewritten, as before');
 });
