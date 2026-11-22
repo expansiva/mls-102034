@@ -99,7 +99,7 @@ test('the decisions of the manager and of the cm are in the types', () => {
     assert.ok((/export interface CmTool \{[^}]*\}/s.exec(source)?.[0] ?? '').includes(field), field);
   }
   assert.deepEqual(cm.operations.find((operation) => operation.operationId === 'simulateAgent')?.personInputs, [{ from: 'asMdmId', to: 'as' }]);
-  assert.equal(cm.operations.filter((operation) => operation.personInputs !== undefined).length, 1);
+  assert.equal(cm.operations.filter((operation) => operation.personInputs !== undefined).length, 2);
   assert.match(source, /personal\?: \{ role: string; state: string \};/);
   assert.match(source, /scope\?: 'company' \| 'personal';/);
   assert.match(source, /refusedReason\?: string;/);

@@ -91,6 +91,11 @@ export interface ConnectionCallerDeps {
    * Without it a call that carries a person by the mdm id is `forbidden`. Throws when the person has no link.
    */
   toCmUserId?: (mdmId: string) => Promise<string>;
+  /**
+   * The mdm id of a person known by the id in the cm (`toMdmId` of the workflow identities), for `personOutputs`.
+   * Throws `WORKFLOW_IDENTITY_UNLINKED` when the person has no link. Without it every person of an output counts as unlinked.
+   */
+  toMdmId?: (cmUserId: string) => Promise<string>;
   /** The organization of the app, to fill `context.organizationId` when the caller leaves it out. `undefined`: none is configured. */
   organizationId?: () => string | undefined;
   /**
@@ -230,6 +235,73 @@ export function createCmTransport(options: { projectId: string; env?: NodeJS.Pro
   };
 }
 
+/** The values at `path` of `root`; `[]` after a name marks each item of a list. Each hit is the object that holds the field and its name. */
+function personSlots(root: unknown, path: string): Array<{ holder: Record<string, unknown>; key: string }> {
+  const slots: Array<{ holder: Record<string, unknown>; key: string }> = [];
+  const walk = (node: unknown, steps: string[]): void => {
+    if (node === null || typeof node !== 'object') return;
+    const [step, ...rest] = steps;
+    const isList = step.endsWith('[]');
+    const key = isList ? step.slice(0, -2) : step;
+    const value = (node as Record<string, unknown>)[key];
+    if (!Object.prototype.hasOwnProperty.call(node, key) || value === undefined) return;
+    if (!isList) {
+      if (rest.length > 0) walk(value, rest);
+      else slots.push({ holder: node as Record<string, unknown>, key });
+      return;
+    }
+    if (!Array.isArray(value)) return;
+    for (const item of value) {
+      if (rest.length > 0) walk(item, rest);
+    }
+  };
+  if (path !== '') walk(root, path.split('.'));
+  return slots;
+}
+
+type PersonOutputsResult = { ok: true; output: unknown; dropped: number } | { ok: false; cause: string };
+
+/**
+ * Replaces, at each `personOutputs` path, the id of the person in the cm by the mdm id. One lookup per distinct id. A person
+ * without link leaves the field out of its item (`dropped` counts them); any other failure of a lookup fails the whole answer.
+ */
+async function translatePersonOutputs(
+  output: unknown,
+  paths: readonly string[],
+  toMdmId: ConnectionCallerDeps['toMdmId'],
+): Promise<PersonOutputsResult> {
+  const copy = structuredClone(output);
+  const slots = paths.flatMap((path) => personSlots(copy, path));
+  const ids = [...new Set(slots.map(({ holder, key }) => holder[key]).filter((value): value is string => typeof value === 'string' && value !== ''))];
+  const mdmOf = new Map<string, string | undefined>();
+  for (const id of ids) {
+    if (!toMdmId) {
+      mdmOf.set(id, undefined);
+      continue;
+    }
+    try {
+      const mdmId = await toMdmId(id);
+      mdmOf.set(id, typeof mdmId === 'string' && mdmId !== '' ? mdmId : undefined);
+    } catch (error) {
+      if ((error as { code?: unknown } | null)?.code !== 'WORKFLOW_IDENTITY_UNLINKED') {
+        return { ok: false, cause: typeof (error as { code?: unknown } | null)?.code === 'string' ? (error as { code: string }).code : 'error' };
+      }
+      mdmOf.set(id, undefined);
+    }
+  }
+  let dropped = 0;
+  for (const { holder, key } of slots) {
+    const value = holder[key];
+    const mdmId = typeof value === 'string' ? mdmOf.get(value) : undefined;
+    if (mdmId !== undefined) holder[key] = mdmId;
+    else {
+      delete holder[key];
+      dropped += 1;
+    }
+  }
+  return { ok: true, output: copy, dropped };
+}
+
 export function createConnectionCaller(deps: ConnectionCallerDeps): CallConnection {
   const log = deps.log ?? ((line: string): void => console.info(line));
   const now = deps.now ?? Date.now;
@@ -364,7 +436,14 @@ export function createConnectionCaller(deps: ConnectionCallerDeps): CallConnecti
       return fail('unavailable', `${connectionId}.${operationId} did not answer`, code);
     }
 
-    if (body.ok === true && Object.prototype.hasOwnProperty.call(body, 'output')) return done({ ok: true, output: body.output });
+    if (body.ok === true && Object.prototype.hasOwnProperty.call(body, 'output')) {
+      const personOutputs = operation.personOutputs ?? [];
+      if (personOutputs.length === 0) return done({ ok: true, output: body.output });
+      // The people come back as the id in the cm; the module only knows the mdm id. No half translation is handed over.
+      const translated = await translatePersonOutputs(body.output, personOutputs, deps.toMdmId);
+      if (!translated.ok) return fail('unavailable', `${connectionId}.${operationId} could not translate the people of the answer`, translated.cause);
+      return done({ ok: true, output: translated.output }, translated.dropped > 0 ? `people-without-link=${translated.dropped}` : undefined);
+    }
     if (body.ok === false && isCode(body.code) && typeof body.message === 'string') return fail(body.code, body.message);
     return fail('unavailable', `${connectionId}.${operationId} answered outside the envelope`, 'outside-envelope');
   };
@@ -376,6 +455,7 @@ export interface ProductionConnectionCallerOptions {
   env?: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
   toCmUserId?: (mdmId: string) => Promise<string>;
+  toMdmId?: (cmUserId: string) => Promise<string>;
   log?: (line: string) => void;
 }
 
@@ -396,6 +476,7 @@ export function createProductionConnectionCaller(options: ProductionConnectionCa
     catalogOf: options.catalogOf ?? connectionCatalogs(),
     transports: { cm: createCmTransport({ projectId, env: options.env, fetchImpl: options.fetchImpl }) },
     toCmUserId: options.toCmUserId ?? ((mdmId) => (identities as NonNullable<typeof identities>).toCmUserId(createAssistantContext(projectId), mdmId)),
+    toMdmId: options.toMdmId ?? (identities ? (cmUserId) => identities.toMdmId(createAssistantContext(projectId), cmUserId) : undefined),
     organizationId: () => {
       try {
         return readMessagesIntegration(projectId).organizationId;

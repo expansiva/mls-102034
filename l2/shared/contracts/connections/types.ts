@@ -63,6 +63,12 @@ export interface ConnectionOperation {
    * `forbidden` and nothing is sent. The connector knows no operation by name: it reads this list.
    */
   personInputs?: Array<{ from: string; to: string }>;
+  /**
+   * call: paths in the output that carry a person by the id in the cm; the connector puts the id in the app (the mdm id) in
+   * their place, by the link of the login. `[]` marks each item of a list (`agents[].responsibleUserId`). A person without
+   * link leaves the field out of the item; any other failure of the translation makes the answer `unavailable`.
+   */
+  personOutputs?: string[];
   /** The caller must send `expectVersion` (the version it read); without it the other side answers `invalid`, with a stale one `conflict`. */
   expectsVersion?: true;
 }
