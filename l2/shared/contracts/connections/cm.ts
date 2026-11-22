@@ -59,7 +59,7 @@ export interface CmAgentCard {
   name: string;
   audience: CmAgentAudience;
   enabled: boolean;
-  /** The id of the person in the app (the mdm id): the connector translates it to the id in the cm by the link of the login (`personInputs` of `updateAgent`, `personOutputs` of `listAgents` and `readAgent`). */
+  /** The id of the person in the app (the mdm id): the connector translates it to the id in the cm (`personInputs` of `updateAgent`, `personOutputs` of `listAgents` and `readAgent`). The app and the cm are linked by the login email; their ids are different: never send an app id to the cm nor use a cm id in the app. */
   responsibleUserId?: string;
   /** Only on drafts. */
   draftStatus?: CmDraftStatus;
@@ -87,7 +87,7 @@ export interface CmReadAgentOutput {
   role: string;
   state: string;
   enabled: boolean;
-  /** The id of the person in the app (the mdm id): the connector translates it to the id in the cm by the link of the login (`personInputs` of `updateAgent`, `personOutputs` of `listAgents` and `readAgent`). */
+  /** The id of the person in the app (the mdm id): the connector translates it to the id in the cm (`personInputs` of `updateAgent`, `personOutputs` of `listAgents` and `readAgent`). The app and the cm are linked by the login email; their ids are different: never send an app id to the cm nor use a cm id in the app. */
   responsibleUserId?: string;
   limits: CmAgentLimits;
   /** The member of the agent in the mdm of the app that asks; absent before the agent is active. */
@@ -111,7 +111,7 @@ export interface CmUpdateAgentInput {
   name?: string;
   prompt?: string;
   enabled?: boolean;
-  /** The id of the person in the app (the mdm id): the connector translates it to the id in the cm by the link of the login (`personInputs` of `updateAgent`, `personOutputs` of `listAgents` and `readAgent`). */
+  /** The id of the person in the app (the mdm id): the connector translates it to the id in the cm (`personInputs` of `updateAgent`, `personOutputs` of `listAgents` and `readAgent`). The app and the cm are linked by the login email; their ids are different: never send an app id to the cm nor use a cm id in the app. */
   responsibleUserId?: string;
   limits?: CmAgentLimitValue[];
 }
@@ -130,7 +130,7 @@ export interface CmAgentChange {
   changeId: string;
   /** ISO 8601. */
   at: string;
-  /** The id of the person in the app (the mdm id): the connector translates it from the id in the cm (`personOutputs` of `listAgentHistory`); the field leaves the item when the author has no link with this app. */
+  /** The id of the person in the app (the mdm id): the connector translates it from the id in the cm (`personOutputs` of `listAgentHistory`); the field leaves the item when the author has no link with this app. The app and the cm are linked by the login email; their ids are different: never send an app id to the cm nor use a cm id in the app. */
   authorUserId: string;
   /** One-line summary of what a prompt change altered, made by the cm. */
   summary?: string;
@@ -154,7 +154,7 @@ export interface CmSimulateAgentInput {
   /** The id of an agent, or of a draft (`draftId`). */
   agentId: string;
   level: CmSimulationLevel;
-  /** A person to simulate, by the mdm id; the connector turns it into `as`. */
+  /** A person to simulate, by the mdm id; the connector turns it into `as`. The app and the cm are linked by the login email; their ids are different: never send an app id to the cm nor use a cm id in the app. */
   asMdmId?: string;
   /** Whom to simulate: the id of the user in the cm (what reaches the cm when `asMdmId` is used), or a role `<moduleId>:<actorId>`. The one who simulates is `context.actorUserId`. */
   as?: string;
