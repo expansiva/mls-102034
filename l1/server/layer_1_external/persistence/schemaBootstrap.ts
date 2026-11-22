@@ -181,27 +181,40 @@ export function forceModulesShapeReason(forceModules: readonly string[], forceRe
   return null;
 }
 
-/** A foreign key: `table` holds the column that points to `references`. */
-export interface ForeignKeyEdge {
-  table: string;
-  references: string;
+/**
+ * One `pg_depend` row with `deptype = 'n'` whose referenced object is a relation of `public` (or the row type
+ * of one): what `DROP … CASCADE` would drop together with it.
+ * - `referenced`: the `public` relation, or the relation of the row type;
+ * - `referencedKind`: its `relkind` (`S` is a sequence; `sequenceOwner` is the table that owns it, or `null`);
+ * - `owner` and `ownerSchema`: the relation that owns the dependent (constraint, rule, trigger, default,
+ *   policy, or the relation itself); `null` when the catalog of the dependent is not one the reader knows;
+ * - `description`: `pg_describe_object` of the dependent.
+ */
+export interface CascadeDependent {
+  referenced: string;
+  referencedKind: string;
+  sequenceOwner: string | null;
+  owner: string | null;
+  ownerSchema: string | null;
+  description: string;
 }
 
-/** A view (or materialized view), in any schema, that reads `dependsOn` (a table or view in `public`). */
-export interface ViewDependencyEdge {
-  viewSchema: string;
-  view: string;
-  dependsOn: string;
+const SYSTEM_SCHEMAS = new Set(['pg_catalog', 'information_schema', 'pg_toast']);
+
+/** The system and the Timescale internals (chunks, aggregate views) go and come back with the table or the aggregate. */
+function isInternalSchema(schema: string): boolean {
+  return SYSTEM_SCHEMAS.has(schema) || schema.startsWith('_timescaledb');
 }
 
 /**
  * Why a single-module reset must stop before any DDL, or `null`.
  * 1. the module is not in the registry of this project;
  * 2. one of its definitions is a platform table (unprefixed name);
- * 3. something outside the scope that `DROP … CASCADE` would drop silently depends on it: a table with a
- *    foreign key into the scope, or a view outside the registry (in any schema; a registry view is in
- *    `public` with a registry name) that reads a scope table or a registry view (the reset drops the
- *    registry views and recreates them; any other view is not recreated);
+ * 3. something that `DROP … CASCADE` would drop silently depends on what the reset drops (the scope tables,
+ *    the registry views, the sequences owned by a scope table, the row types of those): a dependent whose
+ *    owner is outside that set, in any schema, or whose owner is unknown. Closed by default: no list of
+ *    cases. The owner in the set (a foreign key between two tables of the module, a registry view over a
+ *    scope table) and the owner in a system or Timescale schema do not refuse;
  * 4. the incremental plan is not `none`/`recordOnly`: another module has a pending migration, and
  *    `writeModuleState` would mark it as applied without having applied it.
  */
@@ -210,8 +223,7 @@ export function moduleResetBlockReason(input: {
   projectId: string | undefined;
   registry: Array<{ projectId: string; moduleId: string }>;
   definitions: OwnedNameDefinition[];
-  foreignKeys: ForeignKeyEdge[];
-  viewDependencies: ViewDependencyEdge[];
+  dependents: CascadeDependent[];
   registryViews: readonly string[];
   incrementalMode: ModuleRebuildMode;
 }): string | null {
@@ -228,23 +240,23 @@ export function moduleResetBlockReason(input: {
     return refused(`module '${moduleId}' declares platform tables (${platformTables.join(', ')})`);
   }
   const { isOwned } = ownedNamesFor(input.definitions, [moduleId], []);
-  const outside = [...new Set(
-    input.foreignKeys
-      .filter((edge) => isOwned(edge.references) && !isOwned(edge.table))
-      .map((edge) => edge.table),
-  )].sort((left, right) => left.localeCompare(right));
-  if (outside.length > 0) {
-    return refused(`tables outside module '${moduleId}' have a foreign key into it (${outside.join(', ')})`);
-  }
   const registryViews = new Set(input.registryViews);
-  const strayViews = [...new Set(
-    input.viewDependencies
-      .filter((edge) => !(edge.viewSchema === 'public' && registryViews.has(edge.view))
-        && (isOwned(edge.dependsOn) || registryViews.has(edge.dependsOn)))
-      .map((edge) => (edge.viewSchema === 'public' ? edge.view : `${edge.viewSchema}.${edge.view}`)),
+  const inDropSet = (name: string): boolean => isOwned(name) || registryViews.has(name);
+  const stray = [...new Set(
+    input.dependents
+      .filter((dependent) => {
+        const dropped = dependent.referencedKind === 'S'
+          ? dependent.sequenceOwner !== null && isOwned(dependent.sequenceOwner)
+          : inDropSet(dependent.referenced);
+        if (!dropped) return false;
+        if (dependent.owner === null || dependent.ownerSchema === null) return true;
+        if (isInternalSchema(dependent.ownerSchema)) return false;
+        return !(dependent.ownerSchema === 'public' && inDropSet(dependent.owner));
+      })
+      .map((dependent) => dependent.description),
   )].sort((left, right) => left.localeCompare(right));
-  if (strayViews.length > 0) {
-    return refused(`views outside the registry depend on module '${moduleId}' and would be dropped without being recreated (${strayViews.join(', ')})`);
+  if (stray.length > 0) {
+    return refused(`objects outside module '${moduleId}' depend on it and would be dropped (${stray.join(', ')})`);
   }
   if (input.incrementalMode !== 'none' && input.incrementalMode !== 'recordOnly') {
     return refused(`another module has a pending migration (plan ${input.incrementalMode}); migrate first`);
@@ -252,36 +264,60 @@ export function moduleResetBlockReason(input: {
   return null;
 }
 
-async function readForeignKeyEdges(pool: Pool): Promise<ForeignKeyEdge[]> {
-  const result = await pool.query<{ table_name: string; referenced_table: string }>(
-    `SELECT source.relname AS table_name, target.relname AS referenced_table
-       FROM pg_constraint constraint_row
-       JOIN pg_class source ON source.oid = constraint_row.conrelid
-       JOIN pg_namespace source_schema ON source_schema.oid = source.relnamespace
-       JOIN pg_class target ON target.oid = constraint_row.confrelid
-      WHERE constraint_row.contype = 'f' AND source_schema.nspname = 'public'`,
-  );
-  return result.rows.map((row) => ({ table: row.table_name, references: row.referenced_table }));
-}
-
-export async function readViewDependencies(pool: Pool): Promise<ViewDependencyEdge[]> {
-  const result = await pool.query<{ view_schema: string; view_name: string; depends_on: string }>(
-    `SELECT DISTINCT view_schema.nspname AS view_schema, view_class.relname AS view_name, target.relname AS depends_on
+/** The dependents of the `public` relations that `DROP … CASCADE` follows (`deptype = 'n'`), with their owner. */
+export async function readCascadeDependents(pool: Pool): Promise<CascadeDependent[]> {
+  const result = await pool.query<{
+    referenced: string;
+    referenced_kind: string;
+    sequence_owner: string | null;
+    owner: string | null;
+    owner_schema: string | null;
+    description: string;
+  }>(
+    `WITH target AS (
+       SELECT relation.oid AS relid, relation.relname, relation.relkind, relation.reltype
+         FROM pg_class relation
+         JOIN pg_namespace relation_schema ON relation_schema.oid = relation.relnamespace
+        WHERE relation_schema.nspname = 'public' AND relation.relkind IN ('r', 'p', 'f', 'v', 'm', 'S')
+     ), referenced AS (
+       SELECT 'pg_class'::regclass::oid AS ref_class, relid AS ref_object, relid, relname, relkind FROM target
+       UNION ALL
+       SELECT 'pg_type'::regclass::oid, reltype, relid, relname, relkind FROM target WHERE reltype <> 0
+     )
+     SELECT DISTINCT
+            referenced.relname AS referenced,
+            referenced.relkind::text AS referenced_kind,
+            sequence_owner.relname AS sequence_owner,
+            owner.relname AS owner,
+            owner_schema.nspname AS owner_schema,
+            pg_describe_object(dependency.classid, dependency.objid, dependency.objsubid) AS description
        FROM pg_depend dependency
-       JOIN pg_rewrite rewrite ON rewrite.oid = dependency.objid
-       JOIN pg_class view_class ON view_class.oid = rewrite.ev_class
-       JOIN pg_namespace view_schema ON view_schema.oid = view_class.relnamespace
-       JOIN pg_class target ON target.oid = dependency.refobjid
-       JOIN pg_namespace target_schema ON target_schema.oid = target.relnamespace
-      WHERE dependency.classid = 'pg_rewrite'::regclass
-        AND dependency.refclassid = 'pg_class'::regclass
-        AND view_class.relkind IN ('v', 'm')
-        AND view_schema.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
-        AND view_schema.nspname NOT LIKE '\\_timescaledb%'
-        AND target_schema.nspname = 'public'
-        AND target.oid <> view_class.oid`,
+       JOIN referenced ON referenced.ref_class = dependency.refclassid AND referenced.ref_object = dependency.refobjid
+       LEFT JOIN pg_depend sequence_link
+              ON referenced.relkind = 'S'
+             AND sequence_link.classid = 'pg_class'::regclass AND sequence_link.objid = referenced.relid
+             AND sequence_link.refclassid = 'pg_class'::regclass AND sequence_link.deptype = 'a'
+       LEFT JOIN pg_class sequence_owner ON sequence_owner.oid = sequence_link.refobjid
+       LEFT JOIN pg_class owner ON owner.oid = CASE
+              WHEN dependency.classid = 'pg_constraint'::regclass THEN (SELECT conrelid FROM pg_constraint WHERE oid = dependency.objid)
+              WHEN dependency.classid = 'pg_rewrite'::regclass THEN (SELECT ev_class FROM pg_rewrite WHERE oid = dependency.objid)
+              WHEN dependency.classid = 'pg_trigger'::regclass THEN (SELECT tgrelid FROM pg_trigger WHERE oid = dependency.objid)
+              WHEN dependency.classid = 'pg_attrdef'::regclass THEN (SELECT adrelid FROM pg_attrdef WHERE oid = dependency.objid)
+              WHEN dependency.classid = 'pg_policy'::regclass THEN (SELECT polrelid FROM pg_policy WHERE oid = dependency.objid)
+              WHEN dependency.classid = 'pg_class'::regclass THEN dependency.objid
+            END
+       LEFT JOIN pg_namespace owner_schema ON owner_schema.oid = owner.relnamespace
+      WHERE dependency.deptype = 'n'
+        AND NOT (dependency.classid = 'pg_class'::regclass AND dependency.objid = referenced.relid)`,
   );
-  return result.rows.map((row) => ({ viewSchema: row.view_schema, view: row.view_name, dependsOn: row.depends_on }));
+  return result.rows.map((row) => ({
+    referenced: row.referenced,
+    referencedKind: row.referenced_kind,
+    sequenceOwner: row.sequence_owner,
+    owner: row.owner,
+    ownerSchema: row.owner_schema,
+    description: row.description,
+  }));
 }
 
 /**
@@ -807,8 +843,7 @@ export async function bootstrapSchema(
       projectId: env.projectId,
       registry: definedModules,
       definitions: definitions.filter((definition) => usesPostgres(definition)),
-      foreignKeys: await readForeignKeyEdges(pool),
-      viewDependencies: await readViewDependencies(pool),
+      dependents: await readCascadeDependents(pool),
       registryViews: (await loadViewDefinitions()).map((view) => view.viewName),
       incrementalMode: incremental.mode,
     });

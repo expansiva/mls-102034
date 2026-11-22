@@ -12,7 +12,8 @@ import {
   orphanNames,
   ownedNamesFor,
   rebuiltSummary,
-  readViewDependencies,
+  readCascadeDependents,
+  type CascadeDependent,
   selectModuleRebuildPlan,
   tablesToCreate,
   sanitizeDefinitionIndexes,
@@ -478,6 +479,27 @@ test('forceModules rebuilds only that module: the drop scope and the created tab
   );
 });
 
+const ITEM = 'mls102047_controleestoque_item';
+const MOVIMENTO = 'mls102047_controleestoque_movimento';
+
+/** A dependent as pg_depend reports it: `description` is what pg_describe_object would say. */
+function dependent(input: Partial<CascadeDependent> & { description: string }): CascadeDependent {
+  return {
+    referenced: ITEM,
+    referencedKind: 'r',
+    sequenceOwner: null,
+    owner: null,
+    ownerSchema: null,
+    ...input,
+  };
+}
+function fk(owner: string, referenced: string, ownerSchema = 'public'): CascadeDependent {
+  return dependent({ referenced, owner, ownerSchema, description: `constraint ${owner}_fkey on table ${ownerSchema}.${owner}` });
+}
+function viewOver(ownerSchema: string, view: string, referenced: string, referencedKind = 'r'): CascadeDependent {
+  return dependent({ referenced, referencedKind, owner: view, ownerSchema, description: `rule _RETURN on view ${ownerSchema}.${view}` });
+}
+
 const resetBase = {
   moduleId: 'controleEstoque',
   projectId: '102047',
@@ -487,8 +509,7 @@ const resetBase = {
     { projectId: '102047', moduleId: 'mdm' },
   ],
   definitions: allDefs,
-  foreignKeys: [] as Array<{ table: string; references: string }>,
-  viewDependencies: [] as Array<{ viewSchema: string; view: string; dependsOn: string }>,
+  dependents: [] as CascadeDependent[],
   registryViews: ['monitor_summary'] as string[],
   incrementalMode: 'none' as const,
 };
@@ -499,9 +520,9 @@ test('moduleResetBlockReason lets a clean module through, with the plan none or 
   // an FK inside the module, or from another module's table to a third one, is not a risk
   assert.equal(moduleResetBlockReason({
     ...resetBase,
-    foreignKeys: [
-      { table: 'mls102047_controleestoque_movimento', references: 'mls102047_controleestoque_item' },
-      { table: 'mls102047_comandarestaurante_pedido', references: 'mdm_documents' },
+    dependents: [
+      fk(MOVIMENTO, ITEM),
+      fk('mls102047_comandarestaurante_pedido', 'mdm_documents'),
     ],
   }), null);
 });
@@ -517,75 +538,103 @@ test('moduleResetBlockReason refuses a module that declares a platform table', (
   assert.match(reason, /declares platform tables \(_schema_migrations, mdm_documents\)/u);
 });
 
-test('moduleResetBlockReason refuses a foreign key from outside, listing the tables', () => {
-  const reason = moduleResetBlockReason({
-    ...resetBase,
-    foreignKeys: [
-      { table: 'mls102047_comandarestaurante_pedido', references: 'mls102047_controleestoque_item' },
-      { table: 'mls102047_comandarestaurante_pedido', references: 'mls102047_controleestoque_movimento' },
-    ],
-  }) ?? '';
-  assert.match(reason, /outside module 'controleEstoque' have a foreign key into it \(mls102047_comandarestaurante_pedido\)/u);
+const strayReason = (dependents: CascadeDependent[], extra: Partial<typeof resetBase> = {}): string =>
+  moduleResetBlockReason({ ...resetBase, ...extra, dependents }) ?? '';
+
+test('moduleResetBlockReason refuses a foreign key from outside, naming it', () => {
+  const reason = strayReason([
+    fk('mls102047_comandarestaurante_pedido', ITEM),
+    fk('mls102047_comandarestaurante_pedido', MOVIMENTO),
+  ]);
+  assert.match(reason, /forceModules refused before schema write: objects outside module 'controleEstoque' depend on it and would be dropped \(constraint mls102047_comandarestaurante_pedido_fkey on table public\.mls102047_comandarestaurante_pedido\)/u);
 });
 
-test('moduleResetBlockReason refuses a view outside the registry that reads a table of the module', () => {
-  const reason = moduleResetBlockReason({
-    ...resetBase,
-    viewDependencies: [
-      { viewSchema: 'public', view: 'v_manual_b', dependsOn: 'mls102047_controleestoque_item' },
-      { viewSchema: 'public', view: 'v_manual_a', dependsOn: 'mls102047_controleestoque_movimento' },
-      { viewSchema: 'public', view: 'v_manual_a', dependsOn: 'mls102047_controleestoque_item' },
-    ],
-  }) ?? '';
-  assert.match(reason, /forceModules refused before schema write: views outside the registry depend on module 'controleEstoque' and would be dropped without being recreated \(v_manual_a, v_manual_b\)/u);
+test('moduleResetBlockReason refuses a foreign key from another schema', () => {
+  assert.match(strayReason([fk('t_other', ITEM, 'other')]), /\(constraint t_other_fkey on table other\.t_other\)/u);
 });
 
-test('moduleResetBlockReason lets through views that the reset does not break', () => {
-  assert.equal(moduleResetBlockReason({
-    ...resetBase,
-    registryViews: ['monitor_summary', 'monitor_by_module'],
-    viewDependencies: [
-      // outside view over another module's table
-      { viewSchema: 'public', view: 'v_manual', dependsOn: 'mls102047_comandarestaurante_pedido' },
-      // registry view over the module's table: the reset recreates it
-      { viewSchema: 'public', view: 'monitor_summary', dependsOn: 'mls102047_controleestoque_item' },
-      // registry view over another registry view
-      { viewSchema: 'public', view: 'monitor_by_module', dependsOn: 'monitor_summary' },
-    ],
-  }), null);
+test('moduleResetBlockReason refuses a view outside the registry over a table or a registry view, listing them in order', () => {
+  const reason = strayReason([
+    viewOver('public', 'v_manual_b', ITEM),
+    viewOver('public', 'v_manual_a', MOVIMENTO),
+    viewOver('public', 'v_manual_a', ITEM),
+    viewOver('public', 'v_over_registry', 'monitor_summary', 'v'),
+  ]);
+  assert.match(reason, /\(rule _RETURN on view public\.v_manual_a, rule _RETURN on view public\.v_manual_b, rule _RETURN on view public\.v_over_registry\)/u);
 });
 
-test('moduleResetBlockReason refuses a view outside the registry that reads a registry view', () => {
-  const reason = moduleResetBlockReason({
-    ...resetBase,
-    viewDependencies: [{ viewSchema: 'public', view: 'v_manual', dependsOn: 'monitor_summary' }],
-  }) ?? '';
-  assert.match(reason, /views outside the registry depend on module 'controleEstoque'.*\(v_manual\)/u);
+test('moduleResetBlockReason refuses a view in another schema, also with the name of a registry view', () => {
+  assert.match(strayReason([viewOver('other', 'v_x', ITEM)]), /on view other\.v_x\)/u);
+  assert.match(strayReason([viewOver('other', 'v_x', 'monitor_summary', 'v')]), /on view other\.v_x\)/u);
+  assert.match(strayReason([viewOver('other', 'monitor_summary', ITEM)]), /on view other\.monitor_summary\)/u);
 });
 
-test('moduleResetBlockReason sees a view in another schema, named with its schema', () => {
-  const block = (viewDependencies: Array<{ viewSchema: string; view: string; dependsOn: string }>) =>
-    moduleResetBlockReason({ ...resetBase, viewDependencies }) ?? '';
-  assert.match(block([{ viewSchema: 'other', view: 'v_x', dependsOn: 'mls102047_controleestoque_item' }]), /\(other\.v_x\)/u);
-  assert.match(block([{ viewSchema: 'other', view: 'v_x', dependsOn: 'monitor_summary' }]), /\(other\.v_x\)/u);
-  // same name as a registry view, but not in public: it is not the registry view
-  assert.match(block([{ viewSchema: 'other', view: 'monitor_summary', dependsOn: 'mls102047_controleestoque_item' }]), /\(other\.monitor_summary\)/u);
-  // a public stray view is still named bare, and sorted with the qualified ones
-  assert.match(block([
-    { viewSchema: 'other', view: 'v_x', dependsOn: 'mls102047_controleestoque_item' },
-    { viewSchema: 'public', view: 'v_manual', dependsOn: 'mls102047_controleestoque_item' },
-  ]), /\(other\.v_x, v_manual\)/u);
+test('moduleResetBlockReason lets through what the reset itself drops and recreates', () => {
+  assert.equal(strayReason([
+    // outside view over another module's table: not touched by this reset
+    viewOver('public', 'v_manual', 'mls102047_comandarestaurante_pedido'),
+    // registry view over the module's table: the reset recreates it
+    viewOver('public', 'monitor_summary', ITEM),
+    // registry view over another registry view
+    viewOver('public', 'monitor_by_module', 'monitor_summary', 'v'),
+    // foreign key between two tables of the module
+    fk(MOVIMENTO, ITEM),
+  ], { registryViews: ['monitor_summary', 'monitor_by_module'] }), '');
 });
 
-test('readViewDependencies looks at views of any schema but the system and Timescale internals, and at public targets', async () => {
+test('moduleResetBlockReason refuses the default of an outside table that uses a sequence of the module', () => {
+  const reason = strayReason([
+    dependent({
+      referenced: 'mls102047_controleestoque_item_id_seq',
+      referencedKind: 'S',
+      sequenceOwner: ITEM,
+      owner: 't_outside',
+      ownerSchema: 'public',
+      description: 'default value for column id of table public.t_outside',
+    }),
+  ]);
+  assert.match(reason, /\(default value for column id of table public\.t_outside\)/u);
+  // the default of the module's own table over its own sequence is dropped with it
+  assert.equal(strayReason([
+    dependent({ referenced: 'mls102047_controleestoque_item_id_seq', referencedKind: 'S', sequenceOwner: ITEM, owner: ITEM, ownerSchema: 'public', description: 'default value for column id of table public.item' }),
+  ]), '');
+  // a sequence of another module's table is not touched
+  assert.equal(strayReason([
+    dependent({ referenced: 'other_seq', referencedKind: 'S', sequenceOwner: 'mls102047_comandarestaurante_pedido', owner: 't_outside', ownerSchema: 'public', description: 'x' }),
+  ]), '');
+});
+
+test('moduleResetBlockReason refuses a dependent it cannot place, and a row-type dependent of an outside table', () => {
+  assert.match(strayReason([dependent({ description: 'function public.f(item)' })]), /\(function public\.f\(item\)\)/u);
+  assert.match(strayReason([dependent({ owner: 't_outside', ownerSchema: 'public', description: 'table public.t_outside column c' })]), /table public\.t_outside column c/u);
+});
+
+test('moduleResetBlockReason lets through a dependent owned by the system or Timescale internals', () => {
+  assert.equal(strayReason([
+    dependent({ owner: '_hyper_1_1_chunk', ownerSchema: '_timescaledb_internal', description: 'table _timescaledb_internal._hyper_1_1_chunk' }),
+    dependent({ owner: '_partial_view_3', ownerSchema: '_timescaledb_internal', description: 'rule _RETURN on view _timescaledb_internal._partial_view_3' }),
+    dependent({ owner: 'x', ownerSchema: 'pg_catalog', description: 'y' }),
+  ]), '');
+});
+
+test('readCascadeDependents reads pg_depend of normal dependents of public relations and their row types, with the owner', async () => {
   let sql = '';
-  const pool = { query: async (text: string) => { sql = text; return { rows: [{ view_schema: 'other', view_name: 'v_x', depends_on: 't' }] }; } };
-  const edges = await readViewDependencies(pool as never);
-  assert.deepEqual(edges, [{ viewSchema: 'other', view: 'v_x', dependsOn: 't' }]);
-  assert.doesNotMatch(sql, /view_schema\.nspname\s*=/u);
-  assert.match(sql, /view_schema\.nspname NOT IN \('pg_catalog', 'information_schema', 'pg_toast'\)/u);
-  assert.match(sql, /NOT LIKE '\\_timescaledb%'/u);
-  assert.match(sql, /target_schema\.nspname = 'public'/u);
+  const pool = {
+    query: async (text: string) => {
+      sql = text;
+      return { rows: [{ referenced: 't', referenced_kind: 'r', sequence_owner: null, owner: 'v', owner_schema: 'other', description: 'rule _RETURN on view other.v' }] };
+    },
+  };
+  const edges = await readCascadeDependents(pool as never);
+  assert.deepEqual(edges, [{ referenced: 't', referencedKind: 'r', sequenceOwner: null, owner: 'v', ownerSchema: 'other', description: 'rule _RETURN on view other.v' }]);
+  assert.match(sql, /dependency\.deptype = 'n'/u);
+  assert.match(sql, /relation_schema\.nspname = 'public'/u);
+  assert.match(sql, /pg_describe_object\(dependency\.classid, dependency\.objid, dependency\.objsubid\)/u);
+  for (const catalog of ['pg_constraint', 'pg_rewrite', 'pg_trigger', 'pg_attrdef', 'pg_policy']) {
+    assert.match(sql, new RegExp(`'${catalog}'::regclass`, 'u'));
+  }
+  assert.match(sql, /reltype/u);
+  assert.doesNotMatch(sql, /owner_schema\.nspname\s*=/u);
 });
 
 test('moduleResetBlockReason refuses when another module has a pending migration', () => {
