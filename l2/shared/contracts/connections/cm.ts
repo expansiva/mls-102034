@@ -130,6 +130,7 @@ export interface CmAgentChange {
   changeId: string;
   /** ISO 8601. */
   at: string;
+  /** The id of the person in the app (the mdm id): the connector translates it from the id in the cm (`personOutputs` of `listAgentHistory`); the field leaves the item when the author has no link with this app. */
   authorUserId: string;
   /** One-line summary of what a prompt change altered, made by the cm. */
   summary?: string;
@@ -292,7 +293,7 @@ export const cm: ConnectionCatalog = {
     { "operationId": "listAgents", "direction": "call", "kind": "query", "description": "List the agents of the organization, with the drafts and their situation.", "inputType": "CmListAgentsInput", "outputType": "CmListAgentsOutput", "reply": "now", "personOutputs": ["agents[].responsibleUserId"] },
     { "operationId": "readAgent", "direction": "call", "kind": "query", "description": "Read an agent: its definition, ROLE.md, STATE.md, whether it is on, who is responsible, its limits and its version.", "inputType": "CmReadAgentInput", "outputType": "CmReadAgentOutput", "reply": "now", "personOutputs": ["responsibleUserId"] },
     { "operationId": "updateAgent", "direction": "call", "kind": "command", "description": "Change an agent by a prompt or by a field, with the version that was read and the author; also turn it on or off, set the responsible and the limits.", "inputType": "CmUpdateAgentInput", "outputType": "CmUpdateAgentOutput", "reply": "now", "expectsVersion": true, "personInputs": [{ "from": "responsibleUserId", "to": "responsibleUserId" }] },
-    { "operationId": "listAgentHistory", "direction": "call", "kind": "query", "description": "List the changes of an agent, with the author and the date.", "inputType": "CmListAgentHistoryInput", "outputType": "CmListAgentHistoryOutput", "reply": "now" },
+    { "operationId": "listAgentHistory", "direction": "call", "kind": "query", "description": "List the changes of an agent, with the author and the date.", "inputType": "CmListAgentHistoryInput", "outputType": "CmListAgentHistoryOutput", "reply": "now", "personOutputs": ["changes[].authorUserId"] },
     { "operationId": "undoAgentChange", "direction": "call", "kind": "command", "description": "Undo one change of an agent, with the version that was read.", "inputType": "CmUndoAgentChangeInput", "outputType": "CmUndoAgentChangeOutput", "reply": "now", "expectsVersion": true },
     { "operationId": "simulateAgent", "direction": "call", "kind": "command", "description": "Simulate an agent at the levels what it can and what it understands; nothing is saved. A person the cm holds no current roles for (they have not used the assistant, or not recently) answers the error refused; every other failure is invalid or not_found.", "inputType": "CmSimulateAgentInput", "outputType": "CmSimulateAgentOutput", "reply": "now", "personInputs": [{ "from": "asMdmId", "to": "as" }] },
     { "operationId": "createAgent", "direction": "call", "kind": "command", "description": "Ask the cm to create an agent from a prompt: the answer is only the id of the draft, and the result comes later.", "inputType": "CmCreateAgentInput", "outputType": "CmCreateAgentOutput", "reply": "later", "resultOperation": "agentDraftReady" },
