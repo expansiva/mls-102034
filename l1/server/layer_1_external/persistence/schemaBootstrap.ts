@@ -185,7 +185,7 @@ export function forceModulesShapeReason(forceModules: readonly string[], forceRe
  * One `pg_depend` row with `deptype = 'n'` whose referenced object is a relation of `public` (or the row type
  * of one): what `DROP … CASCADE` would drop together with it.
  * - `referenced`: the `public` relation, or the relation of the row type;
- * - `referencedKind`: its `relkind` (`S` is a sequence; `sequenceOwner` is the table that owns it, or `null`);
+ * - `referencedKind`: its `relkind` (`S` is a sequence; `sequenceOwner` is the table linked to it by `deptype` 'a' (SERIAL) or 'i' (IDENTITY), or `null`);
  * - `owner` and `ownerSchema`: the relation that owns the dependent (constraint, rule, trigger, default,
  *   policy, or the relation itself); `null` when the catalog of the dependent is not one the reader knows;
  * - `description`: `pg_describe_object` of the dependent.
@@ -296,7 +296,7 @@ export async function readCascadeDependents(pool: Pool): Promise<CascadeDependen
        LEFT JOIN pg_depend sequence_link
               ON referenced.relkind = 'S'
              AND sequence_link.classid = 'pg_class'::regclass AND sequence_link.objid = referenced.relid
-             AND sequence_link.refclassid = 'pg_class'::regclass AND sequence_link.deptype = 'a'
+             AND sequence_link.refclassid = 'pg_class'::regclass AND sequence_link.deptype IN ('a', 'i')
        LEFT JOIN pg_class sequence_owner ON sequence_owner.oid = sequence_link.refobjid
        LEFT JOIN pg_class owner ON owner.oid = CASE
               WHEN dependency.classid = 'pg_constraint'::regclass THEN (SELECT conrelid FROM pg_constraint WHERE oid = dependency.objid)

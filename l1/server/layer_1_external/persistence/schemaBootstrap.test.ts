@@ -629,6 +629,8 @@ test('readCascadeDependents reads pg_depend of normal dependents of public relat
   assert.deepEqual(edges, [{ referenced: 't', referencedKind: 'r', sequenceOwner: null, owner: 'v', ownerSchema: 'other', description: 'rule _RETURN on view other.v' }]);
   assert.match(sql, /dependency\.deptype = 'n'/u);
   assert.match(sql, /relation_schema\.nspname = 'public'/u);
+  // a sequence is owned by a table through 'a' (SERIAL) or 'i' (IDENTITY)
+  assert.match(sql, /sequence_link\.deptype IN \('a', 'i'\)/u);
   assert.match(sql, /pg_describe_object\(dependency\.classid, dependency\.objid, dependency\.objsubid\)/u);
   for (const catalog of ['pg_constraint', 'pg_rewrite', 'pg_trigger', 'pg_attrdef', 'pg_policy']) {
     assert.match(sql, new RegExp(`'${catalog}'::regclass`, 'u'));
