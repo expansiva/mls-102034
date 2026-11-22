@@ -29,6 +29,8 @@ import {
 import { defsCatalogImporter, distDefsReader } from '/_102034_/l1/workflow/assistantCatalogDefs.js';
 import { execAssistantAction, type AssistantAgentAccess, type AssistantExecInput, type AssistantExecResult } from '/_102034_/l1/workflow/assistantExec.js';
 import { deliverReleaseCatalog, fingerprintCompiledJs, RELEASE_CATALOG_CONNECTION, RELEASE_CATALOG_OPERATION, type ReleaseCatalogDelivery } from '/_102034_/l1/workflow/releaseCatalogDelivery.js';
+import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
+import { getSharedPgPool } from '/_102034_/l1/server/layer_1_external/data/postgres/pg.js';
 import { readMessagesIntegration } from '/_102034_/l1/server/layer_1_external/config/messagesIntegration.js';
 import { getMdmKv } from '/_102034_/l1/mdm/layer_3_usecases/kvUsecases.js';
 import { findAgentMember } from '/_102034_/l1/mdm/layer_3_usecases/agentMember.js';
@@ -88,6 +90,27 @@ export function createAssistantContext(projectId: string): RequestContext {
   });
   ctx.sessionContext.project = { ...ctx.sessionContext.project, projectId };
   return ctx;
+}
+
+/**
+ * Runs `run` while this process holds the session advisory lock `name` of the shared database, so the processes of a cluster
+ * run it one at a time (the delivery of the release catalog only runs in `postgres` mode). A session lock is released when its
+ * connection ends, so a process that dies inside does not hold it; the connection error is not swallowed.
+ */
+async function withProcessLock<T>(name: string, run: () => Promise<T>): Promise<T> {
+  const client = await getSharedPgPool(readAppEnv()).connect();
+  let locked = false;
+  try {
+    await client.query('SELECT pg_advisory_lock(hashtext($1))', [name]);
+    locked = true;
+    return await run();
+  } finally {
+    try {
+      if (locked) await client.query('SELECT pg_advisory_unlock(hashtext($1))', [name]);
+    } finally {
+      client.release();
+    }
+  }
 }
 
 /** Production wiring of the assistant's requests: the real cm identities, the Postgres stores, the screen's alpha. */
@@ -164,6 +187,7 @@ export function createAssistantRunners(projectId: string): AssistantRunners {
       },
       kv: { get: (ctx, params) => getMdmKv(ctx, params), put: (ctx, params) => putMdmKv(ctx, params) },
       newContext,
+      withLock: withProcessLock,
       consumerFingerprint: async () => {
         const index = await serveIndex();
         const routes = index.byOperation.get(`${RELEASE_CATALOG_CONNECTION}.${RELEASE_CATALOG_OPERATION}`) ?? [];

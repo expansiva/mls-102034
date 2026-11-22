@@ -40,7 +40,12 @@ export interface ReleaseCatalogDeliveryDeps {
    */
   consumerFingerprint: () => Promise<string | null>;
   newContext: () => RequestContext;
-  log?: { info: (message: string) => void; error: (message: string) => void };
+  /**
+   * Runs `run` while holding the lock `name`, shared by every process of the app (they split one database): read the key,
+   * serve and keep the key are one step, so the second process of a cluster finds the key the first one kept.
+   */
+  withLock: <T>(name: string, run: () => Promise<T>) => Promise<T>;
+  log?:{ info: (message: string) => void; error: (message: string) => void };
 }
 
 function stable(value: unknown): unknown {
@@ -229,34 +234,37 @@ export async function deliverReleaseCatalog(deps: ReleaseCatalogDeliveryDeps): P
 
     const ctx = deps.newContext();
     const key = `${KEY_PREFIX}${deps.projectId}`;
-    const last = await deps.kv.get(ctx, { key });
-    const stored = last?.value !== null && typeof last?.value === 'object' ? (last.value as { hash?: unknown; consumer?: unknown }) : undefined;
-    if (stored?.hash === hash && stored.consumer === fingerprint) {
-      log.info(`[release-catalog] unchanged (release ${releaseId}): not delivered again`);
-      return 'unchanged';
-    }
-
-    const result = await deps.serve({
-      connectionId: RELEASE_CATALOG_CONNECTION,
-      operationId: RELEASE_CATALOG_OPERATION,
-      input: { releaseId, hash, catalogs },
-      context: { organizationId },
-      idempotencyKey: `${releaseId}:${hash}:${fingerprint}`,
-    });
-    if (!result.ok) {
-      // Only the absence of a route is "no module serves it" (the message of connectionServe.ts); any other `not_found`
-      // is the module's own answer (a 404 of its route) and a failure, so it is tried again and says why.
-      if (result.code === 'not_found' && result.message.startsWith(NO_ROUTE_MESSAGE)) {
-        log.info(`[release-catalog] no module serves ${RELEASE_CATALOG_CONNECTION}.${RELEASE_CATALOG_OPERATION}: nothing delivered`);
-        return 'no_module';
+    // Check and act under one lock per project: a cluster of processes boots together and would all read the old key.
+    return await deps.withLock(key, async (): Promise<ReleaseCatalogDelivery> => {
+      const last = await deps.kv.get(ctx, { key });
+      const stored = last?.value !== null && typeof last?.value === 'object' ? (last.value as { hash?: unknown; consumer?: unknown }) : undefined;
+      if (stored?.hash === hash && stored.consumer === fingerprint) {
+        log.info(`[release-catalog] unchanged (release ${releaseId}): not delivered again`);
+        return 'unchanged';
       }
-      log.error(`[release-catalog] not delivered: ${result.code}${result.message ? `: ${result.message.slice(0, 200)}` : ''}`);
-      return 'failed';
-    }
-    // The hash is kept only after the module said ok: a failure is tried again at the next boot.
-    await deps.kv.put(ctx, { key, value: { hash, releaseId, consumer: fingerprint, at: new Date().toISOString() } });
-    log.info(`[release-catalog] delivered: release ${releaseId}, ${catalogs.length} module(s)`);
-    return 'delivered';
+
+      const result = await deps.serve({
+        connectionId: RELEASE_CATALOG_CONNECTION,
+        operationId: RELEASE_CATALOG_OPERATION,
+        input: { releaseId, hash, catalogs },
+        context: { organizationId },
+        idempotencyKey: `${releaseId}:${hash}:${fingerprint}`,
+      });
+      if (!result.ok) {
+        // Only the absence of a route is "no module serves it" (the message of connectionServe.ts); any other `not_found`
+        // is the module's own answer (a 404 of its route) and a failure, so it is tried again and says why.
+        if (result.code === 'not_found' && result.message.startsWith(NO_ROUTE_MESSAGE)) {
+          log.info(`[release-catalog] no module serves ${RELEASE_CATALOG_CONNECTION}.${RELEASE_CATALOG_OPERATION}: nothing delivered`);
+          return 'no_module';
+        }
+        log.error(`[release-catalog] not delivered: ${result.code}${result.message ? `: ${result.message.slice(0, 200)}` : ''}`);
+        return 'failed';
+      }
+      // The hash is kept only after the module said ok: a failure is tried again at the next boot.
+      await deps.kv.put(ctx, { key, value: { hash, releaseId, consumer: fingerprint, at: new Date().toISOString() } });
+      log.info(`[release-catalog] delivered: release ${releaseId}, ${catalogs.length} module(s)`);
+      return 'delivered';
+    });
   } catch (error) {
     log.error(`[release-catalog] not delivered: ${error instanceof Error ? error.name : 'error'}`);
     return 'failed';

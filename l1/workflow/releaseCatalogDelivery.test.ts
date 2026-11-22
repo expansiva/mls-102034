@@ -17,7 +17,7 @@ function catalogOf(module: string, extra: Record<string, unknown> = {}): Assista
   return { schemaVersion: 'assistant-catalog-v1', module, commands: [], queries: [], ...extra } as AssistantCatalog;
 }
 
-function harness(over: { releaseId?: string | null; catalogs?: Record<string, CatalogLoad>; answer?: ConnectionResult | Error; stored?: Record<string, unknown> | null; organizationId?: string | undefined; kvPutFails?: boolean; fingerprint?: string | null } = {}) {
+function harness(over: { releaseId?: string | null; catalogs?: Record<string, CatalogLoad>; answer?: ConnectionResult | Error; stored?: Record<string, unknown> | null; organizationId?: string | undefined; kvPutFails?: boolean; fingerprint?: string | null; withLock?: ReleaseCatalogDeliveryDeps['withLock'] } = {}) {
   const served: ConnectionServeInput[] = [];
   const puts: Array<{ key: string; value: Record<string, unknown> }> = [];
   const logs: string[] = [];
@@ -46,6 +46,7 @@ function harness(over: { releaseId?: string | null; catalogs?: Record<string, Ca
       },
     },
     newContext: () => CTX,
+    withLock: over.withLock ?? (async (_name, run) => run()),
     log: { info: (line) => logs.push(`info ${line}`), error: (line) => logs.push(`error ${line}`) },
     consumerFingerprint: async () => (over.fingerprint === undefined ? 'fp-1' : over.fingerprint),
   };
@@ -263,4 +264,18 @@ test('rt247 s1b: a not_found that is not the absence of a route is a failure of 
   assert.equal(h.puts.length, 0);
   assert.ok(h.logs.includes('error [release-catalog] not delivered: not_found: Tool was not found.'));
   assert.equal(h.logs.some((line) => line.includes('no module serves')), false);
+});
+
+test('two processes delivering the same catalog at once serve it once: the lock makes the second one find the key', async () => {
+  let tail: Promise<unknown> = Promise.resolve();
+  const queue: ReleaseCatalogDeliveryDeps['withLock'] = (_name, run) => {
+    const turn = tail.then(run, run);
+    tail = turn.catch(() => undefined);
+    return turn;
+  };
+  const h = harness({ withLock: queue });
+  const results = await Promise.all([deliverReleaseCatalog(h.deps), deliverReleaseCatalog(h.deps)]);
+  assert.deepEqual([...results].sort(), ['delivered', 'unchanged']);
+  assert.equal(h.served.length, 1);
+  assert.equal(h.puts.length, 1);
 });
