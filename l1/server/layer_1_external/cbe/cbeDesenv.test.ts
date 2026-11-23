@@ -1,7 +1,7 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/cbe/cbeDesenv.test.ts" enhancement="_blank" />
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify from 'fastify';
@@ -17,7 +17,7 @@ import {
   warmPersonDraftOnLogin,
 } from '/_102034_/l1/server/layer_1_external/cbe/cbeDesenv.js';
 import { getProjectsBaseDir } from '/_102034_/l1/server/layer_1_external/cbe/cbeCompiledLocal.js';
-import { AncestorDenoConfigError, DraftDatabaseError, DraftNoMemoryError, draftSharedText } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
+import { AncestorDenoConfigError, DenoMissingError, DraftDatabaseError, DraftNoMemoryError, DraftPortBusyError, DraftWorktreeMissingError, draftSharedText } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
 
 const SLUG = 'team-102047';
 const PROJECT_ID = 102047;
@@ -151,15 +151,23 @@ test('GET /desenv answers 503 without a cookie when the dev port is not ready', 
   const prevLogin = process.env.CBE_REQUIRE_LOGIN;
   delete process.env.CBE_REQUIRE_LOGIN;
 
+  const base = mkdtempSync(join(tmpdir(), 'cbe-dev-down-'));
   const origWorktree = desenvIo.ensureDraftWorktree;
   const origFastForward = desenvIo.fastForwardDraft;
+  const origRecreate = desenvIo.recreateDraft;
   const origDev = desenvIo.ensureDevProcess;
   const origReady = desenvIo.waitForDevReady;
   const origProject = desenvIo.resolveClientProjectId;
+  const origBase = desenvIo.getProjectsBaseDir;
   desenvIo.resolveClientProjectId = () => String(PROJECT_ID);
+  desenvIo.getProjectsBaseDir = () => base;
   desenvIo.fastForwardDraft = async () => ({ status: 'up_to_date' });
   desenvIo.ensureDraftWorktree = async () => '/tmp/draft';
   desenvIo.ensureDevProcess = () => ({ port: 4100, pid: 1, startedAt: 0, lastRequestAt: 0 });
+  let recreates = 0;
+  desenvIo.recreateDraft = async () => {
+    recreates += 1;
+  };
   let waited: number | undefined;
   desenvIo.waitForDevReady = async (port) => {
     waited = port;
@@ -177,14 +185,18 @@ test('GET /desenv answers 503 without a cookie when the dev port is not ready', 
     assert.equal(down.statusCode, 503);
     assert.equal(headerValue(down.headers['set-cookie']), '');
     assert.equal(headerValue(down.headers.location), '');
-    assert.deepEqual(down.json(), { statusCode: 503, msg: 'draft unavailable: dev not ready' });
+    assert.deepEqual(down.json(), { statusCode: 503, msg: 'draft unavailable: (no child log)' });
     assert.equal(waited, 4100);
+    assert.equal(recreates, 1);
   } finally {
     desenvIo.ensureDraftWorktree = origWorktree;
     desenvIo.fastForwardDraft = origFastForward;
+    desenvIo.recreateDraft = origRecreate;
     desenvIo.ensureDevProcess = origDev;
     desenvIo.waitForDevReady = origReady;
     desenvIo.resolveClientProjectId = origProject;
+    desenvIo.getProjectsBaseDir = origBase;
+    rmSync(base, { recursive: true, force: true });
     if (prevLogin === undefined) delete process.env.CBE_REQUIRE_LOGIN;
     else process.env.CBE_REQUIRE_LOGIN = prevLogin;
     await app.close();
@@ -530,14 +542,21 @@ test('POST /exec draftEnter returns JSON and never sets the draft cookie', async
   delete process.env.CBE_REQUIRE_LOGIN;
 
   const worktrees: string[] = [];
+  const downBase = mkdtempSync(join(tmpdir(), 'cbe-draft-enter-down-'));
   const origWorktree = desenvIo.ensureDraftWorktree;
   const origFastForward = desenvIo.fastForwardDraft;
+  const origRecreate = desenvIo.recreateDraft;
   const origStop = desenvIo.stopDevProcess;
   const origDev = desenvIo.ensureDevProcess;
   const origReady = desenvIo.waitForDevReady;
   const origProject = desenvIo.resolveClientProjectId;
+  const origBase = desenvIo.getProjectsBaseDir;
+  let recreates = 0;
   desenvIo.resolveClientProjectId = () => String(PROJECT_ID);
   desenvIo.stopDevProcess = () => {};
+  desenvIo.recreateDraft = async () => {
+    recreates += 1;
+  };
   desenvIo.fastForwardDraft = async () => ({ status: 'fast_forwarded', ref: 'abc123' });
   desenvIo.ensureDraftWorktree = async (opts) => {
     worktrees.push(opts.slug);
@@ -579,22 +598,157 @@ test('POST /exec draftEnter returns JSON and never sets the draft cookie', async
     assert.equal(headerValue(entered.headers.location), '');
     assert.deepEqual(entered.json(), { statusCode: 200, ok: true, slug: SLUG, head: 'abc123' });
 
+    desenvIo.getProjectsBaseDir = () => downBase;
     desenvIo.waitForDevReady = async () => false;
     const down = await post({ action: 'draftEnter', project: String(PROJECT_ID), draft: SLUG }, 'localhost');
     assert.equal(down.statusCode, 503);
-    assert.equal(down.json().msg, 'draft unavailable: dev not ready');
+    assert.equal(down.json().msg, 'draft unavailable: (no child log)');
+    assert.equal(recreates, 1);
     assert.equal(headerValue(down.headers['set-cookie']), '');
     assert.equal(headerValue(down.headers.location), '');
   } finally {
     desenvIo.ensureDraftWorktree = origWorktree;
     desenvIo.fastForwardDraft = origFastForward;
+    desenvIo.recreateDraft = origRecreate;
     desenvIo.stopDevProcess = origStop;
     desenvIo.ensureDevProcess = origDev;
     desenvIo.waitForDevReady = origReady;
     desenvIo.resolveClientProjectId = origProject;
+    desenvIo.getProjectsBaseDir = origBase;
+    rmSync(downBase, { recursive: true, force: true });
     if (prevLogin === undefined) delete process.env.CBE_REQUIRE_LOGIN;
     else process.env.CBE_REQUIRE_LOGIN = prevLogin;
     await app.close();
+  }
+});
+
+test('draftEnter recreates once when the dev port is not ready, then reports boot_failed or the child log line', async () => {
+  const base = mkdtempSync(join(tmpdir(), 'cbe-boot-failed-'));
+  const origWorktree = desenvIo.ensureDraftWorktree;
+  const origFastForward = desenvIo.fastForwardDraft;
+  const origRecreate = desenvIo.recreateDraft;
+  const origDev = desenvIo.ensureDevProcess;
+  const origReady = desenvIo.waitForDevReady;
+  const origProject = desenvIo.resolveClientProjectId;
+  const origBase = desenvIo.getProjectsBaseDir;
+  const recreates: string[] = [];
+  let remainingFailures = 1;
+  desenvIo.resolveClientProjectId = () => String(PROJECT_ID);
+  desenvIo.getProjectsBaseDir = () => base;
+  desenvIo.ensureDraftWorktree = async () => '/tmp/draft';
+  desenvIo.fastForwardDraft = async () => ({ status: 'up_to_date' });
+  desenvIo.recreateDraft = async (opts) => {
+    recreates.push(`${opts.reason} ${opts.detail}`);
+  };
+  desenvIo.ensureDevProcess = () => ({ port: 4100, pid: 1, startedAt: 0, lastRequestAt: 0 });
+  desenvIo.waitForDevReady = async () => {
+    if (remainingFailures > 0) {
+      remainingFailures -= 1;
+      return false;
+    }
+    return true;
+  };
+  mkdirSync(join(base, 'logs'), { recursive: true });
+  writeFileSync(join(base, 'logs', `dev-${SLUG}.log`), 'booting\nerror: ENOENT postgres://collab:s3cret@127.0.0.1:5432/db\n');
+  try {
+    const recovered = await runDraftEnter({ allowed: true, draft: SLUG, project: PROJECT_ID });
+    assert.equal(recovered.status, 200);
+    assert.deepEqual(recovered.body, { statusCode: 200, ok: true, slug: SLUG, recreated: 'boot_failed' });
+    assert.deepEqual(recreates, ['boot_failed error: ENOENT postgres://***@127.0.0.1:5432/db']);
+
+    recreates.length = 0;
+    remainingFailures = 2;
+    const down = await runDraftEnter({ allowed: true, draft: SLUG, project: PROJECT_ID });
+    assert.equal(down.status, 503);
+    assert.deepEqual(down.body, { statusCode: 503, msg: 'draft unavailable: error: ENOENT postgres://***@127.0.0.1:5432/db' });
+    assert.deepEqual(recreates, ['boot_failed error: ENOENT postgres://***@127.0.0.1:5432/db']);
+    assert.equal(JSON.stringify(down.body).includes('s3cret'), false);
+
+    recreates.length = 0;
+    remainingFailures = 1;
+    desenvIo.fastForwardDraft = async () => ({ status: 'diverged', ahead: 1, behind: 1 });
+    const alreadyRecreated = await runDraftEnter({ allowed: true, draft: SLUG, project: PROJECT_ID });
+    assert.equal(alreadyRecreated.status, 503);
+    assert.deepEqual(alreadyRecreated.body, { statusCode: 503, msg: 'draft unavailable: error: ENOENT postgres://***@127.0.0.1:5432/db' });
+    assert.deepEqual(recreates, ['not_synced diverged']);
+  } finally {
+    desenvIo.ensureDraftWorktree = origWorktree;
+    desenvIo.fastForwardDraft = origFastForward;
+    desenvIo.recreateDraft = origRecreate;
+    desenvIo.ensureDevProcess = origDev;
+    desenvIo.waitForDevReady = origReady;
+    desenvIo.resolveClientProjectId = origProject;
+    desenvIo.getProjectsBaseDir = origBase;
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('draftEnter does not recreate when the dev process fails for an environment error', async () => {
+  const base = mkdtempSync(join(tmpdir(), 'cbe-boot-env-'));
+  const origWorktree = desenvIo.ensureDraftWorktree;
+  const origFastForward = desenvIo.fastForwardDraft;
+  const origRecreate = desenvIo.recreateDraft;
+  const origDev = desenvIo.ensureDevProcess;
+  const origReady = desenvIo.waitForDevReady;
+  const origProject = desenvIo.resolveClientProjectId;
+  const origBase = desenvIo.getProjectsBaseDir;
+  let recreates = 0;
+  let waits = 0;
+  desenvIo.resolveClientProjectId = () => String(PROJECT_ID);
+  desenvIo.getProjectsBaseDir = () => base;
+  desenvIo.ensureDraftWorktree = async () => '/tmp/draft';
+  desenvIo.fastForwardDraft = async () => ({ status: 'up_to_date' });
+  desenvIo.recreateDraft = async () => {
+    recreates += 1;
+  };
+  desenvIo.waitForDevReady = async () => {
+    waits += 1;
+    return false;
+  };
+  const envErrors: Error[] = [
+    new DraftNoMemoryError('no memory'),
+    new DraftPortBusyError(4100, SLUG, PROJECT_ID, 'other'),
+    new DenoMissingError('deno is missing'),
+    new DraftDatabaseError('database is missing'),
+    new AncestorDenoConfigError('ancestor deno config'),
+    new DraftWorktreeMissingError('worktree is missing'),
+  ];
+  try {
+    for (const envError of envErrors) {
+      recreates = 0;
+      waits = 0;
+      desenvIo.ensureDevProcess = () => {
+        throw envError;
+      };
+      const refused = await runDraftEnter({ allowed: true, draft: SLUG, project: PROJECT_ID });
+      assert.equal(refused.status, 503, envError.message);
+      assert.deepEqual(refused.body, { statusCode: 503, msg: 'draft unavailable: ' + envError.message });
+      assert.equal(recreates, 0, envError.name);
+      assert.equal(waits, 0, envError.name);
+    }
+
+    let ensures = 0;
+    desenvIo.ensureDevProcess = () => {
+      ensures += 1;
+      if (ensures > 1) throw new DenoMissingError('deno is missing');
+      return { port: 4100, pid: 1, startedAt: 0, lastRequestAt: 0 };
+    };
+    recreates = 0;
+    waits = 0;
+    const afterBoot = await runDraftEnter({ allowed: true, draft: SLUG, project: PROJECT_ID });
+    assert.equal(afterBoot.status, 503);
+    assert.deepEqual(afterBoot.body, { statusCode: 503, msg: 'draft unavailable: deno is missing' });
+    assert.equal(recreates, 1);
+    assert.equal(waits, 1);
+  } finally {
+    desenvIo.ensureDraftWorktree = origWorktree;
+    desenvIo.fastForwardDraft = origFastForward;
+    desenvIo.recreateDraft = origRecreate;
+    desenvIo.ensureDevProcess = origDev;
+    desenvIo.waitForDevReady = origReady;
+    desenvIo.resolveClientProjectId = origProject;
+    desenvIo.getProjectsBaseDir = origBase;
+    rmSync(base, { recursive: true, force: true });
   }
 });
 

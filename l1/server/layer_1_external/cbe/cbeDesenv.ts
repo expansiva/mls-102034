@@ -23,7 +23,7 @@ export interface DesenvResult {
   status: number;
   location?: string;
   setCookie?: string;
-  body?: { statusCode: number; msg: string } | { statusCode: number; ok: true; slug: string; head?: string };
+  body?: { statusCode: number; msg: string } | { statusCode: number; ok: true; slug: string; head?: string; recreated?: DraftRecreateReason };
 }
 
 type DraftRefusal = { ok: false; status: number; msg: string };
@@ -32,6 +32,7 @@ interface OpenedDraft {
   ok: true;
   slug: string;
   head?: string;
+  recreated?: DraftRecreateReason;
 }
 
 /**
@@ -214,6 +215,22 @@ function jsonResult(status: number, msg: string): DesenvResult {
   return { status, body: { statusCode: status, msg } };
 }
 
+function draftPrepareRefusal(slug: string, err: unknown): DraftRefusal {
+  const message = err instanceof Error ? err.message : String(err);
+  console.error(`[cbe] /desenv: draft ${slug} failed: ${message}`);
+  if (err instanceof AncestorDenoConfigError || err instanceof DraftDatabaseError || err instanceof DraftNoMemoryError || err instanceof DraftWorktreeMissingError || err instanceof DraftPortBusyError || err instanceof DenoMissingError) {
+    return { ok: false, status: 503, msg: 'draft unavailable: ' + message };
+  }
+  return { ok: false, status: CBE_HTTP_SERVER_ERROR, msg: 'draft unavailable' };
+}
+
+/** Last line of the child log, already scrubbed the same way `writeDevLogTail` writes it. */
+function lastChildLogLine(base: string, slug: string): string {
+  const tail = readDevLogTail(base, slug, 60);
+  const line = tail.split('\n').filter((item) => item.trim() !== '').at(-1);
+  return line ?? '(no child log)';
+}
+
 function sameClientProject(project: unknown): boolean {
   const client = desenvIo.resolveClientProjectId();
   if (typeof project === 'string') return project === client;
@@ -263,6 +280,7 @@ async function enterDraft(input: {
   const base = desenvIo.getProjectsBaseDir();
   let port: number;
   let head: string | undefined;
+  let recreated: DraftRecreateReason | undefined;
   try {
     const prepared = await prepareDraft({
       base,
@@ -273,28 +291,63 @@ async function enterDraft(input: {
     });
     port = prepared.port;
     head = prepared.head;
+    recreated = prepared.recreated;
   } catch (err) {
-    console.error(`[cbe] /desenv: draft ${parsed.slug} failed: ${(err as Error).message}`);
-    if (err instanceof AncestorDenoConfigError || err instanceof DraftDatabaseError || err instanceof DraftNoMemoryError || err instanceof DraftWorktreeMissingError || err instanceof DraftPortBusyError || err instanceof DenoMissingError) {
-      return { ok: false, status: 503, msg: 'draft unavailable: ' + err.message };
+    return draftPrepareRefusal(parsed.slug, err);
+  }
+
+  // A failed boot recreates once. The next failure returns the child log line and does not recreate again.
+  let bootRecreated = false;
+  for (;;) {
+    const readyMark = Date.now();
+    let ready = false;
+    try {
+      ready = await desenvIo.waitForDevReady(port, { expect: { projectId, slug: parsed.slug } });
+    } finally {
+      if (input.stages) input.stages.waitForDevReady += stageMs(readyMark);
     }
-    return { ok: false, status: CBE_HTTP_SERVER_ERROR, msg: 'draft unavailable' };
-  }
+    if (ready) {
+      const opened: OpenedDraft = { ok: true, slug: parsed.slug, head };
+      if (recreated !== undefined) opened.recreated = recreated;
+      return opened;
+    }
 
-  const readyMark = Date.now();
-  let ready = false;
-  try {
-    ready = await desenvIo.waitForDevReady(port, { expect: { projectId, slug: parsed.slug } });
-  } finally {
-    if (input.stages) input.stages.waitForDevReady = stageMs(readyMark);
-  }
-  if (!ready) {
     const tailFile = writeDevLogTail(base, parsed.slug, port);
+    const line = lastChildLogLine(base, parsed.slug);
     console.error(`[cbe] /desenv: draft ${parsed.slug} dev not ready on port ${port}; child log tail (also in ${tailFile}):\n${readDevLogTail(base, parsed.slug)}`);
-    return { ok: false, status: 503, msg: 'draft unavailable: dev not ready' };
-  }
+    // Already recreated in this entry (not_synced or boot_failed): show the cause, never a second recreate.
+    if (bootRecreated || recreated !== undefined) return { ok: false, status: 503, msg: 'draft unavailable: ' + line };
 
-  return { ok: true, slug: parsed.slug, head };
+    bootRecreated = true;
+    try {
+      await desenvIo.recreateDraft({
+        base,
+        projectId,
+        slug: parsed.slug,
+        branch: parsed.branch,
+        reason: 'boot_failed',
+        detail: line,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[cbe] /desenv: draft ${parsed.slug} recreate after boot failed: ${message}`);
+      return { ok: false, status: 503, msg: 'draft unavailable: ' + message };
+    }
+    try {
+      const again = await prepareDraft({
+        base,
+        projectId,
+        slug: parsed.slug,
+        branch: parsed.branch,
+        stages: input.stages,
+      });
+      port = again.port;
+      head = again.head;
+      recreated = 'boot_failed';
+    } catch (err) {
+      return draftPrepareRefusal(parsed.slug, err);
+    }
+  }
 }
 
 export async function runDesenvEnter(input: {
@@ -333,12 +386,13 @@ export async function runDraftEnter(input: {
       },
     });
     if (!entered.ok) return jsonResult(entered.status, entered.msg);
-    const body: { statusCode: number; ok: true; slug: string; head?: string } = {
+    const body: { statusCode: number; ok: true; slug: string; head?: string; recreated?: DraftRecreateReason } = {
       statusCode: CBE_HTTP_OK,
       ok: true,
       slug: entered.slug,
     };
     if (entered.head !== undefined) body.head = entered.head;
+    if (entered.recreated !== undefined) body.recreated = entered.recreated;
     return { status: CBE_HTTP_OK, body };
   } finally {
     logDraftEnterTiming(started, stages);
