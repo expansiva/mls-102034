@@ -3,7 +3,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -152,6 +152,62 @@ test('fastForwardDraft and mergeMainIntoDraft against a real draft worktree', as
   );
   assert.equal(g(wt, 'status', '--porcelain'), '');
   assert.equal(g(wt, 'rev-parse', 'HEAD'), headBefore);
+});
+
+test('fastForwardDraft lets untracked files through and still refuses a tracked change or a collision', async () => {
+  const base = mkdtempSync(join(tmpdir(), 'sync-untracked-'));
+  const repo = join(base, 'mls-1');
+  mkdirSync(repo, { recursive: true });
+  g(repo, 'init', '-b', 'main');
+  writeFileSync(join(repo, 'a.txt'), '1\n');
+  g(repo, 'add', '.');
+  g(repo, 'commit', '-m', 'init');
+
+  const slug = 'team-1';
+  const wt = await ensureDraftWorktree({ base, projectId: 1, slug, branch: 'team/1' });
+  writeFileSync(join(repo, 'b.txt'), 'from-main\n');
+  g(repo, 'add', '.');
+  g(repo, 'commit', '-m', 'main moved');
+
+  const candidate = join(wt, 'l4', 'x', 'tobe', 'candidate', 'item.txt');
+  const loose = join(wt, 'l1', 'qualquer.txt');
+  mkdirSync(join(wt, 'l4', 'x', 'tobe', 'candidate'), { recursive: true });
+  writeFileSync(candidate, 'cand\n');
+  mkdirSync(join(wt, 'l1'), { recursive: true });
+  writeFileSync(loose, 'loose\n');
+
+  const forwarded = await fastForwardDraft({ base, projectId: 1, slug });
+  assert.equal(forwarded.status, 'fast_forwarded');
+  assert.equal(g(wt, 'rev-parse', 'HEAD'), g(repo, 'rev-parse', 'main'));
+  assert.equal(readFileSync(candidate, 'utf8'), 'cand\n');
+  assert.equal(readFileSync(loose, 'utf8'), 'loose\n');
+
+  const headAtMain = g(wt, 'rev-parse', 'HEAD');
+  writeFileSync(join(wt, 'a.txt'), 'dirty\n');
+  assert.deepEqual(
+    await fastForwardDraft({ base, projectId: 1, slug }),
+    { status: 409, code: 'DRAFT_DIRTY' },
+  );
+  assert.equal(g(wt, 'rev-parse', 'HEAD'), headAtMain);
+  assert.equal(readFileSync(join(wt, 'a.txt'), 'utf8'), 'dirty\n');
+  g(wt, 'checkout', '--', 'a.txt');
+
+  const novo = join(wt, 'l1', 'novo.txt');
+  mkdirSync(join(repo, 'l1'), { recursive: true });
+  writeFileSync(join(repo, 'l1', 'novo.txt'), 'from-main\n');
+  g(repo, 'add', 'l1/novo.txt');
+  g(repo, 'commit', '-m', 'main adds novo');
+  writeFileSync(novo, 'untracked-collision\n');
+  const headBeforeCollision = g(wt, 'rev-parse', 'HEAD');
+  assert.deepEqual(
+    await fastForwardDraft({ base, projectId: 1, slug }),
+    { status: 500, code: 'GIT_ERROR' },
+  );
+  assert.equal(existsSync(wt), true);
+  assert.equal(g(wt, 'rev-parse', 'HEAD'), headBeforeCollision);
+  assert.equal(readFileSync(novo, 'utf8'), 'untracked-collision\n');
+  assert.equal(readFileSync(candidate, 'utf8'), 'cand\n');
+  assert.equal(readFileSync(loose, 'utf8'), 'loose\n');
 });
 
 test('restoreDraftPaths puts named paths back and drops a draft-only folder', async () => {

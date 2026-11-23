@@ -419,7 +419,9 @@ async function syncDraft(opts: SyncDraftOpts): Promise<SyncDraftResult> {
     ? `fastForwardDraft (${parsed.branch})`
     : `mergeMainIntoDraft (${parsed.branch})`;
 
-  const porcelain = await run(['status', '--porcelain']);
+  // Untracked files stay on disk. Only a tracked change is DRAFT_DIRTY;
+  // a name that collides with main fails later in the merge, as GIT_ERROR.
+  const porcelain = await run(['status', '--porcelain', '--untracked-files=no']);
   if (porcelain.code !== 0) {
     logGitFailure(`${where} status`, porcelain);
     return { status: 500, code: 'GIT_ERROR' };

@@ -215,7 +215,7 @@ test('fastForwardDraft refuses a dirty draft worktree', async () => {
   assert.deepEqual(result, { status: 409, code: 'DRAFT_DIRTY' });
   assert.equal(calls.length, 1);
   assert.equal(calls[0].cwd, worktree);
-  assert.deepEqual(innerArgs(calls[0].args), ['status', '--porcelain']);
+  assert.deepEqual(innerArgs(calls[0].args), ['status', '--porcelain', '--untracked-files=no']);
 });
 
 test('fastForwardDraft is up_to_date when the draft is not behind main', async () => {
