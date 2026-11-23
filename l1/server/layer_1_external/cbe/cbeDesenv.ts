@@ -3,7 +3,7 @@
 // The path is only the entrance. Routing after that is the cookie.
 
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { parseDraftSlug, draftSlugForUser, ensureDraftWorktree, requestDraftValue, type DraftRequestHeaders } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
+import { parseDraftSlug, draftSlugForUser, ensureDraftWorktree, recreateDraft, requestDraftValue, type DraftRecreateReason, type DraftRequestHeaders } from '/_102034_/l1/server/layer_1_external/cbe/cbeDraft.js';
 import { readDevLogTail, writeDevLogTail } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
 import { AncestorDenoConfigError, DenoMissingError, DraftDatabaseError, DraftNoMemoryError, DraftPortBusyError, DraftWorktreeMissingError, ensureDevProcess, stopDevProcess, waitForDevReady } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
 import { fastForwardDraft } from '/_102034_/l1/server/layer_1_external/cbe/cbeGitPromote.js';
@@ -50,6 +50,7 @@ export const desenvIo = {
   getProjectsBaseDir,
   ensureDraftWorktree,
   fastForwardDraft,
+  recreateDraft,
   stopDevProcess,
   ensureDevProcess,
   waitForDevReady,
@@ -86,6 +87,7 @@ function queryValue(query: unknown, key: string): string | undefined {
 interface PreparedDraft {
   port: number;
   head?: string;
+  recreated?: DraftRecreateReason;
 }
 
 /** One in-flight prepare per slug. Login warmup and draftEnter share it. */
@@ -131,12 +133,14 @@ async function runPrepareDraft(opts: {
 }): Promise<PreparedDraft> {
   const { base, projectId, slug, branch, stages } = opts;
   let head: string | undefined;
+  let recreated: DraftRecreateReason | undefined;
   let mark = Date.now();
   try {
     await desenvIo.ensureDraftWorktree({ base, projectId, slug, branch });
   } finally {
     if (stages) stages.worktree = stageMs(mark);
   }
+  let recreateDetail: string | undefined;
   try {
     mark = Date.now();
     const sync = await desenvIo.fastForwardDraft({ base, projectId, slug });
@@ -144,15 +148,18 @@ async function runPrepareDraft(opts: {
       head = sync.ref;
       desenvIo.stopDevProcess(base, slug);
       console.info(`[cbe] /desenv: draft ${slug} fast-forwarded to ${sync.ref}`);
-    } else if (sync.status !== 'up_to_date' && sync.status !== 'diverged') {
-      const code = typeof sync.status === 'number' ? sync.code : sync.status;
-      console.warn(`[cbe] /desenv: draft ${slug} not synced: ${code}`);
+    } else if (sync.status !== 'up_to_date') {
+      recreateDetail = typeof sync.status === 'number' ? sync.code : sync.status;
     }
   } catch (err) {
-    const code = err instanceof Error ? err.message : String(err);
-    console.warn(`[cbe] /desenv: draft ${slug} not synced: ${code}`);
+    recreateDetail = err instanceof Error ? err.message : String(err);
+    console.error(`[cbe] /desenv: draft ${slug} sync failed: ${recreateDetail}`);
   } finally {
     if (stages) stages.fastForward = stageMs(mark);
+  }
+  if (recreateDetail !== undefined) {
+    await desenvIo.recreateDraft({ base, projectId, slug, branch, reason: 'not_synced', detail: recreateDetail });
+    recreated = 'not_synced';
   }
   mark = Date.now();
   let port: number;
@@ -161,7 +168,9 @@ async function runPrepareDraft(opts: {
   } finally {
     if (stages) stages.ensureDevProcess = stageMs(mark);
   }
-  return head === undefined ? { port } : { port, head };
+  const prepared: PreparedDraft = head === undefined ? { port } : { port, head };
+  if (recreated !== undefined) prepared.recreated = recreated;
+  return prepared;
 }
 
 /**

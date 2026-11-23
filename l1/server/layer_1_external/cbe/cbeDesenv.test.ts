@@ -409,15 +409,15 @@ test('GET /desenv fast-forwards a draft with no own commits before the dev proce
   }
 });
 
-test('GET /desenv does not stop the dev process when the draft has diverged', async () => {
+test('GET /desenv recreates a draft that has diverged and still enters', async () => {
   const prevLogin = process.env.CBE_REQUIRE_LOGIN;
   delete process.env.CBE_REQUIRE_LOGIN;
 
   const order: string[] = [];
-  let stopped = false;
+  const recreates: string[] = [];
   const origWorktree = desenvIo.ensureDraftWorktree;
   const origFastForward = desenvIo.fastForwardDraft;
-  const origStop = desenvIo.stopDevProcess;
+  const origRecreate = desenvIo.recreateDraft;
   const origDev = desenvIo.ensureDevProcess;
   const origReady = desenvIo.waitForDevReady;
   const origProject = desenvIo.resolveClientProjectId;
@@ -430,8 +430,9 @@ test('GET /desenv does not stop the dev process when the draft has diverged', as
     order.push('fastForward');
     return { status: 'diverged', ahead: 1, behind: 2 };
   };
-  desenvIo.stopDevProcess = () => {
-    stopped = true;
+  desenvIo.recreateDraft = async (opts) => {
+    order.push('recreate');
+    recreates.push(`${opts.reason} ${opts.detail}`);
   };
   desenvIo.ensureDevProcess = () => {
     order.push('ensureDev');
@@ -452,12 +453,12 @@ test('GET /desenv does not stop the dev process when the draft has diverged', as
     });
     assert.equal(entered.statusCode, 302);
     assert.equal(headerValue(entered.headers['set-cookie']), draftCookie(SLUG));
-    assert.equal(stopped, false);
-    assert.deepEqual(order, ['worktree', 'fastForward', 'ensureDev', 'ready']);
+    assert.deepEqual(recreates, ['not_synced diverged']);
+    assert.deepEqual(order, ['worktree', 'fastForward', 'recreate', 'ensureDev', 'ready']);
   } finally {
     desenvIo.ensureDraftWorktree = origWorktree;
     desenvIo.fastForwardDraft = origFastForward;
-    desenvIo.stopDevProcess = origStop;
+    desenvIo.recreateDraft = origRecreate;
     desenvIo.ensureDevProcess = origDev;
     desenvIo.waitForDevReady = origReady;
     desenvIo.resolveClientProjectId = origProject;
@@ -471,30 +472,25 @@ test('GET /desenv still enters when fast-forward fails', async () => {
   const prevLogin = process.env.CBE_REQUIRE_LOGIN;
   delete process.env.CBE_REQUIRE_LOGIN;
 
-  const warns: string[] = [];
-  let stopped = false;
+  const recreates: string[] = [];
   let mode: 'dirty' | 'throw' = 'dirty';
   const origWorktree = desenvIo.ensureDraftWorktree;
   const origFastForward = desenvIo.fastForwardDraft;
-  const origStop = desenvIo.stopDevProcess;
+  const origRecreate = desenvIo.recreateDraft;
   const origDev = desenvIo.ensureDevProcess;
   const origReady = desenvIo.waitForDevReady;
   const origProject = desenvIo.resolveClientProjectId;
-  const origWarn = console.warn;
   desenvIo.resolveClientProjectId = () => String(PROJECT_ID);
   desenvIo.ensureDraftWorktree = async () => '/tmp/draft';
   desenvIo.fastForwardDraft = async () => {
     if (mode === 'throw') throw new Error('git exploded');
     return { status: 409, code: 'DRAFT_DIRTY' };
   };
-  desenvIo.stopDevProcess = () => {
-    stopped = true;
+  desenvIo.recreateDraft = async (opts) => {
+    recreates.push(`${opts.reason} ${opts.detail}`);
   };
   desenvIo.ensureDevProcess = () => ({ port: 4100, pid: 1, startedAt: 0, lastRequestAt: 0 });
   desenvIo.waitForDevReady = async () => true;
-  console.warn = (...args: unknown[]) => {
-    warns.push(args.map((arg) => String(arg)).join(' '));
-  };
 
   const app = Fastify();
   registerCbeRoutes(app);
@@ -506,8 +502,6 @@ test('GET /desenv still enters when fast-forward fails', async () => {
     });
     assert.equal(dirty.statusCode, 302);
     assert.equal(headerValue(dirty.headers['set-cookie']), draftCookie(SLUG));
-    assert.equal(stopped, false);
-    assert.deepEqual(warns, [`[cbe] /desenv: draft ${SLUG} not synced: DRAFT_DIRTY`]);
 
     mode = 'throw';
     const thrown = await app.inject({
@@ -517,16 +511,11 @@ test('GET /desenv still enters when fast-forward fails', async () => {
     });
     assert.equal(thrown.statusCode, 302);
     assert.equal(headerValue(thrown.headers['set-cookie']), draftCookie(SLUG));
-    assert.equal(stopped, false);
-    assert.deepEqual(warns, [
-      `[cbe] /desenv: draft ${SLUG} not synced: DRAFT_DIRTY`,
-      `[cbe] /desenv: draft ${SLUG} not synced: git exploded`,
-    ]);
+    assert.deepEqual(recreates, ['not_synced DRAFT_DIRTY', 'not_synced git exploded']);
   } finally {
-    console.warn = origWarn;
     desenvIo.ensureDraftWorktree = origWorktree;
     desenvIo.fastForwardDraft = origFastForward;
-    desenvIo.stopDevProcess = origStop;
+    desenvIo.recreateDraft = origRecreate;
     desenvIo.ensureDevProcess = origDev;
     desenvIo.waitForDevReady = origReady;
     desenvIo.resolveClientProjectId = origProject;

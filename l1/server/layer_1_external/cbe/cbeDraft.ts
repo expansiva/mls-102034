@@ -4,10 +4,11 @@
 
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { parseCookies } from '/_102034_/l1/server/layer_1_external/cbe/cbeAuthJwt.js';
+import { stopDevProcess } from '/_102034_/l1/server/layer_1_external/cbe/cbeDevProcess.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -177,6 +178,70 @@ export async function ensureDraftWorktree(opts: {
       throw err;
     }
   }
+}
+
+export type DraftRecreateReason = 'not_synced' | 'boot_failed';
+
+function ownerLogEmail(slug: string, saved: string | null): string {
+  if (slug.startsWith('team-')) return 'team';
+  if (saved === null) {
+    console.error(`[cbe] draft ${slug}: owner.json missing before recreate`);
+    return 'missing';
+  }
+  return saved;
+}
+
+async function gitStep(run: DraftGit, args: string[], cwd: string, where: string): Promise<void> {
+  try {
+    await run(args, cwd);
+  } catch (err) {
+    console.error(`[cbe] draft recreate ${where}: ${errorText(err)}`);
+  }
+}
+
+/**
+ * Stops the draft process, deletes the worktree, the branch and `drafts/<slug>/`,
+ * then creates the branch again from main. No copy is kept. The test database is not touched.
+ */
+export async function recreateDraft(opts: {
+  base: string;
+  projectId: number;
+  slug: string;
+  branch: string;
+  reason: DraftRecreateReason;
+  detail: string;
+  git?: DraftGit;
+}): Promise<void> {
+  const savedEmail = await readDraftOwner(opts.base, opts.slug);
+  const email = ownerLogEmail(opts.slug, savedEmail);
+  console.warn(`[cbe] draft ${opts.slug} recreated (${email}): ${opts.reason} (${opts.detail})`);
+
+  stopDevProcess(opts.base, opts.slug);
+
+  const git = opts.git ?? execGit;
+  const repoPath = resolve(join(opts.base, `mls-${opts.projectId}`));
+  const worktreePath = resolve(draftSourceRoot(opts.base, opts.slug, opts.projectId));
+  const run: DraftGit = (args, cwd) => git(['-c', `safe.directory=${cwd}`, ...args], cwd);
+
+  await gitStep(run, ['worktree', 'remove', '--force', worktreePath], repoPath, `${opts.slug} worktree remove`);
+  await gitStep(run, ['branch', '-D', opts.branch], repoPath, `${opts.slug} branch -D`);
+  const draftDir = join(opts.base, 'drafts', opts.slug);
+  try {
+    await rm(draftDir, { recursive: true, force: true });
+  } catch (err) {
+    console.error(`[cbe] draft ${opts.slug}: remove ${draftDir} failed: ${errorText(err)}`);
+    throw err;
+  }
+  await gitStep(run, ['worktree', 'prune'], repoPath, `${opts.slug} worktree prune`);
+  await mkdir(dirname(worktreePath), { recursive: true });
+  await ensureDraftWorktree({
+    base: opts.base,
+    projectId: opts.projectId,
+    slug: opts.slug,
+    branch: opts.branch,
+    git,
+  });
+  if (savedEmail !== null) await writeDraftOwner(opts.base, opts.slug, savedEmail);
 }
 
 export interface DraftRequestHeaders {
