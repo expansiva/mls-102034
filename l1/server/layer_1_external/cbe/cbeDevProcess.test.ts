@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -31,7 +31,6 @@ import {
   findAncestorDenoConfig,
   isDevPidAlive,
   linkSharedProjects,
-  memoryModeAllowEnv,
   reapIdle,
   releaseAliasOf,
   restartDevProcess,
@@ -93,95 +92,97 @@ test('draftDatabaseName: user drafts include project; team name unchanged', () =
   assert.equal(draftDatabaseName('team-102047', 999), 'collab_app_draft_team_102047');
 });
 
-test('memoryModeAllowEnv contains the measured env names once', () => {
-  const names = memoryModeAllowEnv();
-  assert.equal(names.includes('COLLAB_AUTH_BASE_URL'), true);
-  assert.equal(names.includes('APP_ENV'), true);
-  assert.equal(names.includes('DATABASE_URL'), false);
-  assert.equal(new Set(names).size, names.length);
-});
+/** Seed mode, no `CBE_STATIC_DIR`: the keys `childEnv` builds and no others. */
+const SEED_CHILD_ENV_KEYS = [
+  'APP_ENV',
+  'CBE_PROJECTS_DIR',
+  'COLLAB_DRAFT',
+  'COLLAB_DRAFT_DATA_SOURCE',
+  'COLLAB_DRAFT_IDENTITY_SECRET',
+  'COLLAB_PROJECT_ID',
+  'DATABASE_URL_TEST',
+  'PATH',
+  'PORT',
+  'RUNTIME_MODE',
+];
 
-/** `env.NAME = …` is a write. `==` stays a read. */
-function isEnvAssignment(after: string): boolean {
-  const rest = after.trimStart();
-  if (rest.startsWith('==')) return false;
-  return rest.startsWith('=')
-    || rest.startsWith('+=')
-    || rest.startsWith('-=')
-    || rest.startsWith('*=')
-    || rest.startsWith('/=')
-    || rest.startsWith('||=')
-    || rest.startsWith('&&=')
-    || rest.startsWith('??=');
+/** macOS adds this after `spawnSync`, even when `env` does not list it. */
+const OS_INJECTED_ENV = new Set(['__CF_USER_TEXT_ENCODING']);
+
+const PARENT_LEAKS = ['DATABASE_URL', 'AWS_ACCESS_KEY_ID', 'COLLAB_SECRETS_KEY_FILE', 'COLLAB_BARRIER_TOKEN'] as const;
+
+function childEnvKeys(env: Record<string, string>): string[] {
+  return Object.keys(env).filter((key) => !OS_INJECTED_ENV.has(key)).sort();
 }
 
-function envNamesReadInL1(): Set<string> {
-  const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-  const dot = /process\.env\.([A-Za-z_][A-Za-z0-9_]*)/gu;
-  const bracket = /process\.env\[\s*['"]([A-Za-z0-9_]+)['"]\s*\]/gu;
-  // Parameter read: `env.NAME` or `<name>Env.NAME`. Not an assignment.
-  const param = /(?<![A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)\.([A-Z_][A-Z0-9_]*)/gu;
-  const names = new Set<string>();
-  const walk = (dir: string): void => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (entry.isDirectory()) {
-        if (entry.name === 'scripts') continue;
-        walk(join(dir, entry.name));
-        continue;
-      }
-      if (!entry.name.endsWith('.ts') || entry.name.endsWith('.test.ts')) continue;
-      const text = readFileSync(join(dir, entry.name), 'utf8');
-      for (const match of text.matchAll(dot)) names.add(match[1]);
-      for (const match of text.matchAll(bracket)) names.add(match[1]);
-      for (const match of text.matchAll(param)) {
-        const receiver = match[1];
-        if (receiver !== 'env' && !receiver.endsWith('Env')) continue;
-        if (isEnvAssignment(text.slice((match.index ?? 0) + match[0].length))) continue;
-        names.add(match[2]);
-      }
+function assertAllowEnvHasNoList(args: readonly string[]): void {
+  assert.equal(args.includes('--allow-env'), true);
+  assert.equal(args.some((arg) => arg.startsWith('--allow-env=')), false);
+}
+
+test('the draft env is built from scratch and --allow-env has no list', () => {
+  const pids: number[] = [];
+  const saved: Record<string, string | undefined> = {};
+  for (const key of [...PARENT_LEAKS, 'DATABASE_URL_TEST', 'COLLAB_DEV_PORT_RANGE', 'CBE_STATIC_DIR', 'PATH']) {
+    saved[key] = process.env[key];
+  }
+  const base = mkdtempSync(join(tmpdir(), 'cbe-dev-barrier-'));
+  const bin = join(base, 'bin');
+  const dump = join(base, 'spawn-env.json');
+  try {
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'deno'), '#!/bin/sh\nexit 0\n');
+    chmodSync(join(bin, 'deno'), 0o755);
+    writeFileSync(join(bin, 'sh'), `#!${process.execPath}
+const fs = require('node:fs');
+const { spawn } = require('node:child_process');
+fs.writeFileSync(${JSON.stringify(dump)}, JSON.stringify({ argv: process.argv, env: process.env }));
+const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });
+child.unref();
+process.stdout.write(String(child.pid) + '\\n');
+`);
+    chmodSync(join(bin, 'sh'), 0o755);
+    for (const key of PARENT_LEAKS) process.env[key] = `parent-${key}`;
+    delete process.env.CBE_STATIC_DIR;
+    process.env.DATABASE_URL_TEST = PARENT_TEST_URL;
+    process.env.COLLAB_DEV_PORT_RANGE = '4300-4399';
+    process.env.PATH = `${bin}${saved.PATH ? `:${saved.PATH}` : ''}`;
+    writeOwnReleaseConfig(base);
+    mkdirSync(join(base, 'drafts', SLUG, 'mls-102047'), { recursive: true });
+
+    const calls: Array<{ args: string[]; env: Record<string, string> }> = [];
+    const injected: DevSpawn = (_command, args, options) => {
+      calls.push({ args, env: options.env });
+      return { pid: dummyPid(pids) };
+    };
+    ensureDevProcess({
+      base, slug: SLUG, clientProjectId: 102047, spawn: injected, now: () => 1, writeConfig: () => {}, portFree: () => true,
+    });
+    assert.equal(calls.length, 1);
+    assert.deepEqual(childEnvKeys(calls[0].env), [...SEED_CHILD_ENV_KEYS].sort());
+    assert.equal(calls[0].env.COLLAB_DRAFT_DATA_SOURCE, 'seed');
+    for (const key of PARENT_LEAKS) assert.equal(calls[0].env[key], undefined, key);
+    assertAllowEnvHasNoList(calls[0].args);
+
+    rmSync(join(base, 'drafts', SLUG, 'dev.json'), { force: true });
+    const spawned = ensureDevProcess({
+      base, slug: SLUG, clientProjectId: 102047, now: () => 1, writeConfig: () => {}, portFree: () => true,
+    });
+    pids.push(spawned.pid);
+    const recorded = JSON.parse(readFileSync(dump, 'utf8')) as { argv: string[]; env: Record<string, string> };
+    assert.deepEqual(childEnvKeys(recorded.env), [...SEED_CHILD_ENV_KEYS].sort());
+    for (const key of PARENT_LEAKS) assert.equal(recorded.env[key], undefined, key);
+    const script = recorded.argv[recorded.argv.indexOf('-c') + 1];
+    assert.equal(script.includes("'--allow-env'"), true);
+    assert.equal(script.includes('--allow-env='), false);
+  } finally {
+    killPids(pids);
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
     }
-  };
-  walk(root);
-  return names;
-}
-
-function allowEnvCovers(allowNames: ReadonlySet<string>, name: string): boolean {
-  if (allowNames.has(name)) return true;
-  for (const pattern of allowNames) {
-    if (pattern.endsWith('*') && pattern.length > 1 && name.startsWith(pattern.slice(0, -1))) return true;
+    rmSync(base, { recursive: true, force: true });
   }
-  return false;
-}
-
-/**
- * Parameter reads the draft process does not execute. One reason per name.
- * A name the draft does execute belongs in EXTRA_ENV_KEYS, not here.
- */
-const DRAFT_UNEXECUTED_ENV: Record<string, string> = {
-  LOCAL_TEST_SESSIONS_FILE: 'draft boot (startServer.ts:1159) returns at isEnabledFlag (localTestConfig.ts:294) before the read at localTestConfig.ts:257; childEnv never sets the flag',
-  CANDIDATE_HUB_ORG_ID: 'only caller is cbeRoutes.ts:276, and only in local hub mode; the draft child has no CANDIDATE_HUB, so that branch does not run',
-  CBE_PROJECT_DRIVER_OVERRIDE: 'read at cbeLogin.ts:307 from cbe login (cbeRoutes.ts:1768); the parent serves that route and the draft process does not call it',
-  COLLAB_DRAFT_PORTS_FILE: 'read at cbeDraftPorts.ts:51 from the parent ensureDevProcess (cbeDevProcess.ts:492); the draft child does not spawn a draft',
-  COLLAB_PM2_BIN: 'read at messagesStatusUsecases.ts:105 by the monitor router only; startServer does not import that router',
-};
-
-test('dev --allow-env covers every l1 env read except DATABASE_URL', () => {
-  const allow = buildDenoArgs('/tmp/base', SLUG, 4100, draftDatabaseUrl(PARENT_TEST_URL, SLUG, 102047))
-    .find((arg) => arg.startsWith('--allow-env='));
-  assert.ok(allow);
-  const allowNames = new Set(allow.slice('--allow-env='.length).split(','));
-  assert.equal(allowNames.has('PG*'), true);
-  assert.equal(allowNames.has('USERNAME'), true);
-  assert.equal(allowNames.has('DATABASE_URL'), false);
-  assert.equal(allowEnvCovers(allowNames, 'PGBINARY'), true);
-  const read = envNamesReadInL1();
-  for (const [name, reason] of Object.entries(DRAFT_UNEXECUTED_ENV)) {
-    assert.equal(reason.includes('\n'), false, name);
-    assert.equal(read.has(name), true, name);
-    assert.equal(allowEnvCovers(allowNames, name), false, name);
-  }
-  const missing = [...read].filter((name) => name !== 'DATABASE_URL' && !allowEnvCovers(allowNames, name) && !Object.hasOwn(DRAFT_UNEXECUTED_ENV, name));
-  assert.deepEqual(missing, []);
 });
 
 test('the default appconfig path (OAuth client secrets) is outside every --allow-read root of the draft process', () => {
@@ -336,7 +337,7 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
       assert.deepEqual(calls[0].args, [
         'run',
         `--allow-read=${base},${join(base, 'drafts', SLUG)},${projectFilesAllow.join(',')}`,
-        `--allow-env=${[...memoryModeAllowEnv(), 'DATABASE_URL_TEST', 'PG*', 'USERNAME', 'COLLAB_DRAFT_DATA_SOURCE', 'DATABASE_URL_READONLY', 'MDM_DATABASE_URL'].join(',')}`,
+        '--allow-env',
         '--allow-net=0.0.0.0:4100,127.0.0.1,127.0.0.1:5432',
         '--allow-sys=networkInterfaces,loadavg,systemMemoryInfo,cpus',
         '--config',
@@ -345,13 +346,8 @@ test('dev process: ensure, restart debounce, reapIdle', async (t) => {
         '--no-lock',
         join(base, 'mls-102034', 'l1', 'server', 'layer_1_external', 'transport', 'http', 'startServer.ts'),
       ]);
-      const allowEnv = calls[0].args[2];
-      const allowNames = allowEnv.slice('--allow-env='.length).split(',');
-      for (const key of ['APP_ENV', 'PORT', 'PORT_DEVELOPMENT', 'RUNTIME_MODE', 'COLLAB_PROJECT_ID', 'PGPASSWORD']) {
-        assert.equal(allowNames.includes(key), true, key);
-      }
-      assert.equal(allowNames.includes('DATABASE_URL'), false);
-      assert.equal(allowEnv.includes('--allow-all'), false);
+      assertAllowEnvHasNoList(calls[0].args);
+      assert.equal(calls[0].args.includes('--allow-all'), false);
       assert.equal(calls[0].args.includes('--allow-write'), false);
       assert.equal(calls[0].args.includes('--allow-run'), false);
       assert.equal(calls[0].options.cwd, join(base, 'drafts', SLUG));

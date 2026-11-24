@@ -36,114 +36,6 @@ const LOCK_RETRIES = 40;
 const LOCK_RETRY_MS = 50;
 const DEV_EXIT_WAIT_MS = 3000;
 
-/** Keys `readAppEnv` touches in memory mode. `readEnvValue` reads `KEY_<APP_ENV>` first. No `DATABASE_URL`. */
-const MEMORY_ENV_KEYS = [
-  'RUNTIME_MODE',
-  'WRITE_BEHIND_ENABLED',
-  'TICK_ENABLED',
-  'PORT',
-  'PGHOST',
-  'PGPORT',
-  'PGDATABASE',
-  'PGUSER',
-  'PGPASSWORD',
-  'AWS_REGION',
-  'AWS_ACCESS_KEY_ID',
-  'AWS_SECRET_ACCESS_KEY',
-  'AWS_SESSION_TOKEN',
-  'LOG_LEVEL',
-  'TESTS_ENABLED',
-  'PROJECT_ID',
-  'COLLAB_PROJECT_ID',
-  'PROJECT_DOMAIN',
-  'DOMAIN',
-  'STUDIO_ENABLED',
-  'ACTIVE_COMPANY_ID',
-  'ACTIVE_UNIT_ID',
-  'CURRENT_WORKSPACE_ID',
-  'WORKSPACE_ID',
-  'ACTOR_ID',
-  'ACTOR_SCOPE',
-  'ORGANIZATION_COUNTRY_CODE',
-  'COUNTRY_CODE',
-  'ORGANIZATION_CURRENCY',
-  'ORGANIZATION_TIMEZONE',
-  'S3_BUCKET',
-  'S3_BUCKET_TMP',
-  'ATTACHMENT_MAX_BYTES',
-  'ATTACHMENT_ALLOWED_MIME',
-  'ATTACHMENT_LOCAL_DIR',
-  'REDIS_URL',
-  'IDENTITY_CACHE_TTL_SECONDS',
-] as const;
-
-/** Env names read outside `env.ts` (lima: boot + `loadPatients`). No `_DEVELOPMENT` suffix. */
-const EXTRA_ENV_KEYS = [
-  'AUTH_JWT_ENABLED',
-  'AWS_LAMBDA_BENCHMARK_MODE',
-  'AWS_LAMBDA_NODEJS_NO_GLOBAL_AWSLAMBDA',
-  'AWS_NEW_RETRIES_2026',
-  'BFF_ACTORS_ENFORCED',
-  'BFF_JWT_ENABLED',
-  'CANDIDATE_HUB',
-  'CANDIDATE_ORIGIN',
-  'CBE_LATEST_URL',
-  'CBE_PROJECTS_DIR',
-  'CBE_STATIC_DIR',
-  'CBE_STATIC_ORIGIN',
-  'CBE_TEST_LOGIN_USER',
-  'COLLAB_APPCONFIG_FILE',
-  'COLLAB_AUTH_BASE_URL',
-  'COLLAB_AUTH_ISSUER',
-  'COLLAB_AUTH_JWKS_TIMEOUT_MS',
-  'COLLAB_AUTH_JWKS_URL',
-  'COLLAB_GIT_HTTP_ENABLED',
-  'COLLAB_GIT_PROJECT_ROOT',
-  'COLLAB_LIB_DIR',
-  'COLLAB_REBUILD_DEBOUNCE_MS',
-  'COLLAB_RUNTIME_MODE',
-  // Read by readSecretsKey (externalSettingsStore.ts). Only the name: the key file stays outside --allow-read, so a draft has
-  // the vault disabled (one log line) instead of a NotCapable on the env read that turned every route into a 500.
-  'COLLAB_SECRETS_KEY_FILE',
-  'COLLAB_DRAFT',
-  'COLLAB_DRAFT_IDENTITY_SECRET',
-  'MSG_PROXY_ENABLED',
-  'MSG_PROXY_ORG_ID',
-  'MSG_PROXY_TARGET',
-  'MSG_PROXY_TOKEN',
-  'MSG_PROXY_USER_ID',
-  'NODE_PG_FORCE_NATIVE',
-  'PM2_HOME',
-  'SMITHY_NEW_RETRIES_2026',
-  'USER',
-  'CBE_CANDIDATE_TIMEOUT_MS',
-  'CBE_COMMIT_ON_SAVE',
-  'CBE_PROJECT_FILES_DIR',
-  'CBE_REBUILD_ON_SAVE',
-  'CBE_REQUIRE_LOGIN',
-  'CBE_TEST_CAUTH',
-  'CBE_TEST_LOGIN_MSG',
-  'COLLAB_AUTH_API_KEY',
-  'COLLAB_AUTH_ORG_ID',
-  'COLLAB_DEV_MAX',
-  'COLLAB_DEV_PORT_RANGE',
-  'COLLAB_GIT_HTTP_BACKEND',
-  'COLLAB_MSG_LOGS_DIR',
-  'COLLAB_RELEASE_ALIAS',
-  'COLLAB_RELEASE_ID',
-  'COLLAB_RUNTIME_DIR',
-  'COLLAB_SERVICE_TOKEN',
-  'COLLAB_WORKER_COUNT',
-  'LD_PRELOAD',
-  'NODE_APP_INSTANCE',
-  'NODE_ENV',
-  'NODE_OPTIONS',
-  'PATH',
-  'pm_id',
-  // Boot calls isLocalTestNoAlpha. The child env does not set this, so the read is empty and the manifest stays closed.
-  'LOCAL_TEST_SESSION_ENABLED',
-] as const;
-
 export class AncestorDenoConfigError extends Error {}
 
 export class DraftDatabaseError extends Error {}
@@ -339,29 +231,16 @@ interface PendingRestart {
 
 const pendingRestarts = new Map<string, PendingRestart>();
 
-export function memoryModeAllowEnv(): string[] {
-  const names = ['APP_ENV'];
-  for (const key of MEMORY_ENV_KEYS) {
-    names.push(`${key}_DEVELOPMENT`, key);
-  }
-  names.push(...EXTRA_ENV_KEYS);
-  return [...new Set(names)];
-}
-
 export function buildDenoArgs(base: string, slug: string, port: number, databaseUrl: string): string[] {
   const draftDir = draftDirOf(base, slug);
   const projectFilesDir = process.env.CBE_PROJECT_FILES_DIR ?? '/etc/collab/projects';
   // Deno checks the path as given and does not resolve links first (measured, 2.4.5): `/etc/collab` is a link to the data
   // disk, so the link path must be allowed for the read to pass. The real path is added for a Deno that does resolve.
   const projectFilesAllow = [...new Set([projectFilesDir, ...(existsSync(projectFilesDir) ? [realpathSync(projectFilesDir)] : [])])];
-  const allowEnv = memoryModeAllowEnv();
-  // pg reads `process.env['PG' + key]` (PGBINARY, PGSSLMODE, …) plus USERNAME. Deno ≥ 2.1 accepts the suffix `*`.
-  // MDM_DATABASE_URL stays last: the draft env check rejects a permission named exactly DATABASE_URL, and a comma after MDM_DATABASE_URL would look like one.
-  allowEnv.push('DATABASE_URL_TEST', 'PG*', 'USERNAME', 'COLLAB_DRAFT_DATA_SOURCE', 'DATABASE_URL_READONLY', 'MDM_DATABASE_URL');
   return [
     'run',
     `--allow-read=${base},${draftDir},${projectFilesAllow.join(',')}`,
-    `--allow-env=${allowEnv.join(',')}`,
+    '--allow-env',
     `--allow-net=0.0.0.0:${port},127.0.0.1,${postgresHostPort(databaseUrl)}`,
     // networkInterfaces: the server. loadavg, systemMemoryInfo, cpus: `os.loadavg/freemem/totalmem/cpus` of the monitor collectors.
     '--allow-sys=networkInterfaces,loadavg,systemMemoryInfo,cpus',
