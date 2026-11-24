@@ -102,6 +102,9 @@ const EXTRA_ENV_KEYS = [
   'COLLAB_LIB_DIR',
   'COLLAB_REBUILD_DEBOUNCE_MS',
   'COLLAB_RUNTIME_MODE',
+  // Read by readSecretsKey (externalSettingsStore.ts). Only the name: the key file stays outside --allow-read, so a draft has
+  // the vault disabled (one log line) instead of a NotCapable on the env read that turned every route into a 500.
+  'COLLAB_SECRETS_KEY_FILE',
   'COLLAB_DRAFT',
   'COLLAB_DRAFT_IDENTITY_SECRET',
   'MSG_PROXY_ENABLED',
