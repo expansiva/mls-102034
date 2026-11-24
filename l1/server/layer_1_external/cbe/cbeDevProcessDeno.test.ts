@@ -40,10 +40,23 @@ const ENTRY = `
 const { isAlphaAllAuthorities } = await import('/_102034_/l1/server/layer_1_external/config/alphaAuthorities.ts');
 const alpha = isAlphaAllAuthorities();
 if (typeof alpha !== 'boolean') throw new Error('isAlphaAllAuthorities did not return a boolean');
-console.log('ST75 ' + JSON.stringify({ alpha }));
+let secretsKey = 'other';
+let secretsError = null;
+try {
+  const value = Deno.env.get('COLLAB_SECRETS_KEY_FILE');
+  secretsKey = value === undefined ? 'undefined' : 'present';
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error);
+  secretsError = message;
+  secretsKey = message.includes('NotCapable') || message.includes('Requires env access') ? 'not-capable' : 'other';
+}
+console.log('ST75 ' + JSON.stringify({ alpha, secretsKey, secretsError }));
 `;
 
-test('draft deno allow-env lets boot call isAlphaAllAuthorities', { skip: DENO === null ? 'deno not found (set DENO_BIN)' : false }, async () => {
+const SECRETS_SENTINEL = 'st79-secrets-key-should-not-leak';
+
+test('draft deno --allow-env has no list: boot calls isAlphaAllAuthorities and an outside variable is undefined', async () => {
+  assert.ok(DENO, 'deno not found (set DENO_BIN)');
   const { buildDraftDenoConfig } = await loadDraftDenoConfigModule();
   const dir = mkdtempSync(join(tmpdir(), 'cbe-st75-'));
   const configPath = join(dir, 'deno.json');
@@ -60,12 +73,12 @@ test('draft deno allow-env lets boot call isAlphaAllAuthorities', { skip: DENO =
   args[configAt + 1] = configPath;
   args[args.length - 1] = entry;
   args.splice(configAt, 0, '--no-prompt');
-  const allowEnv = args.find((arg) => arg.startsWith('--allow-env='));
-  assert.ok(allowEnv);
-  assert.equal(allowEnv.includes('DATABASE_URL,'), false);
-  assert.equal(allowEnv.endsWith(',DATABASE_URL'), false);
+  assert.equal(args.includes('--allow-env'), true);
+  assert.equal(args.some((arg) => arg.startsWith('--allow-env=')), false);
+  const previousSecrets = process.env.COLLAB_SECRETS_KEY_FILE;
+  process.env.COLLAB_SECRETS_KEY_FILE = SECRETS_SENTINEL;
   try {
-    const child = spawnSync(DENO as string, args, {
+    const child = spawnSync(DENO, args, {
       cwd: mlsBase,
       encoding: 'utf8',
       env: { PATH: '/usr/bin:/bin:/usr/local/bin' },
@@ -75,9 +88,15 @@ test('draft deno allow-env lets boot call isAlphaAllAuthorities', { skip: DENO =
     assert.equal(child.status, 0, detail);
     const line = (child.stdout ?? '').split('\n').find((item) => item.startsWith('ST75 '));
     assert.ok(line, detail);
-    const report = JSON.parse(line.slice('ST75 '.length)) as { alpha: unknown };
+    const report = JSON.parse(line.slice('ST75 '.length)) as { alpha: unknown; secretsKey: unknown; secretsError: unknown };
     assert.equal(typeof report.alpha, 'boolean');
+    assert.equal(report.secretsKey, 'undefined');
+    assert.equal(report.secretsError, null);
+    assert.equal(detail.includes('NotCapable'), false);
+    assert.equal(detail.includes(SECRETS_SENTINEL), false);
   } finally {
+    if (previousSecrets === undefined) delete process.env.COLLAB_SECRETS_KEY_FILE;
+    else process.env.COLLAB_SECRETS_KEY_FILE = previousSecrets;
     rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -1,7 +1,7 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/cbe/cbeDraftEnv.test.ts" enhancement="_blank" />
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -29,11 +29,8 @@ async function loadDraftDenoConfigModule(): Promise<DraftDenoConfigModule> {
 
 function denoArgs(entry: string, configPath: string): string[] {
   const args = buildDenoArgs(mlsBase, SLUG, 4100, DATABASE_URL);
-  const allowEnv = args.find((arg) => arg.startsWith('--allow-env='));
-  assert.ok(allowEnv);
-  assert.equal(allowEnv.includes('DATABASE_URL,'), false);
-  assert.equal(allowEnv.endsWith(',DATABASE_URL'), false);
-  assert.equal(allowEnv.includes('DATABASE_URL_TEST'), true);
+  assert.equal(args.includes('--allow-env'), true);
+  assert.equal(args.some((arg) => arg.startsWith('--allow-env=')), false);
   const configAt = args.indexOf('--config');
   assert.ok(configAt > 0);
   args[configAt + 1] = configPath;
@@ -43,10 +40,15 @@ function denoArgs(entry: string, configPath: string): string[] {
 }
 
 function denoBin(): string {
+  const fromEnv = process.env.DENO_BIN;
+  if (fromEnv) {
+    if (!existsSync(fromEnv)) throw new Error(`DENO_BIN does not exist: ${fromEnv}`);
+    return fromEnv;
+  }
   const found = spawnSync('/usr/bin/which', ['deno'], { encoding: 'utf8' });
   const bin = (found.stdout ?? '').trim();
   if (found.status !== 0 || !bin) {
-    throw new Error(`deno unavailable: ${(found.stderr ?? '').trim() || 'not on PATH'}`);
+    throw new Error(`deno unavailable: ${(found.stderr ?? '').trim() || 'not on PATH'} (set DENO_BIN)`);
   }
   return bin;
 }
@@ -81,17 +83,22 @@ const ENTRY = `
 const globalEnv = await Deno.permissions.query({ name: 'env' });
 const databaseUrl = await Deno.permissions.query({ name: 'env', variable: 'DATABASE_URL' });
 const named = await Deno.permissions.query({ name: 'env', variable: 'MSG_PROXY_TOKEN' });
-let databaseRead = 'granted';
-try {
-  Deno.env.get('DATABASE_URL');
-} catch (error) {
-  const message = error instanceof Error ? error.message : String(error);
-  databaseRead = message.includes('NotCapable') || message.includes('Requires env access') ? 'denied' : 'other';
+function readEnv(name) {
+  try {
+    const value = Deno.env.get(name);
+    return value === undefined ? 'undefined' : 'present';
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return message.includes('NotCapable') || message.includes('Requires env access') ? 'not-capable' : 'other';
+  }
 }
+const databaseRead = readEnv('DATABASE_URL');
+const secretsKey = readEnv('COLLAB_SECRETS_KEY_FILE');
 const report = {
   global: globalEnv.state,
   databaseUrl: databaseUrl.state,
   databaseRead,
+  secretsKey,
   named: named.state,
 };
 
@@ -197,19 +204,29 @@ console.log('RT130 ' + JSON.stringify(report));
 `;
 
 const ENUM_ENTRY = `
+let secrets = 'other';
 try {
-  Object.keys(process.env);
-  console.log('RT130 enum-open');
-  Deno.exit(1);
+  const value = Deno.env.get('COLLAB_SECRETS_KEY_FILE');
+  secrets = value === undefined ? 'undefined' : 'present';
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
-  if (message.includes('NotCapable') || message.includes('Requires env access')) {
-    console.log('RT130 enum-denied');
-    Deno.exit(0);
-  }
-  console.log('RT130 enum-other');
-  Deno.exit(2);
+  secrets = message.includes('NotCapable') || message.includes('Requires env access') ? 'not-capable' : 'other';
 }
+let keys = [];
+try {
+  keys = Object.keys(process.env);
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error);
+  console.log('RT130 enum ' + JSON.stringify({
+    secrets,
+    leaked: message.includes('NotCapable') ? 'not-capable' : 'other',
+  }));
+  Deno.exit(message.includes('NotCapable') || message.includes('Requires env access') ? 1 : 2);
+}
+console.log('RT130 enum ' + JSON.stringify({
+  secrets,
+  leaked: keys.includes('COLLAB_SECRETS_KEY_FILE'),
+}));
 `;
 
 const LOCAL_CLAIMS = {
@@ -276,7 +293,9 @@ export async function execBff(request) {
 }
 `;
 
-test('draft deno flags deny global env and still run message paths', async () => {
+const SECRETS_SENTINEL = 'st79-secrets-key-should-not-leak';
+
+test('draft deno --allow-env has no list, an outside variable reads undefined, and message paths still run', async () => {
   const { buildDraftDenoConfig } = await loadDraftDenoConfigModule();
   const draftDir = join(mlsBase, 'drafts', SLUG);
   mkdirSync(draftDir, { recursive: true });
@@ -290,14 +309,20 @@ test('draft deno flags deny global env and still run message paths', async () =>
   }), null, 2)}\n`);
   writeFileSync(entry, ENTRY);
   writeFileSync(enumEntry, ENUM_ENTRY);
+  const previousSecrets = process.env.COLLAB_SECRETS_KEY_FILE;
+  process.env.COLLAB_SECRETS_KEY_FILE = SECRETS_SENTINEL;
   try {
-    const probed = denoArgs(entry, configPath).find((arg) => arg.startsWith('--allow-env='));
-    const fresh = buildDenoArgs(mlsBase, SLUG, 4100, DATABASE_URL).find((arg) => arg.startsWith('--allow-env='));
+    const probed = denoArgs(entry, configPath).find((arg) => arg === '--allow-env' || arg.startsWith('--allow-env='));
+    const fresh = buildDenoArgs(mlsBase, SLUG, 4100, DATABASE_URL).find((arg) => arg === '--allow-env' || arg.startsWith('--allow-env='));
+    assert.equal(probed, '--allow-env');
     assert.equal(probed, fresh);
 
     const negative = runDeno(enumEntry, configPath);
     assert.equal(negative.status, 0, negative.stderr || negative.stdout);
-    assert.match(negative.stdout, /RT130 enum-denied/);
+    const enumLine = negative.stdout.split('\n').find((item) => item.startsWith('RT130 enum '));
+    assert.ok(enumLine, negative.stdout + negative.stderr);
+    assert.deepEqual(JSON.parse(enumLine.slice('RT130 enum '.length)), { secrets: 'undefined', leaked: false });
+    assert.equal(negative.stdout.includes(SECRETS_SENTINEL), false);
     assert.equal(negative.stdout.includes('MSG_PROXY_TOKEN='), false);
 
     const result = runDeno(entry, configPath);
@@ -308,6 +333,7 @@ test('draft deno flags deny global env and still run message paths', async () =>
       global: string;
       databaseUrl: string;
       databaseRead: string;
+      secretsKey: string;
       named: string;
       client: string;
       sys: string;
@@ -317,9 +343,10 @@ test('draft deno flags deny global env and still run message paths', async () =>
       auth: boolean;
       cookieStripped: boolean;
     };
-    assert.notEqual(report.global, 'granted');
-    assert.notEqual(report.databaseUrl, 'granted');
-    assert.equal(report.databaseRead, 'denied');
+    assert.equal(report.global, 'granted');
+    assert.equal(report.databaseUrl, 'granted');
+    assert.equal(report.databaseRead, 'undefined');
+    assert.equal(report.secretsKey, 'undefined');
     assert.equal(report.named, 'granted');
     assert.equal(report.client, 'ok');
     assert.equal(report.sys, 'ok');
@@ -330,7 +357,12 @@ test('draft deno flags deny global env and still run message paths', async () =>
     assert.equal(report.cookieStripped, true);
     assert.equal(result.stdout.includes(FIXTURE_TOKEN), false);
     assert.equal(result.stderr.includes(FIXTURE_TOKEN), false);
+    assert.equal(result.stdout.includes(SECRETS_SENTINEL), false);
+    assert.equal(result.stderr.includes(SECRETS_SENTINEL), false);
+    assert.equal(result.stderr.includes('NotCapable'), false);
   } finally {
+    if (previousSecrets === undefined) delete process.env.COLLAB_SECRETS_KEY_FILE;
+    else process.env.COLLAB_SECRETS_KEY_FILE = previousSecrets;
     rmSync(draftDir, { recursive: true, force: true });
   }
 });
