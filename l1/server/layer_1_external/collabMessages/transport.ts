@@ -1,5 +1,10 @@
+import http from 'node:http';
+import https from 'node:https';
 import { readMessagesIntegration } from '/_102034_/l1/server/layer_1_external/config/messagesIntegration.js';
 import { AppError } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
+
+/** Node's `fetch` stops waiting for response headers at 300s. A longer call uses `node:http` instead. */
+const NODE_FETCH_HEADER_LIMIT_MS = 300_000;
 
 /**
  * The one transport to collab-messages: the POST of an action, with a time limit, redirects refused and the answer read
@@ -20,6 +25,72 @@ export type PostEnvelopeInput = {
 
 function isAbortError(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { name?: string }).name === 'AbortError';
+}
+
+function isFetchTimeout(err: unknown): boolean {
+  if (isAbortError(err)) return true;
+  if (typeof err !== 'object' || err === null) return false;
+  const code = (err as { code?: unknown }).code;
+  return code === 'UND_ERR_HEADERS_TIMEOUT' || code === 'UND_ERR_BODY_TIMEOUT';
+}
+
+function timeoutFailure(kind: 'headers' | 'body'): Error {
+  return Object.assign(new Error(`${kind} timeout`), { code: kind === 'headers' ? 'UND_ERR_HEADERS_TIMEOUT' : 'UND_ERR_BODY_TIMEOUT' });
+}
+
+/** Header and body deadlines for a call longer than Node's `fetch` allows. Redirects stay off, as `redirect: 'manual'`. */
+function postLong(url: string, headers: Record<string, string>, body: string, timeoutMs: number, signal: AbortSignal): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const target = new URL(url);
+    const lib = target.protocol === 'https:' ? https : http;
+    let settled = false;
+    let headerTimer: ReturnType<typeof setTimeout> | undefined;
+    let bodyTimer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      if (headerTimer) clearTimeout(headerTimer);
+      if (bodyTimer) clearTimeout(bodyTimer);
+      signal.removeEventListener('abort', onAbort);
+      fn();
+    };
+    const req = lib.request({
+      protocol: target.protocol,
+      hostname: target.hostname,
+      port: target.port,
+      path: `${target.pathname}${target.search}`,
+      method: 'POST',
+      headers: { ...headers, 'content-length': String(Buffer.byteLength(body)) },
+    }, (res) => {
+      if (headerTimer) clearTimeout(headerTimer);
+      const chunks: Buffer[] = [];
+      bodyTimer = setTimeout(() => {
+        res.destroy();
+        finish(() => reject(timeoutFailure('body')));
+      }, timeoutMs);
+      res.on('data', (chunk: Buffer) => { chunks.push(chunk); });
+      res.on('end', () => {
+        const payload = Buffer.concat(chunks);
+        finish(() => resolve(new Response(payload, { status: res.statusCode ?? 0 })));
+      });
+      res.on('error', (err) => finish(() => reject(err)));
+    });
+    const onAbort = (): void => {
+      req.destroy();
+      finish(() => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+    };
+    headerTimer = setTimeout(() => {
+      req.destroy();
+      finish(() => reject(timeoutFailure('headers')));
+    }, timeoutMs);
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener('abort', onAbort, { once: true });
+    req.on('error', (err) => finish(() => reject(err)));
+    req.end(body);
+  });
 }
 
 export function isEnvelope(value: unknown): value is Record<string, unknown> & { statusCode: number } {
@@ -86,15 +157,20 @@ export async function postEnvelope(input: PostEnvelopeInput): Promise<EnvelopeRe
     });
   };
 
-  try {
-    const response = await bounded(fetchImpl(url, {
+  const send = fetchImpl === fetch && timeoutMs > NODE_FETCH_HEADER_LIMIT_MS
+    ? postLong(url, headers, body, timeoutMs, ac.signal)
+    : fetchImpl(url, {
       method: 'POST',
       headers,
       body,
       redirect: 'manual',
       signal: ac.signal,
-    })).catch((err: unknown): never => {
+    });
+
+  try {
+    const response = await bounded(send).catch((err: unknown): never => {
       if (err instanceof AppError) throw err;
+      if (isFetchTimeout(err)) throw timeout();
       return failUnavailable();
     });
 
@@ -107,6 +183,7 @@ export async function postEnvelope(input: PostEnvelopeInput): Promise<EnvelopeRe
 
     const text = await bounded(response.text()).catch((err: unknown): never => {
       if (err instanceof AppError) throw err;
+      if (isFetchTimeout(err)) throw timeout();
       return failUnavailable();
     });
 

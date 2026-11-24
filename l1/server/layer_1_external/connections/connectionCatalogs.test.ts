@@ -67,7 +67,8 @@ test('the cm marks what the contract marks: describe and record hidden, describe
   assert.equal(byId.get('record')?.hiddenFromAgents, true);
   assert.equal(byId.get('record')?.noRowLimit, undefined);
   assert.equal(byId.get('createAgent')?.resultOperation, 'agentDraftReady');
-  assert.ok((byId.get('runAiPrompt')?.timeoutMs ?? 0) > 60000);
+  assert.equal(byId.get('runAiPrompt')?.timeoutMs, 630000);
+  assert.equal(cm.operations.filter((operation) => operation.timeoutMs !== undefined && operation.operationId !== 'runAiPrompt').length, 0);
   assert.equal(cm.operations.filter((operation) => operation.hiddenFromAgents).length, 3);
 });
 

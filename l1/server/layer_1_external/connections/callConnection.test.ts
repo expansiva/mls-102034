@@ -1,9 +1,13 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/connections/callConnection.test.ts" enhancement="_blank"/>
 import assert from 'node:assert/strict';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
+import { postEnvelope } from '/_102034_/l1/server/layer_1_external/collabMessages/transport.js';
+import { AppError } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import { callConnection, createCmTransport, createConnectionCaller, createProductionConnectionCaller, type CallConnection } from '/_102034_/l1/server/layer_1_external/connections/callConnection.js';
 import { connectionCatalogs } from '/_102034_/l1/server/layer_1_external/connections/connectionCatalogs.js';
 import { CONNECTION_CODES, exampleCatalog } from '/_102034_/testing/connections/connectionFixtures.js';
@@ -147,6 +151,67 @@ describe('callConnection: the seven codes', () => {
     assert.ok(Date.now() - started < 1500);
     const byDefault = await callerOver(fetchImpl, { defaultTimeoutMs: 30 })('example', 'lookup', { key: 'k' }, CONTEXT);
     assert.equal(byDefault.ok === false && byDefault.code, 'unavailable');
+  });
+
+  it('runAiPrompt declares 630s and a shorter operation still goes through the injected fetch', async () => {
+    const run = cm.operations.find((operation) => operation.operationId === 'runAiPrompt');
+    assert.equal(run?.timeoutMs, 630000);
+    const { seen, fetchImpl } = fakeCm(() => ({ body: { statusCode: 200, ok: true, output: { agents: [] } } }));
+    const result = await callerOver(fetchImpl)('cm', 'listAgents', {}, CONTEXT);
+    assert.deepEqual(result, { ok: true, output: { agents: [] } });
+    assert.equal(seen.length, 1);
+  });
+
+  it('a call longer than the fetch default uses the node client and keeps a short injected limit on fetch', async () => {
+    let injected = 0;
+    const fetchImpl = (async () => {
+      injected += 1;
+      return new Response(JSON.stringify({ statusCode: 200, ok: true, output: {} }), { status: 200 });
+    }) as unknown as typeof fetch;
+    await postEnvelope({
+      fetchImpl,
+      url: 'http://cm.test/msg',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+      timeoutMs: 310_000,
+      label: 'injected',
+    });
+    assert.equal(injected, 1);
+
+    const server = http.createServer((_req, res) => {
+      res.setHeader('content-type', 'application/json');
+      setTimeout(() => {
+        res.end(JSON.stringify({ statusCode: 200, ok: true, output: { waited: true } }));
+      }, 40);
+    });
+    const port = await new Promise<number>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', () => resolve((server.address() as AddressInfo).port));
+    });
+    try {
+      const slow = await postEnvelope({
+        fetchImpl: fetch,
+        url: `http://127.0.0.1:${port}/msg`,
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+        timeoutMs: 310_000,
+        label: 'long',
+      });
+      assert.equal(slow.body.ok, true);
+      await assert.rejects(
+        () => postEnvelope({
+          fetchImpl: fetch,
+          url: `http://127.0.0.1:${port}/msg`,
+          headers: { 'content-type': 'application/json' },
+          body: '{}',
+          timeoutMs: 20,
+          label: 'short',
+        }),
+        (error: unknown) => error instanceof AppError && error.code === 'MSG_SERVICE_TIMEOUT',
+      );
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((err) => { if (err) reject(err); else resolve(); }));
+    }
   });
 
   it('the cm that cannot be reached is unavailable', async () => {
