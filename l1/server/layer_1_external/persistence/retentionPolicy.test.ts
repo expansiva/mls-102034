@@ -2,27 +2,28 @@
 import assert from 'node:assert/strict';
 import test, { after } from 'node:test';
 import { Client } from 'pg';
-import { applyRetentionPolicy, assertRetentionDeclarations, retentionProblem } from '/_102034_/l1/server/layer_1_external/persistence/retentionPolicy.js';
+import { applyRetentionPolicy, assertRetentionDeclarations, retentionProblem, retentionWarning } from '/_102034_/l1/server/layer_1_external/persistence/retentionPolicy.js';
 
 const HYPER = { hypertable: { timeColumn: 'at' } };
 
-test('retentionDays: a hypertable takes a whole number of days from 1; 0 and none keep the rows', () => {
+test('retentionDays must be a whole number of days, 0 or more: anything else fails by the name of the table', () => {
   assert.equal(retentionProblem({ tableName: 't', retentionDays: 30, timescale: HYPER }), undefined);
-  assert.equal(retentionProblem({ tableName: 't', timescale: HYPER }), undefined);
   assert.equal(retentionProblem({ tableName: 't', retentionDays: 0 }), undefined);
   assert.equal(retentionProblem({ tableName: 't' }), undefined);
+  assert.equal(retentionProblem({ tableName: 'payment', retentionDays: 365 }), undefined);
   for (const bad of [-1, 1.5, Number.NaN, Infinity, '30' as unknown as number]) {
-    assert.match(retentionProblem({ tableName: 'telegram_messageaudit', retentionDays: bad, timescale: HYPER }) ?? '', /^retentionDays must be an integer of 1 or more: telegram_messageaudit$/u, String(bad));
+    assert.match(retentionProblem({ tableName: 'telegram_messageaudit', retentionDays: bad, timescale: HYPER }) ?? '', /^retentionDays must be a whole number of days, 0 or more: telegram_messageaudit$/u, String(bad));
   }
+  assert.throws(() => assertRetentionDeclarations([{ tableName: 'fine', retentionDays: 7, timescale: HYPER }, { tableName: 'bad', retentionDays: -3 }]), /: bad$/u);
+  assert.doesNotThrow(() => assertRetentionDeclarations([{ tableName: 'plain', retentionDays: 30 }, { tableName: 'kept', retentionDays: 0 }]));
 });
 
-test('retentionDays on a plain table fails by the name of the table, never ignored', () => {
-  assert.equal(retentionProblem({ tableName: 'payment', retentionDays: 365 }), 'retentionDays needs a timescale hypertable: payment');
-  assert.throws(
-    () => assertRetentionDeclarations([{ tableName: 'fine', retentionDays: 7, timescale: HYPER }, { tableName: 'payment', retentionDays: 365 }]),
-    /retentionDays needs a timescale hypertable: payment/u,
-  );
-  assert.doesNotThrow(() => assertRetentionDeclarations([{ tableName: 'fine', retentionDays: 7, timescale: HYPER }, { tableName: 'kept', retentionDays: 0 }]));
+test('a plain table with 1 day or more comes up with one warning line; 0, none and a hypertable have none', () => {
+  assert.equal(retentionWarning({ tableName: 'payment', retentionDays: 365 }), 'retentionDays not applied: payment is not a hypertable');
+  assert.equal(retentionWarning({ tableName: 'payment', retentionDays: 1 }), 'retentionDays not applied: payment is not a hypertable');
+  assert.equal(retentionWarning({ tableName: 'payment', retentionDays: 0 }), undefined);
+  assert.equal(retentionWarning({ tableName: 'payment' }), undefined);
+  assert.equal(retentionWarning({ tableName: 'audit', retentionDays: 30, timescale: HYPER }), undefined);
 });
 
 test('the policy is added when missing, kept when it is already that, replaced when it is another', async () => {
@@ -58,7 +59,7 @@ after(async () => {
   }
 });
 
-test('real Postgres: the policy of a hypertable is applied, is not repeated, and changes with retentionDays', { skip: !integration && 'needs RUN_INTEGRATION_TESTS=true and WORKFLOW_TEST_PG_URL' }, async () => {
+test('real Postgres: the policy of a hypertable is applied, is not repeated, changes with retentionDays; a plain table gets none', { skip: !integration && 'needs RUN_INTEGRATION_TESTS=true and WORKFLOW_TEST_PG_URL' }, async () => {
   const raw = process.env.WORKFLOW_TEST_PG_URL ?? '';
   const url = new URL(raw);
   const database = decodeURIComponent(url.pathname.replace(/^\//u, ''));
@@ -83,6 +84,10 @@ test('real Postgres: the policy of a hypertable is applied, is not repeated, and
   // (3) 7 days: the policy is replaced, not added
   assert.equal(await applyRetentionPolicy(client, 'audit', 7), 'replaced');
   assert.deepEqual((await policies()).map((row) => row.drop_after), ['7 days']);
-  // (4) a plain table with retentionDays fails with the name of the table
-  assert.throws(() => assertRetentionDeclarations([{ tableName: 'plain_audit', retentionDays: 30 }]), /retentionDays needs a timescale hypertable: plain_audit/u);
+  // (4) a plain table with retentionDays comes up with no policy and the warning line
+  await client.query('CREATE TABLE plain_audit (id text PRIMARY KEY, at timestamptz NOT NULL)');
+  assert.doesNotThrow(() => assertRetentionDeclarations([{ tableName: 'plain_audit', retentionDays: 30 }]));
+  assert.equal(retentionWarning({ tableName: 'plain_audit', retentionDays: 30 }), 'retentionDays not applied: plain_audit is not a hypertable');
+  const plainJobs = await client.query("SELECT 1 FROM timescaledb_information.jobs WHERE proc_name = 'policy_retention' AND hypertable_schema = current_schema() AND hypertable_name = 'plain_audit'");
+  assert.equal(plainJobs.rows.length, 0);
 });

@@ -1,5 +1,5 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/persistence/schemaBootstrap.ts" enhancement="_blank" />
-import { applyRetentionPolicy, assertRetentionDeclarations } from '/_102034_/l1/server/layer_1_external/persistence/retentionPolicy.js';
+import { applyRetentionPolicy, assertRetentionDeclarations, retentionWarning } from '/_102034_/l1/server/layer_1_external/persistence/retentionPolicy.js';
 import type { Pool } from 'pg';
 import { getSharedPgPool } from '/_102034_/l1/server/layer_1_external/data/postgres/pg.js';
 import type { AppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
@@ -638,7 +638,7 @@ async function rebuildPostgresSchema(
       } catch (error) {
         console.warn(`[bootstrapSchema] create_hypertable failed for "${definition.tableName}" — kept as regular table:`, error instanceof Error ? error.message : error);
       }
-      // A table that declares `retentionDays` is not allowed to run without the policy: a failure here stops the migration.
+      // A hypertable that declares `retentionDays` is not allowed to run without the policy: a failure here stops the migration.
       if (definition.retentionDays !== undefined && definition.retentionDays > 0) {
         const applied = await applyRetentionPolicy(pool, definition.tableName, definition.retentionDays);
         console.info(`[bootstrapSchema] retention of "${definition.tableName}": ${definition.retentionDays} days (${applied})`);
@@ -833,7 +833,12 @@ export async function bootstrapSchema(
 
   const definitions = await loadResolvedTableDefinitions(env);
   // Before any change: a retentionDays that cannot be applied stops the bootstrap by the name of the table.
-  assertRetentionDeclarations(definitions.filter((definition) => usesPostgres(definition)));
+  const retentionTables = definitions.filter((definition) => usesPostgres(definition));
+  assertRetentionDeclarations(retentionTables);
+  for (const definition of retentionTables) {
+    const warning = retentionWarning(definition);
+    if (warning) console.warn(`[bootstrapSchema] ${warning}`);
+  }
   const snapshot = await buildSchemaSnapshot(env);
   const pool = getSharedPgPool(env);
   const definedModules = modulesOf(snapshot.tables);

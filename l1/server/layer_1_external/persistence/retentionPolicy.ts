@@ -1,26 +1,35 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/persistence/retentionPolicy.ts" enhancement="_blank"/>
 /**
- * `TableDefinition.retentionDays` made real: a hypertable that declares it gets the Timescale retention policy, and a table that
- * cannot have one fails the bootstrap by name, never silently (a plain table declares no column for "when the row was written").
+ * `TableDefinition.retentionDays` made real: a hypertable that declares it gets the Timescale retention policy; a value that is not a
+ * whole number of days fails the bootstrap by the name of the table; a plain table comes up with a warning line (`retentionWarning`).
  */
 import type { Pool } from 'pg';
 import type { ResolvedTableDefinition } from '/_102034_/l1/server/layer_1_external/persistence/contracts.js';
 
 type RetentionShape = Pick<ResolvedTableDefinition, 'tableName' | 'retentionDays' | 'timescale'>;
 
-/** Why the declaration cannot be applied, or `undefined` when it can (or when the table keeps its rows: no `retentionDays`, or 0). */
+/** Why the declaration is not acceptable (a value that is not a whole number of days, or is negative), or `undefined`. */
 export function retentionProblem(definition: RetentionShape): string | undefined {
   const days = definition.retentionDays;
-  // 0 is how the generated definitions say "keep forever" (102046 declares it on 18 tables): the same as no declaration.
-  if (days === undefined || days === 0) return undefined;
-  if (typeof days !== 'number' || !Number.isInteger(days) || days < 1) {
-    return `retentionDays must be an integer of 1 or more: ${definition.tableName}`;
+  if (days === undefined) return undefined;
+  if (typeof days !== 'number' || !Number.isInteger(days) || days < 0) {
+    return `retentionDays must be a whole number of days, 0 or more: ${definition.tableName}`;
   }
-  if (!definition.timescale?.hypertable) return `retentionDays needs a timescale hypertable: ${definition.tableName}`;
   return undefined;
 }
 
-/** Throws, before anything is touched, for the first table whose `retentionDays` cannot be applied. */
+/**
+ * The table asks for a retention it cannot have: 1 day or more on a table that is not a hypertable (a plain table declares no
+ * column for "when the row was written"). It comes up without the policy, and the registry carries this line, one per table.
+ * 0 is how the generated definitions say "keep forever" (102046 declares it on 18 tables): no policy and no line.
+ */
+export function retentionWarning(definition: RetentionShape): string | undefined {
+  const days = definition.retentionDays;
+  if (days === undefined || days < 1 || definition.timescale?.hypertable) return undefined;
+  return `retentionDays not applied: ${definition.tableName} is not a hypertable`;
+}
+
+/** Throws, before anything is touched, for the first table whose `retentionDays` is not acceptable. */
 export function assertRetentionDeclarations(definitions: readonly RetentionShape[]): void {
   for (const definition of definitions) {
     const problem = retentionProblem(definition);
