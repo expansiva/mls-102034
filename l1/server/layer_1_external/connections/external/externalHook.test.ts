@@ -4,12 +4,12 @@ import { createHmac } from 'node:crypto';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { after, before, describe, it } from 'node:test';
+import { after, before, describe, it, mock } from 'node:test';
 import Fastify from 'fastify';
 import type { ConnectionCatalog } from '/_102034_/l2/shared/contracts/connections/types.js';
 import type { BffResponse } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import type { ExternalCallRow, ExternalNoticeKey } from '/_102034_/l1/server/layer_1_external/connections/external/externalCallStore.js';
-import { allowExternalHookRate, handleExternalHook, type ExternalHookDeps } from '/_102034_/l1/server/layer_1_external/connections/external/externalHook.js';
+import { allowExternalHookRate, DELIVER_MS, handleExternalHook, type ExternalHookDeps } from '/_102034_/l1/server/layer_1_external/connections/external/externalHook.js';
 import { releaseDeclarationOf } from '/_102034_/l1/server/layer_1_external/connections/external/productionExternalSender.js';
 import type { ExternalSystemDeclaration } from '/_102034_/l2/shared/contracts/connections/externalSystem.js';
 import { clientAddress, registerExternalHookRoutes } from '/_102034_/l1/server/layer_1_external/transport/http/externalHookHttp.js';
@@ -226,6 +226,48 @@ describe('external hook', () => {
     assert.equal((await send('{"update_id": null}')).status, 401);
     assert.equal((await send('{"update_id": ""}')).status, 401);
     assert.equal(keys.length, 1);
+  });
+
+  it('the arrival waits 60 s for the route: a route that answers in 30 s is delivered, one that never answers gives the timeout', async () => {
+    assert.equal(DELIVER_MS, 60_000);
+    const outcomes: string[] = [];
+    const forgotten: string[] = [];
+    const make = (deliver: ExternalHookDeps['deliver']): ExternalHookDeps => ({
+      declarationOf: async () => declaration,
+      secretOf: async () => SECRET,
+      seen: async () => true,
+      forget: async (notice) => { forgotten.push(notice.noticeId); },
+      organizationOf: () => 'org-1',
+      record: async (row) => { outcomes.push(row.outcome); },
+      deliver,
+      now: () => WHEN,
+      allow: () => true,
+      log: () => undefined,
+    });
+    const target = { projectId: PROJECT, moduleId: MODULE, systemId: SYSTEM, operationId: 'receive' };
+    const body = Buffer.from('{"id":"n-30"}');
+    const request = { target, rawBody: body, headers: { 'x-signature': sign(body), 'x-notice-id': 'n-30' }, remoteAddress: '1.2.3.4' };
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      const slow = handleExternalHook(request, make(() => new Promise((resolve) => {
+        setTimeout(() => resolve({ ok: true, output: {} }), 30_000);
+      })));
+      await new Promise((resolve) => setImmediate(resolve));
+      mock.timers.tick(30_000);
+      assert.equal((await slow).status, 200);
+      assert.equal(outcomes.at(-1), 'accepted');
+
+      const never = handleExternalHook(request, make(() => new Promise(() => undefined)));
+      await new Promise((resolve) => setImmediate(resolve));
+      mock.timers.tick(59_999);
+      mock.timers.tick(1);
+      const late = await never;
+      assert.equal(late.status, 503);
+      assert.equal(outcomes.at(-1), 'timeout');
+      assert.deepEqual(forgotten, ['n-30']);
+    } finally {
+      mock.timers.reset();
+    }
   });
 
   it('logs once when the serve operation has no noticeId', async () => {

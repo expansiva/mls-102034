@@ -15,7 +15,12 @@ import { verifyExternalNotice } from '/_102034_/l1/server/layer_1_external/conne
 export const EXTERNAL_HOOK_PATH = '/hook/:projectId/:moduleId/:systemId/:operationId';
 
 export const EXTERNAL_HOOK_MAX_BYTES = 1024 * 1024;
-const DELIVER_MS = 5000;
+/**
+ * How long the arrival waits for the route of the module: 1 minute (Wagner, 25/11: a slow call to the cm must not turn into an error and a
+ * resend). Nothing between the nginx (1900 s) and the route cuts earlier: Fastify runs with `requestTimeout` and `handlerTimeout` 0 (no
+ * limit, `startServer.ts:630`).
+ */
+export const DELIVER_MS = 60_000;
 const RATE_WINDOW_MS = 60_000;
 const RATE_MAX = 60;
 const ID = /^[a-z][A-Za-z0-9]*$/u;
@@ -254,6 +259,7 @@ export async function handleExternalHook(request: ExternalHookRequest, deps: Ext
   };
 
   let delivered: ConnectionResult;
+  let deadline: ReturnType<typeof setTimeout> | undefined;
   try {
     delivered = await Promise.race([
       deps.deliver({
@@ -264,10 +270,12 @@ export async function handleExternalHook(request: ExternalHookRequest, deps: Ext
         ...(requestId !== null ? { idempotencyKey: requestId } : {}),
       }),
       new Promise<ConnectionResult>((resolve) => {
-        setTimeout(() => resolve({ ok: false, code: 'unavailable', message: 'timeout' }), DELIVER_MS);
+        deadline = setTimeout(() => resolve({ ok: false, code: 'unavailable', message: 'timeout' }), DELIVER_MS);
       }),
     ]);
+    clearTimeout(deadline);
   } catch (error) {
+    clearTimeout(deadline);
     const text = error instanceof Error ? error.name : 'error';
     deps.log(`[external] hook deliver failed ${target.systemId}.${target.operationId}: ${text}`);
     await giveBack();
