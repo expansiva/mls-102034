@@ -310,6 +310,8 @@ export interface CmSendChannelMessageInput {
   text: string;
   /** When the message was written in the cm (ISO 8601 with fractions of a second); the same on every retry of the same send. */
   writtenAt: string;
+  /** The id of the message in the cm; the same on every retry of the same send. */
+  messageRef: string;
 }
 export interface CmSendChannelMessageOutput {
   /** The id the channel gave to the message sent. */
