@@ -28,6 +28,11 @@ const CM_TABLE: Array<[string, 'call' | 'serve', 'query' | 'command', 'now' | 'l
   ['describe', 'serve', 'query', 'now'],
   ['ensureAgentMember', 'serve', 'command', 'now'],
   ['record', 'serve', 'command', 'now'],
+  ['channelMessageReceived', 'call', 'command', 'now'],
+  ['sendChannelMessage', 'serve', 'command', 'now'],
+  ['setChannelConversationIdentity', 'serve', 'command', 'now'],
+  ['disableChannel', 'serve', 'command', 'now'],
+  ['notifyPerson', 'call', 'command', 'now'],
 ];
 
 function check(catalog: ConnectionCatalog, file: string): void {
@@ -54,13 +59,13 @@ function check(catalog: ConnectionCatalog, file: string): void {
   }
 }
 
-test('the cm catalog has the 15 operations of the contract, with direction, kind and reply', () => {
+test('the cm catalog has the 20 operations of the contract (15 of the agents, 5 of the channels), with direction, kind and reply', () => {
   assert.equal(cm.connectionId, 'cm');
   assert.deepEqual(cm.operations.map((operation) => [operation.operationId, operation.direction, operation.kind, operation.reply]), CM_TABLE);
   check(cm, 'cm.ts');
 });
 
-test('the cm marks what the contract marks: describe and record hidden, describe without row ceiling, createAgent answers later, runAiPrompt waits longer', () => {
+test('the cm marks what the contract marks: describe, record and the three serve operations of the channels hidden, describe without row ceiling, createAgent answers later, runAiPrompt waits longer', () => {
   const byId = new Map(cm.operations.map((operation) => [operation.operationId, operation]));
   assert.equal(byId.get('describe')?.hiddenFromAgents, true);
   assert.equal(byId.get('describe')?.noRowLimit, true);
@@ -69,7 +74,7 @@ test('the cm marks what the contract marks: describe and record hidden, describe
   assert.equal(byId.get('createAgent')?.resultOperation, 'agentDraftReady');
   assert.equal(byId.get('runAiPrompt')?.timeoutMs, 630000);
   assert.equal(cm.operations.filter((operation) => operation.timeoutMs !== undefined && operation.operationId !== 'runAiPrompt').length, 0);
-  assert.equal(cm.operations.filter((operation) => operation.hiddenFromAgents).length, 3);
+  assert.equal(cm.operations.filter((operation) => operation.hiddenFromAgents).length, 6);
 });
 
 test('the only operation answered by the platform is ensureAgentMember, hidden from the agents', () => {
