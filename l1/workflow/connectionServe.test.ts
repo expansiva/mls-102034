@@ -260,3 +260,27 @@ test('platform operation: a route of a module that carries the mark is ignored a
   assert.ok(served.issues.includes('SERVES_INVALID: modA.agents.ensureMember: cm.ensureAgentMember is answered by the platform'));
   assert.ok(await findAgentMember(ctx, 'agent-serve-3'));
 });
+
+test('rt315: two modules serve cm.sendChannelMessage; with targetModuleId only the route of that module runs, a module that does not serve it is not_found, and without it the answer is invalid as before', async () => {
+  const served = index({ 'cm.sendChannelMessage': [{ moduleId: 'telegram', route: 'telegram.channel.send' }, { moduleId: 'whatsapp', route: 'whatsapp.channel.send' }] });
+  const both = harness({ served });
+  const send = (extra: Record<string, unknown> = {}) => both.serve({ ...call('sendChannelMessage'), ...extra } as never);
+  assert.equal((await send({ targetModuleId: 'telegram' })).ok, true);
+  assert.deepEqual(both.requests.map((entry) => entry.request.routine), ['telegram.channel.send']);
+  assert.equal((await send({ targetModuleId: 'whatsapp' })).ok, true);
+  assert.deepEqual(both.requests.map((entry) => entry.request.routine), ['telegram.channel.send', 'whatsapp.channel.send']);
+  const absent = await send({ targetModuleId: 'signal' });
+  assert.deepEqual(absent, { ok: false, code: 'not_found', message: 'no route of signal serves cm.sendChannelMessage' });
+  const unnamed = await send();
+  assert.equal(unnamed.ok === false && unnamed.code, 'invalid');
+  assert.equal(both.requests.length, 2);
+});
+
+test('rt315: an operation nobody serves stays not_found with or without targetModuleId; a single route answers when it is the named one', async () => {
+  const one = harness({ served: index({ 'cm.sendChannelMessage': [{ moduleId: 'telegram', route: 'telegram.channel.send' }] }) });
+  assert.equal((await one.serve({ ...call('sendChannelMessage'), targetModuleId: 'telegram' } as never)).ok, true);
+  assert.equal((await one.serve(call('sendChannelMessage') as never)).ok, true);
+  const none = harness({ served: index({}) });
+  const result = await none.serve({ ...call('sendChannelMessage'), targetModuleId: 'telegram' } as never);
+  assert.equal(result.ok === false && result.code, 'not_found');
+});

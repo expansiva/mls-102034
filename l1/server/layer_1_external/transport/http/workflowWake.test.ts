@@ -581,6 +581,26 @@ test('connection: the runner gets only the checked fields, and the answer has th
   }
 });
 
+test('connection: x-module-id names the destination module (targetModuleId); one value, a plain id, else invalid and nothing runs', async () => {
+  const seen: Array<string | undefined> = [];
+  const h = await harness(() => ({ connection: async (input) => { seen.push(input.targetModuleId); return { ok: true, output: {} }; } }));
+  try {
+    assert.equal((await postConnection(h.app, connectionBody(), { ...authHeaders(), 'x-module-id': 'telegram' })).statusCode, 200);
+    assert.equal((await postConnection(h.app, connectionBody())).statusCode, 200);
+    assert.deepEqual(seen, ['telegram', undefined]);
+    for (const bad of ['Not A Module', 'a,b', '9x', '']) {
+      const response = await postConnection(h.app, connectionBody(), { ...authHeaders(), 'x-module-id': bad });
+      assert.equal(response.statusCode, 400, bad);
+      assert.equal(JSON.parse(response.body).code, 'invalid');
+    }
+    const twice = await postConnection(h.app, connectionBody(), { ...authHeaders(), 'x-module-id': ['telegram', 'whatsapp'] });
+    assert.equal(twice.statusCode, 400);
+    assert.deepEqual(seen, ['telegram', undefined]);
+  } finally {
+    await h.restore();
+  }
+});
+
 test('connection: each failure code has its status and the body carries code and message; not_found is a normal answer', async () => {
   const expected: Array<[string, number]> = [['invalid', 400], ['forbidden', 403], ['not_found', 404], ['conflict', 409], ['disabled', 409], ['refused', 422], ['unavailable', 503]];
   for (const [code, status] of expected) {

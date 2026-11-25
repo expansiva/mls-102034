@@ -58,6 +58,9 @@ function sameToken(presented: string, expected: string): boolean {
   return timingSafeEqual(digest(presented), digest(expected));
 }
 
+/** A module id, as the platform names the modules (lowerCamel, the same shape `ConnectionServeInput.targetModuleId` takes). */
+const MODULE_ID = /^[a-z][A-Za-z0-9]*$/u;
+
 function headerValues(request: FastifyRequest, name: string): string[] {
   const target = name.toLowerCase();
   const values: string[] = [];
@@ -442,6 +445,12 @@ export function registerWorkflowWakeRoutes(app: FastifyInstance, deps: WorkflowW
         const body = raw && typeof raw === 'object' && 'value' in raw ? raw.value : undefined;
         const parsed = parseConnectionServe(body);
         if (isConnectionFailure(parsed)) return sendConnectionResult(reply, parsed);
+        // The module the cm names as the destination travels in `x-module-id`, next to `x-app-id` (rt315). One value, a plain id.
+        const named = headerValues(request, 'x-module-id');
+        if (named.length > 1 || (named.length === 1 && !MODULE_ID.test(named[0] ?? ''))) {
+          return sendConnectionResult(reply, { ok: false, code: 'invalid', message: 'x-module-id must be one module id' });
+        }
+        if (named.length === 1) parsed.targetModuleId = named[0];
         try {
           if (!assistant || assistant.projectId !== projectId) assistant = { projectId, runners: createAssistant(projectId) };
           return sendConnectionResult(reply, await assistant.runners.connection(parsed));

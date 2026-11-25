@@ -80,6 +80,11 @@ export interface ConnectionServeInput {
   input: unknown;
   context: ConnectionContext;
   idempotencyKey?: string;
+  /**
+   * The module the cm names as the destination (the header `x-module-id` of the delivery). With it only the route of that module
+   * answers; without it, one route answers and more than one is `invalid`. An operation the platform answers ignores it.
+   */
+  targetModuleId?: string;
 }
 
 export interface ConnectionServerDeps {
@@ -161,6 +166,11 @@ export function createConnectionServer(deps: ConnectionServerDeps): (input: Conn
       } catch {
         return fail('unavailable', `${name} could not be answered now`, 'platform-failed');
       }
+    }
+    if (input.targetModuleId !== undefined) {
+      // The cm named the module that must answer (several channel modules serve the same operation): only its route counts.
+      served = served.filter((entry) => entry.moduleId === input.targetModuleId);
+      if (served.length === 0) return fail('not_found', `no route of ${input.targetModuleId} serves ${name}`, 'no-route-in-module');
     }
     if (served.length === 0) return fail('not_found', `no route of this release serves ${name}`, 'no-route');
     if (served.length > 1) return fail('invalid', `more than one route serves ${name}`, 'duplicate-mark');
