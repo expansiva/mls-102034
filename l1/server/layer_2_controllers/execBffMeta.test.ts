@@ -1,4 +1,5 @@
 /// <mls fileReference="_102034_/l1/server/layer_2_controllers/execBffMeta.test.ts" enhancement="_blank" />
+import { callerModuleOf } from '/_102034_/l1/server/layer_1_external/connections/callerModule.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -62,6 +63,15 @@ test.before(() => {
     '}];',
     '',
   ].join('\n'));
+  // rt315: a route that reports which module the platform says is running (read through the same module the connector reads).
+  writeFileSync(join(controllers, 'whoRuns.js'), [
+    'export const routes = [{',
+    "  key: 'rt242.whoRuns',",
+    '  handler: async () => ({ ok: true, data: { callerModule: globalThis.__rt315CallerModuleOf() ?? null }, error: null }),',
+    '}];',
+    '',
+  ].join('\n'));
+  (globalThis as { __rt315CallerModuleOf?: () => string | undefined }).__rt315CallerModuleOf = callerModuleOf;
   process.chdir(tempRoot);
   process.env.APP_ENV = 'development';
   process.env.RUNTIME_MODE = 'memory';
@@ -194,4 +204,11 @@ test('every key of the meta of a request is copied by normalizeRequest or left o
       assert.equal(normalized[key], undefined, `${key} is listed as left out but is copied`);
     }
   }
+});
+
+test('while a route of a module runs, the platform knows which module it is (the stamp of the calls it makes); after it, none', async () => {
+  const answer = await execMessage({ routine: 'rt242.whoRuns', params: {}, meta: { requestId: 'r-4' } as BffRequest['meta'] }, ctx);
+  assert.equal(answer.statusCode, 200, JSON.stringify(answer.response));
+  assert.equal((answer.response as { data?: { callerModule?: string } }).data?.callerModule, 'rt242');
+  assert.equal(callerModuleOf(), undefined);
 });

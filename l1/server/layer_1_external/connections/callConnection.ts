@@ -4,6 +4,7 @@ import { resolveClientProjectId } from '/_102034_/l1/server/layer_1_external/cbe
 import { createServerMessagesClient } from '/_102034_/l1/server/layer_1_external/collabMessages/client.js';
 import { ensureEnvFileLoaded } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { readMessagesIntegration } from '/_102034_/l1/server/layer_1_external/config/messagesIntegration.js';
+import { callerModuleOf } from '/_102034_/l1/server/layer_1_external/connections/callerModule.js';
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { externalHookAddress, publicOriginOf } from '/_102034_/l1/server/layer_1_external/connections/external/externalHook.js';
 import { resolveProjectDistPath } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
@@ -118,6 +119,8 @@ export interface ConnectionCallerDeps {
   settingOf?: (ref: ExternalRef, settingId: string) => Promise<string | undefined>;
   /** The public origin of the app (`ctx.hookUrl` of the adapters). Default: from the domain of the app; empty when it has none. */
   publicOrigin?: () => string;
+  /** The module whose route is running (the stamp of `callerModuleId`). Default: `callerModuleOf` (`callerModule.ts`). */
+  callerModuleOf?: () => string | undefined;
 }
 
 const CODES: Record<ConnectionErrorCode, true> = {
@@ -218,19 +221,21 @@ export function createCmTransport(options: { projectId: string; env?: NodeJS.Pro
   const source = options.env ?? process.env;
   const target = msgProxyTarget({ MSG_PROXY_TARGET: source.MSG_PROXY_TARGET });
   return async (request) => {
+    // The module that calls goes in the header `x-module-id` (next to `x-app-id`), not in the body.
+    const { callerModuleId, ...bodyContext } = request.context;
     const body: Record<string, unknown> = {
       action: 'connectionCall',
       connectionId: request.connectionId,
       operationId: request.operation.operationId,
       input: request.input,
-      context: request.context,
+      context: bodyContext,
     };
     if (request.operation.kind === 'command' && request.opts.idempotencyKey !== undefined) body.idempotencyKey = request.opts.idempotencyKey;
     if (request.opts.expectVersion !== undefined) body.expectVersion = request.opts.expectVersion;
     const response = await postEnvelope({
       fetchImpl,
       url: `${target}/msg`,
-      headers: moduleHeaders(options.projectId, options.projectId),
+      headers: { ...moduleHeaders(options.projectId, options.projectId), ...(callerModuleId !== undefined ? { 'x-module-id': callerModuleId } : {}) },
       body: JSON.stringify(body),
       timeoutMs: request.timeoutMs,
       label: `connectionCall ${request.connectionId}.${request.operation.operationId}`,
@@ -415,7 +420,10 @@ export function createConnectionCaller(deps: ConnectionCallerDeps): CallConnecti
         return undefined;
       }
     };
-    const { actorMdmId, ...sent } = { ...context, organizationId };
+    // The module that is calling is the one the platform is running; what the code puts in `callerModuleId` is not believed.
+    const { actorMdmId, callerModuleId: _claimedModule, ...sent } = { ...context, organizationId };
+    const callerModuleId = (deps.callerModuleOf ?? callerModuleOf)();
+    if (callerModuleId !== undefined) sent.callerModuleId = callerModuleId;
     let sentContext: ConnectionContext = sent;
     if (actorMdmId !== undefined && !context.actorUserId) {
       const actorUserId = await toCm(actorMdmId);

@@ -1,4 +1,5 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/connections/callConnection.test.ts" enhancement="_blank"/>
+import { runAsCallerModule } from '/_102034_/l1/server/layer_1_external/connections/callerModule.js';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -87,6 +88,33 @@ describe('callConnection: the transport to the cm', () => {
     assert.equal(seen[0].headers['x-org-id'], ORG);
     assert.equal('x-user-id' in seen[0].headers, false);
     assert.deepEqual(seen[0].body, { action: 'connectionCall', connectionId: 'cm', operationId: 'listAgents', input: { includeDrafts: true }, context: CONTEXT });
+  });
+
+  it('a call made from a route of the module telegram carries x-module-id: telegram, whatever the code put in the context; with no route it carries none', async () => {
+    const { seen, fetchImpl } = fakeCm(() => ({ body: { statusCode: 200, ok: true, output: { agents: [] } } }));
+    const call = callerOver(fetchImpl);
+    const forged = { ...CONTEXT, callerModuleId: 'someoneElse' };
+    await runAsCallerModule('telegram', () => call('cm', 'listAgents', {}, forged));
+    assert.equal(seen[0].headers['x-module-id'], 'telegram');
+    assert.equal(JSON.stringify(seen[0].body).includes('callerModuleId'), false);
+    assert.equal(JSON.stringify(seen[0].body).includes('someoneElse'), false);
+    // outside any route (the assistant, a job): no stamp, and a forged value is dropped all the same
+    await call('cm', 'listAgents', {}, forged);
+    assert.equal('x-module-id' in seen[1].headers, false);
+    assert.deepEqual(seen[1].body, { action: 'connectionCall', connectionId: 'cm', operationId: 'listAgents', input: {}, context: CONTEXT });
+  });
+
+  it('the transport receives callerModuleId in the context of the request', async () => {
+    const got: Array<string | undefined> = [];
+    const call = createConnectionCaller({
+      catalogOf: connectionCatalogs(),
+      transports: { cm: async (request) => { got.push(request.context.callerModuleId); return { statusCode: 200, ok: true, output: { agents: [] } }; } },
+      organizationId: () => 'org',
+      log: () => undefined,
+    });
+    await runAsCallerModule('telegram', () => call('cm', 'listAgents', {}, { callerModuleId: 'forged' }));
+    await call('cm', 'listAgents', {}, { callerModuleId: 'forged' });
+    assert.deepEqual(got, ['telegram', undefined]);
   });
 
   it('the requestId of the app request is not sent to the cm: no new field in the body or the headers', async () => {

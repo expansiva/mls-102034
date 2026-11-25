@@ -39,6 +39,12 @@ export interface ConnectionContext {
    * else is dropped (`workflowWake.ts`).
    */
   hookParams?: Record<string, string>;
+  /**
+   * The module whose code is making a call out of the app, stamped by the platform from the route that is running (never from
+   * what the code puts here: a value that comes in the context is dropped). On the wire it is the header `x-module-id`, next to
+   * `x-app-id`. Absent when no module is running.
+   */
+  callerModuleId?: string;
 }
 
 export interface ConnectionOperation {

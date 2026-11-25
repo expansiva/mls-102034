@@ -16,6 +16,7 @@ import {
   type RequestOrganizationContext,
   type RequestSessionContext,
 } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
+import { runAsCallerModule } from '/_102034_/l1/server/layer_1_external/connections/callerModule.js';
 import { loadModuleRouter, resolveRoutineResolution } from '/_102034_/l1/server/layer_2_controllers/moduleRegistry.js';
 import { createMemoryDataRuntime } from '/_102034_/l1/mdm/layer_1_external/data/memory/MdmDataRuntimeMemory.js';
 import { getSharedDataRuntime } from '/_102034_/l1/mdm/layer_1_external/data/runtimeFactory.js';
@@ -352,10 +353,11 @@ export async function execBff(
     );
     handlerCtx.mdm = createMdmFacade(handlerCtx);
 
-    response = await handler({
+    // The module that runs is the one the platform resolved; `callConnection` stamps its calls with it.
+    response = await runAsCallerModule(resolution.moduleId, () => handler({
       request: normalizedRequest,
       ctx: handlerCtx,
-    });
+    }));
     statusCode = 200;
     return {
       response,
