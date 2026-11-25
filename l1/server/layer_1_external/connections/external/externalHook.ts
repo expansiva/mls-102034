@@ -114,6 +114,9 @@ function jsonPointer(rawBody: Buffer, pointer: string): string | undefined {
     if (value === null || typeof value !== 'object' || !Object.hasOwn(value, part)) return undefined;
     value = (value as Record<string, unknown>)[part];
   }
+  // The Telegram names each notice by `update_id`, a number: a safe integer becomes its text. Anything else that is not a
+  // plain non-empty text (a fraction, a boolean, an object, null) is still "no identifier".
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return String(value);
   return typeof value === 'string' && value !== '' ? value : undefined;
 }
 

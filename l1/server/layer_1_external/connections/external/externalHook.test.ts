@@ -191,6 +191,43 @@ describe('external hook', () => {
     await app.close();
   });
 
+  it('a notice identified by a number (the update_id of the Telegram) is delivered once and refused on repeat', async () => {
+    const byPointer: ExternalSystemDeclaration = {
+      ...declaration,
+      operations: declaration.operations.map((item) => item.operationId === 'receive'
+        ? { ...item, noticeId: { jsonPointer: '/update_id' } }
+        : item),
+    };
+    const seen = new Set<string>();
+    const keys: Array<string | undefined> = [];
+    const deps: ExternalHookDeps = {
+      declarationOf: async () => byPointer,
+      secretOf: async () => SECRET,
+      seen: async (notice) => (seen.has(notice.noticeId) ? false : (seen.add(notice.noticeId), true)),
+      forget: async (notice) => { seen.delete(notice.noticeId); },
+      organizationOf: () => 'org-1',
+      record: async () => undefined,
+      deliver: async (input) => { keys.push(input.idempotencyKey); return { ok: true, output: {} }; },
+      now: () => WHEN,
+      allow: () => true,
+      log: () => undefined,
+    };
+    const target = { projectId: PROJECT, moduleId: MODULE, systemId: SYSTEM, operationId: 'receive' };
+    const send = (json: string) => {
+      const body = Buffer.from(json);
+      return handleExternalHook({ target, rawBody: body, headers: { 'x-signature': sign(body) }, remoteAddress: '1.2.3.4' }, deps);
+    };
+    assert.equal((await send('{"update_id": 123}')).status, 200);
+    assert.deepEqual(keys, ['123']);
+    assert.equal((await send('{"update_id": 123}')).status, 409);
+    assert.equal(keys.length, 1);
+    assert.equal((await send('{"update_id": 1.5}')).status, 401);
+    assert.equal((await send('{"update_id": true}')).status, 401);
+    assert.equal((await send('{"update_id": null}')).status, 401);
+    assert.equal((await send('{"update_id": ""}')).status, 401);
+    assert.equal(keys.length, 1);
+  });
+
   it('logs once when the serve operation has no noticeId', async () => {
     const lines: string[] = [];
     const open: ExternalSystemDeclaration = {
