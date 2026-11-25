@@ -14,6 +14,22 @@ import { verifyExternalNotice } from '/_102034_/l1/server/layer_1_external/conne
 /** Exact public path. No login. */
 export const EXTERNAL_HOOK_PATH = '/hook/:projectId/:moduleId/:systemId/:operationId';
 
+/**
+ * The public address of a `serve` operation of a system: `<origin>/hook/<project>/<module>/<system>/<operation>`. The one place
+ * that builds it: the monitor screen and `ctx.hookUrl` of the adapters use it. Without an origin the answer is the path alone.
+ */
+export function externalHookAddress(origin: string, ref: ExternalRef, operationId: string): string {
+  const path = `/hook/${ref.projectId}/${ref.moduleId}/${ref.systemId}/${operationId}`;
+  const base = origin.replace(/\/+$/u, '');
+  return base ? `${base}${path}` : path;
+}
+
+/** The public origin of the app, from its domain (`APP_PROJECT_DOMAIN`); empty when the app has none (a local run). */
+export function publicOriginOf(projectDomain: string | undefined): string {
+  const domain = projectDomain?.trim() ?? '';
+  return domain === '' ? '' : `https://${domain}`;
+}
+
 export const EXTERNAL_HOOK_MAX_BYTES = 1024 * 1024;
 /**
  * How long the arrival waits for the route of the module: 1 minute (Wagner, 25/11: a slow call to the cm must not turn into an error and a

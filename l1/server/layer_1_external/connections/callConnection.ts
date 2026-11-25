@@ -4,6 +4,8 @@ import { resolveClientProjectId } from '/_102034_/l1/server/layer_1_external/cbe
 import { createServerMessagesClient } from '/_102034_/l1/server/layer_1_external/collabMessages/client.js';
 import { ensureEnvFileLoaded } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { readMessagesIntegration } from '/_102034_/l1/server/layer_1_external/config/messagesIntegration.js';
+import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
+import { externalHookAddress, publicOriginOf } from '/_102034_/l1/server/layer_1_external/connections/external/externalHook.js';
 import { resolveProjectDistPath } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import { connectionCatalogs } from '/_102034_/l1/server/layer_1_external/connections/connectionCatalogs.js';
 import { moduleSystemsIndex } from '/_102034_/l1/server/layer_1_external/connections/moduleSystemsIndex.js';
@@ -114,6 +116,8 @@ export interface ConnectionCallerDeps {
    * writes and the sender reads in production. It never returns a secret.
    */
   settingOf?: (ref: ExternalRef, settingId: string) => Promise<string | undefined>;
+  /** The public origin of the app (`ctx.hookUrl` of the adapters). Default: from the domain of the app; empty when it has none. */
+  publicOrigin?: () => string;
 }
 
 const CODES: Record<ConnectionErrorCode, true> = {
@@ -375,6 +379,11 @@ export function createConnectionCaller(deps: ConnectionCallerDeps): CallConnecti
         connection: sentContext,
         send: (id, request) => sender.sendExternal(ref, id, request, sentContext, { requestId: opts.requestId }),
         setting: (id) => settingValues.get(id),
+        hookUrl: (id) => {
+          if (!declaration.operations.some((item) => item.operationId === id && item.direction === 'serve')) return undefined;
+          const origin = (deps.publicOrigin ?? (() => publicOriginOf(readAppEnv().projectDomain)))();
+          return origin === '' ? undefined : externalHookAddress(origin, ref, id);
+        },
       };
       // The platform transport enforces the time itself; an adapter is module code, so the caller enforces it here.
       const limitMs = operation.timeoutMs ?? defaultTimeoutMs;

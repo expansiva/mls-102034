@@ -1,4 +1,5 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/connections/callConnection.module.test.ts" enhancement="_blank"/>
+import { externalHookAddress } from '/_102034_/l1/server/layer_1_external/connections/external/externalHook.js';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import https from 'node:https';
@@ -97,7 +98,7 @@ before(() => {
     export default {
       async ping(input, ctx) {
         const sent = await ctx.send('ping', { method: 'GET', path: '/ping' });
-        return { ok: true, output: { input, setting: ctx.setting('account'), secret: ctx.setting('signingKey'), organizationId: ctx.connection.organizationId, actorUserId: ctx.connection.actorUserId, sent } };
+        return { ok: true, output: { input, setting: ctx.setting('account'), secret: ctx.setting('signingKey'), organizationId: ctx.connection.organizationId, actorUserId: ctx.connection.actorUserId, sent, hooks: { receive: ctx.hookUrl('receive'), ping: ctx.hookUrl('ping'), missing: ctx.hookUrl('nothing') } } };
       },
     };
   `);
@@ -159,6 +160,31 @@ describe('a module calls a system its sibling declared', () => {
     assert.equal(seen[0]?.projectId, PROJECT);
     assert.equal(seen[0]?.moduleId, OWNER);
     assert.equal(seen[0]?.systemId, 'siblingSystem');
+  });
+
+  it('the adapter learns the public address of a serve operation of its own system, and of nothing else', async () => {
+    const make = (origin: string) => createConnectionCaller({
+      projectId: PROJECT,
+      catalogOf: connectionCatalogs(),
+      transports: {},
+      settingOf: settingsOf({}),
+      publicOrigin: () => origin,
+      sender: { async sendExternal() { return { ok: true, output: { status: 200, headers: {}, body: '{}' } }; } },
+      log: () => undefined,
+    });
+    const hooksOf = async (origin: string) => {
+      const result = await make(origin)('siblingSystem', 'ping', {}, context);
+      assert.equal(result.ok, true);
+      return result.ok ? (result.output as { hooks: Record<string, string | undefined> }).hooks : {};
+    };
+    const withDomain = await hooksOf('https://app.example');
+    assert.equal(withDomain.receive, `https://app.example/hook/${PROJECT}/${OWNER}/siblingSystem/receive`);
+    assert.equal(withDomain.ping, undefined);
+    assert.equal(withDomain.missing, undefined);
+    // an app with no public domain has no address to register
+    assert.equal((await hooksOf('')).receive, undefined);
+    assert.equal(externalHookAddress('https://app.example/', { projectId: PROJECT, moduleId: OWNER, systemId: 'siblingSystem' }, 'receive'),
+      `https://app.example/hook/${PROJECT}/${OWNER}/siblingSystem/receive`);
   });
 
   it('the requestId of the request reaches the send of the module, apart from the context', async () => {

@@ -4,6 +4,7 @@
  * A secret setting is only filled or missing. Its value never leaves this module.
  */
 import { PLATFORM_ADMIN_AUTHORITY } from '/_102034_/l1/server/layer_1_external/auth/bffAuth.js';
+import { externalHookAddress } from '/_102034_/l1/server/layer_1_external/connections/external/externalHook.js';
 import type { ExternalCallRow } from '/_102034_/l1/server/layer_1_external/connections/external/externalCallStore.js';
 import type { ExternalSettingsStore } from '/_102034_/l1/server/layer_1_external/connections/external/externalSettingsStore.js';
 import type { ExternalRef } from '/_102034_/l1/server/layer_1_external/connections/external/sendExternal.js';
@@ -93,12 +94,6 @@ export function externalSystemsScope(
   return 'module';
 }
 
-function hookAddress(origin: string, ref: ExternalRef, operationId: string): string {
-  const path = `/hook/${ref.projectId}/${ref.moduleId}/${ref.systemId}/${operationId}`;
-  const base = origin.replace(/\/+$/u, '');
-  return base ? `${base}${path}` : path;
-}
-
 function lineOf(row: ExternalCallRow): ExternalCallLine {
   return {
     occurredAt: row.occurredAt,
@@ -161,7 +156,7 @@ export async function externalSystemsOf(
         operationId: operation.operationId,
         direction: operation.direction,
         ...(operation.direction === 'serve'
-          ? { hook: hookAddress(deps.publicOrigin(), ref, operation.operationId) }
+          ? { hook: externalHookAddress(deps.publicOrigin(), ref, operation.operationId) }
           : {}),
       })),
       settings: declaration.settings.map((item) => ({

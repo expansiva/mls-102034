@@ -1,5 +1,6 @@
 /// <mls fileReference="_102034_/l1/monitor/layer_2_controllers/externalSystemsHandlers.ts" enhancement="_blank" />
 import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
+import { publicOriginOf } from '/_102034_/l1/server/layer_1_external/connections/external/externalHook.js';
 import { getSharedPgPool } from '/_102034_/l1/server/layer_1_external/data/postgres/pg.js';
 import { moduleSystemsIndex } from '/_102034_/l1/server/layer_1_external/connections/moduleSystemsIndex.js';
 import {
@@ -48,7 +49,6 @@ function callDb(): ExternalCallDb | null {
 function monitorDeps(): ExternalSystemsDeps {
   const env = readAppEnv();
   const db = callDb();
-  const domain = env.projectDomain?.trim() ?? '';
   return {
     systemsOf: moduleSystemsIndex,
     declarationOf: releaseDeclarationOf,
@@ -58,7 +58,7 @@ function monitorDeps(): ExternalSystemsDeps {
       return readRecentExternalCalls(db, projectId, moduleId, systemId);
     },
     writeFailureCount: externalCallWriteFailureCount,
-    publicOrigin: () => (domain === '' ? '' : `https://${domain}`),
+    publicOrigin: () => publicOriginOf(env.projectDomain),
   };
 }
 

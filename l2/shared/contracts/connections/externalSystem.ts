@@ -144,6 +144,12 @@ export interface ExternalAdapterContext {
   send(operationId: string, request: ExternalRequest): Promise<ConnectionResult<ExternalResponse>>;
   /** A non-secret setting of this system; secrets are never readable here. */
   setting(settingId: string): string | undefined;
+  /**
+   * The public address, complete, of a `serve` operation of the SAME system (`<origin>/hook/<project>/<module>/<system>/<operation>`),
+   * the one a person registers in the outside system (e.g. the `setWebhook` of a bot). `undefined` when the operation does not
+   * exist, is not a `serve`, or the app has no public domain (a relative path cannot be registered anywhere).
+   */
+  hookUrl(operationId: string): string | undefined;
 }
 
 /** One function per `call` operation of the declaration, by operationId. `serve` stays a route with `serves`. */
