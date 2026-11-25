@@ -308,6 +308,8 @@ export interface CmSendChannelMessageInput {
   /** An existing conversation, or an address of the channel with the bot that sends it. */
   to: { conversationRef: string } | { address: string; botRef: string };
   text: string;
+  /** When the message was written in the cm (ISO 8601 with fractions of a second); the same on every retry of the same send. */
+  writtenAt: string;
 }
 export interface CmSendChannelMessageOutput {
   /** The id the channel gave to the message sent. */
