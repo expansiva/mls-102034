@@ -33,6 +33,12 @@ export interface ConnectionContext {
   requestedBy?: string;
   /** `requestedBy` by the mdm id, filled by the engine on arrival by the link of the login (never believed when it comes in the body); absent without the link. */
   requestedByMdmId?: string;
+  /**
+   * The one query parameter of the public address a notice arrived on (`.../hook/...?robo=<id>`), when the address had one:
+   * the name belongs to the module, the platform knows none. Filled only by the arrival of a notice; what comes from anywhere
+   * else is dropped (`workflowWake.ts`).
+   */
+  hookParams?: Record<string, string>;
 }
 
 export interface ConnectionOperation {

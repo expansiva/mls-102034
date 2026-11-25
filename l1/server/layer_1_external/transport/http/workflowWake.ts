@@ -475,7 +475,7 @@ function sendConnectionResult(reply: FastifyReply, result: ConnectionResult): un
 
 const isConnectionFailure = (value: ConnectionServeInput | ConnectionResult): value is ConnectionResult => 'ok' in value;
 
-function parseConnectionServe(body: unknown): ConnectionServeInput | ConnectionResult {
+export function parseConnectionServe(body: unknown): ConnectionServeInput | ConnectionResult {
   const invalid = (message: string): ConnectionResult => ({ ok: false, code: 'invalid', message });
   if (body === null || typeof body !== 'object' || Array.isArray(body)) return invalid('the body must be an object');
   const record = body as Record<string, unknown>;
@@ -489,7 +489,8 @@ function parseConnectionServe(body: unknown): ConnectionServeInput | ConnectionR
     connectionId: record.connectionId,
     operationId: record.operationId,
     input: record.input,
-    context: context as ConnectionContext,
+    // `hookParams` is filled only by the arrival of a notice (externalHook); one that comes in this body is never believed.
+    context: (({ hookParams: _claimed, ...own }) => own)(context as ConnectionContext),
     ...(record.idempotencyKey !== undefined ? { idempotencyKey: record.idempotencyKey as string } : {}),
   };
 }

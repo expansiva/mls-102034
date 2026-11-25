@@ -121,6 +121,7 @@ export function registerExternalHookRoutes(app: FastifyInstance, deps: ExternalH
         target: params,
         rawBody,
         headers: headerMap(request.headers),
+        query: request.query as Record<string, unknown>,
         remoteAddress: clientAddress(request.ip ?? '', headerMap(request.headers)['x-forwarded-for']),
       }, deps);
       send(reply, result.status, result.body);

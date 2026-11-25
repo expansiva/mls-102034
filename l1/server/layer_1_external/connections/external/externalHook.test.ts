@@ -273,6 +273,79 @@ describe('external hook', () => {
     }
   });
 
+  it('one query parameter of the address reaches the route, tells the senders apart, and any other query is refused', async () => {
+    const seen = new Set<string>();
+    const delivered: Array<{ hookParams: Record<string, string> | undefined; key: string | undefined }> = [];
+    const rateKeys: string[] = [];
+    const deps: ExternalHookDeps = {
+      declarationOf: async () => declaration,
+      secretOf: async () => SECRET,
+      seen: async (notice) => (seen.has(notice.noticeId) ? false : (seen.add(notice.noticeId), true)),
+      forget: async (notice) => { seen.delete(notice.noticeId); },
+      organizationOf: () => 'org-1',
+      record: async () => undefined,
+      deliver: async (input) => { delivered.push({ hookParams: input.context.hookParams, key: input.idempotencyKey }); return { ok: true, output: {} }; },
+      now: () => WHEN,
+      allow: (key) => { rateKeys.push(key); return true; },
+      log: () => undefined,
+    };
+    const target = { projectId: PROJECT, moduleId: MODULE, systemId: SYSTEM, operationId: 'receive' };
+    const send = (query: Record<string, unknown> | undefined) => {
+      const body = Buffer.from('{"update_id":7}');
+      return handleExternalHook({
+        target, rawBody: body, headers: { 'x-signature': sign(body), 'x-notice-id': '7' }, remoteAddress: '1.2.3.4', ...(query ? { query } : {}),
+      }, deps);
+    };
+    // (1) the parameter reaches the route
+    assert.equal((await send({ robo: 'a' })).status, 200);
+    assert.deepEqual(delivered[0].hookParams, { robo: 'a' });
+    // (2) the same notice id on two bots is two notices; on the same bot it is a repeat
+    assert.equal((await send({ robo: 'b' })).status, 200);
+    assert.equal(delivered.length, 2);
+    assert.notEqual(delivered[0].key, delivered[1].key);
+    assert.equal((await send({ robo: 'a' })).status, 200);
+    assert.equal(delivered.length, 2);
+    // (3) two parameters, or a value or a name out of the form, are 400 and never reach the route
+    for (const bad of [{ robo: 'a', other: 'b' }, { robo: 'a b' }, { robo: '' }, { robo: ['a', 'b'] }, { 'ro bo': 'a' }, { robo: 'x'.repeat(65) }]) {
+      assert.equal((await send(bad)).status, 400, JSON.stringify(bad));
+    }
+    assert.equal(delivered.length, 2);
+    // (4) without a parameter the keys are the ones of today
+    seen.clear();
+    delivered.length = 0;
+    rateKeys.length = 0;
+    assert.equal((await send(undefined)).status, 200);
+    assert.equal((await send({})).status, 200);
+    assert.deepEqual(delivered, [{ hookParams: undefined, key: '7' }]);
+    assert.deepEqual([...seen], ['7']);
+    assert.equal(rateKeys[0], `1.2.3.4\0${PROJECT}/${MODULE}/${SYSTEM}/receive`);
+  });
+
+  it('the address query is read by the transport: ?robo=a arrives as the parameter, a second one is a 400', async () => {
+    const got: Array<Record<string, string> | undefined> = [];
+    const deps: ExternalHookDeps = {
+      declarationOf: async () => declaration,
+      secretOf: async () => SECRET,
+      seen: async () => true,
+      forget: async () => undefined,
+      organizationOf: () => 'org-1',
+      record: async () => undefined,
+      deliver: async (input) => { got.push(input.context.hookParams); return { ok: true, output: {} }; },
+      now: () => WHEN,
+      allow: () => true,
+      log: () => undefined,
+    };
+    const app = Fastify({ logger: false });
+    registerExternalHookRoutes(app, deps);
+    const body = JSON.stringify({ id: 'q-1' });
+    const headers = { 'content-type': 'application/json', 'x-signature': sign(Buffer.from(body)), 'x-notice-id': 'q-1' };
+    const base = `/hook/${PROJECT}/${MODULE}/${SYSTEM}/receive`;
+    assert.equal((await app.inject({ method: 'POST', url: `${base}?robo=a`, headers, payload: body })).statusCode, 200);
+    assert.equal((await app.inject({ method: 'POST', url: `${base}?robo=a&x=1`, headers, payload: body })).statusCode, 400);
+    assert.deepEqual(got, [{ robo: 'a' }]);
+    await app.close();
+  });
+
   it('logs once when the serve operation has no noticeId', async () => {
     const lines: string[] = [];
     const open: ExternalSystemDeclaration = {

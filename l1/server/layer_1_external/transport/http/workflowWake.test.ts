@@ -12,7 +12,7 @@ import { WORKFLOW_WAKE_BODY_LIMIT_BYTES, type WorkflowWakeInbox } from '/_102034
 import { resetWorkflowWakeRegistryForTests } from '/_102034_/l1/workflow/wakeRegistry.js';
 import type { ModuleWakeEvent } from '/_102036_/l2/shared/interfaces.js';
 import type { AssistantActivitiesRunner, AssistantRunners } from '/_102034_/l1/workflow/assistantRuntime.js';
-import { registerWorkflowWakeRoutes } from '/_102034_/l1/server/layer_1_external/transport/http/workflowWake.js';
+import { parseConnectionServe, registerWorkflowWakeRoutes } from '/_102034_/l1/server/layer_1_external/transport/http/workflowWake.js';
 
 const APP_ID = '910106';
 const OTHER_APP = '910199';
@@ -679,4 +679,15 @@ test('assistant exec: an agent in its own name is accepted (agentId, requestedBy
   } finally {
     await h.restore();
   }
+});
+
+test('a connection call that comes in the body never carries hookParams: only the arrival of a notice fills it', () => {
+  const parsed = parseConnectionServe({
+    connectionId: 'cm',
+    operationId: 'sendChannelMessage',
+    input: {},
+    context: { organizationId: 'org-1', agentId: 'a-1', hookParams: { robo: 'forged' } },
+  });
+  assert.ok(!('ok' in parsed));
+  assert.deepEqual((parsed as { context: unknown }).context, { organizationId: 'org-1', agentId: 'a-1' });
 });

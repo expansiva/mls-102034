@@ -25,6 +25,8 @@ const RATE_WINDOW_MS = 60_000;
 const RATE_MAX = 60;
 const ID = /^[a-z][A-Za-z0-9]*$/u;
 const PROJECT = /^\d+$/u;
+/** Name and value of the one query parameter an address may carry. */
+const HOOK_PARAM = /^[A-Za-z0-9_-]{1,64}$/u;
 
 const warnedWithoutNoticeId = new Set<string>();
 const rateHits = new Map<string, number[]>();
@@ -56,6 +58,8 @@ export interface ExternalHookRequest {
   rawBody: Buffer;
   headers: Record<string, string>;
   remoteAddress: string;
+  /** The query of the address, as the transport read it; at most one parameter, with a plain name and a plain text value. */
+  query?: Record<string, unknown>;
 }
 
 export interface ExternalHookResponse {
@@ -89,6 +93,16 @@ function plainIds(target: ExternalHookTarget): boolean {
     && ID.test(target.moduleId)
     && ID.test(target.systemId)
     && ID.test(target.operationId);
+}
+
+/** The one allowed query parameter: `{}` when there is none, `null` when the query is not acceptable (more than one, or not plain). */
+function hookParamsOf(query: Record<string, unknown> | undefined): Record<string, string> | null {
+  const entries = Object.entries(query ?? {});
+  if (entries.length === 0) return {};
+  if (entries.length > 1) return null;
+  const [name, value] = entries[0];
+  if (typeof value !== 'string' || !HOOK_PARAM.test(name) || !HOOK_PARAM.test(value)) return null;
+  return { [name]: value };
 }
 
 function headerOf(headers: Record<string, string>, name: string): string | undefined {
@@ -194,7 +208,12 @@ export async function handleExternalHook(request: ExternalHookRequest, deps: Ext
   if (rawBody.length > EXTERNAL_HOOK_MAX_BYTES) {
     return answer(deps, target, now, rawBody.length, 413, 'too-large', 'too large', null);
   }
-  const rateKey = `${request.remoteAddress}\0${target.projectId}/${target.moduleId}/${target.systemId}/${target.operationId}`;
+  const hookParams = hookParamsOf(request.query);
+  if (hookParams === null) return answer(deps, target, now, rawBody.length, 400, 'invalid', 'invalid', null);
+  const [paramName] = Object.keys(hookParams);
+  // The parameter tells the senders of one address apart (one bot each): it is part of the repeat key and of the rate key.
+  const paramKey = paramName === undefined ? '' : `${paramName}=${hookParams[paramName]}`;
+  const rateKey = `${request.remoteAddress}\0${target.projectId}/${target.moduleId}/${target.systemId}/${target.operationId}${paramKey === '' ? '' : `\0${paramKey}`}`;
   if (!deps.allow(rateKey, now.getTime())) {
     return answer(deps, target, now, rawBody.length, 429, 'rate', 'too many requests', null);
   }
@@ -234,8 +253,9 @@ export async function handleExternalHook(request: ExternalHookRequest, deps: Ext
       deps.log(`[external] ${target.systemId}.${target.operationId} has no noticeId; repeated notices are delivered again`);
     }
   } else {
-    const noticeId = noticeKey(serve.noticeId, rawBody, headers);
-    if (!noticeId) return answer(deps, target, now, rawBody.length, 401, 'missing', 'unauthorized', null);
+    const sent = noticeKey(serve.noticeId, rawBody, headers);
+    if (!sent) return answer(deps, target, now, rawBody.length, 401, 'missing', 'unauthorized', null);
+    const noticeId = paramKey === '' ? sent : `${sent}?${paramKey}`;
     requestId = noticeId;
     const fresh = await deps.seen({
       projectId: target.projectId,
@@ -271,7 +291,7 @@ export async function handleExternalHook(request: ExternalHookRequest, deps: Ext
         connectionId: target.systemId,
         operationId: target.operationId,
         input: inputOf(rawBody),
-        context: { organizationId },
+        context: { organizationId, ...(paramKey === '' ? {} : { hookParams }) },
         ...(requestId !== null ? { idempotencyKey: requestId } : {}),
       }),
       new Promise<ConnectionResult>((resolve) => {
