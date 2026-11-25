@@ -169,7 +169,10 @@ describe('external hook', () => {
     assert.equal(JSON.stringify(records).includes(body), false);
 
     const again = await app.inject({ method: 'POST', url, headers, payload: body });
-    assert.equal(again.statusCode, 409);
+    assert.equal(again.statusCode, 200);
+    assert.deepEqual(again.json(), { ok: true, message: 'already received' });
+    assert.equal(records.at(-1)?.outcome, 'duplicate');
+    assert.equal(records.at(-1)?.httpStatus, 200);
     assert.equal(delivered.length, 1);
 
     const bad = await app.inject({
@@ -219,7 +222,7 @@ describe('external hook', () => {
     };
     assert.equal((await send('{"update_id": 123}')).status, 200);
     assert.deepEqual(keys, ['123']);
-    assert.equal((await send('{"update_id": 123}')).status, 409);
+    assert.equal((await send('{"update_id": 123}')).status, 200);
     assert.equal(keys.length, 1);
     assert.equal((await send('{"update_id": 1.5}')).status, 401);
     assert.equal((await send('{"update_id": true}')).status, 401);
@@ -324,7 +327,8 @@ describe('external hook', () => {
     const retry = await handleExternalHook({ target, rawBody: body, headers, remoteAddress: '1.2.3.4' }, deps);
     assert.equal(retry.status, 200);
     const third = await handleExternalHook({ target, rawBody: body, headers, remoteAddress: '1.2.3.4' }, deps);
-    assert.equal(third.status, 409);
+    assert.equal(third.status, 200);
+    assert.deepEqual(third.body, { ok: true, message: 'already received' });
     assert.equal(attempts, 2);
   });
 

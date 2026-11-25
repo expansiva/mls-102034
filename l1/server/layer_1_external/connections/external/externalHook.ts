@@ -244,7 +244,12 @@ export async function handleExternalHook(request: ExternalHookRequest, deps: Ext
       noticeId,
       arrivedAt: now.toISOString(),
     });
-    if (!fresh) return answer(deps, target, now, rawBody.length, 409, 'duplicate', 'already received', noticeId);
+    if (!fresh) {
+      // The sender resends everything that is not 2xx (the Telegram does): a notice already handled answers 200, and the record
+      // still says `duplicate`, so the monitor tells it from a first delivery.
+      const recorded = await answer(deps, target, now, rawBody.length, 200, 'duplicate', undefined, noticeId);
+      return { status: recorded.status, body: { ok: true, message: 'already received' } };
+    }
     firstTime = { projectId: target.projectId, systemId: target.systemId, operationId: target.operationId, noticeId };
   }
 
