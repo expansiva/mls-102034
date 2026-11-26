@@ -30,6 +30,11 @@ export type ExternalHost = { host: string } | { fromSetting: string };
 export interface ExternalCallUses {
   settings: string[];
   secrets: string[];
+  /**
+   * Fields of the operation input whose value is a secret of the module (a credential kept per record).
+   * Their values never appear in a record, an error, a log or the output; they are hidden like the secrets of the settings.
+   */
+  inputSecrets?: string[];
 }
 
 /** One piece of what an HMAC signs: the raw body, a request header value, or a fixed text. */
@@ -322,6 +327,7 @@ export function validateExternalSystemDeclaration(value: unknown): ExternalDecla
           if (!setting) found.push(problem(`operations[${index}] uses unknown setting ${String(id)}`));
           else if (!setting.secret) found.push(problem(`operations[${index}] uses secret ${id} but the setting is not secret`));
         }
+        if (uses.inputSecrets !== undefined) found.push(...inputSecretsProblems(uses.inputSecrets, index));
       }
       if (item.reply !== 'now') found.push(problem(`operations[${index}] call reply is not now`));
     } else if (item.direction === 'serve') {
@@ -331,6 +337,23 @@ export function validateExternalSystemDeclaration(value: unknown): ExternalDecla
       found.push(problem(`operations[${index}] direction is not call or serve`));
     }
   });
+  return found;
+}
+
+const INPUT_SECRET_FIELD = /^[a-z][A-Za-z0-9]*$/;
+
+function inputSecretsProblems(value: unknown, index: number): ExternalDeclarationProblem[] {
+  if (!Array.isArray(value)) return [problem(`operations[${index}] inputSecrets is not a list`)];
+  const found: ExternalDeclarationProblem[] = [];
+  const seen = new Set<string>();
+  for (const field of value) {
+    if (typeof field !== 'string' || !INPUT_SECRET_FIELD.test(field)) {
+      found.push(problem(`operations[${index}] inputSecrets item ${String(field)} is not a top-level field name`));
+    } else if (seen.has(field)) {
+      found.push(problem(`operations[${index}] inputSecrets item ${field} is repeated`));
+    }
+    if (typeof field === 'string') seen.add(field);
+  }
   return found;
 }
 

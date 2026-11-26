@@ -84,6 +84,32 @@ describe('validateExternalSystemDeclaration', () => {
     assert.match(text, /baseUrl but the setting is not secret/);
   });
 
+  it('rt318: accepts inputSecrets and a declaration without it', () => {
+    const value = declaration();
+    assert.deepEqual(validateExternalSystemDeclaration(value), []);
+    value.operations[0] = {
+      ...value.operations[0],
+      uses: { settings: ['baseUrl'], secrets: ['apiKey'], inputSecrets: ['accessKey'] },
+    } as ExternalSystemDeclaration['operations'][number];
+    assert.deepEqual(validateExternalSystemDeclaration(value), []);
+  });
+
+  it('rt318: rejects inputSecrets that is not a list, a bad item and a repeated item', () => {
+    function withInputSecrets(inputSecrets: unknown): string {
+      const value = declaration();
+      value.operations[0] = {
+        ...value.operations[0],
+        uses: { settings: ['baseUrl'], secrets: ['apiKey'], inputSecrets },
+      } as ExternalSystemDeclaration['operations'][number];
+      return messages(value).join('\n');
+    }
+    assert.match(withInputSecrets('accessKey'), /operations\[0\] inputSecrets is not a list/);
+    assert.match(withInputSecrets(['a.b']), /inputSecrets item a\.b is not a top-level field name/);
+    assert.match(withInputSecrets([7]), /inputSecrets item 7 is not a top-level field name/);
+    assert.match(withInputSecrets(['AccessKey']), /inputSecrets item AccessKey is not a top-level field name/);
+    assert.match(withInputSecrets(['accessKey', 'accessKey']), /inputSecrets item accessKey is repeated/);
+  });
+
   it('rejects a call without methods', () => {
     const value = declaration();
     const operation = { ...value.operations[0] } as { methods?: string[] };
