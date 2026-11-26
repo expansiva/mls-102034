@@ -94,7 +94,7 @@ export interface ExternalSender {
     request: ExternalRequest,
     context: ConnectionContext,
     /** Not part of `context`, which goes to the cm: only ties the record to the request being served. */
-    trace?: { requestId?: string },
+    trace?: { requestId?: string; inputSecrets?: string[] },
   ): Promise<ConnectionResult<ExternalResponseOutput>>;
 }
 
@@ -259,6 +259,17 @@ function redact(text: string, secrets: string[]): string {
   return out;
 }
 
+/** The raw and the URL-encoded form of each secret, longest first, so a long value is hidden before a shorter one inside it. */
+export function secretForms(values: string[]): string[] {
+  const forms = new Set<string>();
+  for (const value of values) {
+    if (value.length === 0) continue;
+    forms.add(value);
+    forms.add(encodeURIComponent(value));
+  }
+  return [...forms].sort((a, b) => b.length - a.length);
+}
+
 function callOperation(declaration: ExternalSystemDeclaration, operationId: string): ExternalCallOperation | 'missing' | 'serve' {
   const found = declaration.operations.find((item) => item.operationId === operationId);
   if (!found) return 'missing';
@@ -294,8 +305,10 @@ export function createExternalSender(deps: ExternalSenderDeps): ExternalSender {
     result: ConnectionResult<ExternalResponseOutput>,
     status?: number,
     place?: { server: string; path: string },
-    extra: { durationMs: number; bytes: number; context: ConnectionContext; requestId?: string } = { durationMs: 0, bytes: 0, context: { organizationId: '' } },
+    extra: { durationMs: number; bytes: number; context: ConnectionContext; requestId?: string; hide?: (text: string) => string } = { durationMs: 0, bytes: 0, context: { organizationId: '' } },
   ): Promise<ConnectionResult<ExternalResponseOutput>> {
+    const hide = extra.hide ?? ((text: string) => text);
+    if (!result.ok) result = { ...result, message: hide(result.message) };
     logLine(ref.systemId, operationId, outcome);
     const person = extra.context.actorUserId ?? extra.context.actorMdmId;
     await read(deps.record({
@@ -306,7 +319,7 @@ export function createExternalSender(deps: ExternalSenderDeps): ExternalSender {
       outcome,
       status,
       server: place?.server ?? '',
-      path: place?.path ?? '',
+      path: hide(place?.path ?? ''),
       durationMs: extra.durationMs,
       bytes: extra.bytes,
       denialReason: result.ok ? null : result.message,
@@ -321,12 +334,16 @@ export function createExternalSender(deps: ExternalSenderDeps): ExternalSender {
     async sendExternal(ref, operationId, request, context, trace) {
       const started = Date.now();
       let bytes = 0;
+      // Secrets of the input are known from the start; those of the settings join the list once they are read.
+      const inputForms = secretForms(trace?.inputSecrets ?? []);
+      let hidden = inputForms;
+      const hide = (text: string): string => redact(text, hidden);
       const fin = (
         outcome: ExternalRecordEvent['outcome'],
         result: ConnectionResult<ExternalResponseOutput>,
         status?: number,
         place?: { server: string; path: string },
-      ): Promise<ConnectionResult<ExternalResponseOutput>> => finish(ref, operationId, outcome, result, status, place, { durationMs: Date.now() - started, bytes, context, requestId: trace?.requestId });
+      ): Promise<ConnectionResult<ExternalResponseOutput>> => finish(ref, operationId, outcome, result, status, place, { durationMs: Date.now() - started, bytes, context, requestId: trace?.requestId, hide });
       let declaration: ExternalSystemDeclaration | null;
       try {
         declaration = await read(deps.declarationOf(ref));
@@ -412,7 +429,8 @@ export function createExternalSender(deps: ExternalSenderDeps): ExternalSender {
       const timeoutMs = clamp(operation.timeoutMs, EXTERNAL_DEFAULT_TIMEOUT_MS, EXTERNAL_MAX_TIMEOUT_MS);
       const maxResponseBytes = clamp(operation.maxResponseBytes, EXTERNAL_DEFAULT_MAX_RESPONSE_BYTES, EXTERNAL_MAX_RESPONSE_BYTES);
       const search = query.size > 0 ? `?${query.toString()}` : '';
-      const knownSecrets = [...secretValues.values()];
+      const knownSecrets = secretForms([...secretValues.values(), ...(trace?.inputSecrets ?? [])]);
+      hidden = knownSecrets;
       let response: ExternalTransportResponse;
       try {
         // The transport is told the ceiling, and the ceiling is also enforced here: a transport that ignores it cannot hang the caller.

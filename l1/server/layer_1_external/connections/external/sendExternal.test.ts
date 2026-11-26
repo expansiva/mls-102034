@@ -132,6 +132,22 @@ describe('sendExternal', () => {
     assert.equal(box.lines.some((line) => line.startsWith('[external] billingApi.readInvoice ok')), true);
   });
 
+  it('rt318: an input secret in the path is hidden in the record of every outcome, including disabled', async () => {
+    const key = '123456:ABC-def_ghi';
+    const path = `/bot${encodeURIComponent(key)}/sendMessage`;
+    const box = harness({ secretOf: () => null });
+    try {
+      const result = await box.sender.sendExternal(ref, 'readInvoice', { method: 'GET', path, headers: { authorization: 'Bearer {{secret:apiKey}}' } }, context, { inputSecrets: [key] });
+      assert.equal(result.ok, false);
+      if (!result.ok) assert.equal(result.code, 'disabled');
+      assert.equal(box.records[0]?.path, '/bot***/sendMessage');
+      assert.equal(JSON.stringify([result, box.records, box.lines]).includes(key), false);
+      assert.equal(JSON.stringify([result, box.records, box.lines]).includes(encodeURIComponent(key)), false);
+    } finally {
+      box.restore();
+    }
+  });
+
   it('refuses a system, a serve operation, a method or a host the declaration does not list', async () => {
     const missing = harness({ declaration: null });
     const missingResult = await send(missing, okRequest);

@@ -16,6 +16,7 @@ import {
   releaseDeclarationOf,
 } from '/_102034_/l1/server/layer_1_external/connections/external/productionExternalSender.js';
 import type { ExternalRef, ExternalSender } from '/_102034_/l1/server/layer_1_external/connections/external/sendExternal.js';
+import { secretForms } from '/_102034_/l1/server/layer_1_external/connections/external/sendExternal.js';
 import {
   externalSystemAdapterFile,
   validateExternalSystemAdapter,
@@ -34,6 +35,9 @@ import type {
   ConnectionOperation,
   ConnectionResult,
 } from '/_102034_/l2/shared/contracts/connections/types.js';
+
+/** A shorter value would erase whole pieces of a record when hidden. */
+const INPUT_SECRET_MIN_LENGTH = 8;
 
 /**
  * `callConnection(connectionId, operationId, input, context, opts?)`: the one way a backend calls another system
@@ -380,9 +384,22 @@ export function createConnectionCaller(deps: ConnectionCallerDeps): CallConnecti
         return fail('unavailable', `the settings of ${connectionId} cannot be read`, 'settings');
       }
       const sentContext: ConnectionContext = { ...context, organizationId };
+      // Fields of the input the declaration marks as secrets of the module: hidden in every record, error and output of this call.
+      const declared = declaration.operations.find((item) => item.operationId === operationId);
+      const inputSecretFields = declared?.direction === 'call' ? declared.uses.inputSecrets ?? [] : [];
+      const inputSecrets: string[] = [];
+      for (const field of inputSecretFields) {
+        const value = input !== null && typeof input === 'object' ? (input as Record<string, unknown>)[field] : undefined;
+        if (value === undefined) continue;
+        if (typeof value !== 'string' || value.length < INPUT_SECRET_MIN_LENGTH) {
+          return fail('invalid', `${connectionId}.${operationId} input secret ${field} is not a secret value`, 'input-secret');
+        }
+        inputSecrets.push(value);
+      }
+      const forms = secretForms(inputSecrets);
       const ctx: ExternalAdapterContext = {
         connection: sentContext,
-        send: (id, request) => sender.sendExternal(ref, id, request, sentContext, { requestId: opts.requestId }),
+        send: (id, request) => sender.sendExternal(ref, id, request, sentContext, { requestId: opts.requestId, ...(inputSecrets.length > 0 ? { inputSecrets } : {}) }),
         setting: (id) => settingValues.get(id),
         hookUrl: (id) => {
           if (!declaration.operations.some((item) => item.operationId === id && item.direction === 'serve')) return undefined;
@@ -399,6 +416,12 @@ export function createConnectionCaller(deps: ConnectionCallerDeps): CallConnecti
         });
         const answered = await Promise.race([call(input, ctx), ceiling]);
         if (!isConnectionResult(answered)) return fail('invalid', `${connectionId}.${operationId} answered outside the envelope`, 'outside-envelope');
+        if (forms.length > 0) {
+          if (!answered.ok) return done({ ...answered, message: forms.reduce((text, form) => text.split(form).join('***'), answered.message) });
+          // Not rewritten: a secret in the output is a defect of the adapter and has to show.
+          const text = JSON.stringify(answered.output) ?? '';
+          if (forms.some((form) => text.includes(form))) return fail('invalid', `${connectionId}.${operationId} output carries an input secret`, 'secret-in-output');
+        }
         return done(answered);
       } catch (error) {
         const name = error instanceof Error ? error.name : 'error';
