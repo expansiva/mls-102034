@@ -426,8 +426,7 @@ export function createConnectionCaller(deps: ConnectionCallerDeps): CallConnecti
     // The module that is calling is the one the platform is running; what the code puts in `callerModuleId` is not believed.
     const { actorMdmId, callerModuleId: _claimedModule, ...sent } = { ...context, organizationId };
     const callerModuleId = (deps.callerModuleOf ?? callerModuleOf)();
-    if (callerModuleId !== undefined) sent.callerModuleId = callerModuleId;
-    let sentContext: ConnectionContext = sent;
+    let sentContext: ConnectionContext = callerModuleId !== undefined ? { ...sent, callerModuleId } : sent;
     if (actorMdmId !== undefined && !context.actorUserId) {
       const actorUserId = await toCm(actorMdmId);
       if (actorUserId === undefined) return fail('forbidden', 'the person has no link with the system outside', 'no-link');

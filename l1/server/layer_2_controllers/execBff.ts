@@ -354,8 +354,10 @@ export async function execBff(
     handlerCtx.mdm = createMdmFacade(handlerCtx);
 
     // The module that runs is the one the platform resolved; `callConnection` stamps its calls with it.
+    // Held in a const: the narrowing of `normalizedRequest` does not cross into the closure.
+    const handledRequest = normalizedRequest;
     response = await runAsCallerModule(resolution.moduleId, () => handler({
-      request: normalizedRequest,
+      request: handledRequest,
       ctx: handlerCtx,
     }));
     statusCode = 200;
