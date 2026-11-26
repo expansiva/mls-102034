@@ -7,7 +7,8 @@ import { existsSync, readdirSync } from 'node:fs';
 import { distDefsReader } from '/_102034_/l1/workflow/assistantCatalogDefs.js';
 import { resolveProjectsPath } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import { connectionCatalogs } from '/_102034_/l1/server/layer_1_external/connections/connectionCatalogs.js';
-import { externalSystemDeclarationFile } from '/_102034_/l2/shared/contracts/connections/externalSystem.js';
+import { externalSystemDeclarationFile, type ExternalSystemDeclaration } from '/_102034_/l2/shared/contracts/connections/externalSystem.js';
+import type { ConnectionCatalog, ConnectionOperation } from '/_102034_/l2/shared/contracts/connections/types.js';
 
 const SAFE_NAME = /^[a-z][A-Za-z0-9]*$/u;
 const cache = new Map<string, Promise<Map<string, string>>>();
@@ -115,4 +116,28 @@ async function buildIndex(projectId: string): Promise<Map<string, string>> {
     if (!dropped.has(systemId)) index.set(systemId, moduleId);
   }
   return index;
+}
+
+/** The catalog of a system declared by a module, the same on the side that calls (`callConnection`) and on the side that serves (`connectionServe`): only the `call` operations, plus `serve` so a call of one is `forbidden`. */
+export function catalogOfDeclaration(declaration: ExternalSystemDeclaration): ConnectionCatalog {
+  const operations: ConnectionOperation[] = [];
+  for (const operation of declaration.operations) {
+    operations.push({
+      operationId: operation.operationId,
+      direction: operation.direction,
+      kind: operation.kind,
+      description: operation.description,
+      inputType: operation.inputType,
+      outputType: operation.outputType,
+      reply: 'now',
+      ...(operation.timeoutMs !== undefined ? { timeoutMs: operation.timeoutMs } : {}),
+    });
+  }
+  return {
+    schemaVersion: 'connection-catalog-v1',
+    connectionId: declaration.systemId,
+    title: declaration.title,
+    description: declaration.description,
+    operations,
+  };
 }

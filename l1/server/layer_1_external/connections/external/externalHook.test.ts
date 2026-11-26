@@ -118,6 +118,7 @@ describe('external hook', () => {
     const seen = new Set<string>();
     const records: ExternalCallRow[] = [];
     const delivered: string[] = [];
+    const targets: Array<string | undefined> = [];
     const reader: DefsReader = {
       list: () => ['receive.defs.js'],
       async read() {
@@ -149,7 +150,7 @@ describe('external hook', () => {
       forget: async (notice) => { seen.delete(notice.noticeId); },
       organizationOf: () => 'org-1',
       record: async (row) => { records.push(row); },
-      deliver: (input) => serve(input),
+      deliver: (input) => { targets.push(input.targetModuleId); return serve(input); },
       now: () => WHEN,
       allow: () => true,
       log: () => undefined,
@@ -163,6 +164,7 @@ describe('external hook', () => {
     assert.equal(first.statusCode, 200);
     assert.deepEqual(first.json(), { ok: true });
     assert.deepEqual(delivered, [`connection:${SYSTEM}`]);
+    assert.deepEqual(targets, [MODULE], 'the hook names the module of the address (rt319)');
     const raw = records[0];
     assert.equal(raw?.outcome, 'accepted');
     assert.equal(JSON.stringify(records).includes(SECRET), false);

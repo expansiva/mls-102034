@@ -15,6 +15,8 @@ import {
   type AssistantModuleRef,
 } from '/_102034_/l1/workflow/assistantActivities.js';
 import { createMessagesWorkflowIdentities } from '/_102034_/l1/workflow/messagesIdentities.js';
+import { releaseDeclarationOf } from '/_102034_/l1/server/layer_1_external/connections/external/productionExternalSender.js';
+import { catalogOfDeclaration } from '/_102034_/l1/server/layer_1_external/connections/moduleSystemsIndex.js';
 import { getRunningRelease } from '/_102034_/l1/server/layer_1_external/cbe/cbeRelease.js';
 import { lookupLoginEmail } from '/_102034_/l1/mdm/layer_3_usecases/identityUsecases.js';
 import { putMdmKv, reserveMdmKv } from '/_102034_/l1/mdm/layer_3_usecases/kvUsecases.js';
@@ -136,6 +138,10 @@ export function createAssistantRunners(projectId: string): AssistantRunners {
   };
   const serveConnection = createConnectionServer({
     catalogOf: connectionCatalogs(),
+    moduleCatalogOf: async (connectionId, moduleId) => {
+      const declaration = await releaseDeclarationOf({ projectId, moduleId, systemId: connectionId });
+      return declaration ? catalogOfDeclaration(declaration) : undefined;
+    },
     index: serveIndex,
     execMessage: (request, ctx) => execMessage(request, ctx),
     newContext,

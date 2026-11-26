@@ -9,7 +9,7 @@ import { readAppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { externalHookAddress, publicOriginOf } from '/_102034_/l1/server/layer_1_external/connections/external/externalHook.js';
 import { resolveProjectDistPath } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
 import { connectionCatalogs } from '/_102034_/l1/server/layer_1_external/connections/connectionCatalogs.js';
-import { moduleSystemsIndex } from '/_102034_/l1/server/layer_1_external/connections/moduleSystemsIndex.js';
+import { catalogOfDeclaration, moduleSystemsIndex } from '/_102034_/l1/server/layer_1_external/connections/moduleSystemsIndex.js';
 import {
   createProductionExternalSender,
   productionExternalSettings,
@@ -150,30 +150,6 @@ function isConnectionResult(value: unknown): value is ConnectionResult {
   if (body.ok === true) return Object.prototype.hasOwnProperty.call(body, 'output');
   if (body.missing !== undefined && !(Array.isArray(body.missing) && body.missing.every((id) => typeof id === 'string'))) return false;
   return body.ok === false && isCode(body.code) && typeof body.message === 'string';
-}
-
-/** The catalog `callConnection` already checks: only the `call` operations, plus `serve` so a call of one is `forbidden`. */
-function catalogOfDeclaration(declaration: ExternalSystemDeclaration): ConnectionCatalog {
-  const operations: ConnectionOperation[] = [];
-  for (const operation of declaration.operations) {
-    operations.push({
-      operationId: operation.operationId,
-      direction: operation.direction,
-      kind: operation.kind,
-      description: operation.description,
-      inputType: operation.inputType,
-      outputType: operation.outputType,
-      reply: 'now',
-      ...(operation.timeoutMs !== undefined ? { timeoutMs: operation.timeoutMs } : {}),
-    });
-  }
-  return {
-    schemaVersion: 'connection-catalog-v1',
-    connectionId: declaration.systemId,
-    title: declaration.title,
-    description: declaration.description,
-    operations,
-  };
 }
 
 /** The adapter file of the active release, validated against the declaration. Cached for this process. */

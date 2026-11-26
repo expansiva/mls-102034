@@ -44,6 +44,7 @@ function harness(over: Partial<ConnectionServerDeps> & { served?: ServeIndex; an
   const catalogs: Record<string, ConnectionCatalog> = { cm, example: exampleCatalog };
   const serve = createConnectionServer({
     catalogOf: async (id) => catalogs[id],
+    moduleCatalogOf: over.moduleCatalogOf,
     index: async () => over.served ?? index({ 'cm.describe': [{ moduleId: 'modA', route: 'modA.agents.describe' }] }),
     execMessage: async (request, ctx) => {
       requests.push({ request, ctx });
@@ -283,4 +284,48 @@ test('rt315: an operation nobody serves stays not_found with or without targetMo
   const none = harness({ served: index({}) });
   const result = await none.serve({ ...call('sendChannelMessage'), targetModuleId: 'telegram' } as never);
   assert.equal(result.ok === false && result.code, 'not_found');
+});
+
+// rt319: a system a module declared (not in the platform catalogs) is served through the catalog of the module the delivery names.
+const moduleSystem: ConnectionCatalog = {
+  schemaVersion: 'connection-catalog-v1',
+  connectionId: 'chat',
+  title: 'Chat',
+  description: 'Declared by a module.',
+  operations: [{ operationId: 'arrived', direction: 'serve', kind: 'command', description: 'In.', inputType: 'In', outputType: 'Out', reply: 'now' }],
+};
+const chatServed = index({ 'chat.arrived': [{ moduleId: 'modX', route: 'modX.chat.arrived' }] });
+const chatCall = (extra: Record<string, unknown> = {}) => ({
+  connectionId: 'chat', operationId: 'arrived', input: { n: 1 }, context: { organizationId: 'org-1', hookParams: { b: '7' } }, ...extra,
+});
+
+test('rt319: a module system with targetModuleId runs the route of the module, with the hookParams intact', async () => {
+  const asked: Array<[string, string]> = [];
+  const h = harness({ served: chatServed, moduleCatalogOf: async (id, moduleId) => { asked.push([id, moduleId]); return moduleId === 'modX' ? moduleSystem : undefined; } });
+  const result = await h.serve(chatCall({ targetModuleId: 'modX' }));
+  assert.equal(result.ok, true);
+  assert.deepEqual(asked, [['chat', 'modX']]);
+  assert.equal(h.requests[0].request.routine, 'modX.chat.arrived');
+  assert.deepEqual(h.requests[0].request.meta?.connection?.context, { organizationId: 'org-1', hookParams: { b: '7' } });
+});
+
+test('rt319: without targetModuleId, or in a module that does not declare it, the operation is unknown; a catalog that throws is unavailable', async () => {
+  const moduleCatalogOf = async (_id: string, moduleId: string) => (moduleId === 'modX' ? moduleSystem : undefined);
+  const none = harness({ served: chatServed, moduleCatalogOf });
+  const noTarget = await none.serve(chatCall());
+  assert.equal(noTarget.ok === false && noTarget.code, 'invalid');
+  const other = await none.serve(chatCall({ targetModuleId: 'modY' }));
+  assert.equal(other.ok === false && other.code, 'invalid');
+  assert.match(none.logs.join('\n'), /reason=unknown-operation/);
+  assert.equal(none.requests.length, 0);
+  const throwing = harness({ served: chatServed, moduleCatalogOf: async () => { throw new Error('boom'); } });
+  const result = await throwing.serve(chatCall({ targetModuleId: 'modX' }));
+  assert.equal(result.ok === false && result.code, 'unavailable');
+  assert.equal(throwing.requests.length, 0);
+});
+
+test('rt319: the catalog of the platform wins over the one of a module', async () => {
+  const h = harness({ moduleCatalogOf: async () => { throw new Error('must not be asked'); } });
+  const result = await h.serve(call('describe', CONTEXT, { targetModuleId: 'modA' }));
+  assert.equal(result.ok, true);
 });

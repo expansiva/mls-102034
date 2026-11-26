@@ -89,6 +89,11 @@ export interface ConnectionServeInput {
 
 export interface ConnectionServerDeps {
   catalogOf(connectionId: string): Promise<ConnectionCatalog | undefined>;
+  /**
+   * The catalog of a system a module declared (its `serve` operations arrive at the hook of that module). Asked only when the
+   * platform has no catalog of that name and the delivery names the module (`targetModuleId`). `undefined`: the module does not declare it.
+   */
+  moduleCatalogOf?(connectionId: string, moduleId: string): Promise<ConnectionCatalog | undefined>;
   index(): Promise<ServeIndex>;
   execMessage(request: BffRequest, ctx: RequestContext): Promise<{ response: BffResponse; statusCode: number }>;
   newContext(): RequestContext;
@@ -131,6 +136,9 @@ export function createConnectionServer(deps: ConnectionServerDeps): (input: Conn
     let catalog: ConnectionCatalog | undefined;
     try {
       catalog = await deps.catalogOf(input.connectionId);
+      if (!catalog && input.targetModuleId !== undefined && deps.moduleCatalogOf) {
+        catalog = await deps.moduleCatalogOf(input.connectionId, input.targetModuleId);
+      }
     } catch (error) {
       return fail('unavailable', 'the connection catalog cannot be read', `catalog-unreadable:${error instanceof Error ? error.name : 'error'}`);
     }

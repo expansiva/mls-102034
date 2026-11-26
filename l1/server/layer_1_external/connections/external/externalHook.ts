@@ -306,6 +306,7 @@ export async function handleExternalHook(request: ExternalHookRequest, deps: Ext
       deps.deliver({
         connectionId: target.systemId,
         operationId: target.operationId,
+        targetModuleId: target.moduleId,
         input: inputOf(rawBody),
         context: { organizationId, ...(paramKey === '' ? {} : { hookParams }) },
         ...(requestId !== null ? { idempotencyKey: requestId } : {}),
