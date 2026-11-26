@@ -392,8 +392,12 @@ export function createConnectionCaller(deps: ConnectionCallerDeps): CallConnecti
         });
         const answered = await Promise.race([call(input, ctx), ceiling]);
         if (!isConnectionResult(answered)) return fail('invalid', `${connectionId}.${operationId} answered outside the envelope`, 'outside-envelope');
+        if (!answered.ok) {
+          // Only what the adapter decided leaves: the answer of the outside system (`response`) or any other extra member stays here.
+          const message = forms.reduce((text, form) => text.split(form).join('***'), answered.message);
+          return done({ ok: false, code: answered.code, message, ...(answered.missing !== undefined ? { missing: answered.missing } : {}) });
+        }
         if (forms.length > 0) {
-          if (!answered.ok) return done({ ...answered, message: forms.reduce((text, form) => text.split(form).join('***'), answered.message) });
           // Not rewritten: a secret in the output is a defect of the adapter and has to show.
           const text = JSON.stringify(answered.output) ?? '';
           if (forms.some((form) => text.includes(form))) return fail('invalid', `${connectionId}.${operationId} output carries an input secret`, 'secret-in-output');

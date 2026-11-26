@@ -5,12 +5,13 @@
  * A secret is cited as `{{secret:<id>}}` and filled here. It never comes back in a log, a record, an error or the output.
  */
 
-import type { ConnectionContext, ConnectionResult } from '/_102034_/l2/shared/contracts/connections/types.js';
+import type { ConnectionContext } from '/_102034_/l2/shared/contracts/connections/types.js';
 import {
   validateExternalSystemDeclaration,
   type ExternalCallOperation,
   type ExternalRequest,
   type ExternalResponse,
+  type ExternalSendResult,
   type ExternalSystemDeclaration,
 } from '/_102034_/l2/shared/contracts/connections/externalSystem.js';
 
@@ -95,7 +96,7 @@ export interface ExternalSender {
     context: ConnectionContext,
     /** Not part of `context`, which goes to the cm: only ties the record to the request being served. */
     trace?: { requestId?: string; inputSecrets?: string[] },
-  ): Promise<ConnectionResult<ExternalResponseOutput>>;
+  ): Promise<ExternalSendResult>;
 }
 
 type Maybe<T> = Promise<T> | T;
@@ -104,7 +105,7 @@ async function read<T>(value: Maybe<T>): Promise<T> {
   return await value;
 }
 
-function denied(code: 'not_found' | 'disabled' | 'unavailable' | 'conflict' | 'refused' | 'forbidden' | 'invalid', message: string): ConnectionResult<ExternalResponseOutput> {
+function denied(code: 'not_found' | 'disabled' | 'unavailable' | 'conflict' | 'refused' | 'forbidden' | 'invalid', message: string): ExternalSendResult {
   return { ok: false, code, message };
 }
 
@@ -201,7 +202,7 @@ export function isBlockedAddress(address: string): boolean {
   return false;
 }
 
-function httpCode(status: number): ConnectionResult<ExternalResponseOutput> | null {
+function httpCode(status: number): ExternalSendResult | null {
   if (status >= 200 && status < 400) return null;
   if (status === 400 || status === 422) return denied('invalid', `http ${status}`);
   if (status === 401 || status === 403) return denied('refused', `http ${status}`);
@@ -302,11 +303,11 @@ export function createExternalSender(deps: ExternalSenderDeps): ExternalSender {
     ref: ExternalRef,
     operationId: string,
     outcome: ExternalRecordEvent['outcome'],
-    result: ConnectionResult<ExternalResponseOutput>,
+    result: ExternalSendResult,
     status?: number,
     place?: { server: string; path: string },
     extra: { durationMs: number; bytes: number; context: ConnectionContext; requestId?: string; hide?: (text: string) => string } = { durationMs: 0, bytes: 0, context: { organizationId: '' } },
-  ): Promise<ConnectionResult<ExternalResponseOutput>> {
+  ): Promise<ExternalSendResult> {
     const hide = extra.hide ?? ((text: string) => text);
     if (!result.ok) result = { ...result, message: hide(result.message) };
     logLine(ref.systemId, operationId, outcome);
@@ -340,10 +341,10 @@ export function createExternalSender(deps: ExternalSenderDeps): ExternalSender {
       const hide = (text: string): string => redact(text, hidden);
       const fin = (
         outcome: ExternalRecordEvent['outcome'],
-        result: ConnectionResult<ExternalResponseOutput>,
+        result: ExternalSendResult,
         status?: number,
         place?: { server: string; path: string },
-      ): Promise<ConnectionResult<ExternalResponseOutput>> => finish(ref, operationId, outcome, result, status, place, { durationMs: Date.now() - started, bytes, context, requestId: trace?.requestId, hide });
+      ): Promise<ExternalSendResult> => finish(ref, operationId, outcome, result, status, place, { durationMs: Date.now() - started, bytes, context, requestId: trace?.requestId, hide });
       let declaration: ExternalSystemDeclaration | null;
       try {
         declaration = await read(deps.declarationOf(ref));
@@ -469,7 +470,13 @@ export function createExternalSender(deps: ExternalSenderDeps): ExternalSender {
       const mapped = httpCode(status);
       if (mapped && !mapped.ok) {
         const message = redact(mapped.message, knownSecrets);
-        return fin(mapped.code, denied(mapped.code, message), status, place);
+        // The answer of the outside system goes to the adapter (never to the record), with the protections of a success.
+        const answered: ExternalResponseOutput = {
+          status,
+          headers: Object.fromEntries(Object.entries(response.headers).map(([name, value]) => [name, redact(value, knownSecrets)])),
+          body: redact(response.body, knownSecrets),
+        };
+        return fin(mapped.code, { ok: false, code: mapped.code, message, response: answered }, status, place);
       }
       const output: ExternalResponseOutput = {
         status,

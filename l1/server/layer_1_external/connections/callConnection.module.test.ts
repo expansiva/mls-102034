@@ -276,6 +276,22 @@ describe('a module calls a system its sibling declared', () => {
     assert.deepEqual(result, { ok: false, code: 'disabled', message: 'configuration incomplete: a, b', missing: ['a', 'b'] });
   });
 
+  it('rt320: a failure the adapter hands back from the send leaves without the response of the outside system', async () => {
+    const call = createConnectionCaller({
+      projectId: PROJECT,
+      catalogOf: async () => undefined,
+      transports: {},
+      sender: {
+        async sendExternal() {
+          return { ok: false, code: 'refused', message: 'http 401', response: { status: 401, headers: {}, body: 'RAW-ERROR-BODY' } };
+        },
+      },
+      log: () => undefined,
+    });
+    const result = await call('lackSystem', 'lack', {}, context);
+    assert.deepEqual(result, { ok: false, code: 'refused', message: 'http 401' });
+  });
+
   it('an adapter that answers missing as a text is invalid: outside the envelope', async () => {
     const call = createConnectionCaller({
       projectId: PROJECT,

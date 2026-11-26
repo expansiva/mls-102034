@@ -254,10 +254,51 @@ describe('sendExternal', () => {
         assert.equal(result.code, code);
         assert.equal(result.message, `http ${status}`);
       }
-      assert.equal(JSON.stringify(result).includes('body-'), false);
-      assert.equal(leaked(result), false);
+      // rt320: the answer of the outside system comes with the failure, for the adapter, with the secret hidden; the record never has it.
+      if (!result.ok) assert.deepEqual(result.response, { status, headers: {}, body: marker });
+      assert.equal(JSON.stringify(box.records).includes('body-'), false);
+      assert.equal(box.records[0]?.denialReason, `http ${status}`);
     }
     assert.equal(EXTERNAL_MAX_RESPONSE_BYTES > 0, true);
+  });
+
+  it('rt320: a 401 with a body leaves with the status and the body intact; 5xx too; no response on timeout or above the ceiling', async () => {
+    const body = '{"ok":false,"description":"Unauthorized"}';
+    const box = harness({ transport: async () => ({ status: 401, headers: { 'content-type': 'application/json' }, body }) });
+    const result = await send(box, { method: 'GET', path: '/invoices/1' });
+    assert.deepEqual(result, { ok: false, code: 'refused', message: 'http 401', response: { status: 401, headers: { 'content-type': 'application/json' }, body } });
+    assert.equal(box.records[0]?.denialReason, 'http 401');
+    assert.equal(JSON.stringify(box.records).includes('Unauthorized'), false);
+    assert.equal(JSON.stringify(box.lines).includes('Unauthorized'), false);
+
+    const server = harness({ transport: async () => ({ status: 502, headers: {}, body: 'bad gateway' }) });
+    const unavailable = await send(server, { method: 'GET', path: '/invoices/1' });
+    assert.equal(unavailable.ok === false && unavailable.code, 'unavailable');
+    assert.equal(unavailable.ok === false && unavailable.response?.body, 'bad gateway');
+
+    const timeout = harness({ transport: async () => { throw Object.assign(new Error('t'), { name: 'TimeoutError' }); } });
+    const timed = await send(timeout, { method: 'GET', path: '/invoices/1' });
+    assert.equal(timed.ok === false && 'response' in timed, false);
+    const over = harness({ transport: async () => ({ status: 401, headers: {}, body: 'x', truncated: true }) });
+    const overResult = await send(over, { method: 'GET', path: '/invoices/1' });
+    assert.equal(overResult.ok === false && 'response' in overResult, false);
+  });
+
+  it('rt320: an error body that echoes a secret of the settings and an input secret (raw and encoded) comes back with ***', async () => {
+    const key = '123456:ABC-def_ghi';
+    const box = harness({
+      transport: async () => ({ status: 401, headers: { 'x-echo': key }, body: `{"d":"${SECRET} ${key} ${encodeURIComponent(key)}"}` }),
+    });
+    try {
+      const result = await box.sender.sendExternal(ref, 'readInvoice', { method: 'GET', path: `/bot${encodeURIComponent(key)}/x`, headers: { authorization: 'Bearer {{secret:apiKey}}' } }, context, { inputSecrets: [key] });
+      assert.equal(result.ok, false);
+      if (!result.ok) {
+        assert.equal(result.response?.body, '{"d":"*** *** ***"}');
+        assert.equal(result.response?.headers['x-echo'], '***');
+      }
+    } finally {
+      box.restore();
+    }
   });
 
   it('refuses reserved ranges that embed or hide an internal address', () => {

@@ -7,7 +7,7 @@
  * Secrets stay out of that file: settings are ids, and the sender fills them.
  */
 
-import type { ConnectionContext, ConnectionResult } from '/_102034_/l2/shared/contracts/connections/types.js';
+import type { ConnectionContext, ConnectionErrorCode, ConnectionResult } from '/_102034_/l2/shared/contracts/connections/types.js';
 
 export type { ConnectionContext, ConnectionErrorCode, ConnectionResult } from '/_102034_/l2/shared/contracts/connections/types.js';
 
@@ -143,10 +143,19 @@ export interface ExternalResponse {
   body: string;
 }
 
+/**
+ * What `send` answers. The same as a `ConnectionResult` of `ExternalResponse`, with one more member on the failure: `response`,
+ * the answer of the outside system when it answered with an HTTP status of 400 or more and a body inside the ceiling
+ * (secrets hidden as in a success). Only the adapter sees it: `callConnection` takes it out of what the adapter returns.
+ */
+export type ExternalSendResult =
+  | { ok: true; output: ExternalResponse }
+  | { ok: false; code: ConnectionErrorCode; message: string; missing?: string[]; response?: ExternalResponse };
+
 export interface ExternalAdapterContext {
   connection: ConnectionContext;
   /** The only way out: sendExternal bound to this project, module and system. */
-  send(operationId: string, request: ExternalRequest): Promise<ConnectionResult<ExternalResponse>>;
+  send(operationId: string, request: ExternalRequest): Promise<ExternalSendResult>;
   /** A non-secret setting of this system; secrets are never readable here. */
   setting(settingId: string): string | undefined;
   /**
