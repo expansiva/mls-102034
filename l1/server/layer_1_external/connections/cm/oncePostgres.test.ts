@@ -6,7 +6,7 @@ import { after, describe, it } from 'node:test';
 import { Pool } from 'pg';
 import type { AppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { runAsCallerModule } from '/_102034_/l1/server/layer_1_external/connections/callerModule.js';
-import { once } from '/_102034_/l1/server/layer_1_external/connections/cm/once.js';
+import { once, type Jsonable } from '/_102034_/l1/server/layer_1_external/connections/cm/once.js';
 import { onceAnswerDefinition } from '/_102034_/l1/server/layer_1_external/connections/cm/onceStore.js';
 import { createPostgresModuleDataRuntime } from '/_102034_/l1/server/layer_1_external/data/moduleDataRuntime.js';
 import { platformTransactionAccess } from '/_102034_/l1/server/layer_1_external/data/postgres/txClient.js';
@@ -51,7 +51,7 @@ describe('rt325 s1: once (Postgres, real transaction)', { skip: url === '' }, ()
   const WHERE = { scope: 'sendChannelMessage', key: 'k-pg' };
   const env = { appEnv: 'development', projectId: '102030' } as unknown as AppEnv;
 
-  async function call<T>(moduleId: string, where: { scope: string; key: string }, work: (ctx: RequestContext) => Promise<T>): Promise<T> {
+  async function call<T>(moduleId: string, where: { scope: string; key: string }, work: (ctx: RequestContext) => Promise<T & Jsonable<T>>): Promise<T> {
     const runtime = createPostgresModuleDataRuntime(env, await setup());
     return runAsCallerModule(moduleId, () => runtime.runInTransaction((tx) => {
       const ctx = { data: { moduleData: tx } } as unknown as RequestContext;

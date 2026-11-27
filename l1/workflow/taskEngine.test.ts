@@ -76,7 +76,10 @@ function key(): OccurrenceKey {
   return { project: '10', module: 'tarefas', processId: 'ciclo', entity: 'Tarefa', recordId: 'r1' };
 }
 
-function clonePlan(plan: WorkflowPlanInput): WorkflowPlanInput {
+/** A copy a test may change: arrays are not `readonly` (assignable to `WorkflowPlanInput`). */
+type MutablePlanInput = Omit<WorkflowPlanInput, 'steps'> & { steps: Array<Omit<WorkflowPlanInput['steps'][number], 'next'> & { next: string[] }> };
+
+function clonePlan(plan: WorkflowPlanInput): MutablePlanInput {
   return {
     ...plan,
     steps: plan.steps.map((step) => ({
@@ -87,7 +90,7 @@ function clonePlan(plan: WorkflowPlanInput): WorkflowPlanInput {
   };
 }
 
-function openInput(plan: WorkflowPlanInput, title = OCCURRENCE_TITLE): TaskWorkflowOpen {
+function openInput(plan: WorkflowPlanInput, title = OCCURRENCE_TITLE): TaskWorkflowOpen & { plan: MutablePlanInput } {
   return {
     key: key(),
     plan: clonePlan(plan),

@@ -14,11 +14,17 @@ import {
   type WorkflowPlanStepInput,
 } from '/_102034_/l1/workflow/plan.js';
 
-function step(overrides: Partial<WorkflowPlanStepInput> & Pick<WorkflowPlanStepInput, 'stepId' | 'kind' | 'title' | 'next'>): WorkflowPlanStepInput {
+/** A step a test may change after the call: `next` is not `readonly` (it is assignable to `WorkflowPlanStepInput`). */
+type MutableStepInput = Omit<WorkflowPlanStepInput, 'next'> & { next: string[] };
+
+function step(overrides: Partial<MutableStepInput> & Pick<MutableStepInput, 'stepId' | 'kind' | 'title' | 'next'>): MutableStepInput {
   return { ...overrides };
 }
 
-function planInput(): WorkflowPlanInput {
+/** An input a test may change after the call: arrays are not `readonly` (it is assignable to `WorkflowPlanInput`). */
+type MutablePlanInput = Omit<WorkflowPlanInput, 'steps'> & { steps: MutableStepInput[] };
+
+function planInput(): MutablePlanInput {
   return {
     processId: 'ciclo',
     title: 'Ciclo da tarefa',

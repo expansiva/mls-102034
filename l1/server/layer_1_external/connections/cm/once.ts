@@ -70,10 +70,11 @@ function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
-export async function once<T extends Jsonable<T>>(
+export async function once<T>(
   ctx: RequestContext,
   where: { scope: string; key: string },
-  work: () => Promise<T>,
+  // `T & Jsonable<T>`: an answer that is not JSON-shaped (a function, a Date) does not fit, and there is no circular constraint on T.
+  work: () => Promise<T & Jsonable<T>>,
 ): Promise<T> {
   const moduleId = callerModuleOf();
   if (moduleId === undefined) throw new Error('[once] needs a running module: call it from a route of the module');

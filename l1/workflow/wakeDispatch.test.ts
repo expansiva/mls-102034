@@ -438,6 +438,7 @@ test('rt328: every outcome that is not accepted leaves one [workflowWake] line w
   handlers.set(key({ projectId: PROJECT, moduleId: MODULE, processId: 'procA', routine: 'onWait' }), async () => { throw new TypeError('boom of the handler\nsecond line with a secret'); });
   const failing = harness({ handlers, log });
   assert.deepEqual(await failing.dispatcher.dispatch(event()), { retry: { code: 'WORKFLOW_WAKE_HANDLER_FAILED' } });
-  assert.match(lines[2], /outcome=retry code=WORKFLOW_WAKE_HANDLER_FAILED cause=TypeError: boom of the handler$/u, 'the name and the first line of the message only');
-  assert.equal(lines[2].includes('secret'), false);
+  const failedLine = lines[2] ?? '';
+  assert.match(failedLine, /outcome=retry code=WORKFLOW_WAKE_HANDLER_FAILED cause=TypeError: boom of the handler$/u, 'the name and the first line of the message only');
+  assert.equal(/secret/u.test(failedLine), false);
 });

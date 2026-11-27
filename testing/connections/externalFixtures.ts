@@ -221,6 +221,8 @@ export interface FakeAdapterContextOptions {
   secrets?: readonly string[];
   sender?: ExternalSender;
   ref?: ExternalRef;
+  /** The public address of a `serve` operation, by operationId. An operation not listed has none. */
+  hookUrls?: Readonly<Record<string, string>>;
 }
 
 /** A context for a generated adapter. `send` is the fake door; `setting` never returns a secret. */
@@ -231,6 +233,7 @@ export function createFakeAdapterContext(options: FakeAdapterContextOptions = {}
   const hidden = new Set(options.secrets ?? ['signingKey']);
   return {
     connection,
+    hookUrl: (operationId) => options.hookUrls?.[operationId],
     send(operationId, request) {
       return sender.sendExternal(ref, operationId, request, connection);
     },

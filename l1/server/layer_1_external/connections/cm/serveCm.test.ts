@@ -145,8 +145,8 @@ describe('rt325 s3: serveCm', () => {
     const route = serveCm('sendChannelMessage', async () => { ran += 1; return { ok: true, output: { channelMessageId: 'x' } }; });
     const cases: Array<Partial<NonNullable<BffRequest['meta']>>> = [
       { connection: undefined },
-      { connection: { connectionId: 'telegram', operationId: 'sendChannelMessage', context: {} } },
-      { connection: { connectionId: 'cm', operationId: 'disableChannel', context: {} } },
+      { connection: { connectionId: 'telegram', operationId: 'sendChannelMessage', context: { organizationId: 'org-1' } } },
+      { connection: { connectionId: 'cm', operationId: 'disableChannel', context: { organizationId: 'org-1' } } },
       { verifiedAuthorities: [] },
       { verifiedAuthorities: ['agents:connection:cm'] },
     ];

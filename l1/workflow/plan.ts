@@ -75,6 +75,8 @@ export interface WorkflowPlanInput {
 
 export interface WorkflowPlanStep extends WorkflowPlanStepInput {
   ownerKind: StepOwner;
+  /** The prepared plan owns its arrays (`copyStep`), so they are not `readonly`. */
+  next: string[];
 }
 
 export interface WorkflowPlan {

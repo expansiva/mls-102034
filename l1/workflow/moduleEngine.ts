@@ -118,8 +118,9 @@ export async function runOccurrence<P extends ModulePlans, K extends keyof P & s
   }
   const recordId = occurrenceRecordId(ctx, occurrence.processId, seed);
   const key: OccurrenceKey & { processId: K } = {
-    project: ctx.sessionContext.project.projectId,
-    module: ctx.moduleId,
+    // Both were checked by `occurrenceRecordId` just above (it throws when one is empty): the assertion is for the type only, the JS is the same.
+    project: ctx.sessionContext.project.projectId!,
+    module: ctx.moduleId!,
     processId: occurrence.processId,
     entity: occurrence.entity,
     recordId,
