@@ -98,6 +98,7 @@ function harness(options: {
   handlers?: Map<string, WorkflowWakeHandler>;
   now?: Date;
   integrationError?: unknown;
+  log?: (line: string) => void;
 } = {}) {
   const calls: string[] = [];
   const contexts: RequestContext[] = [];
@@ -130,6 +131,7 @@ function harness(options: {
   const dispatcher = createWorkflowWakeDispatcher(PROJECT, MODULE, {
     port,
     now: () => options.now ?? new Date('2026-10-20T12:00:01Z'),
+    ...(options.log ? { log: options.log } : {}),
     companyId: () => 'company-canonical',
     readIntegration: () => {
       if (options.integrationError) throw options.integrationError;
@@ -414,4 +416,28 @@ test('rt324: o handler do relógio roda como o módulo do evento (callerModuleOf
   assert.equal(await h.dispatcher.dispatch(event()), 'accepted');
   assert.deepEqual(seenModules, [MODULE]);
   assert.equal(callerModuleOf(), undefined, 'nothing leaks out of the handler');
+});
+
+test('rt328: every outcome that is not accepted leaves one [workflowWake] line with the code, and the one that comes from an exception names it', async () => {
+  const lines: string[] = [];
+  const log = (line: string) => lines.push(line);
+  const accepted = harness({ log });
+  assert.equal(await accepted.dispatcher.dispatch(event()), 'accepted');
+  assert.deepEqual(lines, [], 'accepted says nothing');
+
+  const paused = harness({ occurrence: snapshot({ status: 'paused' }), log });
+  assert.deepEqual(await paused.dispatcher.dispatch(event()), { retry: { code: 'WORKFLOW_WAKE_PAUSED' } });
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /^\[workflowWake\] 900001\/modA task=rec-1 step=wait outcome=retry code=WORKFLOW_WAKE_PAUSED$/u);
+
+  const missing = harness({ occurrence: null, log });
+  assert.equal(await missing.dispatcher.dispatch(event()), 'stale');
+  assert.match(lines[1], /outcome=stale code=-$/u);
+
+  const handlers = new Map<string, WorkflowWakeHandler>();
+  handlers.set(key({ projectId: PROJECT, moduleId: MODULE, processId: 'procA', routine: 'onWait' }), async () => { throw new TypeError('boom of the handler\nsecond line with a secret'); });
+  const failing = harness({ handlers, log });
+  assert.deepEqual(await failing.dispatcher.dispatch(event()), { retry: { code: 'WORKFLOW_WAKE_HANDLER_FAILED' } });
+  assert.match(lines[2], /outcome=retry code=WORKFLOW_WAKE_HANDLER_FAILED cause=TypeError: boom of the handler$/u, 'the name and the first line of the message only');
+  assert.equal(lines[2].includes('secret'), false);
 });

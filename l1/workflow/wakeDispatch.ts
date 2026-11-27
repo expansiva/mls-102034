@@ -32,6 +32,8 @@ export interface WorkflowWakeDispatcherDeps {
   companyId?: () => string | undefined;
   /** Server test seam. Production uses the current clock for wake.until. */
   now?: () => Date;
+  /** Server test seam. One line for every outcome that is not `accepted`. Default: `console.warn`. */
+  log?: (line: string) => void;
 }
 
 export interface WorkflowWakeDispatcher {
@@ -52,10 +54,13 @@ export function createWorkflowWakeDispatcher(
 
   return {
     async dispatch(event) {
+      let cause: unknown;
+      const outcome = await (async (): Promise<WorkflowWakeDispatchResult> => {
       let ctx: RequestContext;
       try {
         ctx = routineContext(projectId, moduleId, event, deps);
       } catch (error) {
+        cause = error;
         return { retry: { code: sanitizedCode(error) } };
       }
 
@@ -73,6 +78,7 @@ export function createWorkflowWakeDispatcher(
           recordId: event.ref.recordId,
         });
       } catch (error) {
+        cause = error;
         return { retry: { code: sanitizedCode(error) } };
       }
 
@@ -110,6 +116,7 @@ export function createWorkflowWakeDispatcher(
           routine: event.routine,
         });
       } catch (error) {
+        cause = error;
         return { retry: { code: sanitizedCode(error) } };
       }
 
@@ -117,9 +124,20 @@ export function createWorkflowWakeDispatcher(
         // The clock is the one way in that did not say the module: the handler resolves its repositories as `moduleId`.
         await runAsCallerModule(moduleId, () => handler(ctx, event, snapshot));
       } catch (error) {
+        cause = error;
         return { retry: { code: sanitizedCode(error) } };
       }
       return 'accepted';
+      })();
+      if (outcome !== 'accepted') {
+        // Every outcome that is not accepted leaves a line: the cm only sees a 503 and the app used to say nothing.
+        const code = outcome === 'stale' ? '-' : outcome.retry.code;
+        const from = cause === undefined ? '' : ` cause=${cause instanceof Error ? `${cause.name}: ${cause.message.split('\n')[0].slice(0, 200)}` : 'non-error'}`;
+        (deps.log ?? ((line: string) => console.warn(line)))(
+          `[workflowWake] ${projectId}/${moduleId} task=${event.ref.recordId} step=${event.stepKey} outcome=${outcome === 'stale' ? 'stale' : 'retry'} code=${code}${from}`,
+        );
+      }
+      return outcome;
     },
   };
 }
