@@ -41,7 +41,7 @@ function postgresDb(): ExternalCallDb | null {
   return { query: (sql, params) => getSharedPgPool(env).query(sql, params as never[]) };
 }
 
-function productionDeps(): ExternalHookDeps {
+export function productionDeps(): ExternalHookDeps {
   const db = postgresDb();
   return {
     declarationOf: releaseDeclarationOf,
