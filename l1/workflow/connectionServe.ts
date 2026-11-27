@@ -120,8 +120,10 @@ export function createConnectionServer(deps: ConnectionServerDeps): (input: Conn
   return async (input) => {
     const started = Date.now();
     const name = `${String(input?.connectionId)}.${String(input?.operationId)}`;
+    // The id of this call: the same one the route runs with (`meta.requestId`), so a line of the log matches the monitor record. No data of the call goes in the line.
+    const requestId = typeof input?.idempotencyKey === 'string' && input.idempotencyKey !== '' ? input.idempotencyKey : randomUUID();
     const done = (result: ConnectionResult, reason?: string, detail?: string): ConnectionResult => {
-      log(`[connection] serve ${name} ${result.ok ? 'ok=true' : `ok=false code=${result.code}`}${reason ? ` reason=${reason}` : ''} ms=${Date.now() - started}${detail ? ` ${detail}` : ''}`);
+      log(`[connection] serve ${name} ${result.ok ? 'ok=true' : `ok=false code=${result.code}`}${reason ? ` reason=${reason}` : ''} ms=${Date.now() - started} requestId=${requestId}${detail ? ` ${detail}` : ''}`);
       return result;
     };
     const fail = (code: ConnectionErrorCode, message: string, reason?: string): ConnectionResult => done({ ok: false, code, message }, reason);
@@ -168,7 +170,7 @@ export function createConnectionServer(deps: ConnectionServerDeps): (input: Conn
       }
       const platformCtx = deps.newContext();
       const technicalId = `connection:${input.connectionId}`;
-      platformCtx.requestMeta = { requestId: input.idempotencyKey ?? randomUUID(), userId: technicalId, source: 'message', actorType: 'system', connection: { connectionId: input.connectionId, operationId: input.operationId, context: input.context } };
+      platformCtx.requestMeta = { requestId, userId: technicalId, source: 'message', actorType: 'system', connection: { connectionId: input.connectionId, operationId: input.operationId, context: input.context } };
       try {
         return done(await answer(platformCtx, input.input, input.context));
       } catch {
@@ -201,7 +203,6 @@ export function createConnectionServer(deps: ConnectionServerDeps): (input: Conn
     }
 
     const technical = `connection:${input.connectionId}`;
-    const requestId = input.idempotencyKey ?? randomUUID();
     let result: ConnectionResult;
     let detail: string | undefined;
     try {
@@ -231,7 +232,7 @@ export function createConnectionServer(deps: ConnectionServerDeps): (input: Conn
       if (mapped.outcome === 'unavailable') {
         const cause = (answer.response.error?.details as { cause?: unknown } | undefined)?.cause;
         const text = [mapped.error?.message, typeof cause === 'string' ? cause : undefined].filter(Boolean).join(': ');
-        detail = `status=${answer.statusCode} error=${mapped.error?.code ?? '-'} requestId=${requestId} message=${JSON.stringify(text.replace(/\s+/gu, ' ').slice(0, 300))}`;
+        detail = `status=${answer.statusCode} error=${mapped.error?.code ?? '-'} message=${JSON.stringify(text.replace(/\s+/gu, ' ').slice(0, 300))}`;
       }
     } catch (error) {
       // The exception stays here once, with its stack; the caller still gets the same `unavailable`. Only what the exception carries, never the input or the context.

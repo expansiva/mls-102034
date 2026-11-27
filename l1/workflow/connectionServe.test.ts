@@ -148,8 +148,8 @@ test('one log line per call, with no input and no context', async () => {
   await h.serve({ ...call('describe', { organizationId: 'org-1', actorUserId: 'context-sentinel' }), input: { secret: 'input-sentinel' } });
   await h.serve(call('nope'));
   assert.equal(h.logs.length, 2);
-  assert.match(h.logs[0], /^\[connection\] serve cm\.describe ok=true ms=\d+$/);
-  assert.match(h.logs[1], /^\[connection\] serve cm\.nope ok=false code=invalid reason=unknown-operation ms=\d+$/);
+  assert.match(h.logs[0], /^\[connection\] serve cm\.describe ok=true ms=\d+ requestId=[0-9a-f-]{36}$/);
+  assert.match(h.logs[1], /^\[connection\] serve cm\.nope ok=false code=invalid reason=unknown-operation ms=\d+ requestId=[0-9a-f-]{36}$/);
   for (const line of h.logs) assert.equal(/sentinel/.test(line), false);
 });
 
@@ -336,7 +336,7 @@ test('rt323: a route that answers 500 leaves status, error code, request id and 
   assert.equal(result.ok, false);
   assert.equal(h.logs.length, 1);
   assert.match(h.logs[0], /ok=false code=unavailable/u);
-  assert.match(h.logs[0], /status=500 error=INTERNAL_ERROR requestId=key-5xx message=".*: the bot is gone"/u);
+  assert.match(h.logs[0], / requestId=key-5xx status=500 error=INTERNAL_ERROR message=".*: the bot is gone"/u);
   assert.equal(h.logs[0].includes('do-not-log-me'), false);
 });
 
@@ -354,4 +354,26 @@ test('rt323: an execMessage that throws leaves its stack once in console.error, 
   } finally {
     console.error = original;
   }
+});
+
+test('rt328: every line of serve carries the requestId: ok, a 4xx refusal, a 5xx, and a failure before the route; the same id the route runs with', async () => {
+  const UUID = /requestId=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/u;
+  const ok = harness();
+  await ok.serve(call('describe', CONTEXT, { idempotencyKey: 'key-ok' }));
+  assert.match(ok.logs[0], /^\[connection\] serve cm\.describe ok=true ms=\d+ requestId=key-ok$/u);
+  assert.equal(ok.requests[0].request.meta?.requestId, 'key-ok', 'the id of the line is the id the route got');
+
+  const refused = harness({ answer: { response: { ok: false, data: null, error: { code: 'CM_REFUSED', message: 'no' } } as BffResponse, statusCode: 422 } });
+  await refused.serve(call('describe', CONTEXT, { idempotencyKey: 'key-422' }));
+  assert.match(refused.logs[0], /^\[connection\] serve cm\.describe ok=false code=refused ms=\d+ requestId=key-422$/u);
+
+  const noKey = harness();
+  await noKey.serve(call('describe', CONTEXT));
+  assert.match(noKey.logs[0], UUID);
+  assert.equal(noKey.logs[0].includes(`requestId=${noKey.requests[0].request.meta?.requestId}`), true, 'a generated id is the one the route got');
+
+  const early = harness();
+  await early.serve({ connectionId: '', operationId: 'x', input: {}, context: CONTEXT } as never);
+  assert.match(early.logs[0], /reason=ids ms=\d+ requestId=/u);
+  for (const line of [...ok.logs, ...refused.logs, ...noKey.logs, ...early.logs]) assert.equal(/secret|sentinel/u.test(line), false);
 });
