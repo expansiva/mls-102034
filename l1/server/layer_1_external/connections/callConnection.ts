@@ -478,11 +478,20 @@ export interface ProductionConnectionCallerOptions {
   log?: (line: string) => void;
 }
 
-let cmTransportOverride: ConnectionTransport | undefined;
+/** Test only (the cm bench): what replaces the network of the cm and the data of the environment around it. */
+export interface CmBenchOverride {
+  projectId: string;
+  transport: ConnectionTransport;
+  organizationId: string;
+  toCmUserId: (mdmId: string) => Promise<string>;
+  toMdmId: (cmUserId: string) => Promise<string>;
+}
 
-/** Test only (the cm bench): replaces what the network of the cm would answer. Called with nothing, it restores the real transport. */
-export function setCmTransportForTests(transport?: ConnectionTransport): void {
-  cmTransportOverride = transport;
+let cmBenchOverride: CmBenchOverride | undefined;
+
+/** Test only (the cm bench). Called with nothing, it restores the real transport. */
+export function setCmBenchForTests(override?: CmBenchOverride): void {
+  cmBenchOverride = override;
   production = undefined;
 }
 
@@ -495,16 +504,18 @@ export function setCmTransportForTests(transport?: ConnectionTransport): void {
  */
 export function createProductionConnectionCaller(options: ProductionConnectionCallerOptions): CallConnection {
   const { projectId } = options;
-  const identities = options.toCmUserId
+  const bench = cmBenchOverride;
+  const identities = options.toCmUserId || bench
     ? undefined
     : createMessagesWorkflowIdentities({ projectId, client: createServerMessagesClient({ projectId }) });
   return createConnectionCaller({
     projectId,
     catalogOf: options.catalogOf ?? connectionCatalogs(),
-    transports: { cm: cmTransportOverride ?? createCmTransport({ projectId, env: options.env, fetchImpl: options.fetchImpl }) },
-    toCmUserId: options.toCmUserId ?? ((mdmId) => (identities as NonNullable<typeof identities>).toCmUserId(createAssistantContext(projectId), mdmId)),
-    toMdmId: options.toMdmId ?? (identities ? (cmUserId) => identities.toMdmId(createAssistantContext(projectId), cmUserId) : undefined),
+    transports: { cm: bench?.transport ?? createCmTransport({ projectId, env: options.env, fetchImpl: options.fetchImpl }) },
+    toCmUserId: options.toCmUserId ?? bench?.toCmUserId ?? ((mdmId) => (identities as NonNullable<typeof identities>).toCmUserId(createAssistantContext(projectId), mdmId)),
+    toMdmId: options.toMdmId ?? bench?.toMdmId ?? (identities ? (cmUserId) => identities.toMdmId(createAssistantContext(projectId), cmUserId) : undefined),
     organizationId: () => {
+      if (bench) return bench.organizationId;
       try {
         return readMessagesIntegration(projectId).organizationId;
       } catch {
@@ -522,7 +533,7 @@ let production: { projectId: string; call: CallConnection } | undefined;
  * request context. The connector of the app is built once per process, with the application of this server.
  */
 export const callConnection: CallConnection = (connectionId, operationId, input, context, opts) => {
-  const projectId = resolveClientProjectId();
+  const projectId = cmBenchOverride?.projectId ?? resolveClientProjectId();
   if (!production || production.projectId !== projectId) production = { projectId, call: createProductionConnectionCaller({ projectId }) };
   return production.call(connectionId, operationId, input, context, opts);
 };

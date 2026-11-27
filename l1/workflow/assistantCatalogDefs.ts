@@ -47,12 +47,24 @@ function dataOf(definition: unknown): Rec {
 }
 
 /** The reader of the running release: dist files only, never the source fallback. */
+let defsSourceFallback = false;
+
+/** Test only (the cm bench with `projectRoot`): a release folder that is missing is read from the source of the project instead. Off by default. */
+export function setDefsSourceFallbackForTests(enabled: boolean): void {
+  defsSourceFallback = enabled;
+}
+
 export function distDefsReader(projectId: string): DefsReader {
-  const distPath = (file: string): string => resolveProjectsPath(`dist/local/_${projectId}_/${file}`);
+  const distPath = (file: string): string => {
+    const dist = resolveProjectsPath(`dist/local/_${projectId}_/${file}`);
+    if (!defsSourceFallback || existsSync(dist)) return dist;
+    const source = resolveProjectsPath(`mls-${projectId}/${file}`);
+    return [source, source.replace(/\.js$/u, '.ts')].find((candidate) => existsSync(candidate)) ?? dist;
+  };
   return {
     list(folder) {
       const dir = distPath(folder);
-      return existsSync(dir) ? readdirSync(dir).filter((name) => name.endsWith('.defs.js')).sort() : [];
+      return existsSync(dir) ? readdirSync(dir).filter((name) => name.endsWith('.defs.js') || (defsSourceFallback && name.endsWith('.defs.ts'))).sort() : [];
     },
     async read(file, exportName) {
       const path = distPath(file);
