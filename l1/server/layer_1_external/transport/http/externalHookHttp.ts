@@ -73,7 +73,7 @@ function productionDeps(): ExternalHookDeps {
       if (!db) return;
       await writeExternalCallPair(db, row);
     },
-    deliver: (input) => sharedAssistantRunners(input.context.organizationId).connection(input),
+    deliver: (input, projectId) => sharedAssistantRunners(projectId).connection(input),
     now: () => new Date(),
     allow: allowExternalHookRate,
     log: (line) => console.warn(line),

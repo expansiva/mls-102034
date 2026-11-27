@@ -63,7 +63,8 @@ export interface ExternalHookDeps {
   /** The organization of the app (the one the cm reads), or undefined when none is configured. */
   organizationOf(projectId: string): string | undefined;
   record(row: ExternalCallRow): Promise<void>;
-  deliver(input: ConnectionServeInput): Promise<ConnectionResult>;
+  /** `projectId` is the project whose declaration was just read (never the organization). */
+  deliver(input: ConnectionServeInput, projectId: string): Promise<ConnectionResult>;
   now(): Date;
   allow(key: string, nowMs: number): boolean;
   log(line: string): void;
@@ -310,7 +311,7 @@ export async function handleExternalHook(request: ExternalHookRequest, deps: Ext
         input: inputOf(rawBody),
         context: { organizationId, ...(paramKey === '' ? {} : { hookParams }) },
         ...(requestId !== null ? { idempotencyKey: requestId } : {}),
-      }),
+      }, target.projectId),
       new Promise<ConnectionResult>((resolve) => {
         deadline = setTimeout(() => resolve({ ok: false, code: 'unavailable', message: 'timeout' }), DELIVER_MS);
       }),
