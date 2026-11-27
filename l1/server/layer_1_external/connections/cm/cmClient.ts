@@ -11,7 +11,8 @@ import type { RequestContext } from '/_102034_/l1/server/layer_2_controllers/con
 export interface CmCallOptions {
   /** Default: `<key of the request in course>:<operation>`. Required when the same operation is called twice in one request. */
   idempotencyKey?: string;
-  expectVersion?: number;
+  /** The `version` the cm gave when the module read the thing (a string, as the catalog types it). Passed on as it is. */
+  expectVersion?: string;
 }
 
 /** Who the call is about, besides the person of `ctx` (put by the platform). */

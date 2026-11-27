@@ -67,4 +67,10 @@ describe('rt325 s2: cm(ctx)', () => {
     assert.equal(typeof client.listAgents, 'function');
     assert.equal(client.sendChannelMessage, undefined, 'a serve operation is not callable');
   });
+
+  it('expectVersion is the version read, a string, and goes on to the call without conversion', async () => {
+    const h = harness({ requestId: 'r' });
+    await h.client.updateAgent({ agentId: 'a', version: 'v-17', changes: [] } as never, { expectVersion: 'v-17' });
+    assert.strictEqual(h.seen[0].opts?.expectVersion, 'v-17');
+  });
 });
