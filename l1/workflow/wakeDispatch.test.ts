@@ -13,6 +13,7 @@ import type {
 import type { WorkflowPlan } from '/_102034_/l1/workflow/plan.js';
 import type { WorkflowWakeHandler, WorkflowWakeScope } from '/_102034_/l1/workflow/wakeContracts.js';
 import { workflowWakeCommandId } from '/_102034_/l1/workflow/wakeContracts.js';
+import { callerModuleOf } from '/_102034_/l1/server/layer_1_external/connections/callerModule.js';
 import { createWorkflowWakeDispatcher } from '/_102034_/l1/workflow/wakeDispatch.js';
 
 const PROJECT = '900001';
@@ -404,4 +405,13 @@ test('llm-step-finished é stale com a Task done, outro passo ou outro pass; pau
 test('um despertar comum continua stale sem wake: a mudança só vale para llm-step-finished', async () => {
   const run = harness({ occurrence: snapshot({ wake: undefined }) });
   assert.equal(await run.dispatcher.dispatch(event()), 'stale');
+});
+
+test('rt324: o handler do relógio roda como o módulo do evento (callerModuleOf)', async () => {
+  const h = harness();
+  const seenModules: Array<string | undefined> = [];
+  h.handlers.set(key({ projectId: PROJECT, moduleId: MODULE, processId: 'procA', routine: 'onWait' } as WorkflowWakeScope), (async () => { seenModules.push(callerModuleOf()); }) as WorkflowWakeHandler);
+  assert.equal(await h.dispatcher.dispatch(event()), 'accepted');
+  assert.deepEqual(seenModules, [MODULE]);
+  assert.equal(callerModuleOf(), undefined, 'nothing leaks out of the handler');
 });

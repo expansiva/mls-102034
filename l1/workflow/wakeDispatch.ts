@@ -1,5 +1,6 @@
 /// <mls fileReference="_102034_/l1/workflow/wakeDispatch.ts" enhancement="_blank"/>
 import { AppError, type RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
+import { runAsCallerModule } from '/_102034_/l1/server/layer_1_external/connections/callerModule.js';
 import { readMessagesIntegration } from '/_102034_/l1/server/layer_1_external/config/messagesIntegration.js';
 import { getSharedIdentityCache } from '/_102034_/l1/server/layer_1_external/cache/identityCache.js';
 import { getSharedDataRuntime } from '/_102034_/l1/mdm/layer_1_external/data/runtimeFactory.js';
@@ -113,7 +114,8 @@ export function createWorkflowWakeDispatcher(
       }
 
       try {
-        await handler(ctx, event, snapshot);
+        // The clock is the one way in that did not say the module: the handler resolves its repositories as `moduleId`.
+        await runAsCallerModule(moduleId, () => handler(ctx, event, snapshot));
       } catch (error) {
         return { retry: { code: sanitizedCode(error) } };
       }
