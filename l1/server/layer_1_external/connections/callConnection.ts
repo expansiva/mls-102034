@@ -438,6 +438,11 @@ export function createConnectionCaller(deps: ConnectionCallerDeps): CallConnecti
       const copy: Record<string, unknown> = { ...(input as Record<string, unknown>) };
       for (const { from, to } of personInputs) {
         if (!Object.prototype.hasOwnProperty.call(copy, from)) continue;
+        // A key present with `undefined` (the shape of generated code: `field: input.field`) is an absent person: no translation, no refusal.
+        if (copy[from] === undefined) {
+          delete copy[from];
+          continue;
+        }
         const mdmId = copy[from];
         delete copy[from];
         const cmUserId = typeof mdmId === 'string' && mdmId !== '' ? await toCm(mdmId) : undefined;

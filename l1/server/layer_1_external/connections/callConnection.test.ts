@@ -333,6 +333,23 @@ describe('callConnection: the people', () => {
     await call('example', 'notify', { toMdmId: 'm1', text: 'hi' }, CONTEXT);
     assert.deepEqual(seen[0].body.input, { text: 'hi', to: 'cm-m1' });
   });
+
+  it('rt329 s2: a person key with undefined is absent (no translation, nothing sent for it); null, empty and an unlinked id are as before', async () => {
+    const { seen, fetchImpl } = fakeCm(OK);
+    const looked: string[] = [];
+    const call = callerOver(fetchImpl, { toCmUserId: async (mdmId) => { looked.push(mdmId); return mdmId === 'unlinked' ? undefined as never : `cm-${mdmId}`; } });
+    const absent = await call('cm', 'simulateAgent', { agentId: 'a', level: 'canDo', asMdmId: undefined }, CONTEXT);
+    assert.equal(absent.ok, true);
+    assert.deepEqual(seen[0].body.input, { agentId: 'a', level: 'canDo' }, 'neither the from nor the to reaches the cm');
+    assert.deepEqual(looked, []);
+    const withNull = await call('cm', 'simulateAgent', { agentId: 'a', level: 'canDo', asMdmId: null }, CONTEXT);
+    assert.equal(withNull.ok === false && withNull.code, 'forbidden', 'null is as before');
+    const empty = await call('cm', 'simulateAgent', { agentId: 'a', level: 'canDo', asMdmId: '' }, CONTEXT);
+    assert.equal(empty.ok === false && empty.code, 'forbidden', 'the empty text is as before');
+    const unlinked = await call('cm', 'simulateAgent', { agentId: 'a', level: 'canDo', asMdmId: 'unlinked' }, CONTEXT);
+    assert.equal(unlinked.ok === false && unlinked.code, 'forbidden', 'an id without link is still refused');
+    assert.equal(seen.length, 1, 'only the undefined one was sent');
+  });
 });
 
 describe('callConnection: the log', () => {
