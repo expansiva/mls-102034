@@ -1,5 +1,6 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/data/moduleDataRuntime.ts" enhancement="_blank" />
 import type { Pool, PoolClient } from 'pg';
+import { registerPlatformTransactionAccess } from '/_102034_/l1/server/layer_1_external/data/postgres/txClient.js';
 import type { AppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js';
 import { readProjectMode } from '/_102034_/l1/server/layer_1_external/config/projectMode.js';
 import { getSharedPgPool, queryRows, withPgTransaction } from '/_102034_/l1/server/layer_1_external/data/postgres/pg.js';
@@ -102,22 +103,6 @@ export interface IModuleDataRuntime {
   getTable<TRecord extends object>(repositoryNameOrTableName: string): Promise<ITableRepository<TRecord>>;
   listTables(): Promise<ResolvedTableDefinition[]>;
   runInTransaction<TValue>(callback: (runtime: IModuleDataRuntime) => Promise<TValue>): Promise<TValue>;
-}
-
-/**
- * What only the platform reads from a runtime (`once`): whether it is the runtime of a transaction, and the SQL of that
- * transaction's connection, so a platform table commits or rolls back with the module's writes. It is NOT on `IModuleDataRuntime`:
- * generated code sees that interface and cannot reach it.
- */
-export interface PlatformTransactionAccess {
-  inTransaction: boolean;
-  sql?: { query(sql: string, params?: unknown[]): Promise<{ rows: Array<Record<string, unknown>> }> };
-}
-
-const platformAccess = new WeakMap<object, PlatformTransactionAccess>();
-
-export function platformTransactionAccess(runtime: IModuleDataRuntime): PlatformTransactionAccess | undefined {
-  return platformAccess.get(runtime);
 }
 
 type RegistryWriteBehindPayload = {
@@ -558,7 +543,7 @@ class MemoryModuleDataRuntime implements IModuleDataRuntime {
     private readonly store = new Map<string, object[]>(),
     private readonly inTx = false,
   ) {
-    platformAccess.set(this, { inTransaction: inTx });
+    registerPlatformTransactionAccess(this, { inTransaction: inTx });
   }
 
   public async getTable<TRecord extends object>(repositoryNameOrTableName: string): Promise<ITableRepository<TRecord>> {
@@ -602,7 +587,7 @@ class PostgresModuleDataRuntime implements IModuleDataRuntime {
     private readonly executor: PgExecutor = getSharedPgPool(env),
   ) {
     const inTransaction = 'release' in executor;
-    platformAccess.set(this, {
+    registerPlatformTransactionAccess(this, {
       inTransaction,
       ...(inTransaction
         ? { sql: { query: async (sql: string, params?: unknown[]) => ({ rows: (await executor.query(sql, params as unknown[])).rows as Array<Record<string, unknown>> }) } }

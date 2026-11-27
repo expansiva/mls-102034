@@ -8,7 +8,8 @@ import type { AppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js'
 import { runAsCallerModule } from '/_102034_/l1/server/layer_1_external/connections/callerModule.js';
 import { once } from '/_102034_/l1/server/layer_1_external/connections/cm/once.js';
 import { onceAnswerDefinition } from '/_102034_/l1/server/layer_1_external/connections/cm/onceStore.js';
-import { createPostgresModuleDataRuntime, platformTransactionAccess } from '/_102034_/l1/server/layer_1_external/data/moduleDataRuntime.js';
+import { createPostgresModuleDataRuntime } from '/_102034_/l1/server/layer_1_external/data/moduleDataRuntime.js';
+import { platformTransactionAccess } from '/_102034_/l1/server/layer_1_external/data/postgres/txClient.js';
 import { buildCreateIndexSql, buildCreateTableSql } from '/_102034_/l1/server/layer_1_external/persistence/schemaBootstrap.js';
 import type { RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 

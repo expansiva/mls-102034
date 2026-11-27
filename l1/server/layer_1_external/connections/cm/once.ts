@@ -7,7 +7,7 @@
  */
 import { callerModuleOf } from '/_102034_/l1/server/layer_1_external/connections/callerModule.js';
 import { ONCE_ANSWER_TABLE } from '/_102034_/l1/server/layer_1_external/connections/cm/onceStore.js';
-import { platformTransactionAccess } from '/_102034_/l1/server/layer_1_external/data/moduleDataRuntime.js';
+import { platformTransactionAccess } from '/_102034_/l1/server/layer_1_external/data/postgres/txClient.js';
 import type { RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [k: string]: JsonValue };
