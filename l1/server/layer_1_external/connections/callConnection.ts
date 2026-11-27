@@ -478,6 +478,14 @@ export interface ProductionConnectionCallerOptions {
   log?: (line: string) => void;
 }
 
+let cmTransportOverride: ConnectionTransport | undefined;
+
+/** Test only (the cm bench): replaces what the network of the cm would answer. Called with nothing, it restores the real transport. */
+export function setCmTransportForTests(transport?: ConnectionTransport): void {
+  cmTransportOverride = transport;
+  production = undefined;
+}
+
 /**
  * The connector of the app: the catalogs the release carries, the transport to the cm as this application, the real link of the
  * login (`toCmUserId` of the workflow identities, run in a context of its own, as the assistant's requests are), and the
@@ -493,7 +501,7 @@ export function createProductionConnectionCaller(options: ProductionConnectionCa
   return createConnectionCaller({
     projectId,
     catalogOf: options.catalogOf ?? connectionCatalogs(),
-    transports: { cm: createCmTransport({ projectId, env: options.env, fetchImpl: options.fetchImpl }) },
+    transports: { cm: cmTransportOverride ?? createCmTransport({ projectId, env: options.env, fetchImpl: options.fetchImpl }) },
     toCmUserId: options.toCmUserId ?? ((mdmId) => (identities as NonNullable<typeof identities>).toCmUserId(createAssistantContext(projectId), mdmId)),
     toMdmId: options.toMdmId ?? (identities ? (cmUserId) => identities.toMdmId(createAssistantContext(projectId), cmUserId) : undefined),
     organizationId: () => {

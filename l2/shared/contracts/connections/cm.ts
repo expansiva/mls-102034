@@ -350,6 +350,35 @@ export interface CmNotifyPersonOutput {
   status: 'sent' | 'no_channel';
 }
 
+/** The operations the module CALLS on the cm (direction 'call'). Kept equal to `cm` by a test: a new operation is one line in the catalog and one here. */
+export interface CmCallOperations {
+  listAgents: { input: CmListAgentsInput; output: CmListAgentsOutput };
+  readAgent: { input: CmReadAgentInput; output: CmReadAgentOutput };
+  updateAgent: { input: CmUpdateAgentInput; output: CmUpdateAgentOutput };
+  listAgentHistory: { input: CmListAgentHistoryInput; output: CmListAgentHistoryOutput };
+  undoAgentChange: { input: CmUndoAgentChangeInput; output: CmUndoAgentChangeOutput };
+  simulateAgent: { input: CmSimulateAgentInput; output: CmSimulateAgentOutput };
+  createAgent: { input: CmCreateAgentInput; output: CmCreateAgentOutput };
+  activateAgent: { input: CmActivateAgentInput; output: CmActivateAgentOutput };
+  discardAgentDraft: { input: CmDiscardAgentDraftInput; output: CmDiscardAgentDraftOutput };
+  listCmTools: { input: CmListCmToolsInput; output: CmListCmToolsOutput };
+  runAiPrompt: { input: CmRunAiPromptInput; output: CmRunAiPromptOutput };
+  channelMessageReceived: { input: CmChannelMessageReceivedInput; output: CmChannelMessageReceivedOutput };
+  notifyPerson: { input: CmNotifyPersonInput; output: CmNotifyPersonOutput };
+}
+/** The operations the cm CALLS on the module (direction 'serve'). */
+export interface CmServeOperations {
+  agentDraftReady: { input: CmAgentDraftReadyInput; output: CmAgentDraftReadyOutput };
+  describe: { input: CmDescribeInput; output: CmDescribeOutput };
+  ensureAgentMember: { input: CmEnsureAgentMemberInput; output: CmEnsureAgentMemberOutput };
+  record: { input: CmRecordInput; output: CmRecordOutput };
+  sendChannelMessage: { input: CmSendChannelMessageInput; output: CmSendChannelMessageOutput };
+  setChannelConversationIdentity: { input: CmSetChannelConversationIdentityInput; output: CmSetChannelConversationIdentityOutput };
+  disableChannel: { input: CmDisableChannelInput; output: CmDisableChannelOutput };
+}
+export type CmCallId = keyof CmCallOperations;
+export type CmServeId = keyof CmServeOperations;
+
 export const cm: ConnectionCatalog = {
   "schemaVersion": "connection-catalog-v1",
   "connectionId": "cm",
