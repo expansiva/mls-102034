@@ -69,7 +69,8 @@ export interface WorkflowPlanInput {
   processId: string;
   title: string;
   moduleTitle: string;
-  steps: WorkflowPlanStepInput[];
+  /** `readonly`: a plan declared `as const satisfies WorkflowPlanInput` compiles; a mutable array still fits. */
+  steps: readonly WorkflowPlanStepInput[];
 }
 
 export interface WorkflowPlanStep extends WorkflowPlanStepInput {

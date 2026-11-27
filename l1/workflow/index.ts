@@ -43,6 +43,13 @@ export {
   type TaskWorkflowLlmEngine,
   type TaskWorkflowLlmStep,
 } from '/_102034_/l1/workflow/engine.js';
+export {
+  createModuleWorkflowEngine,
+  runOccurrence,
+  type ModulePlans,
+  type ModuleWorkflowEngine,
+  type StepOf,
+} from '/_102034_/l1/workflow/moduleEngine.js';
 export { createMemoryOccurrencePort } from '/_102034_/l1/workflow/memoryOccurrence.js';
 export {
   createMessagesTaskOccurrencePort,

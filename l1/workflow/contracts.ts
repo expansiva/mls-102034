@@ -10,7 +10,7 @@ export interface WorkflowStepDef {
   kind: WorkflowStepKind;
   actorRef?: string;
   journeyRef?: string;
-  next: string[];
+  next: readonly string[];
 }
 
 export interface WorkflowTable {
