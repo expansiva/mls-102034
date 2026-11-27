@@ -16,7 +16,7 @@ import type {
 export interface ExternalSystemsDeps {
   systemsOf(projectId: string): Promise<Map<string, string>>;
   declarationOf(ref: ExternalRef): Promise<ExternalSystemDeclaration | null>;
-  settings: Pick<ExternalSettingsStore, 'status' | 'settingOf' | 'set'>;
+  settings: Pick<ExternalSettingsStore, 'status' | 'settingOf' | 'set' | 'clear'>;
   recentCalls(projectId: string, moduleId: string, systemId: string): Promise<ExternalCallRow[]>;
   writeFailureCount(): number;
   /** `https://host` of this app, or empty when the app has no public domain yet. */
@@ -40,6 +40,8 @@ export interface ExternalSettingView {
   settingId: string;
   status: 'filled' | 'missing';
   secret: boolean;
+  /** The platform makes the value: the screen shows no input, only whether there is one and a way to delete it. */
+  generated: boolean;
 }
 
 export interface ExternalCallLine {
@@ -163,6 +165,7 @@ export async function externalSystemsOf(
         settingId: item.id,
         status: filled.get(item.id) === true ? 'filled' : 'missing',
         secret: item.secret,
+        generated: item.generated === true,
       })),
       recent: recent.map(lineOf),
       writeFailureCount: deps.writeFailureCount(),
@@ -182,4 +185,13 @@ export async function setExternalSetting(
   const written = await deps.settings.set(ref, settingId, value, by);
   if (!written.ok) return written;
   return { ok: true };
+}
+
+export async function clearExternalSetting(
+  deps: ExternalSystemsDeps,
+  ref: ExternalRef,
+  settingId: string,
+  by: string,
+): Promise<{ ok: true } | { ok: false; code: 'refused' }> {
+  return deps.settings.clear(ref, settingId, by);
 }

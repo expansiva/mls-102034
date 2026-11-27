@@ -29,6 +29,7 @@ interface SettingView {
   settingId: string;
   status: 'filled' | 'missing';
   secret: boolean;
+  generated?: boolean;
 }
 
 interface CallLine {
@@ -140,6 +141,24 @@ export class MonitorWebDesktopExternalSystemsPage extends CollabLitElement {
     }
   }
 
+  private async clearSetting(systemId: string, settingId: string) {
+    const text = pageText();
+    if (!window.confirm(text.clearWarning)) return;
+    this.busy = true;
+    const res = await execBff<{ ok: true }>(
+      'monitor.externalSettings.clear',
+      { moduleId: this.moduleId, systemId, settingId },
+      { mode: 'silent' },
+    );
+    this.busy = false;
+    if (!res.ok) {
+      this.status = externalSystemsErrorText(res.error?.code, text, text.clearFailed);
+      return;
+    }
+    this.status = text.cleared;
+    await this.load();
+  }
+
   private async saveSetting(systemId: string, settingId: string) {
     const text = pageText();
     const key = this.draftKey(systemId, settingId);
@@ -214,22 +233,31 @@ export class MonitorWebDesktopExternalSystemsPage extends CollabLitElement {
                   <span class="text-xs ${setting.status === 'filled' ? 'ok' : 'warn'}">
                     ${setting.status === 'filled' ? text.filled : text.missing}
                   </span>
-                  <input
-                    class="rounded-full px-3 py-1 text-sm"
-                    type=${setting.secret ? 'password' : 'text'}
-                    placeholder=${text.newValue}
-                    autocomplete="off"
-                    .value=${this.drafts[key] ?? ''}
-                    @input=${(event: Event) => {
-                      const value = (event.target as HTMLInputElement).value;
-                      this.drafts = { ...this.drafts, [key]: value };
-                    }}
-                  />
-                  <button
-                    class="primary rounded-full px-3 py-1 text-xs disabled:opacity-50"
-                    ?disabled=${this.busy}
-                    @click=${() => { void this.saveSetting(system.systemId, setting.settingId); }}
-                  >${text.save}</button>
+                  ${setting.generated
+                    ? html`
+                      <span class="muted text-xs">${text.generated}</span>
+                      <button
+                        class="rounded-full px-3 py-1 text-xs disabled:opacity-50"
+                        ?disabled=${this.busy || setting.status !== 'filled'}
+                        @click=${() => { void this.clearSetting(system.systemId, setting.settingId); }}
+                      >${text.clear}</button>`
+                    : html`
+                      <input
+                        class="rounded-full px-3 py-1 text-sm"
+                        type=${setting.secret ? 'password' : 'text'}
+                        placeholder=${text.newValue}
+                        autocomplete="off"
+                        .value=${this.drafts[key] ?? ''}
+                        @input=${(event: Event) => {
+                          const value = (event.target as HTMLInputElement).value;
+                          this.drafts = { ...this.drafts, [key]: value };
+                        }}
+                      />
+                      <button
+                        class="primary rounded-full px-3 py-1 text-xs disabled:opacity-50"
+                        ?disabled=${this.busy}
+                        @click=${() => { void this.saveSetting(system.systemId, setting.settingId); }}
+                      >${text.save}</button>`}
                 </li>
               `;
             })}

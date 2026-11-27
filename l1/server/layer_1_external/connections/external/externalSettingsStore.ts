@@ -70,6 +70,8 @@ export interface ExternalSettingsStore {
    * Not generated without the key of the VM (`disabled`).
    */
   ensureGeneratedSecret(ref: ExternalRef, settingId: string, by?: string): Promise<ExternalSecretRead>;
+  /** Deletes the value of a declared setting. On a `generated` secret it is the swap: the next outbound call makes another. */
+  clear(ref: ExternalRef, settingId: string, by: string): Promise<{ ok: true } | { ok: false; code: 'refused' }>;
 }
 
 export interface ExternalSettingsDeps {
@@ -200,6 +202,17 @@ export function createExternalSettingsStore(deps: ExternalSettingsDeps): Externa
       return { ok: true };
     },
 
+    async clear(ref, settingId, by) {
+      const declaration = await declarationOf(ref);
+      if (!declaration?.settings.some((item) => item.id === settingId)) return { ok: false, code: 'refused' };
+      await deps.db.query(
+        `DELETE FROM ${table} WHERE ${quote('projectId')} = $1 AND ${quote('systemId')} = $2 AND ${quote('settingId')} = $3`,
+        [ref.projectId, ref.systemId, settingId],
+      );
+      log(`[external] setting cleared ${ref.systemId}.${settingId} by ${by}`);
+      return { ok: true };
+    },
+
     async status(projectId, systemId) {
       const stored = await rowsOf(projectId, systemId);
       const filled = new Map(stored.map((row) => [row.settingId, row.value.length > 0]));
@@ -278,6 +291,10 @@ export function memorySettingsDb(): ExternalSettingsDb {
   const rows = new Map<string, { value: string; secret: boolean; writtenBy: string; writtenAt: string }>();
   return {
     async query(sql, params = []) {
+      if (sql.startsWith('DELETE')) {
+        rows.delete(`${String(params[0])}\0${String(params[1])}\0${String(params[2])}`);
+        return { rows: [] };
+      }
       if (sql.startsWith('SELECT')) {
         const projectId = String(params[0]);
         const systemId = String(params[1]);

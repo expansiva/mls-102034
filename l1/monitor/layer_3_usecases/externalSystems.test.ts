@@ -112,6 +112,12 @@ function deps(): ExternalSystemsDeps & { stored: Map<string, string> } {
         stored.set(`${ref.systemId}\0${settingId}`, value);
         return { ok: true };
       },
+      async clear(ref, settingId) {
+        const source = ref.systemId === 'billing' ? declaration : bare;
+        if (!source.settings.some((item) => item.id === settingId)) return { ok: false, code: 'refused' };
+        stored.delete(`${ref.systemId}\0${settingId}`);
+        return { ok: true };
+      },
     },
     async recentCalls() {
       return [row()];

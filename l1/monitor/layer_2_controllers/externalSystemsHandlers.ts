@@ -17,6 +17,7 @@ import {
   externalSystemsOf,
   externalSystemsScope,
   modulesWithSystems,
+  clearExternalSetting,
   setExternalSetting,
   type ExternalSystemsDeps,
 } from '/_102034_/l1/monitor/layer_3_usecases/externalSystems.js';
@@ -116,5 +117,27 @@ export const monitorExternalSettingSetHandler: BffHandler = async (input) => {
       written.code === 'disabled' ? 503 : 400,
     );
   }
+  return { ok: true, data: { ok: true }, error: null };
+};
+
+export const monitorExternalSettingClearHandler: BffHandler = async (input) => {
+  const { request } = input;
+  const params = (request.params ?? {}) as Record<string, unknown>;
+  const projectId = projectIdOf();
+  const moduleId = text(params.moduleId);
+  // The same authority as writing a setting.
+  requireScope(request.meta?.verifiedAuthorities, moduleId, { write: true, agent: isAgentRequest(input) });
+  const systemId = text(params.systemId);
+  const settingId = text(params.settingId);
+  if (projectId === '' || moduleId === '' || systemId === '' || settingId === '') {
+    throw new AppError('INVALID_REQUEST', 'projectId, moduleId, systemId and settingId are required.', 400);
+  }
+  const cleared = await clearExternalSetting(
+    monitorDeps(),
+    { projectId, moduleId, systemId },
+    settingId,
+    request.meta?.verifiedEmail || request.meta?.verifiedUserId || 'admin',
+  );
+  if (!cleared.ok) throw new AppError('SETTING_REFUSED', 'That setting is not in the declaration.', 400);
   return { ok: true, data: { ok: true }, error: null };
 };

@@ -142,3 +142,26 @@ describe('rt331 s1: the outbound call makes the secret it cites', () => {
     assert.deepEqual(result.ok === false && result.missing, ['signingKey']);
   });
 });
+
+describe('rt331 s2: clear (delete a setting)', () => {
+  it('a generated secret is swapped: after clear the next outbound call makes ANOTHER value; the hook reads the new one', async () => {
+    const { store } = storeOf();
+    const first = await store.ensureGeneratedSecret(ref, GEN);
+    assert.deepEqual(await store.clear(ref, GEN, 'admin'), { ok: true });
+    assert.deepEqual(await store.secretOf(ref, GEN), { ok: true, value: undefined }, 'nothing to read until the next activation');
+    const second = await store.ensureGeneratedSecret(ref, GEN);
+    assert.equal(first.ok && second.ok && first.value !== second.value, true);
+  });
+
+  it('a secret that is not generated, once cleared, leaves the outbound call `disabled` with missing', async () => {
+    const { store } = storeOf();
+    assert.deepEqual(await store.set(ref, 'manualKey', 'typed-by-hand', 'admin'), { ok: true });
+    assert.deepEqual(await store.clear(ref, 'manualKey', 'admin'), { ok: true });
+    assert.deepEqual(await store.secretOf(ref, 'manualKey'), { ok: true, value: undefined });
+  });
+
+  it('a setting that is not in the declaration is refused', async () => {
+    const { store } = storeOf();
+    assert.deepEqual(await store.clear(ref, 'nothing', 'admin'), { ok: false, code: 'refused' });
+  });
+});

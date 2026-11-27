@@ -30,6 +30,7 @@ import {
   monitorTestsRunHandler,
 } from '/_102034_/l1/monitor/layer_2_controllers/testsHandlers.js';
 import {
+  monitorExternalSettingClearHandler,
   monitorExternalSettingSetHandler,
   monitorExternalSystemsListHandler,
 } from '/_102034_/l1/monitor/layer_2_controllers/externalSystemsHandlers.js';
@@ -67,6 +68,7 @@ export function createMonitorRouter(): Map<string, BffHandler> {
     ['monitor.tests.results', monitorTestsResultsHandler],
     ['monitor.externalSystems.list', monitorExternalSystemsListHandler],
     ['monitor.externalSettings.set', monitorExternalSettingSetHandler],
+    ['monitor.externalSettings.clear', monitorExternalSettingClearHandler],
     ['monitor.moduleEvents.list', monitorModuleEventsListHandler],
   ]);
 }
