@@ -7,6 +7,7 @@
  */
 import { callerModuleOf } from '/_102034_/l1/server/layer_1_external/connections/callerModule.js';
 import { ONCE_ANSWER_TABLE } from '/_102034_/l1/server/layer_1_external/connections/cm/onceStore.js';
+import { platformTransactionAccess } from '/_102034_/l1/server/layer_1_external/data/moduleDataRuntime.js';
 import type { RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [k: string]: JsonValue };
@@ -34,10 +35,10 @@ export async function once<T extends JsonValue>(
   if (typeof where?.scope !== 'string' || where.scope === '' || typeof where.key !== 'string' || where.key === '') {
     throw new Error('[once] scope and key are required');
   }
-  const data = ctx.data.moduleData;
-  if (data.inTransaction?.() !== true) throw new Error('[once] has to run inside a transaction (serveCm or runInTransaction)');
+  const access = platformTransactionAccess(ctx.data.moduleData);
+  if (access?.inTransaction !== true) throw new Error('[once] has to run inside a transaction (serveCm or runInTransaction)');
 
-  const sql = data.transactionSql?.();
+  const sql = access.sql;
   if (sql === undefined) {
     const id = `${moduleId}\0${where.scope}\0${where.key}`;
     if (memory.has(id)) return clone(memory.get(id) as T);

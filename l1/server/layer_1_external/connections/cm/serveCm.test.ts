@@ -1,8 +1,12 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/connections/cm/serveCm.test.ts" enhancement="_blank" />
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 import { AppError, type BffRequest, type BffResponse, type IRequestEnvelope, type RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import { runAsCallerModule } from '/_102034_/l1/server/layer_1_external/connections/callerModule.js';
+import { cmServeInputTypes } from '/_102034_/l1/server/layer_1_external/connections/cm/cmInputTypes.js';
 import { checkCmServeInput } from '/_102034_/l1/server/layer_1_external/connections/cm/cmInputCheck.js';
 import { serveCm, type CmServeAnswer } from '/_102034_/l1/server/layer_1_external/connections/cm/serveCm.js';
 import { createConnectionServer } from '/_102034_/l1/workflow/connectionServe.js';
@@ -33,7 +37,7 @@ describe('rt325 s3: the input of the cm, by the type of cm.ts', () => {
     assert.equal(checkCmServeInput('disableChannel', { target: { botRef: 'b' }, reason: 'x' }), null);
     assert.match(checkCmServeInput('disableChannel', { target: { botRef: 'b' } }) ?? '', /^reason is required/u);
     assert.match(checkCmServeInput('record', { executionId: 'e', agentId: 'a', mode: 'maybe' }) ?? '', /mode is not a permitted value/u);
-    assert.match(checkCmServeInput('nothing', {}) ?? '', /does not serve nothing/u);
+    assert.throws(() => checkCmServeInput('nothing', {}), (e: unknown) => e instanceof AppError && e.statusCode === 503, 'an operation without a type is unavailable, never a pass');
   });
 
   it('the default reader is unchanged: without keepUnions a union of objects is still `unknown`', () => {
@@ -50,10 +54,9 @@ describe('rt325 s3: the input of the cm, by the type of cm.ts', () => {
 function harness() {
   const events: string[] = [];
   const moduleData = {
-    inTransaction: () => false,
     runInTransaction: async <T>(callback: (tx: unknown) => Promise<T>): Promise<T> => {
       events.push('begin');
-      const tx = { marker: 'tx', inTransaction: () => true };
+      const tx = { marker: 'tx' };
       try {
         const result = await callback(tx);
         events.push('commit');
@@ -79,6 +82,28 @@ function harness() {
 }
 
 const asModule = <T>(work: () => T): T => runAsCallerModule('telegram', work);
+
+describe('rt325 s3b: the input types are data that follow the source of cm.ts', () => {
+  it('the tree of cmInputTypes is exactly what the contract reader reads from cm.ts, for every served operation', () => {
+    const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..', '..', 'l2', 'shared', 'contracts', 'connections', 'cm.ts'), 'utf8');
+    const { types } = parseContractSource(source, { keepUnions: true });
+    for (const operation of cmCatalog.operations.filter((candidate) => candidate.direction === 'serve')) {
+      assert.deepEqual(cmServeInputTypes[operation.inputType], types[operation.inputType], operation.inputType);
+    }
+    for (const [name, node] of Object.entries(cmServeInputTypes)) assert.deepEqual(node, types[name], name);
+  });
+  it('a type that is missing is unavailable with a line in the log', () => {
+    const lines: string[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => { lines.push(args.map(String).join(' ')); };
+    try {
+      assert.throws(() => checkCmServeInput('nothing', {}), /not known by this release/u);
+    } finally {
+      console.error = original;
+    }
+    assert.match(lines[0] ?? '', /no input type for the served operation nothing/u);
+  });
+});
 
 describe('rt325 s3: serveCm', () => {
   it('runs decide inside the transaction, with the ctx bound to it, and answers the output', async () => {

@@ -102,10 +102,22 @@ export interface IModuleDataRuntime {
   getTable<TRecord extends object>(repositoryNameOrTableName: string): Promise<ITableRepository<TRecord>>;
   listTables(): Promise<ResolvedTableDefinition[]>;
   runInTransaction<TValue>(callback: (runtime: IModuleDataRuntime) => Promise<TValue>): Promise<TValue>;
-  /** Platform only (`once`): true for the runtime that `runInTransaction` hands to its callback. */
-  inTransaction?(): boolean;
-  /** Platform only (`once`): SQL on the connection of the running transaction, so a platform table commits or rolls back with the module's writes. Undefined outside one and in memory. */
-  transactionSql?(): { query(sql: string, params?: unknown[]): Promise<{ rows: Array<Record<string, unknown>> }> } | undefined;
+}
+
+/**
+ * What only the platform reads from a runtime (`once`): whether it is the runtime of a transaction, and the SQL of that
+ * transaction's connection, so a platform table commits or rolls back with the module's writes. It is NOT on `IModuleDataRuntime`:
+ * generated code sees that interface and cannot reach it.
+ */
+export interface PlatformTransactionAccess {
+  inTransaction: boolean;
+  sql?: { query(sql: string, params?: unknown[]): Promise<{ rows: Array<Record<string, unknown>> }> };
+}
+
+const platformAccess = new WeakMap<object, PlatformTransactionAccess>();
+
+export function platformTransactionAccess(runtime: IModuleDataRuntime): PlatformTransactionAccess | undefined {
+  return platformAccess.get(runtime);
 }
 
 type RegistryWriteBehindPayload = {
@@ -545,10 +557,8 @@ class MemoryModuleDataRuntime implements IModuleDataRuntime {
     private readonly env: AppEnv,
     private readonly store = new Map<string, object[]>(),
     private readonly inTx = false,
-  ) {}
-
-  public inTransaction(): boolean {
-    return this.inTx;
+  ) {
+    platformAccess.set(this, { inTransaction: inTx });
   }
 
   public async getTable<TRecord extends object>(repositoryNameOrTableName: string): Promise<ITableRepository<TRecord>> {
@@ -590,7 +600,15 @@ class PostgresModuleDataRuntime implements IModuleDataRuntime {
   public constructor(
     private readonly env: AppEnv,
     private readonly executor: PgExecutor = getSharedPgPool(env),
-  ) {}
+  ) {
+    const inTransaction = 'release' in executor;
+    platformAccess.set(this, {
+      inTransaction,
+      ...(inTransaction
+        ? { sql: { query: async (sql: string, params?: unknown[]) => ({ rows: (await executor.query(sql, params as unknown[])).rows as Array<Record<string, unknown>> }) } }
+        : {}),
+    });
+  }
 
   public async getTable<TRecord extends object>(repositoryNameOrTableName: string): Promise<ITableRepository<TRecord>> {
     const definition = await findResolvedTableDefinition(repositoryNameOrTableName, this.env);
@@ -616,17 +634,6 @@ class PostgresModuleDataRuntime implements IModuleDataRuntime {
 
   public async listTables(): Promise<ResolvedTableDefinition[]> {
     return loadResolvedTableDefinitions(this.env);
-  }
-
-  public inTransaction(): boolean {
-    return 'release' in this.executor;
-  }
-
-  public transactionSql(): { query(sql: string, params?: unknown[]): Promise<{ rows: Array<Record<string, unknown>> }> } | undefined {
-    const executor = this.executor;
-    return 'release' in executor
-      ? { query: async (sql, params) => ({ rows: (await executor.query(sql, params as unknown[])).rows as Array<Record<string, unknown>> }) }
-      : undefined;
   }
 
   public async runInTransaction<TValue>(callback: (runtime: IModuleDataRuntime) => Promise<TValue>): Promise<TValue> {

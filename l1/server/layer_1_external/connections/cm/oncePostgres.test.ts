@@ -8,7 +8,7 @@ import type { AppEnv } from '/_102034_/l1/server/layer_1_external/config/env.js'
 import { runAsCallerModule } from '/_102034_/l1/server/layer_1_external/connections/callerModule.js';
 import { once } from '/_102034_/l1/server/layer_1_external/connections/cm/once.js';
 import { onceAnswerDefinition } from '/_102034_/l1/server/layer_1_external/connections/cm/onceStore.js';
-import { createPostgresModuleDataRuntime } from '/_102034_/l1/server/layer_1_external/data/moduleDataRuntime.js';
+import { createPostgresModuleDataRuntime, platformTransactionAccess } from '/_102034_/l1/server/layer_1_external/data/moduleDataRuntime.js';
 import { buildCreateIndexSql, buildCreateTableSql } from '/_102034_/l1/server/layer_1_external/persistence/schemaBootstrap.js';
 import type { RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 
@@ -58,7 +58,7 @@ describe('rt325 s1: once (Postgres, real transaction)', { skip: url === '' }, ()
     }));
   }
   const write = async (ctx: RequestContext, id: string) => {
-    await ctx.data.moduleData.transactionSql?.()?.query('INSERT INTO module_effect (id) VALUES ($1)', [id]);
+    await platformTransactionAccess(ctx.data.moduleData)?.sql?.query('INSERT INTO module_effect (id) VALUES ($1)', [id]);
   };
 
   it('two simultaneous requests with the same key: one execution, the same answer', async () => {

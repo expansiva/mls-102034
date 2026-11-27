@@ -3,58 +3,10 @@
  * The input of an operation the cm serves, checked against the TYPE of `cm.ts` (the source of the catalog): every alternative of a
  * union of objects, the required and the optional fields, no field that the type does not name. The type is read once per process.
  */
-import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { parseContractSource, type AsTypeNode } from '/_102034_/l1/workflow/assistantContractSource.js';
-import { resolveProjectsPath } from '/_102034_/l1/server/layer_1_external/config/projectConfig.js';
+import { AppError } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
+import type { AsTypeNode } from '/_102034_/l1/workflow/assistantContractSource.js';
+import { cmServeInputTypes } from '/_102034_/l1/server/layer_1_external/connections/cm/cmInputTypes.js';
 import { cm as cmCatalog } from '/_102034_/l2/shared/contracts/connections/cm.js';
-
-type Parsed = { types: Record<string, AsTypeNode> };
-
-let loaded: Parsed | null | undefined;
-let sourceOverride: string | undefined;
-
-/** Test only: the text of `cm.ts` to read the types from (undefined restores the file). */
-export function setCmContractSourceForTests(source?: string): void {
-  sourceOverride = source;
-  loaded = undefined;
-}
-
-function candidates(): string[] {
-  const here = dirname(fileURLToPath(import.meta.url));
-  return [
-    // The source tree (tsx, tests): l1/server/layer_1_external/connections/cm → l2/shared/contracts/connections.
-    join(here, '..', '..', '..', '..', '..', 'l2', 'shared', 'contracts', 'connections', 'cm.ts'),
-    // The platform repository next to the apps, and a source copy kept in the release.
-    resolveProjectsPath('mls-102034/l2/shared/contracts/connections/cm.ts'),
-    resolveProjectsPath('dist/local/_102034_/l2/shared/contracts/connections/cm.ts'),
-  ];
-}
-
-function types(): Parsed | null {
-  if (loaded !== undefined) return loaded;
-  let source = sourceOverride;
-  if (source === undefined) {
-    for (const file of candidates()) {
-      try {
-        if (existsSync(file)) {
-          source = readFileSync(file, 'utf8');
-          break;
-        }
-      } catch {
-        // the next candidate
-      }
-    }
-  }
-  if (source === undefined) {
-    console.warn('[cm] the source of the contract types (cm.ts) is not in this install: the input of the cm is not checked by type here');
-    loaded = null;
-    return loaded;
-  }
-  loaded = parseContractSource(source, { keepUnions: true });
-  return loaded;
-}
 
 function describe(node: AsTypeNode, all: Record<string, AsTypeNode>): string {
   switch (node.kind) {
@@ -138,16 +90,16 @@ function problem(value: unknown, node: AsTypeNode, all: Record<string, AsTypeNod
   }
 }
 
-/** The input of a served operation of the cm against its type in `cm.ts`; null when it fits (or when the types are not in this install). */
+/**
+ * The input of a served operation of the cm against its type (data of `cmInputTypes.ts`); null when it fits.
+ * An operation or a type that is not there is NOT a pass: it is `unavailable` (503) with a line in the log, so a missing type is seen.
+ */
 export function checkCmServeInput(operationId: string, input: unknown): string | null {
-  const parsed = types();
-  if (parsed === null) return null;
   const operation = cmCatalog.operations.find((candidate) => candidate.direction === 'serve' && candidate.operationId === operationId);
-  if (!operation) return `the cm does not serve ${operationId}`;
-  const node = parsed.types[operation.inputType];
-  if (!node) {
-    console.warn(`[cm] the type ${operation.inputType} is not in cm.ts: the input of ${operationId} is not checked by type`);
-    return null;
+  const node = operation ? cmServeInputTypes[operation.inputType] : undefined;
+  if (!operation || !node) {
+    console.error(`[cm] no input type for the served operation ${operationId}${operation ? ` (${operation.inputType})` : ''}: refused as unavailable`);
+    throw new AppError('CM_INPUT_TYPE_MISSING', `The input type of ${operationId} is not known by this release.`, 503);
   }
-  return problem(input, node, parsed.types, '', 0);
+  return problem(input, node, cmServeInputTypes, '', 0);
 }
