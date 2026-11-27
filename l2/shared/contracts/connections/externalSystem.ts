@@ -20,6 +20,11 @@ const IPV4 = /^(?:\d{1,3}\.){3}\d{1,3}$/;
 export interface ExternalSettingRef {
   id: string;
   secret: boolean;
+  /**
+   * Only with `secret: true`. The platform makes the value (32 random bytes, base64url) the first time it is needed and keeps it; nobody types it.
+   * A value already stored by hand stays as it is. The inbound hook never generates: it reads what the outbound call made.
+   */
+  generated?: true;
   /** Text for the configuration page. Optional; when present, not empty. */
   title?: string;
   description?: string;
@@ -290,7 +295,12 @@ export function validateExternalSystemDeclaration(value: unknown): ExternalDecla
           found.push(problem(`settings[${index}].${field} is present but not a non-empty text`));
         }
       }
-      settings.push({ id: item.id, secret: item.secret });
+      if (item.generated !== undefined && item.generated !== true) {
+        found.push(problem(`settings[${index}].generated is present but not true`));
+      } else if (item.generated === true && item.secret !== true) {
+        found.push(problem(`settings[${index}].generated is only valid with secret: true`));
+      }
+      settings.push({ id: item.id, secret: item.secret, ...(item.generated === true ? { generated: true as const } : {}) });
     });
   }
   const byId = settingIndex(settings);

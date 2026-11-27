@@ -148,6 +148,11 @@ export function createProductionExternalSender(db: ExternalCallDb | null = callD
       if (!read.ok) return null;
       return read.value ?? null;
     },
+    ensureSecret: async (ref, id) => {
+      const read = await settings.ensureGeneratedSecret(ref, id);
+      if (!read.ok) return null;
+      return read.value ?? null;
+    },
     async record(event: ExternalRecordEvent): Promise<void> {
       if (!db) return;
       await writeExternalCallPair(db, externalCallRowFromEvent(event));

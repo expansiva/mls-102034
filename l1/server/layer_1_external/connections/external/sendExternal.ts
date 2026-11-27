@@ -83,6 +83,8 @@ export interface ExternalSenderDeps {
   declarationOf(ref: ExternalRef): Promise<ExternalSystemDeclaration | null> | ExternalSystemDeclaration | null;
   settingOf(ref: ExternalRef, settingId: string): Promise<string | null> | string | null;
   secretOf(ref: ExternalRef, settingId: string): Promise<string | null> | string | null;
+  /** The value of a secret the declaration marks `generated`: made here the first time, then the same. Only the outbound call asks; the hook never does. */
+  ensureSecret?(ref: ExternalRef, settingId: string): Promise<string | null> | string | null;
   record(event: ExternalRecordEvent): Promise<void> | void;
   transport(call: ExternalTransportCall): Promise<ExternalTransportResponse>;
   resolveHost(host: string): Promise<string[]>;
@@ -387,8 +389,11 @@ export function createExternalSender(deps: ExternalSenderDeps): ExternalSender {
       const secretValues = new Map<string, string>();
       const settingValues = new Map<string, string>();
       const missing: string[] = [];
+      const generated = new Set(declaration.settings.filter((item) => item.generated === true).map((item) => item.id));
       for (const id of cites.secrets) {
-        const value = await read(deps.secretOf(ref, id));
+        let value = await read(deps.secretOf(ref, id));
+        // A `generated` secret without a value is made now (never one a person wrote: that one is read above and stays).
+        if (!value && generated.has(id) && deps.ensureSecret) value = await read(deps.ensureSecret(ref, id));
         if (!value) missing.push(id);
         else secretValues.set(id, value);
       }

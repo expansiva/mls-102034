@@ -178,7 +178,7 @@ export async function setExternalSetting(
   settingId: string,
   value: string,
   by: string,
-): Promise<{ ok: true } | { ok: false; code: 'disabled' | 'refused' }> {
+): Promise<{ ok: true } | { ok: false; code: 'disabled' | 'refused' | 'generated' }> {
   const written = await deps.settings.set(ref, settingId, value, by);
   if (!written.ok) return written;
   return { ok: true };

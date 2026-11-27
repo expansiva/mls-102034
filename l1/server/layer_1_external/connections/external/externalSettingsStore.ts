@@ -51,7 +51,9 @@ export interface ExternalSettingStatus {
 export type ExternalSettingWrite =
   | { ok: true }
   | { ok: false; code: 'disabled' }
-  | { ok: false; code: 'refused' };
+  | { ok: false; code: 'refused' }
+  /** The setting is `generated`: the platform makes the value, nobody writes it. */
+  | { ok: false; code: 'generated' };
 
 export type ExternalSecretRead =
   | { ok: true; value: string | undefined }
@@ -62,6 +64,12 @@ export interface ExternalSettingsStore {
   status(projectId: string, systemId: string): Promise<ExternalSettingStatus[]>;
   settingOf(ref: ExternalRef, settingId: string): Promise<string | undefined>;
   secretOf(ref: ExternalRef, settingId: string): Promise<ExternalSecretRead>;
+  /**
+   * The value of a `generated` secret: the one already stored (by hand too), or a new one made now (32 random bytes, base64url) and kept
+   * only if there is none (`INSERT … ON CONFLICT DO NOTHING`, then read again): two callers at once get the same value.
+   * Not generated without the key of the VM (`disabled`).
+   */
+  ensureGeneratedSecret(ref: ExternalRef, settingId: string, by?: string): Promise<ExternalSecretRead>;
 }
 
 export interface ExternalSettingsDeps {
@@ -179,6 +187,7 @@ export function createExternalSettingsStore(deps: ExternalSettingsDeps): Externa
       const declaration = await declarationOf(ref);
       const declared = declaration?.settings.find((item) => item.id === settingId);
       if (!declared) return { ok: false, code: 'refused' };
+      if (declared.generated === true) return { ok: false, code: 'generated' };
       if (declared.secret && !deps.key) {
         noteSecretsDisabled(log);
         return { ok: false, code: 'disabled' };
@@ -212,6 +221,36 @@ export function createExternalSettingsStore(deps: ExternalSettingsDeps): Externa
       const row = (await rowsOf(ref.projectId, ref.systemId)).find((item) => item.settingId === settingId);
       if (!row || row.secret) return undefined;
       return row.value;
+    },
+
+    async ensureGeneratedSecret(ref, settingId, by = 'platform:generated') {
+      const declaration = await declarationOf(ref);
+      const declared = declaration?.settings.find((item) => item.id === settingId);
+      if (!declared?.secret || declared.generated !== true) return { ok: true, value: undefined };
+      if (!deps.key) {
+        noteSecretsDisabled(log);
+        return { ok: false, code: 'disabled' };
+      }
+      const aad = settingAad(ref.projectId, ref.systemId, settingId);
+      const openStored = async (): Promise<ExternalSecretRead | undefined> => {
+        const row = (await rowsOf(ref.projectId, ref.systemId)).find((item) => item.settingId === settingId);
+        if (!row) return undefined;
+        const plain = deps.key ? openSettingValue(deps.key, row.value, aad) : null;
+        if (plain === null) {
+          log(`[external] secret unreadable ${ref.systemId}.${settingId}`);
+          return { ok: false, code: 'disabled' };
+        }
+        return { ok: true, value: plain };
+      };
+      const existing = await openStored();
+      if (existing) return existing;
+      const made = randomBytes(32).toString('base64url');
+      await deps.db.query(
+        `INSERT INTO ${table} (${quote('projectId')}, ${quote('systemId')}, ${quote('settingId')}, ${quote('value')}, ${quote('secret')}, ${quote('writtenBy')}, ${quote('writtenAt')}) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (${quote('projectId')}, ${quote('systemId')}, ${quote('settingId')}) DO NOTHING`,
+        [ref.projectId, ref.systemId, settingId, sealSettingValue(deps.key, made, aad), true, by, now().toISOString()],
+      );
+      // Read again: when another caller won the race, its value is the one that stays.
+      return (await openStored()) ?? { ok: false, code: 'disabled' };
     },
 
     async secretOf(ref, settingId) {
@@ -252,7 +291,9 @@ export function memorySettingsDb(): ExternalSettingsDb {
         return { rows: found };
       }
       const [projectId, systemId, settingId, value, secret, writtenBy, writtenAt] = params;
-      rows.set(`${String(projectId)}\0${String(systemId)}\0${String(settingId)}`, {
+      const rowKey = `${String(projectId)}\0${String(systemId)}\0${String(settingId)}`;
+      if (sql.includes('DO NOTHING') && rows.has(rowKey)) return { rows: [] };
+      rows.set(rowKey, {
         value: String(value),
         secret: secret === true,
         writtenBy: String(writtenBy),
