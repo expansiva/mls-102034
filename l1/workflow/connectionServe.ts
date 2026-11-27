@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { WORKFLOW_CM_ERROR_CODES } from '/_102034_/l1/workflow/messagesOccurrence.js';
 import type { BffRequest, BffResponse, RequestContext } from '/_102034_/l1/server/layer_2_controllers/contracts.js';
 import { mapBffResult, type AssistantOutcome } from '/_102034_/l1/workflow/assistantExec.js';
 import type { DefsReader } from '/_102034_/l1/workflow/assistantCatalogDefs.js';
@@ -224,7 +225,9 @@ export function createConnectionServer(deps: ConnectionServerDeps): (input: Conn
           },
         },
       }, ctx);
-      const mapped = mapBffResult(answer.response, answer.statusCode, { actors: [] });
+      // An error of the platform toward the cm (WORKFLOW_CM_*) is infrastructure, not the module saying no: unavailable, whatever the status.
+      const infra = !answer.response.ok && WORKFLOW_CM_ERROR_CODES.has(answer.response.error?.code ?? '');
+      const mapped = mapBffResult(answer.response, infra ? 503 : answer.statusCode, { actors: [] });
       result = mapped.outcome === 'done'
         ? { ok: true, output: mapped.data }
         : { ok: false, code: CODE_OF[mapped.outcome], message: mapped.error?.message || mapped.error?.code || mapped.outcome };

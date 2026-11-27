@@ -147,6 +147,15 @@ describe('rt319 s2: arrival at the hook of a system declared by a module', () =>
     await app.close();
   });
 
+  it('rt330: the cm of the platform refusing with a 401 (a broken token, WORKFLOW_CM_REJECTED) is a 503 and the notice is given back, not a 200 refused', async () => {
+    const { app, forgotten, records } = build(async () => ({ response: { ok: false, data: null, error: { code: 'WORKFLOW_CM_REJECTED', message: 'Module task was rejected.' } } as BffResponse, statusCode: 401 }));
+    const first = await app.inject({ method: 'POST', url, headers: headers(), payload });
+    assert.equal(first.statusCode, 503);
+    assert.equal(records.at(-1)?.outcome, 'unavailable');
+    assert.equal(forgotten.length, 1, 'given back, so the sender retry is delivered');
+    await app.close();
+  });
+
   it('503 when the route fails: the notice is given back and, sent again, it is delivered again (not duplicate)', async () => {
     let fail = true;
     const calls: string[] = [];

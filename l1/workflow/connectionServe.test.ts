@@ -377,3 +377,15 @@ test('rt328: every line of serve carries the requestId: ok, a 4xx refusal, a 5xx
   assert.match(early.logs[0], /reason=ids ms=\d+ requestId=/u);
   for (const line of [...ok.logs, ...refused.logs, ...noKey.logs, ...early.logs]) assert.equal(/secret|sentinel/u.test(line), false);
 });
+
+test('rt330: an error of the platform toward the cm (WORKFLOW_CM_*) is unavailable whatever its status; the same status from a module stays what it was', async () => {
+  for (const [code, status] of [['WORKFLOW_CM_REJECTED', 401], ['WORKFLOW_CM_REJECTED', 403], ['WORKFLOW_CM_REJECTED', 404], ['WORKFLOW_CM_REJECTED', 422], ['WORKFLOW_CM_PROTOCOL_ERROR', 502], ['WORKFLOW_CM_BUSY', 409], ['WORKFLOW_CM_TASK_INCOMPLETE', 400], ['WORKFLOW_CM_ROOM_UNAVAILABLE', 404]] as const) {
+    const h = harness({ answer: { response: { ok: false, data: null, error: { code, message: 'cm said no' } } as BffResponse, statusCode: status } });
+    const result = await h.serve(call('describe', CONTEXT, { idempotencyKey: `key-${code}-${status}` }));
+    assert.equal(result.ok === false && result.code, 'unavailable', `${code} ${status}`);
+    assert.match(h.logs[0], new RegExp(`status=${status} error=${code} message=`, 'u'), 'the line keeps the original code and status');
+  }
+  const module = harness({ answer: { response: { ok: false, data: null, error: { code: 'FORBIDDEN_ACTOR', message: 'no authority' } } as BffResponse, statusCode: 403 } });
+  const refused = await module.serve(call('describe', CONTEXT));
+  assert.equal(refused.ok === false && refused.code, 'forbidden', 'the 403 of a module is still forbidden');
+});

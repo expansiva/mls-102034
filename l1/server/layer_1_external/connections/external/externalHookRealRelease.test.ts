@@ -93,7 +93,7 @@ describe('the hook through the production wiring and the source of 102047 (rt322
     const record = records.at(-1);
     assert.equal(record?.outcome, 'refused');
     assert.match(record?.denialReason ?? '', /^not_found: /u);
-    assert.equal(forgotten.includes('101'), false, 'the notice is kept');
+    assert.equal(forgotten.some((id) => id.startsWith('101')), false, 'the notice is kept');
     const again = await post(app, 101, '?b=ghost');
     assert.equal(again.statusCode, 200);
     assert.deepEqual(JSON.parse(again.body), { ok: true, message: 'already received' });
@@ -109,23 +109,22 @@ describe('the hook through the production wiring and the source of 102047 (rt322
     assert.equal(first.statusCode, 200);
     assert.equal(records.at(-1)?.outcome, 'refused');
     assert.match(records.at(-1)?.denialReason ?? '', /^refused: The delivery address has no bot parameter/u);
-    assert.equal(forgotten.includes('102'), false);
+    assert.equal(forgotten.some((id) => id.startsWith('102')), false);
   });
 
-  it('3. a bot the module knows but that is paused: the route answers as the module says (refused, not an error), 200 and a repeat is a duplicate', async () => {
+  it('3. a bot the module knows but the cm of the platform fails (no cm here: WORKFLOW_CM_REJECTED): 503 and the notice is given back; a repeat is delivered again', async () => {
     const app = build();
     await post(app, 103, '?b=ghost');
     const bots = runAsCallerModule('telegram', () => resolveRepository<{ create(bot: unknown): Promise<unknown> }>(createAssistantContext(PROJECT), 'TelegramBotRepository'));
     await bots.create({ id: 'bot-7', version: 1, name: 'Bot 7', audience: 'employees', agentId: 'agent-1', status: 'paused', details: { accessKey: 'key-123456' } });
     logs.length = 0;
     const first = await post(app, 104, '?b=bot-7');
-    originalLog(`CASE3 HTTP ${first.statusCode} ${first.body} outcome=${records.at(-1)?.outcome} reason=${records.at(-1)?.denialReason ?? '-'}`);
-    assert.equal(first.statusCode, 200);
-    assert.equal(forgotten.includes('104'), false, 'kept');
+    originalLog(`CASE3 HTTP ${first.statusCode} ${first.body} outcome=${records.at(-1)?.outcome}`);
+    assert.equal(first.statusCode, 503);
+    assert.equal(forgotten.some((id) => id.startsWith('104')), true, 'given back');
+    assert.equal(records.at(-1)?.outcome, 'unavailable');
+    assert.equal(logs.some((line) => /serve telegram\.messageArrived ok=false code=unavailable .*error=WORKFLOW_CM_REJECTED/u.test(line)), true, 'the line keeps the original code');
     const again = await post(app, 104, '?b=bot-7');
-    assert.equal(again.statusCode, 200);
-    assert.deepEqual(JSON.parse(again.body), { ok: true, message: 'already received' });
-    // The module ran with the hookParams: the arrival of the chat is the one of the bot of `?b=`.
-    assert.equal(logs.some((line) => line.includes('declaration refused') || line.includes('no-route-in-module')), false);
+    assert.equal(again.statusCode, 503, 'a repeat is delivered again, not a duplicate');
   });
 });

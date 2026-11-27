@@ -42,6 +42,19 @@ export interface MessagesTaskOccurrencePortOptions {
   client?: TaskClient;
 }
 
+/**
+ * The codes the platform throws when the cm (the task service) fails or refuses. They are infrastructure, never a decision of a module:
+ * `connectionServe` answers them as `unavailable` whatever the status the cm gave (a broken token is a 401, and must be retried, not refused).
+ * Closed list: a new `WORKFLOW_CM_*` code has to be added here and to the test.
+ */
+export const WORKFLOW_CM_ERROR_CODES: ReadonlySet<string> = new Set([
+  'WORKFLOW_CM_PROTOCOL_ERROR',
+  'WORKFLOW_CM_REJECTED',
+  'WORKFLOW_CM_BUSY',
+  'WORKFLOW_CM_TASK_INCOMPLETE',
+  'WORKFLOW_CM_ROOM_UNAVAILABLE',
+]);
+
 const PROTOCOL = 'Module task payload is not valid.';
 const REJECTED = 'Module task was rejected.';
 const BUSY = 'Module task is busy.';
