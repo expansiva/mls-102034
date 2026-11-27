@@ -12,7 +12,9 @@ export type AsTypeNode =
   | { kind: 'object'; fields: AsTypeField[] }
   | { kind: 'array'; of: AsTypeNode }
   | { kind: 'tuple'; items: AsTypeNode[] }
-  | { kind: 'ref'; name: string };
+  | { kind: 'ref'; name: string }
+  /** Only with `keepUnions`: a union that is not all string literals, with every alternative (`null` and `undefined` stay as refs). */
+  | { kind: 'union'; members: AsTypeNode[] };
 
 export interface AsTypeField {
   name: string;
@@ -87,7 +89,7 @@ export function tokenize(text: string): Token[] {
 
 class TypeParser {
   private index = 0;
-  constructor(private readonly tokens: Token[]) {}
+  constructor(private readonly tokens: Token[], private readonly keepUnions = false) {}
 
   get done(): boolean { return this.index >= this.tokens.length; }
   peek(offset = 0): Token | undefined { return this.tokens[this.index + offset]; }
@@ -111,6 +113,7 @@ class TypeParser {
     if (members.length === 1) return members[0];
     const literals = members.filter((member): member is { kind: 'literal'; values: string[] } => member.kind === 'literal');
     if (literals.length === members.length) return { kind: 'literal', values: literals.flatMap(member => member.values) };
+    if (this.keepUnions) return { kind: 'union', members };
     const meaningful = members.filter(member => !(member.kind === 'ref' && (member.name === 'null' || member.name === 'undefined')));
     return meaningful.length === 1 ? meaningful[0] : { kind: 'primitive', name: 'unknown' };
   }
@@ -141,6 +144,12 @@ class TypeParser {
     }
     const name = token.value;
     if (this.isPunct('<')) {
+      if (this.keepUnions && (name === 'Array' || name === 'ReadonlyArray')) {
+        this.next();
+        const of = this.parseType();
+        this.expectPunct('>');
+        return { kind: 'array', of };
+      }
       this.skipGeneric();
       if (name === 'Array' || name === 'ReadonlyArray') return { kind: 'array', of: { kind: 'primitive', name: 'unknown' } };
       return { kind: 'primitive', name: 'unknown' };
@@ -215,7 +224,8 @@ export interface AsParsedContract {
 
 // Reads every `export interface X { }` / `export type X = ...;` and collects the routes:
 // properties whose key is a dotted route name and whose value is an object with a `kind`.
-export function parseContractSource(source: string): AsParsedContract {
+export function parseContractSource(source: string, options: { keepUnions?: boolean } = {}): AsParsedContract {
+  const keepUnions = options.keepUnions === true;
   const tokens = tokenize(source);
   const types: Record<string, AsTypeNode> = {};
   let i = 0;
@@ -227,7 +237,7 @@ export function parseContractSource(source: string): AsParsedContract {
       if (keyword === 'interface' && name) {
         let j = i + 3;
         while (j < tokens.length && !(tokens[j].kind === 'punct' && tokens[j].value === '{')) j += 1;
-        const parser = new TypeParser(tokens.slice(j + 1));
+        const parser = new TypeParser(tokens.slice(j + 1), keepUnions);
         try {
           types[name] = parser.parseObjectBody();
         } catch {
@@ -249,7 +259,7 @@ export function parseContractSource(source: string): AsParsedContract {
           j += 1;
         }
         try {
-          const parser = new TypeParser(tokens.slice(start, j));
+          const parser = new TypeParser(tokens.slice(start, j), keepUnions);
           types[name] = parser.parseType();
         } catch {
           // ignore unreadable type aliases
