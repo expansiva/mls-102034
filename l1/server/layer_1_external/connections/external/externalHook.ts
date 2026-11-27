@@ -177,6 +177,7 @@ function rowOf(
   httpStatus: number,
   bytes: number,
   requestId: string | null,
+  denialReason: string | null = null,
 ): ExternalCallRow {
   return {
     id: randomUUID(),
@@ -189,7 +190,7 @@ function rowOf(
     server: '',
     path: `/hook/${target.projectId}/${target.moduleId}/${target.systemId}/${target.operationId}`,
     outcome,
-    denialReason: null,
+    denialReason,
     httpStatus,
     durationMs: null,
     bytes,
@@ -208,15 +209,19 @@ async function answer(
   outcome: string,
   message: string | undefined,
   requestId: string | null,
+  denialReason: string | null = null,
 ): Promise<ExternalHookResponse> {
   try {
-    await deps.record(rowOf(target, now, outcome, status, bytes, requestId));
+    await deps.record(rowOf(target, now, outcome, status, bytes, requestId, denialReason));
   } catch (error) {
     const text = error instanceof Error ? error.message : 'record failed';
     deps.log(`[external] hook record failed ${target.systemId}.${target.operationId}: ${text}`);
   }
   return { status, body: message === undefined ? { ok: status >= 200 && status < 300 } : { ok: false, message } };
 }
+
+/** What a module answers when the notice is understood and refused: not worth a retry. `invalid` is not here: a notice the module cannot read may be read after a fix. */
+const REFUSED_CODES: ReadonlySet<string> = new Set(['not_found', 'refused', 'forbidden']);
 
 export async function handleExternalHook(request: ExternalHookRequest, deps: ExternalHookDeps): Promise<ExternalHookResponse> {
   const { target, rawBody, headers } = request;
@@ -323,6 +328,14 @@ export async function handleExternalHook(request: ExternalHookRequest, deps: Ext
     deps.log(`[external] hook deliver failed ${target.systemId}.${target.operationId}: ${text}`);
     await giveBack();
     return answer(deps, target, now, rawBody.length, 503, 'unavailable', 'unavailable', requestId);
+  }
+  if (!delivered.ok && REFUSED_CODES.has(delivered.code)) {
+    // The module said no and a retry would say the same (an unknown bot, a rule, no authority): the notice stays seen and the sender is
+    // answered 200, so it stops sending it. The code and the message are the module's own words; never the body of the notice.
+    const reason = `${delivered.code}: ${delivered.message}`.replace(/\s+/gu, ' ').slice(0, 200);
+    deps.log(`[external] hook ${target.systemId}.${target.operationId} refused by the module code=${delivered.code}`);
+    const response = await answer(deps, target, now, rawBody.length, 200, 'refused', undefined, requestId, reason);
+    return { status: response.status, body: { ok: true, message: 'refused' } };
   }
   if (!delivered.ok) {
     await giveBack();

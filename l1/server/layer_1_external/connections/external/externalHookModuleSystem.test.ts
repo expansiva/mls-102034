@@ -128,6 +128,25 @@ describe('rt319 s2: arrival at the hook of a system declared by a module', () =>
     await app.close();
   });
 
+  it('rt330: a route that answers 422 (refused) is a 200 `refused`: the notice is kept, the record says refused, and the same notice again is a duplicate', async () => {
+    let calls = 0;
+    const { app, forgotten, records } = build(async () => {
+      calls += 1;
+      return { response: { ok: false, data: null, error: { code: 'CM_REFUSED', message: 'blocked' } } as BffResponse, statusCode: 422 };
+    });
+    const first = await app.inject({ method: 'POST', url, headers: headers(), payload });
+    assert.equal(first.statusCode, 200);
+    assert.deepEqual(JSON.parse(first.body), { ok: true, message: 'refused' });
+    assert.equal(records.at(-1)?.outcome, 'refused');
+    assert.match(records.at(-1)?.denialReason ?? '', /^refused: blocked$/u);
+    assert.deepEqual(forgotten, [], 'the notice stays seen');
+    const again = await app.inject({ method: 'POST', url, headers: headers(), payload });
+    assert.equal(again.statusCode, 200);
+    assert.deepEqual(JSON.parse(again.body), { ok: true, message: 'already received' });
+    assert.equal(calls, 1, 'the route is not asked again');
+    await app.close();
+  });
+
   it('503 when the route fails: the notice is given back and, sent again, it is delivered again (not duplicate)', async () => {
     let fail = true;
     const calls: string[] = [];

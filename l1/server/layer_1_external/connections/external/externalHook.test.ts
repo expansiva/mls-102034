@@ -465,4 +465,74 @@ describe('external hook', () => {
     const failed = lines.find((line) => line.includes('hook deliver failed'));
     assert.ok(failed && /Error: deliver blew up\n\s+at /u.test(failed), failed);
   });
+
+  it('rt330: refused or not to retry — the code decides: not_found, refused and forbidden answer 200 and keep the notice; the others answer 503 and give it back', async () => {
+    const table: Array<{ code: 'not_found' | 'refused' | 'forbidden' | 'invalid' | 'conflict' | 'unavailable' | 'disabled'; status: number; keeps: boolean; outcome: string }> = [
+      { code: 'not_found', status: 200, keeps: true, outcome: 'refused' },
+      { code: 'refused', status: 200, keeps: true, outcome: 'refused' },
+      { code: 'forbidden', status: 200, keeps: true, outcome: 'refused' },
+      { code: 'invalid', status: 503, keeps: false, outcome: 'unavailable' },
+      { code: 'conflict', status: 503, keeps: false, outcome: 'unavailable' },
+      { code: 'unavailable', status: 503, keeps: false, outcome: 'unavailable' },
+      { code: 'disabled', status: 503, keeps: false, outcome: 'unavailable' },
+    ];
+    for (const [index, row] of table.entries()) {
+      const seen = new Set<string>();
+      const forgotten: string[] = [];
+      const records: ExternalCallRow[] = [];
+      const lines: string[] = [];
+      const deps: ExternalHookDeps = {
+        declarationOf: async () => declaration,
+        secretOf: async () => SECRET,
+        seen: async (notice) => (seen.has(notice.noticeId) ? false : (seen.add(notice.noticeId), true)),
+        forget: async (notice) => { forgotten.push(notice.noticeId); seen.delete(notice.noticeId); },
+        organizationOf: () => 'org-1',
+        record: async (record) => { records.push(record); },
+        deliver: async () => ({ ok: false, code: row.code, message: `the module said ${row.code}\nsecond line` }),
+        now: () => WHEN,
+        allow: () => true,
+        log: (line) => lines.push(line),
+      };
+      const body = Buffer.from(`{"id":"n-rt330-${index}","text":"sentinel-body"}`);
+      const headers = { 'x-signature': sign(body), 'x-notice-id': `n-rt330-${index}` };
+      const target = { projectId: PROJECT, moduleId: MODULE, systemId: SYSTEM, operationId: 'receive' };
+      const first = await handleExternalHook({ target, rawBody: body, headers, remoteAddress: '1.2.3.4' }, deps);
+      assert.equal(first.status, row.status, row.code);
+      assert.equal(records.at(-1)?.outcome, row.outcome, row.code);
+      assert.equal(forgotten.length, row.keeps ? 0 : 1, `${row.code}: give back only when it is a 503`);
+      if (row.keeps) {
+        assert.deepEqual(first.body, { ok: true, message: 'refused' });
+        assert.match(records.at(-1)?.denialReason ?? '', new RegExp(`^${row.code}: the module said ${row.code} second line`, 'u'), 'the module words in denialReason, one line');
+        assert.equal(lines.some((line) => line.includes(`refused by the module code=${row.code}`)), true);
+        assert.equal(JSON.stringify(records.at(-1)).includes('sentinel-body'), false, 'nothing of the body of the notice in the record');
+        const again = await handleExternalHook({ target, rawBody: body, headers, remoteAddress: '1.2.3.4' }, deps);
+        assert.equal(again.status, 200);
+        assert.deepEqual(again.body, { ok: true, message: 'already received' }, 'the repeat is a duplicate');
+      } else {
+        assert.equal(first.body.ok, false);
+      }
+    }
+  });
+
+  it('rt330: a timeout and an exception of the delivery still answer 503 and give the notice back', async () => {
+    const forgotten: string[] = [];
+    const base = (deliver: ExternalHookDeps['deliver']): ExternalHookDeps => ({
+      declarationOf: async () => declaration,
+      secretOf: async () => SECRET,
+      seen: async () => true,
+      forget: async (notice) => { forgotten.push(notice.noticeId); },
+      organizationOf: () => 'org-1',
+      record: async () => undefined,
+      deliver,
+      now: () => WHEN,
+      allow: () => true,
+      log: () => undefined,
+    });
+    const body = Buffer.from('{"id":"n-exc"}');
+    const headers = { 'x-signature': sign(body), 'x-notice-id': 'n-exc' };
+    const target = { projectId: PROJECT, moduleId: MODULE, systemId: SYSTEM, operationId: 'receive' };
+    const thrown = await handleExternalHook({ target, rawBody: body, headers, remoteAddress: '1.2.3.4' }, base(async () => { throw new Error('boom'); }));
+    assert.equal(thrown.status, 503);
+    assert.deepEqual(forgotten, ['n-exc']);
+  });
 });
