@@ -1,5 +1,6 @@
 /// <mls fileReference="_102034_/l1/server/layer_1_external/config/env.ts" enhancement="_blank" />
 import { existsSync, readFileSync } from 'node:fs';
+import { readProjectFile } from '/_102034_/l1/server/layer_1_external/cbe/cbeLogin.js';
 import { resolve } from 'node:path';
 import { getStorageConfig } from '/_102034_/l1/server/layer_1_external/config/storageConfig.js';
 import {
@@ -149,6 +150,23 @@ export function ensureEnvFileLoaded(): void {
   loadEnvFile();
 }
 
+let loggedFileDomain = false;
+
+/**
+ * The domain of the app when the environment has none: the one the sites wrote in the project file (`project.domain`, the same file the
+ * organization is read from). Nothing there (a local run) leaves it undefined, as before. Logs once, when it is used.
+ */
+function projectDomainFromFile(projectId: string | undefined): string | undefined {
+  if (projectId === undefined || !/^[1-9][0-9]*$/u.test(projectId)) return undefined;
+  const domain = readProjectFile(Number(projectId))?.project?.domain;
+  if (typeof domain !== 'string' || domain.trim() === '') return undefined;
+  if (!loggedFileDomain) {
+    loggedFileDomain = true;
+    console.info(`[env] project domain from the project file (${domain.trim()})`);
+  }
+  return domain.trim();
+}
+
 export function readAppEnv(): AppEnv {
   loadEnvFile();
   const appEnv =
@@ -199,7 +217,7 @@ export function readAppEnv(): AppEnv {
     // disposable in-memory sandbox, so enabling it never touches the production data.
     testsEnabled: parseBoolean(readEnvValue('TESTS_ENABLED', appEnv), appEnv === 'development'),
     projectId: readEnvValue('PROJECT_ID', appEnv) || readEnvValue('COLLAB_PROJECT_ID', appEnv) || undefined,
-    projectDomain: readEnvValue('PROJECT_DOMAIN', appEnv) || readEnvValue('DOMAIN', appEnv) || undefined,
+    projectDomain: readEnvValue('PROJECT_DOMAIN', appEnv) || readEnvValue('DOMAIN', appEnv) || projectDomainFromFile(readEnvValue('PROJECT_ID', appEnv) || readEnvValue('COLLAB_PROJECT_ID', appEnv)),
     studioEnabled: parseBoolean(readEnvValue('STUDIO_ENABLED', appEnv), false),
     activeCompanyId: readEnvValue('ACTIVE_COMPANY_ID', appEnv) || undefined,
     activeUnitId: readEnvValue('ACTIVE_UNIT_ID', appEnv) || undefined,
