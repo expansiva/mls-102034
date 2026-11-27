@@ -111,4 +111,27 @@ describe('rt325 s1: once (Postgres, real transaction)', { skip: url === '' }, ()
     const ctx = { data: { moduleData: runtime } } as unknown as RequestContext;
     await assert.rejects(runAsCallerModule('telegram', () => once(ctx, WHERE, async () => 1)), /inside a transaction/u);
   });
+
+  it('a runInTransaction nested in the one of serveCm is the SAME transaction: a write in the nested one and an exception after it, in the outer, undo both', async () => {
+    const runtime = createPostgresModuleDataRuntime(env, await setup());
+    await assert.rejects(
+      runtime.runInTransaction(async (outer) => {
+        await outer.runInTransaction(async (inner) => {
+          assert.equal(platformTransactionAccess(inner)?.inTransaction, true);
+          await platformTransactionAccess(inner)?.sql?.query('INSERT INTO module_effect (id) VALUES ($1)', ['nested-lost']);
+        });
+        throw new Error('outer fails');
+      }),
+      /outer fails/u,
+    );
+    const rows = await (await setup()).query(`SELECT count(*)::int AS n FROM module_effect WHERE id = 'nested-lost'`);
+    assert.equal(rows.rows[0].n, 0);
+    await runtime.runInTransaction(async (outer) => {
+      await outer.runInTransaction(async (inner) => {
+        await platformTransactionAccess(inner)?.sql?.query('INSERT INTO module_effect (id) VALUES ($1)', ['nested-kept']);
+      });
+    });
+    const kept = await (await setup()).query(`SELECT count(*)::int AS n FROM module_effect WHERE id = 'nested-kept'`);
+    assert.equal(kept.rows[0].n, 1);
+  });
 });
