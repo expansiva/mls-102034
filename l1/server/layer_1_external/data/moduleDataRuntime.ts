@@ -102,6 +102,10 @@ export interface IModuleDataRuntime {
   getTable<TRecord extends object>(repositoryNameOrTableName: string): Promise<ITableRepository<TRecord>>;
   listTables(): Promise<ResolvedTableDefinition[]>;
   runInTransaction<TValue>(callback: (runtime: IModuleDataRuntime) => Promise<TValue>): Promise<TValue>;
+  /** Platform only (`once`): true for the runtime that `runInTransaction` hands to its callback. */
+  inTransaction?(): boolean;
+  /** Platform only (`once`): SQL on the connection of the running transaction, so a platform table commits or rolls back with the module's writes. Undefined outside one and in memory. */
+  transactionSql?(): { query(sql: string, params?: unknown[]): Promise<{ rows: Array<Record<string, unknown>> }> } | undefined;
 }
 
 type RegistryWriteBehindPayload = {
@@ -537,9 +541,15 @@ export function copySandboxSeedRows(definition: ResolvedTableDefinition): Record
 }
 
 class MemoryModuleDataRuntime implements IModuleDataRuntime {
-  private readonly store = new Map<string, object[]>();
+  public constructor(
+    private readonly env: AppEnv,
+    private readonly store = new Map<string, object[]>(),
+    private readonly inTx = false,
+  ) {}
 
-  public constructor(private readonly env: AppEnv) {}
+  public inTransaction(): boolean {
+    return this.inTx;
+  }
 
   public async getTable<TRecord extends object>(repositoryNameOrTableName: string): Promise<ITableRepository<TRecord>> {
     const definition = await findResolvedTableDefinition(repositoryNameOrTableName, this.env);
@@ -569,7 +579,8 @@ class MemoryModuleDataRuntime implements IModuleDataRuntime {
   }
 
   public async runInTransaction<TValue>(callback: (runtime: IModuleDataRuntime) => Promise<TValue>): Promise<TValue> {
-    return callback(this);
+    // Same store (the memory runtime has no rollback); only the flag differs, so `once` can tell it is inside one.
+    return callback(this.inTx ? this : new MemoryModuleDataRuntime(this.env, this.store, true));
   }
 }
 
@@ -605,6 +616,17 @@ class PostgresModuleDataRuntime implements IModuleDataRuntime {
 
   public async listTables(): Promise<ResolvedTableDefinition[]> {
     return loadResolvedTableDefinitions(this.env);
+  }
+
+  public inTransaction(): boolean {
+    return 'release' in this.executor;
+  }
+
+  public transactionSql(): { query(sql: string, params?: unknown[]): Promise<{ rows: Array<Record<string, unknown>> }> } | undefined {
+    const executor = this.executor;
+    return 'release' in executor
+      ? { query: async (sql, params) => ({ rows: (await executor.query(sql, params as unknown[])).rows as Array<Record<string, unknown>> }) }
+      : undefined;
   }
 
   public async runInTransaction<TValue>(callback: (runtime: IModuleDataRuntime) => Promise<TValue>): Promise<TValue> {

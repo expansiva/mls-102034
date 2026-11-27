@@ -33,6 +33,10 @@
       "persistenceEntrypoint": "./_102034_/l1/server/layer_1_external/connections/external/log/persistence.js"
     },
     {
+      "moduleId": "platformOnce",
+      "persistenceEntrypoint": "./_102034_/l1/server/layer_1_external/connections/cm/persistence.js"
+    },
+    {
       "moduleId": "platformModuleEvents",
       "persistenceEntrypoint": "./_102034_/l1/server/layer_1_external/events/persistence.js"
     },
