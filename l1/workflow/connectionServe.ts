@@ -120,8 +120,8 @@ export function createConnectionServer(deps: ConnectionServerDeps): (input: Conn
   return async (input) => {
     const started = Date.now();
     const name = `${String(input?.connectionId)}.${String(input?.operationId)}`;
-    const done = (result: ConnectionResult, reason?: string): ConnectionResult => {
-      log(`[connection] serve ${name} ${result.ok ? 'ok=true' : `ok=false code=${result.code}`}${reason ? ` reason=${reason}` : ''} ms=${Date.now() - started}`);
+    const done = (result: ConnectionResult, reason?: string, detail?: string): ConnectionResult => {
+      log(`[connection] serve ${name} ${result.ok ? 'ok=true' : `ok=false code=${result.code}`}${reason ? ` reason=${reason}` : ''} ms=${Date.now() - started}${detail ? ` ${detail}` : ''}`);
       return result;
     };
     const fail = (code: ConnectionErrorCode, message: string, reason?: string): ConnectionResult => done({ ok: false, code, message }, reason);
@@ -201,13 +201,15 @@ export function createConnectionServer(deps: ConnectionServerDeps): (input: Conn
     }
 
     const technical = `connection:${input.connectionId}`;
+    const requestId = input.idempotencyKey ?? randomUUID();
     let result: ConnectionResult;
+    let detail: string | undefined;
     try {
       const answer = await deps.execMessage({
         routine: route,
         params: input.input,
         meta: {
-          requestId: input.idempotencyKey ?? randomUUID(),
+          requestId,
           userId: technical,
           actorId: technical,
           // The same value in both: `actorScope` is read by the engine, `verifiedAuthorities` by the `authorize` the route carries.
@@ -225,10 +227,18 @@ export function createConnectionServer(deps: ConnectionServerDeps): (input: Conn
       result = mapped.outcome === 'done'
         ? { ok: true, output: mapped.data }
         : { ok: false, code: CODE_OF[mapped.outcome], message: mapped.error?.message || mapped.error?.code || mapped.outcome };
-    } catch {
+      // A 5xx leaves its cause in the log: the code, the status and the request id (the line of the monitor with the stack has the same id), and the message cut to one line. Never the input.
+      if (mapped.outcome === 'unavailable') {
+        const cause = (answer.response.error?.details as { cause?: unknown } | undefined)?.cause;
+        const text = [mapped.error?.message, typeof cause === 'string' ? cause : undefined].filter(Boolean).join(': ');
+        detail = `status=${answer.statusCode} error=${mapped.error?.code ?? '-'} requestId=${requestId} message=${JSON.stringify(text.replace(/\s+/gu, ' ').slice(0, 300))}`;
+      }
+    } catch (error) {
+      // The exception stays here once, with its stack; the caller still gets the same `unavailable`. Only what the exception carries, never the input or the context.
+      console.error(`[connection] serve ${name} exec threw requestId=${requestId}: ${error instanceof Error ? (error.stack ?? `${error.name}: ${error.message}`) : String(error)}`);
       return fail('unavailable', `${name} could not be served now`, 'exec-failed');
     }
-    return done(result);
+    return done(result, undefined, detail);
   };
 }
 

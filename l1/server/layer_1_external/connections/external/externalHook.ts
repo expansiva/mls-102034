@@ -319,7 +319,7 @@ export async function handleExternalHook(request: ExternalHookRequest, deps: Ext
     clearTimeout(deadline);
   } catch (error) {
     clearTimeout(deadline);
-    const text = error instanceof Error ? error.name : 'error';
+    const text = error instanceof Error ? (error.stack ?? `${error.name}: ${error.message}`) : 'error';
     deps.log(`[external] hook deliver failed ${target.systemId}.${target.operationId}: ${text}`);
     await giveBack();
     return answer(deps, target, now, rawBody.length, 503, 'unavailable', 'unavailable', requestId);

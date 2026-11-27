@@ -329,3 +329,29 @@ test('rt319: the catalog of the platform wins over the one of a module', async (
   const result = await h.serve(call('describe', CONTEXT, { targetModuleId: 'modA' }));
   assert.equal(result.ok, true);
 });
+
+test('rt323: a route that answers 500 leaves status, error code, request id and the message in the line; the answer is the same', async () => {
+  const h = harness({ answer: { response: { ok: false, data: null, error: { code: 'INTERNAL_ERROR', message: 'Unexpected error', details: { cause: 'the\nbot   is gone' } } } as BffResponse, statusCode: 500 } });
+  const result = await h.serve(call('describe', CONTEXT, { idempotencyKey: 'key-5xx', input: { secretField: 'do-not-log-me' } }));
+  assert.equal(result.ok, false);
+  assert.equal(h.logs.length, 1);
+  assert.match(h.logs[0], /ok=false code=unavailable/u);
+  assert.match(h.logs[0], /status=500 error=INTERNAL_ERROR requestId=key-5xx message=".*: the bot is gone"/u);
+  assert.equal(h.logs[0].includes('do-not-log-me'), false);
+});
+
+test('rt323: an execMessage that throws leaves its stack once in console.error, and the result is the same unavailable', async () => {
+  const errors: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => { errors.push(args.map(String).join(' ')); };
+  try {
+    const h = harness({ answer: new Error('boom in the route') });
+    const result = await h.serve(call('describe', CONTEXT, { idempotencyKey: 'key-throw' }));
+    assert.deepEqual(result, { ok: false, code: 'unavailable', message: 'cm.describe could not be served now' });
+    assert.equal(errors.length, 1);
+    assert.match(errors[0], /requestId=key-throw: Error: boom in the route\n\s+at /u);
+    assert.match(h.logs[0], /reason=exec-failed/u);
+  } finally {
+    console.error = original;
+  }
+});

@@ -443,4 +443,26 @@ describe('external hook', () => {
     }
     assert.ok(allowed <= 10_000);
   });
+
+  it('rt323: a deliver that throws registers its stack and the answer stays 503', async () => {
+    const lines: string[] = [];
+    const deps: ExternalHookDeps = {
+      declarationOf: async () => declaration,
+      secretOf: async () => SECRET,
+      seen: async () => true,
+      forget: async () => undefined,
+      organizationOf: () => 'org-1',
+      record: async () => undefined,
+      deliver: async () => { throw new Error('deliver blew up'); },
+      now: () => WHEN,
+      allow: () => true,
+      log: (line) => lines.push(line),
+    };
+    const body = Buffer.from('{"id":"n-10"}');
+    const target = { projectId: PROJECT, moduleId: MODULE, systemId: SYSTEM, operationId: 'receive' };
+    const result = await handleExternalHook({ target, rawBody: body, headers: { 'x-signature': sign(body), 'x-notice-id': 'n-10' }, remoteAddress: '1.2.3.4' }, deps);
+    assert.equal(result.status, 503);
+    const failed = lines.find((line) => line.includes('hook deliver failed'));
+    assert.ok(failed && /Error: deliver blew up\n\s+at /u.test(failed), failed);
+  });
 });
