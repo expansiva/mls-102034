@@ -15,7 +15,7 @@ export interface WorkflowStepDef {
 
 export interface WorkflowTable {
   processId: string;
-  steps: WorkflowStepDef[];
+  steps: readonly WorkflowStepDef[];
 }
 
 /** Identity of one occurrence. Version is not part of the key. */

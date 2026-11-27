@@ -179,7 +179,7 @@ function wirePlanStep(step: {
   kind: ModulePlanStep['kind'];
   ownerKind: ModulePlanStep['ownerKind'];
   title: string;
-  next: string[];
+  next: readonly string[];
   actorRef?: string;
   journeyRef?: string;
   functionRef?: string;
